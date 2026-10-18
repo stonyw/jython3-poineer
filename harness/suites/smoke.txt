@@ -1,0 +1,14 @@
+# M0 smoke suite: chosen to be fast and to exercise the reference backend's parsing paths.
+# These run through `python3.14 -m test <name>`; the jy3 backend reports NOT_IMPLEMENTED until M1.
+test_grammar
+test_bool
+test_str
+test_tuple
+test_list
+test_dict
+test_int
+test_float
+test_range
+test_set
+test_slice
+test_tokenize

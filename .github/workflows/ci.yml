@@ -1,0 +1,59 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+        java: ["21", "25"]
+    name: JDK ${{ matrix.java }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The reference backend is part of the build: the harness is only trustworthy if the
+      # CPython-measures-CPython path stays green on every platform we claim to support.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - name: Gradle wrapper cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Assemble test tree
+        run: ./gradlew :harness:syncCpythonTests --no-daemon
+
+      - name: Build and unit test
+        run: ./gradlew build --no-daemon
+
+      - name: Harness against reference CPython
+        run: ./gradlew :harness:harnessCpythonRef --no-daemon
+
+      # M0: every jy3 result is a surprise by construction. Remove continue-on-error at M1.
+      - name: Harness against jy3
+        continue-on-error: true
+        run: ./gradlew :harness:harnessJy3 --no-daemon
+
+      - name: Upload harness reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-${{ matrix.os }}-jdk${{ matrix.java }}
+          path: |
+            build/reports/harness/
+            harness/build/reports/harness/
+          if-no-files-found: ignore

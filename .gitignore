@@ -1,0 +1,16 @@
+# Reference clones: local research material, never committed (~280 MB).
+/refs/
+
+# Vendored CPython regression tree, produced by :harness:syncCpythonTests.
+/lib-python/
+
+# Build outputs.
+**/build/
+**/.gradle/
+*.class
+
+# Machine-local settings.
+local.properties
+.idea/
+.kotlin/
+.DS_Store
