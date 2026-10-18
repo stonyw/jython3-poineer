@@ -59,7 +59,7 @@ public final class Cpython314Code extends PyObject implements PyCode {
             PyBytes lineTable,
             PyBytes exceptionTable) {
         super(PyType.CODE);
-        if (localsPlusNames.length() != localsPlusKinds.length()) {
+        if (localsPlusNames.size() != localsPlusKinds.getValue().length) {
             throw MarshalFormatException.badData(
                     "localsplus names and kinds disagree in length");
         }
@@ -147,20 +147,38 @@ public final class Cpython314Code extends PyObject implements PyCode {
      * array: a name belongs to whichever views its kind byte selects. Note that a captured
      * parameter is both a local and a cell, and so legitimately appears in two of these.
      */
-    PyTuple varNames() {
+    @Override
+    public PyTuple varNames() {
         return namesWithKind(CO_FAST_LOCAL);
     }
 
-    PyTuple cellVars() {
+    @Override
+    public PyTuple cellVars() {
         return namesWithKind(CO_FAST_CELL);
     }
 
-    PyTuple freeVars() {
+    @Override
+    public PyTuple freeVars() {
         return namesWithKind(CO_FAST_FREE);
     }
 
+    /**
+     * {@code co_varnames + co_freevars + co_cellvars} in the order the code object actually lays them
+     * out, which is the localsplus array itself. CPython's four names are three lists and a derived
+     * fourth; this keeps the one that is stored and answers the others from it.
+     */
+    @Override
+    public PyTuple localNames() {
+        return localsPlusNames;
+    }
+
+    @Override
+    public int localCount() {
+        return localsPlusNames.size();
+    }
+
     int nLocals() {
-        return varNames().length();
+        return varNames().size();
     }
 
     byte[] codeArray() {

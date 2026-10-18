@@ -23,4 +23,14 @@ public interface CodeInstructions {
 
     /** The instruction starting at {@code unit}, or -1 if none does. */
     int indexOfUnitAt(int unit);
+
+    /**
+     * The instruction a jump at {@code index} lands on.
+     *
+     * A jump argument is relative: it counts units from the instruction <em>after</em> the jump, in
+     * the direction {@link Opcodes} says that opcode goes. Which instruction comes after depends on
+     * how many unused units the front-end left behind the jumping opcode, so only the packing can
+     * answer this — it is the same number {@code dis} prints as {@code argval}.
+     */
+    int jumpTargetAt(int index);
 }

@@ -1,6 +1,6 @@
 # Jython3 — 总体计划（Python 3.14 on JVM, Java 21+）
 
-> 状态：计划已确认（2026-10-18），执行从 M0 开始。本文件是唯一的路线图来源，各阶段完成后更新"验收结果"。
+> 状态：计划已确认（2026-10-18）。M0 完成；M1 完成 MVP①（2026-10-19，`test_types` 子集仍待 M4 的导入系统）。本文件是唯一的路线图来源，各阶段完成后更新"验收结果"。
 
 ## 0. 目标与硬约束
 
@@ -42,7 +42,7 @@
 | 阶段 | 目标 | 验收判据 | 量级 | 验收结果 |
 |---|---|---|---|---|
 | **M0** 基建 | JDK 21 + Gradle 多模块骨架 + CI（21/25 × mac/linux）+ 黄金测试 harness（引入 `lib-python/3.14` 与 expected-fail 双向清单）+ `jy3` CLI 桩 | 空实现也能产出 pass/fail/expected 报告；CI 绿 | 0.5–1 周 | ✅ 完成：6 模块 Gradle 9.8.1 构建绿、配置缓存无告警；30 个 harness 单元用例通过；参考后端 smoke 12/12 PASS 0 意外；jy3 后端 12/12 诚实报 NOT_IMPLEMENTED（exit 3 协议已验证） |
-| **M1** 运行时骨架 → **MVP①** | `marshal` v5 读取 + `PyCode` 接口 + 15 个核心类型 + 槽位分派 + 异常模型 + ≈60 opcode + `sys`/`builtins` 骨架 + stdout | `jy3 hello.py`；算术/分支/循环/函数调用；`test_types` 子集通过 | 2–4 周 | — |
+| **M1** 运行时骨架 → **MVP①** | `marshal` v5 读取 + `PyCode` 接口 + 15 个核心类型 + 槽位分派 + 异常模型 + ≈60 opcode + `sys`/`builtins` 骨架 + stdout | `jy3 hello.py`；算术/分支/循环/函数调用；`test_types` 子集通过 | 2–4 周 | ✅ 前两条判据达成并实测：`jy3 hello.py` 的 stdout/stderr/exit 与 CPython 3.14.8 **逐字节一致**；`m1/corpus` 10 个差分脚本（整数、浮点、比较、控制流、函数、闭包、字符串、容器、切片与 range、builtins+sys）在两个后端下 stdout+stderr+exit 全等，`Jy3LauncherTest` 41 例全绿；opcode 实测 90 个，`:runtime:checkOpcodes` 门禁保证表与 `bytecodes.c` 同步。第 3 条 `test_types` **未达成**：它要先 `import unittest`，导入 finder 属 M4。已知偏差（均已在代码或此处具名）：未捕获异常只打印类型与消息（traceback 帧属 M3）；`sys.version_info` 是纯元组、无 `.major`（structseq 属 M3）；`sys.path` 保持 `[]`（M4）；`int.to_bytes`/`bytes` 方法与完整 Unicode case folding 的希腊分支未做；`-m`/`-X`/`-O`/目录入口/REPL/`--harness` 一律诚实报 exit 3；`int ** 负整数` 的末位 ulp 取决于 libm（CPython 自己走 `float_pow`），不做逐位对齐 |
 | **M2** 双向互操作 → **MVP②③④** | py3 原生重写 `PyJavaType`/`ReflectedArgs`/`PyArray`/包扫描/`@Exposed`；重载、可变参数、装箱、泛型擦除、SAM 函数式接口、静态成员、bean 属性、`__tojava__`；Java→Python：`PythonInterpreter`、片段求值、`PyObject`→Java 接口代理、跨边界异常；JPMS/`--add-opens` 边界 | 四条 MVP 各有可运行 demo + `tests/java` 用例；`import java.util.*`、`from java.awt import Point`、Java 调 py 函数取回 `List` | 3–6 周 | — |
 | **M3** 语言面完整 | 补齐 ≈130 opcode：class + C3 MRO + metaclass + descriptor + `super`、迭代协议、生成器/`send`、3.14 异常表 + `except*`、推导式、解包、`match`、f-string/t-string、延迟注解、剩余 builtins、`codecs`/`_io` | `test_class`/`test_exceptions`/`test_generators`/`test_descr`/`test_builtin`/`test_fstring` 达约定通过率 | 6–10 周 | — |
 | **M4** 导入系统 + 标准库装配 | `_imp`、`sys.meta_path`、3.14 `importlib` 语义、zip/jar 导入；`CPythonLib.includes` 重生成 3.14 版；`Setup` 内建模块注册表；REPL（JLine 3） | `unittest/json/logging/configparser/datetime/dataclasses` 可用；`jy3 -m unittest` 可自举；纯 Python 模块清单首批 N=40 通过 | 4–8 周 | — |

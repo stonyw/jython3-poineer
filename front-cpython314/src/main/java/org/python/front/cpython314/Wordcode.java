@@ -1,6 +1,7 @@
 package org.python.front.cpython314;
 
 import org.python.core.CodeInstructions;
+import org.python.core.Opcodes;
 
 /**
  * CPython 3.14 wordcode: two bytes per code unit, {@code [opcode, oparg]}, with a variable number
@@ -82,5 +83,23 @@ final class Wordcode implements CodeInstructions {
     @Override
     public int indexOfUnitAt(int unit) {
         return unit >= 0 && unit < indexByUnit.length ? indexByUnit[unit] : -1;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * The offset is measured from the unit after this instruction <em>and its whole cache</em>,
+     * which is why the cache width appears here. A jump therefore lands one unit further along than
+     * a naive {@code unit + 1 + arg}, and {@code dis} reports the same target it does.
+     *
+     * FOR_ITER is not special-cased: its {@code dis} target is the END_FOR that follows the loop
+     * body, and the interpreter steps past that itself.
+     */
+    @Override
+    public int jumpTargetAt(int index) {
+        int opcode = opcodes[index];
+        int target = units[index] + 1 + InlineCaches.of(opcode)
+                + (Opcodes.jumpsBackward(opcode) ? -args[index] : args[index]);
+        return indexOfUnitAt(target);
     }
 }

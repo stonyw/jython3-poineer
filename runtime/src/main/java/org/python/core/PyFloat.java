@@ -25,6 +25,56 @@ public final class PyFloat extends PyObject {
         return value;
     }
 
+    // --- numeric slots ---------------------------------------------------------------------
+
+    @Override
+    public PyObject binaryOp(BinaryOp op, PyObject other) {
+        return Numeric.apply(op, this, other);
+    }
+
+    @Override
+    public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        return Numeric.apply(op, other, this);
+    }
+
+    @Override
+    public PyObject unaryOp(UnaryOp op) {
+        return Numeric.unary(op, this);
+    }
+
+    @Override
+    public PyObject richCompare(CompareOp cmp, PyObject other) {
+        return Numeric.compare(cmp, this, other);
+    }
+
+    /** Every float is true except zero, and NaN is true — the value is never tested for its length. */
+    @Override
+    public PyObject truth() {
+        return PyBool.of(value != 0.0);
+    }
+
+    @Override
+    public PyObject getAttr(String name) {
+        return switch (name) {
+            case "real" -> this;
+            case "imag" -> PyFloat.of(0.0);
+            default -> METHODS.bind(this, name);
+        };
+    }
+
+    private static final Members METHODS = Members.of("float")
+            .addNoArgument("is_integer", self -> PyBool.of(
+                    isIntegral(((PyFloat) self).value)))
+            .addNoArgument("conjugate", self -> self);
+
+    /**
+     * Whether the value is an integer, which {@code float.is_integer()} answers and the arithmetic
+     * below needs too: a negative base raised to a non-integer leaves the reals.
+     */
+    private static boolean isIntegral(double v) {
+        return !Double.isInfinite(v) && !Double.isNaN(v) && v == Math.floor(v);
+    }
+
     @Override
     public long hash() {
         return PyHash.floatHash(value);

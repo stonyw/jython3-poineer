@@ -171,8 +171,8 @@ final class MarshalRenderer {
     }
 
     private String join(PyTuple t, String open, String close) {
-        List<PyObject> items = new ArrayList<>(t.length());
-        for (int i = 0; i < t.length(); i++) {
+        List<PyObject> items = new ArrayList<>(t.size());
+        for (int i = 0; i < t.size(); i++) {
             items.add(t.at(i));
         }
         return joinItems(items, open, close);

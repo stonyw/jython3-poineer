@@ -8,6 +8,12 @@ public final class PyNone extends PyObject {
         super(PyType.NONE);
     }
 
+    /** {@code None} is false, and has no length for {@link Slots#truth} to fall back to. */
+    @Override
+    public PyObject truth() {
+        return PyBool.FALSE;
+    }
+
     /** CPython hashes {@code None} by address; a fixed value is the only reproducible choice. */
     @Override
     public long hash() {

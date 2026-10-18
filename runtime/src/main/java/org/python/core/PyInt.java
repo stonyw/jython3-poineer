@@ -16,6 +16,10 @@ public final class PyInt extends PyObject {
         }
     }
 
+    /** The two values the rest of the tower keeps needing — both from the cache, so they are shared. */
+    public static final PyInt ZERO = of(0);
+    public static final PyInt ONE = of(1);
+
     private final BigInteger value;
 
     private PyInt(BigInteger value) {
@@ -45,6 +49,58 @@ public final class PyInt extends PyObject {
     public boolean fitsLong() {
         return value.bitLength() < 64;
     }
+
+    // --- numeric slots ---------------------------------------------------------------------
+
+    @Override
+    public PyObject binaryOp(BinaryOp op, PyObject other) {
+        return Numeric.apply(op, this, other);
+    }
+
+    @Override
+    public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        // The tower is closed: any number on either side is computed here, so nothing reflects back.
+        return Numeric.apply(op, other, this);
+    }
+
+    @Override
+    public PyObject unaryOp(UnaryOp op) {
+        return Numeric.unary(op, this);
+    }
+
+    @Override
+    public PyObject richCompare(CompareOp cmp, PyObject other) {
+        return Numeric.compare(cmp, this, other);
+    }
+
+    /** Zero is the only false integer, and it is false on its value, not on a length it does not have. */
+    @Override
+    public PyObject truth() {
+        return PyBool.of(value.signum() != 0);
+    }
+
+    /**
+     * The attributes an {@code int} answers.
+     *
+     * {@code real}, {@code imag}, {@code numerator} and {@code denominator} are the four properties
+     * that make an integer look like the rest of the tower to a generic numeric function; they are
+     * attributes rather than methods, so they cannot live in {@link #METHODS}.
+     */
+    @Override
+    public PyObject getAttr(String name) {
+        return switch (name) {
+            case "real", "numerator" -> this;
+            case "imag" -> ZERO;
+            case "denominator" -> ONE;
+            default -> METHODS.bind(this, name);
+        };
+    }
+
+    private static final Members METHODS = Members.of("int")
+            .addNoArgument("bit_length", self -> PyInt.of(
+                    ((PyInt) self).value.abs().bitLength()))
+            .addNoArgument("conjugate", self -> self)
+            .addNoArgument("as_integer_ratio", self -> PyTuple.of((PyInt) self, ONE));
 
     @Override
     public long hash() {

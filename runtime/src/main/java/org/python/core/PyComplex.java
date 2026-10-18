@@ -31,6 +31,50 @@ public final class PyComplex extends PyObject {
         return imaginary == 0.0;
     }
 
+    // --- numeric slots ---------------------------------------------------------------------
+
+    @Override
+    public PyObject binaryOp(BinaryOp op, PyObject other) {
+        return Numeric.apply(op, this, other);
+    }
+
+    @Override
+    public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        return Numeric.apply(op, other, this);
+    }
+
+    @Override
+    public PyObject unaryOp(UnaryOp op) {
+        return Numeric.unary(op, this);
+    }
+
+    /**
+     * A complex is false only when both parts are zero.
+     *
+     * Ordering is not here because it is not a slot of {@code complex} in CPython either: the base
+     * class declines an ordering test, and {@link Slots} turns two declinations into the error that
+     * names both types.
+     */
+    @Override
+    public PyObject truth() {
+        return PyBool.of(real != 0.0 || imaginary != 0.0);
+    }
+
+    @Override
+    public PyObject getAttr(String name) {
+        return switch (name) {
+            case "real" -> realPart();
+            case "imag" -> PyFloat.of(imaginary);
+            default -> METHODS.bind(this, name);
+        };
+    }
+
+    private static final Members METHODS = Members.of("complex")
+            .addNoArgument("conjugate", self -> {
+                PyComplex c = (PyComplex) self;
+                return PyComplex.of(c.real(), -c.imaginary());
+            });
+
     @Override
     public long hash() {
         return PyHash.complexHash(real, imaginary);

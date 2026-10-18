@@ -1,0 +1,177 @@
+package org.python.core;
+
+/**
+ * One activation of one code object: its variable slots, its value stack and its instruction pointer.
+ *
+ * The variable slots are CPython's {@code localsplus} array, indexed by the numbers {@code LOAD_FAST},
+ * {@code STORE_DEREF} and friends carry. Cells live <em>in</em> that array rather than in a side
+ * table, which is why {@code LOAD_FAST} on a captured variable hands over the cell itself and why
+ * {@code MAKE_CELL} rewrites a slot in place.
+ *
+ * The value stack holds Java {@code null} where CPython holds a NULL stack reference — the one the
+ * call opcodes leave under a callable, and the one {@code CALL_FUNCTION_EX} uses to say "no keyword
+ * arguments". Nothing on the stack may be null by accident, so a slot that expects a value checks.
+ */
+public final class Frame {
+
+    private final PyCode code;
+    private final PyDict globals;
+    /** {@code f_locals}: the module's dictionary at module level, null in optimized code. */
+    private final PyDict locals;
+    private final PyObject[] slots;
+
+    private PyObject[] stack;
+    private int sp;
+    private int ip;
+
+    /** The function whose closure fills this frame's free variables; null for a module frame. */
+    PyFunction function;
+
+    Frame(PyCode code, PyDict globals, PyObject[] slots) {
+        this.code = code;
+        this.globals = globals;
+        this.locals = (code.flags() & PyCode.CO_OPTIMIZED) == 0 ? globals : null;
+        this.slots = slots;
+        // co_stacksize bounds the frame's own needs; the extra room is for the values a call opcode
+        // has not yet moved into the callee.
+        this.stack = new PyObject[Math.max(8, code.stackSize() + 8)];
+    }
+
+    public PyCode code() {
+        return code;
+    }
+
+    public PyDict globals() {
+        return globals;
+    }
+
+    /** The dictionary {@code LOAD_NAME} and {@code STORE_NAME} address, or null when there is none. */
+    public PyDict locals() {
+        return locals;
+    }
+
+    // --- instruction pointer -------------------------------------------------------------
+
+    int ip() {
+        return ip;
+    }
+
+    void setIp(int ip) {
+        this.ip = ip;
+    }
+
+    CodeInstructions instructions() {
+        return code.instructions();
+    }
+
+    /** Where the jump at {@code index} lands, in instruction indices. */
+    int jumpTarget(int index) {
+        return code.instructions().jumpTargetAt(index);
+    }
+
+    // --- value stack ---------------------------------------------------------------------
+
+    void push(PyObject value) {
+        if (sp == stack.length) {
+            PyObject[] grown = new PyObject[stack.length * 2];
+            System.arraycopy(stack, 0, grown, 0, stack.length);
+            stack = grown;
+        }
+        stack[sp++] = value;
+    }
+
+    PyObject pop() {
+        if (sp == 0) {
+            throw Slots.runtimeError("underflow in the value stack (a bug in the interpreter)");
+        }
+        PyObject value = stack[--sp];
+        stack[sp] = null;
+        return value;
+    }
+
+    /** The value {@code depth} places below the top; {@code peek(0)} is the top. */
+    PyObject peek(int depth) {
+        if (depth < 0 || depth >= sp) {
+            throw Slots.runtimeError("read past the bottom of the value stack (a bug in the interpreter)");
+        }
+        return stack[sp - 1 - depth];
+    }
+
+    /** Overwrite the value at {@code depth}, which is how {@code SWAP} is implemented. */
+    void replace(int depth, PyObject value) {
+        stack[sp - 1 - depth] = value;
+    }
+
+    int stackDepth() {
+        return sp;
+    }
+
+    /** The {@code n} values on top, in the order they were pushed, leaving them popped. */
+    PyObject[] take(int n) {
+        PyObject[] args = new PyObject[n];
+        for (int i = 0; i < n; i++) {
+            args[n - 1 - i] = pop();
+        }
+        return args;
+    }
+
+    // --- variable slots ------------------------------------------------------------------
+
+    PyObject slot(int index) {
+        return slots[index];
+    }
+
+    void setSlot(int index, PyObject value) {
+        slots[index] = value;
+    }
+
+    PyObject[] slots() {
+        return slots;
+    }
+
+    /** The name a slot holds, for the messages CPython prints when it is not bound. */
+    String slotName(int index) {
+        PyTuple names = code.localNames();
+        return index < names.size() ? ((PyStr) names.at(index)).getValue() : "?";
+    }
+
+    /**
+     * The error CPython raises for a read of slot {@code index} while its cell is empty: a free
+     * variable is someone else's local, so it is a {@code NameError} about an enclosing scope, and
+     * anything else is an {@code UnboundLocalError} about this one.
+     */
+    PyRaise unbound(int index) {
+        String name = slotName(index);
+        int free = code.freeVars().size();
+        if (free > 0 && index >= code.localCount() - free) {
+            return PyRaise.raise(
+                    ExceptionTypes.NAME_ERROR,
+                    "free variable '" + name + "' referenced before assignment in enclosing scope");
+        }
+        return PyRaise.raise(
+                ExceptionTypes.UNBOUND_LOCAL_ERROR,
+                "cannot access local variable '" + name + "' where it is not associated with a value");
+    }
+
+    // --- constant and name pools ---------------------------------------------------------
+
+    PyObject constant(int index) {
+        return code.constants().at(index);
+    }
+
+    String name(int index) {
+        return ((PyStr) code.names().at(index)).getValue();
+    }
+
+    /**
+     * The cell at {@code index}, which {@code LOAD_DEREF}, {@code STORE_DEREF} and {@code DELETE_DEREF}
+     * all require: the compiler only emits them for slots it has made into cells.
+     */
+    PyCell cell(int index) {
+        if (slots[index] instanceof PyCell cell) {
+            return cell;
+        }
+        throw Slots.runtimeError(
+                "variable '" + slotName(index) + "' is not a cell (a bug in the interpreter)");
+    }
+}

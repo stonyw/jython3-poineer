@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import org.python.core.ExceptionTypes;
 import org.python.core.PyBool;
 import org.python.core.PyBytes;
 import org.python.core.PyCode;
@@ -123,7 +124,7 @@ public final class MarshalReader {
                 case TYPE_NONE -> PyNone.INSTANCE;
                 case TYPE_FALSE -> PyBool.FALSE;
                 case TYPE_TRUE -> PyBool.TRUE;
-                case TYPE_STOPITER -> PyType.STOPITERATION;
+                case TYPE_STOPITER -> ExceptionTypes.STOP_ITERATION;
                 case TYPE_ELLIPSIS -> PyEllipsis.INSTANCE;
                 case TYPE_INT -> register(PyInt.of(readIntLE()), flag);
                 case TYPE_INT64 -> register(PyInt.of(BigInteger.valueOf(readLongLE())), flag);

@@ -201,8 +201,11 @@ class PyHashTest {
     @Test
     void refusesToHashAnUnhashableElement() {
         assertThatThrownBy(() -> PyTuple.of(PyDict.empty()).hash())
-                .isInstanceOf(UnsupportedOperationException.class)
-                .hasMessageContaining("dict");
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refusal -> assertThat(refusal.value().exceptionType())
+                                .isEqualTo(ExceptionTypes.TYPE_ERROR))
+                .hasMessageContaining("unhashable type: 'dict'");
     }
 
     /** A slice is the only value in the numeric-free corner of the fixture set, so check its bits. */
