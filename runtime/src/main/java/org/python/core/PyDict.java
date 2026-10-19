@@ -303,7 +303,7 @@ public final class PyDict extends PyObject {
     }
 
     /** The method table, in CPython's order, with {@code fromkeys} alongside the rest. */
-    private static final Members METHODS = Members.of("dict")
+    private static final Members METHODS = Members.of(PyType.DICT)
             .add("fromkeys", (self, args, kwNames) -> {
                 noKeywords("dict.fromkeys()", kwNames);
                 Arguments.between("fromkeys", args, kwNames, 1, 2);

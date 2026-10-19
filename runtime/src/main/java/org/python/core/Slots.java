@@ -232,6 +232,11 @@ public final class Slots {
         if (answer != PyNotImplemented.INSTANCE) {
             return answer;
         }
+        // CPython names a class by what it is, because the reader of `str.nonsense` has to be told the
+        // attribute was looked up on the type rather than on one of its values.
+        if (target instanceof PyType kind) {
+            throw attributeError("type object '%s' has no attribute '%s'", kind.name(), name);
+        }
         throw attributeError(
                 "'%s' object has no attribute '%s'", target.getType().name(), name);
     }
@@ -270,6 +275,24 @@ public final class Slots {
      */
     public static boolean isMapping(PyObject value) {
         return value instanceof PyDict;
+    }
+
+    /**
+     * Whether {@code value} may be called, which is what {@code callable()} answers and what any caller
+     * of {@link #call} is about to find out the hard way.
+     *
+     * <p>One list, read by both the builtin and the interop layer: a caller who is told
+     * {@code callable(x)} is true and then gets a {@code TypeError} from a Java parameter has been lied
+     * to. Every callable value in this runtime is one of these Java classes; a user-defined class and an
+     * instance with {@code __call__} join the list when the class system arrives (M3).
+     */
+    public static boolean isCallable(PyObject value) {
+        return value instanceof PyType
+                || value instanceof PyMethodDescriptor
+                || value instanceof PyFunction
+                || value instanceof PyNativeFunction
+                || value instanceof PyBoundMethod
+                || value instanceof PyBaseException;
     }
 
     /**

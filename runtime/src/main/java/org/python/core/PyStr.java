@@ -315,7 +315,7 @@ public final class PyStr extends PyObject {
      * unimplemented method reports better than an {@code AttributeError} for a name every Python
      * programmer knows.
      */
-    private static final Members METHODS = Members.of("str")
+    private static final Members METHODS = Members.of(PyType.STR)
             .addNoArgument("capitalize", self -> PyStr.of(capitalize(text(self), false)))
             // Python's casefold is Unicode's full case folding: lower everything, then expand the
             // characters whose lowercase form is more than one letter. Java stops at the first half.

@@ -286,7 +286,7 @@ public final class PyBytes extends PyObject {
     private static final String[] CODE_NAMES = {"encoding", "errors"};
     private static final PyObject[] CODE_DEFAULTS = {PyStr.of("utf-8"), PyStr.of("strict")};
 
-    private static final Members METHODS = Members.of("bytes")
+    private static final Members METHODS = Members.of(PyType.BYTES)
             .add("decode", (self, args, kwNames) -> {
                 Arguments.between("decode", args, kwNames, 0, 2);
                 PyObject[] parameters =

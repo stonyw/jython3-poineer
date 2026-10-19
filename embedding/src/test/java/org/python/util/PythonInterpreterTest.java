@@ -9,9 +9,13 @@ import java.util.Map;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.python.core.PyInt;
+import org.python.core.PyModule;
 import org.python.core.PyNone;
 import org.python.core.PyObject;
 import org.python.core.PyRaise;
+import org.python.core.PyRuntime;
+import org.python.core.PyStr;
+import org.python.core.PyTuple;
 import org.python.interop.fixtures.Panel;
 import org.python.interop.fixtures.Widget;
 import org.python.javaclass.PyJavaThrowable;
@@ -94,6 +98,54 @@ class PythonInterpreterTest {
     void everyInterpreterReadsAsAModuleTopLevel() {
         assertThat(new PythonInterpreter().eval("__name__")).isEqualTo("__main__");
         assertThat(PythonInterpreter.interp().eval("__name__")).isEqualTo("__main__");
+    }
+
+    // --- importing -----------------------------------------------------------------------
+
+    /**
+     * A star import takes the names a module publishes, in the order it publishes them.
+     *
+     * <p>This is the half of {@code from java.util import *} that belongs to Python, so it is tested on a
+     * module built here rather than on a {@code .py} file — a file on a path is the M4 finder's business.
+     * The two names left out are the point: {@code beetroot} is public but not listed, and {@code __all__}
+     * says the module's exports are not "everything without an underscore" any more.
+     */
+    @Test
+    void aStarImportTakesExactlyThePublishedNames() {
+        PyModule veg = publishedModule("veg");
+        veg.set("__all__", PyTuple.of(PyStr.of("celeriac"), PyStr.of("carrot")));
+
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("from veg import *");
+
+        assertThat(py.get("celeriac")).isEqualTo(3);
+        assertThat(py.get("carrot")).isEqualTo(1);
+        assertThat(py.get("beetroot")).isNull();
+        assertThat(py.get("_cellar")).isNull();
+    }
+
+    /** Without {@code __all__}, a star import takes every name that does not begin with an underscore. */
+    @Test
+    void aStarImportWithoutAPublishedListTakesThePublicNames() {
+        publishedModule("fruit");
+
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("from fruit import *");
+
+        assertThat(py.get("carrot")).isEqualTo(1);
+        assertThat(py.get("beetroot")).isEqualTo(2);
+        assertThat(py.get("_cellar")).isNull();
+    }
+
+    /** A module in the import system, with three names on it and one of them private. */
+    private static PyModule publishedModule(String name) {
+        PyModule module = new PyModule(name);
+        module.set("carrot", PyInt.of(1));
+        module.set("beetroot", PyInt.of(2));
+        module.set("celeriac", PyInt.of(3));
+        module.set("_cellar", PyInt.of(4));
+        PyRuntime.addModuleFinder(dotted -> dotted.equals(name) ? module : null);
+        return module;
     }
 
     // --- going in ------------------------------------------------------------------------

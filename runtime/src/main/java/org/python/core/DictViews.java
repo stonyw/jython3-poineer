@@ -252,8 +252,8 @@ final class DictViews {
         }
 
         /** The one method the two set-like views share. */
-        private static Members methods(String typeName) {
-            return Members.of(typeName)
+        private static Members methods(PyType type) {
+            return Members.of(type)
                     .addOne("isdisjoint", (self, other) -> ((SetLike) self).disjoint(other));
         }
     }
@@ -261,7 +261,7 @@ final class DictViews {
     /** {@code d.keys()}: membership is the dict's own lookup, message and all. */
     private static final class Keys extends SetLike {
 
-        private static final Members METHODS = SetLike.methods("dict_keys");
+        private static final Members METHODS = SetLike.methods(KEYS);
 
         Keys(PyDict mapping) {
             super(mapping, KEYS, METHODS);
@@ -286,7 +286,7 @@ final class DictViews {
     /** {@code d.items()}: a member is a pair, and only a two-element tuple can be one. */
     private static final class Items extends SetLike {
 
-        private static final Members METHODS = SetLike.methods("dict_items");
+        private static final Members METHODS = SetLike.methods(ITEMS);
 
         Items(PyDict mapping) {
             super(mapping, ITEMS, METHODS);
@@ -320,7 +320,7 @@ final class DictViews {
     /** {@code d.values()}: a window with a length, an iteration and nothing else. */
     private static final class Values extends View {
 
-        private static final Members METHODS = Members.of("dict_values");
+        private static final Members METHODS = Members.of(VALUES);
 
         Values(PyDict mapping) {
             super(mapping, VALUES, METHODS);

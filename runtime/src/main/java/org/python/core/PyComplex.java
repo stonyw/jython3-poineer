@@ -69,7 +69,7 @@ public final class PyComplex extends PyObject {
         };
     }
 
-    private static final Members METHODS = Members.of("complex")
+    private static final Members METHODS = Members.of(PyType.COMPLEX)
             .addNoArgument("conjugate", self -> {
                 PyComplex c = (PyComplex) self;
                 return PyComplex.of(c.real(), -c.imaginary());

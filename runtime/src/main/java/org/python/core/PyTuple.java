@@ -120,7 +120,7 @@ public final class PyTuple extends PyObject {
     }
 
     /** {@code count} and {@code index}, the only two a tuple has, since nothing may change it. */
-    private static final Members METHODS = Members.of("tuple")
+    private static final Members METHODS = Members.of(PyType.TUPLE)
             .addOne("count", (self, item) ->
                     PyInt.of(Sequences.countOf(((PyTuple) self).items, item, 0, ((PyTuple) self).size())))
             .add("index", (self, args, kwNames) -> {

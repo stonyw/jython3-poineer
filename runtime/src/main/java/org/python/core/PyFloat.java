@@ -62,7 +62,7 @@ public final class PyFloat extends PyObject {
         };
     }
 
-    private static final Members METHODS = Members.of("float")
+    private static final Members METHODS = Members.of(PyType.FLOAT)
             .addNoArgument("is_integer", self -> PyBool.of(
                     isIntegral(((PyFloat) self).value)))
             .addNoArgument("conjugate", self -> self);

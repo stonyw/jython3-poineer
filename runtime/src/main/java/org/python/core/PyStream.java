@@ -63,7 +63,7 @@ public final class PyStream extends PyObject {
         return PyInt.of(value.codePointCount(0, value.length()));
     }
 
-    private static final Members METHODS = Members.of("TextIOWrapper")
+    private static final Members METHODS = Members.of(TYPE)
             .addOne("write", (self, text) -> ((PyStream) self).write(text))
             .addOne("writelines", (self, lines) -> {
                 PyIterator iterator = Slots.iterator(lines);

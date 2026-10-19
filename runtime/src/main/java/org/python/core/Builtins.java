@@ -112,7 +112,7 @@ final class Builtins {
         put(out, "abs", unary("abs", value -> Slots.absolute(value)));
         put(out, "hash", unary("hash", value -> PyInt.of(value.hash())));
         put(out, "id", unary("id", value -> PyInt.of(System.identityHashCode(value))));
-        put(out, "callable", unary("callable", value -> PyBool.of(isCallable(value))));
+        put(out, "callable", unary("callable", value -> PyBool.of(Slots.isCallable(value))));
         put(out, "ord", unary("ord", Builtins::ordinal));
         put(out, "chr", unary("chr", Builtins::character));
         put(out, "bin", unary("bin", value -> PyStr.of(radix(value, 2, "0b"))));
@@ -140,16 +140,6 @@ final class Builtins {
         put(out, "hasattr", new PyNativeFunction("hasattr", Builtins::hasAttribute));
         put(out, "setattr", new PyNativeFunction("setattr", Builtins::setAttribute));
         put(out, "delattr", new PyNativeFunction("delattr", Builtins::deleteAttribute));
-    }
-
-    private static boolean isCallable(PyObject value) {
-        // Every callable value in this runtime is one of these Java classes; a user-defined class or
-        // an instance with __call__ joins the list when the class system arrives (M3).
-        return value instanceof PyType
-                || value instanceof PyFunction
-                || value instanceof PyNativeFunction
-                || value instanceof PyBoundMethod
-                || value instanceof PyBaseException;
     }
 
     // --- one argument ----------------------------------------------------------------------
@@ -540,7 +530,7 @@ final class Builtins {
         if (args.length == 1) {
             return Slots.iterator(args[0]);
         }
-        if (!isCallable(args[0])) {
+        if (!Slots.isCallable(args[0])) {
             throw Slots.typeError("iter(v, w): v must be callable");
         }
         return new Repeated(Slots.call(args[0], new PyObject[0], null), args[1]);

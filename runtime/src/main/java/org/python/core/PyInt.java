@@ -96,7 +96,7 @@ public final class PyInt extends PyObject {
         };
     }
 
-    private static final Members METHODS = Members.of("int")
+    private static final Members METHODS = Members.of(PyType.INT)
             .addNoArgument("bit_length", self -> PyInt.of(
                     ((PyInt) self).value.abs().bitLength()))
             .addNoArgument("conjugate", self -> self)

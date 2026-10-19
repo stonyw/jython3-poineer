@@ -392,7 +392,7 @@ public final class PyList extends PyObject {
     // --- methods -------------------------------------------------------------------------
 
     /** The method table, in CPython's order. */
-    private static final Members METHODS = Members.of("list")
+    private static final Members METHODS = Members.of(PyType.LIST)
             .addOne("append", (self, item) -> {
                 ((PyList) self).items.add(item);
                 return PyNone.INSTANCE;

@@ -55,6 +55,8 @@ public class PyType extends PyObject {
     public static final PyType FUNCTION = builtin("function");
     public static final PyType BUILTIN_FUNCTION = builtin("builtin_function_or_method");
     public static final PyType METHOD = builtin("method");
+    /** What {@code str.upper} is: a method reached through its type rather than through a value. */
+    public static final PyType METHOD_DESCRIPTOR = builtin("method_descriptor");
     public static final PyType MODULE = builtin("module");
     public static final PyType CELL = builtin("cell");
     public static final PyType ITERATOR = builtin("iterator");
@@ -127,9 +129,14 @@ public class PyType extends PyObject {
     }
 
     /**
-     * {@code int.__name__} and {@code int.__base__}.
+     * {@code int.__name__}, {@code int.__base__} and {@code int.bit_length}.
      *
-     * Only the two the exception hierarchy can already answer truthfully; {@code __bases__} as a
+     * A method reached through the type rather than through one of its values is a
+     * {@link PyMethodDescriptor}, the same object CPython keeps in the type's own dictionary: it takes
+     * the value as its first argument, which is what makes {@code str.upper("abc")} and
+     * {@code sorted(words, key=str.lower)} answer.
+     *
+     * Only the two dunders the exception hierarchy can already answer truthfully; {@code __bases__} as a
      * tuple, and a {@code __module__} that is not always {@code builtins}, wait for M3.
      */
     @Override
@@ -137,7 +144,10 @@ public class PyType extends PyObject {
         return switch (attribute) {
             case "__name__", "__qualname__" -> PyStr.of(name);
             case "__base__" -> parent == null ? PyNone.INSTANCE : parent;
-            default -> PyNotImplemented.INSTANCE;
+            default -> {
+                Members methods = Members.registered(this);
+                yield methods == null ? PyNotImplemented.INSTANCE : methods.describe(attribute);
+            }
         };
     }
 

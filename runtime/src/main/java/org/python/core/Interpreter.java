@@ -569,9 +569,14 @@ public final class Interpreter {
      * class is not a method of the object it was reached through, and a method already bound to that
      * object carries its own receiver. Everything else — a Python function found on an instance above
      * all — is called with the owner as its first argument.
+     *
+     * <p>A class owns the second half of the first clause: {@code str.upper("abc")} is CPython's way of
+     * calling a method whose receiver is not yet known, so the method found on a class is never handed
+     * that class. Its {@code __name__} and a nested class are covered by the same test, and a Java
+     * class's unbound method already binds itself to the class it was found on.
      */
     private static boolean needsReceiver(PyObject attribute, PyObject owner) {
-        if (attribute instanceof PyType) {
+        if (attribute instanceof PyType || owner instanceof PyType) {
             return false;
         }
         return !(attribute instanceof PyBoundMethod method && method.receives(owner));
@@ -882,7 +887,30 @@ public final class Interpreter {
         return items;
     }
 
+    /**
+     * {@code from m import *}.
+     *
+     * <p>{@code __all__} is the module's own answer to what the star stands for, and this runtime does not
+     * get to guess it — a Java package can only say which of its classes a name like {@code ArrayList}
+     * came from by listing them, and a Python module with a private helper has to be able to keep it out.
+     * Without a list, the fallback is Python's: every name in the module's dictionary that does not begin
+     * with an underscore.
+     */
     private static void importAll(Frame frame, PyObject module) {
+        PyObject published = module == null ? null : module.getAttr("__all__");
+        if (published != null && published != PyNotImplemented.INSTANCE) {
+            for (PyObject entry : drain(Slots.iterator(published))) {
+                if (!(entry instanceof PyStr name)) {
+                    throw Slots.typeError(
+                            "Item in %s.__all__ must be str, not %s",
+                            textOrEmpty(module.getAttr("__name__")), entry.getType().name());
+                }
+                // A name on the list that the module does not have is an AttributeError, which is what
+                // makes the list a promise rather than a hint.
+                storeName(frame, name.getValue(), Slots.getAttr(module, name.getValue()));
+            }
+            return;
+        }
         if (module instanceof PyModule python) {
             for (java.util.Map.Entry<PyObject, PyObject> entry : python.dictionary().getItems().entrySet()) {
                 if (!((PyStr) entry.getKey()).getValue().startsWith("_")) {

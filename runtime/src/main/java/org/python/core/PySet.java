@@ -442,8 +442,8 @@ public class PySet extends PyObject {
     }
 
     /** The set's own table, with the frozen one its same methods minus the ones that change anything. */
-    private static Members table(String typeName, boolean mutable) {
-        Members methods = Members.of(typeName);
+    private static Members table(PyType type, boolean mutable) {
+        Members methods = Members.of(type);
         if (mutable) {
             methods
                     .addOne("add", (self, element) -> {
@@ -466,7 +466,7 @@ public class PySet extends PyObject {
         }
         methods
                 .addNoArgument("copy", self -> ((PySet) self).copy())
-                .add("union", varargs(typeName + ".union()",
+                .add("union", varargs(type.name() + ".union()",
                         (self, others) -> {
                             PySet out = self.copy();
                             for (PyObject other : others) {
@@ -474,7 +474,7 @@ public class PySet extends PyObject {
                             }
                             return out;
                         }))
-                .add("intersection", varargs(typeName + ".intersection()",
+                .add("intersection", varargs(type.name() + ".intersection()",
                         (self, others) -> {
                             PySet out = self.copy();
                             for (PyObject other : others) {
@@ -482,7 +482,7 @@ public class PySet extends PyObject {
                             }
                             return out;
                         }))
-                .add("difference", varargs(typeName + ".difference()",
+                .add("difference", varargs(type.name() + ".difference()",
                         (self, others) -> {
                             PySet out = self.copy();
                             for (PyObject other : others) {
@@ -494,21 +494,21 @@ public class PySet extends PyObject {
                 .addOne("issuperset", (self, other) -> ((PySet) self).isSuperset(other));
         if (mutable) {
             methods
-                    .add("update", varargs(typeName + ".update()",
+                    .add("update", varargs(type.name() + ".update()",
                             (self, others) -> {
                                 for (PyObject other : others) {
                                     self.update(other);
                                 }
                                 return PyNone.INSTANCE;
                             }))
-                    .add("intersection_update", varargs(typeName + ".intersection_update()",
+                    .add("intersection_update", varargs(type.name() + ".intersection_update()",
                             (self, others) -> {
                                 for (PyObject other : others) {
                                     self.intersectionUpdate(other);
                                 }
                                 return PyNone.INSTANCE;
                             }))
-                    .add("difference_update", varargs(typeName + ".difference_update()",
+                    .add("difference_update", varargs(type.name() + ".difference_update()",
                             (self, others) -> {
                                 for (PyObject other : others) {
                                     self.differenceUpdate(other);
@@ -527,7 +527,7 @@ public class PySet extends PyObject {
         return methods.addOne("isdisjoint", (self, other) -> ((PySet) self).isDisjoint(other));
     }
 
-    private static final Members METHODS = table("set", true);
+    private static final Members METHODS = table(PyType.SET, true);
 
-    private static final Members FROZEN_METHODS = table("frozenset", false);
+    private static final Members FROZEN_METHODS = table(PyType.FROZENSET, false);
 }
