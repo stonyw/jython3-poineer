@@ -29,7 +29,7 @@ final class JavaMembers {
             String name = method.getName();
             if (property.equals(propertyName(name, "get"))
                     || property.equals(propertyName(name, "is"))) {
-                return method;
+                return Overloads.invocable(method);
             }
         }
         return null;
@@ -41,7 +41,7 @@ final class JavaMembers {
             if (method.getParameterCount() == 1
                     && !Modifier.isStatic(method.getModifiers())
                     && property.equals(propertyName(method.getName(), "set"))) {
-                return method;
+                return Overloads.invocable(method);
             }
         }
         return null;

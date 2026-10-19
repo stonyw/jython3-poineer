@@ -5,9 +5,12 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Executable;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.python.core.PyNone;
 import org.python.core.PyObject;
 import org.python.core.Slots;
@@ -71,10 +74,32 @@ final class Overloads {
             return JavaConvert.toPython(((Constructor<?>) chosen.executable).newInstance(arguments));
         } catch (InvocationTargetException failure) {
             throw JavaInterop.causedBy(failure.getTargetException());
+        } catch (IllegalAccessException refused) {
+            // It is the module system refusing, not the argument list: a package a module does not export
+            // still imports and still shows its classes, so the only place the boundary can appear is
+            // here — and it has to appear with Java's own name for it, not as a TypeError about arguments.
+            throw JavaInterop.causedBy(refused);
         } catch (ReflectiveOperationException bad) {
             throw Slots.typeError(
                     "cannot call %s(%s): %s", name, parameterNames(chosen.executable), bad.getMessage());
         }
+    }
+
+    /**
+     * Whether these candidates take these arguments at all, without invoking anything.
+     *
+     * <p>A caller that has two overload sets under one name — the statics of a class and its instance
+     * methods — needs to know which set the arguments belong to before it commits to one. Asking
+     * {@link #call} and catching its refusal would work, but it would also report the wrong candidate
+     * list when neither set matches, so the question is asked of the ranking directly.
+     */
+    static boolean takes(
+            String name, List<? extends Executable> candidates, PyObject[] args, String[] kwNames) {
+        if (kwNames != null && kwNames.length > 0) {
+            // Let the call itself report keywords, which Java has no way to express either.
+            return true;
+        }
+        return !rank(order(name, candidates), args).isEmpty();
     }
 
     /** The public callables a class offers, minus the ones a bridge method adds for generics. */
@@ -82,7 +107,7 @@ final class Overloads {
         List<Method> out = new ArrayList<>();
         for (Method method : type.getMethods()) {
             if (!method.isBridge() && !method.isSynthetic()) {
-                out.add(method);
+                out.add(invocable(method));
             }
         }
         return out;
@@ -96,6 +121,80 @@ final class Overloads {
             }
         }
         return out;
+    }
+
+    /**
+     * The same method, as declared by a class an outside caller may name.
+     *
+     * <p>Java's most useful return values are instances of classes nobody can write: {@code List.of} gives
+     * an {@code ImmutableCollections.ListN} and {@code stream()} a {@code ReferencePipeline}, each
+     * package-private, each holding the public {@code get(int)} and {@code map} that reflection checks
+     * against the class they were declared in. So binding what the runtime class declares makes a call
+     * every Java program makes for free an {@code IllegalAccessException}. Java answers that by dispatching
+     * through {@code List} or {@code Stream}; binding the same signature on the nearest public supertype is
+     * the same dispatch, reached by reflection, and the virtual call still lands on the real override.
+     */
+    static Method invocable(Method method) {
+        if (publiclyNamed(method.getDeclaringClass())) {
+            return method;
+        }
+        List<Class<?>> frontier =
+                new ArrayList<>(Arrays.asList(directSupertypes(method.getDeclaringClass())));
+        Set<Class<?>> seen = new HashSet<>();
+        for (int at = 0; at < frontier.size(); at++) {
+            Class<?> candidate = frontier.get(at);
+            if (!seen.add(candidate)) {
+                continue;
+            }
+            if (publiclyNamed(candidate)) {
+                Method declared = declaredIn(candidate, method);
+                if (declared != null) {
+                    return declared;
+                }
+            }
+            frontier.addAll(Arrays.asList(directSupertypes(candidate)));
+        }
+        // Nothing public declares it, so the call is refused — by Java, in Java's own words.
+        return method;
+    }
+
+    /**
+     * Whether an outside caller may name {@code type}, which is what reflection requires before a call.
+     *
+     * <p>Every enclosing class counts, not just the innermost: {@code ImmutableCollections$ListN} is public
+     * inside a package-private {@code ImmutableCollections}, and the pair is no more reachable than either
+     * half. This is 2.7's {@code isAccessibleClass} test, and it says nothing about JPMS — a public class in
+     * a package its module does not export passes here and is still refused at the call.
+     */
+    private static boolean publiclyNamed(Class<?> type) {
+        for (Class<?> current = type; current != null; current = current.getEnclosingClass()) {
+            if (!Modifier.isPublic(current.getModifiers())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static Class<?>[] directSupertypes(Class<?> type) {
+        Class<?>[] faces = type.getInterfaces();
+        Class<?> parent = type.getSuperclass();
+        if (parent == null) {
+            return faces;
+        }
+        Class<?>[] all = Arrays.copyOf(faces, faces.length + 1);
+        all[faces.length] = parent;
+        return all;
+    }
+
+    /** {@code method}'s signature as {@code type} declares it, when it declares it publicly. */
+    private static Method declaredIn(Class<?> type, Method method) {
+        try {
+            Method found = type.getDeclaredMethod(method.getName(), method.getParameterTypes());
+            // An interface member is implicitly public, but a class's has to say so to be callable.
+            return Modifier.isPublic(found.getModifiers()) ? found : null;
+        } catch (NoSuchMethodException notThere) {
+            return null;
+        }
     }
 
     /**
@@ -281,6 +380,11 @@ final class Overloads {
             }
             if (executable.isVarArgs()) {
                 Class<?> component = parameters[fixed].getComponentType();
+                Object passed = passedAsTheArray(args, fixed);
+                if (passed != null) {
+                    out[fixed] = passed;
+                    return out;
+                }
                 Object tail = Array.newInstance(component, Math.max(0, args.length - fixed));
                 for (int i = fixed; i < args.length; i++) {
                     Array.set(tail, i - fixed, require(JavaConvert.toJava(args[i], component), i));
@@ -288,6 +392,29 @@ final class Overloads {
                 out[fixed] = tail;
             }
             return out;
+        }
+
+        /**
+         * One argument that already is the array Java would have built, used as it stands.
+         *
+         * <p>JLS 15.12.2.4 says a variable-arity call whose single trailing argument is assignment
+         * compatible with the varargs parameter *is* that parameter, and reflection has no static type to
+         * make the call with — {@code Arrays.asList(names)} with a {@code String[]} in hand is the two
+         * element list in Java and a one element list of an array if the layer forgets the rule. The same
+         * rule reaches a Python {@code list}, because the conversion table already reads a list as an
+         * array of its elements; a caller who wants the list as one element has the fixed-arity overload,
+         * which an earlier phase prefers.
+         */
+        private Object passedAsTheArray(PyObject[] args, int fixed) {
+            if (args.length != fixed + 1) {
+                return null;
+            }
+            PyObject only = args[fixed];
+            if (JavaConvert.phase(only, parameters[fixed]) == JavaConvert.IMPOSSIBLE) {
+                return null;
+            }
+            Object converted = JavaConvert.toJava(only, parameters[fixed]);
+            return converted == JavaConvert.NO_CONVERSION ? null : converted;
         }
 
         private static Object require(Object converted, int position) {

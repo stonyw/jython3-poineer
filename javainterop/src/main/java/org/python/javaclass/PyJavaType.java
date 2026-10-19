@@ -131,9 +131,15 @@ public final class PyJavaType extends PyType {
     /**
      * Statics, constants and nested classes are the attributes of a Java class.
      *
-     * <p>An instance method is too, but as an unbound one: {@code Widget.getName(w)} is Java's own
-     * spelling and stays available with the receiver becoming the first argument, which is what Jython
-     * 2.7 does and what a reader who knows Java will look for.
+     * <p>An instance method is too, and Java's own unbound spelling stays available:
+     * {@code Widget.getName(w)} passes the receiver as the first argument, as 2.7 does. When one name
+     * covers both an instance method and a static one — {@code Point2D.distance} — the class answers
+     * both, and {@link JavaMethods#onClass} is where the call decides which was meant.
+     *
+     * <p>What the class does not declare is then looked for on the {@code java.lang.Class} it reflects,
+     * last and weakest: a Java class is an instance of that class too, so {@code getName()},
+     * {@code isInterface()} and {@code getDeclaredFields()} — Java's own {@code Integer.class.getName()} —
+     * are reachable from Python, which is what a reader who came to introspect came for.
      */
     @Override
     public PyObject getAttr(String attribute) {
@@ -150,20 +156,27 @@ public final class PyJavaType extends PyType {
         }
         List<Method> withName = JavaMethods.named(reflected, attribute);
         if (!withName.isEmpty()) {
-            boolean everyStatic = withName.stream().allMatch(one -> Modifier.isStatic(one.getModifiers()));
-            return everyStatic
-                    ? JavaMethods.aClass(this, attribute, withName)
-                    : JavaMethods.unbound(this, attribute, withName);
+            return JavaMethods.onClass(this, attribute, withName);
         }
         Field constant = staticField(attribute);
         if (constant != null) {
-            try {
-                return JavaConvert.toPython(constant.get(null));
-            } catch (IllegalAccessException hidden) {
-                return PyNotImplemented.INSTANCE;
-            }
+            return readConstant(constant);
         }
-        return PyNotImplemented.INSTANCE;
+        List<Method> reflective = JavaMethods.named(Class.class, attribute);
+        if (reflective.isEmpty()) {
+            return PyNotImplemented.INSTANCE;
+        }
+        // Bound to the Class object rather than unbound: it is this object's own method, in Java's sense,
+        // and `Integer.getName()` reads the class the same way `Integer.class.getName()` does in Java.
+        return JavaMethods.instance(this, attribute, reflective, reflected);
+    }
+
+    private PyObject readConstant(Field constant) {
+        try {
+            return JavaConvert.toPython(constant.get(null));
+        } catch (IllegalAccessException hidden) {
+            return PyNotImplemented.INSTANCE;
+        }
     }
 
     private Field staticField(String name) {

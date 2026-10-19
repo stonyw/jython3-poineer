@@ -1,8 +1,10 @@
 package org.python.javaclass;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.python.core.PyDict;
+import org.python.core.PyList;
 import org.python.core.PyNone;
 import org.python.core.PyNotImplemented;
 import org.python.core.PyObject;
@@ -64,11 +66,32 @@ public final class JavaPackage extends PyObject {
         if (attribute.equals("__dict__")) {
             return dictionary;
         }
+        if (attribute.equals("__all__")) {
+            return published();
+        }
         String nested = name.isEmpty() ? attribute : name + "." + attribute;
         if (PackageIndex.isPackage(nested)) {
             return of(nested);
         }
         return PyJavaType.classIn(name, attribute);
+    }
+
+    /**
+     * Every name {@code from this package import *} binds, which is what makes Java's wildcard a Python
+     * one.
+     *
+     * <p>A Java package has no public marker Python can read late — accessibility lives on the class, not
+     * in the directory — so the list is the directory: the classes in it and the packages under it, nested
+     * classes left out because {@code Widget$Builder} is not a name Python can write. Reading it is the
+     * one thing that has to know a package's whole contents at once, and it happens only when asked.
+     */
+    private PyObject published() {
+        List<String> names = PackageIndex.membersOf(name);
+        PyObject[] items = new PyObject[names.size()];
+        for (int i = 0; i < names.size(); i++) {
+            items[i] = PyStr.of(names.get(i));
+        }
+        return PyList.of(items);
     }
 
     /**

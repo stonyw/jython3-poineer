@@ -8,13 +8,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.python.core.PyBool;
-import org.python.core.PyBoundMethod;
 import org.python.core.PyDict;
 import org.python.core.PyFloat;
-import org.python.core.PyFunction;
 import org.python.core.PyInt;
 import org.python.core.PyList;
-import org.python.core.PyNativeFunction;
 import org.python.core.PyNone;
 import org.python.core.PyObject;
 import org.python.core.PyStr;
@@ -165,6 +162,11 @@ public final class JavaConvert {
         }
         if (value instanceof PyJavaObject java) {
             return java.target().getClass();
+        }
+        // A Java class named in Python is the Class object Java names it with, which is what lets
+        // `Array.newInstance(Integer.TYPE, 3)` and `Class.forName` neighbours take a class argument.
+        if (value instanceof PyJavaType kind) {
+            return Class.class;
         }
         return PyObject.class;
     }
@@ -403,6 +405,9 @@ public final class JavaConvert {
         if (value instanceof PyJavaObject java) {
             return java.target();
         }
+        if (value instanceof PyJavaType kind && Class.class.isAssignableFrom(target)) {
+            return kind.javaClass();
+        }
         if (target == boolean.class || target == Boolean.class) {
             return truth(value);
         }
@@ -456,6 +461,9 @@ public final class JavaConvert {
     static Object javaOf(PyObject value) {
         if (value instanceof PyJavaObject java) {
             return java.target();
+        }
+        if (value instanceof PyJavaType kind) {
+            return kind.javaClass();
         }
         if (value instanceof PyNone) {
             // null, and not the None object, because a Java caller has no way to compare against None
@@ -608,11 +616,13 @@ public final class JavaConvert {
         return target == Map.class;
     }
 
+    /**
+     * Whether this Python value may be called, which is the runtime's answer rather than a list kept
+     * here: a caller who is told {@code callable(x)} is true and then watches {@code f(Function)} refuse
+     * {@code x} has been lied to by the interop layer.
+     */
     static boolean isCallable(PyObject value) {
-        return value instanceof PyFunction
-                || value instanceof PyNativeFunction
-                || value instanceof PyBoundMethod
-                || value instanceof PyJavaType;
+        return Slots.isCallable(value);
     }
 
     static Class<?> unbox(Class<?> target) {
