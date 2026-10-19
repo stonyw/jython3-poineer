@@ -42,11 +42,13 @@ public final class Cpython314Compiler {
     /**
      * The driver, executed by the reference interpreter with {@code -c}.
      *
-     * <p>Argv is {@code mode payload fileName}: {@code f} reads the payload as a path, {@code s} uses
-     * it as the source itself. {@code dont_inherit=True} is not decoration — without it, a compile
-     * flag inherited from the parent ({@code -O}, or {@code __debug__} off) would change the bytecode
-     * the launcher never asked for. {@code -O} has to be an explicit decision of ours, at the point
-     * where {@code sys.flags} can report it.
+     * <p>Argv is {@code payload-kind payload fileName code-kind}: the first {@code kind} says whether
+     * the payload is a path ({@code f}) or the source itself ({@code s}), the second which compile
+     * mode to ask for ({@code exec} for a module's top level, {@code eval} for one expression).
+     * {@code dont_inherit=True} is not decoration — without it, a compile flag inherited from the
+     * parent ({@code -O}, or {@code __debug__} off) would change the bytecode the launcher never
+     * asked for. {@code -O} has to be an explicit decision of ours, at the point where
+     * {@code sys.flags} can report it.
      */
     private static final String DRIVER =
             """
@@ -61,18 +63,20 @@ public final class Cpython314Compiler {
                     % (sys.executable, *sys.version_info[:2]))
                 raise SystemExit(64)
 
-            mode, payload, file_name = sys.argv[1], sys.argv[2], sys.argv[3]
-            if mode == "f":
+            payload_kind, payload, file_name, code_kind = (
+                sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+            if payload_kind == "f":
                 with open(payload, "rb") as stream:
                     source = stream.read()
                 file_name = os.path.abspath(file_name)
             else:
                 source = payload.encode("utf-8")
             try:
-                code = compile(source, file_name, "exec", dont_inherit=True)
-            except SyntaxError as error:
+                code = compile(source, file_name, code_kind, dont_inherit=True)
+            except (SyntaxError, ValueError) as error:
                 # The report the interpreter would have printed for the script, and nothing of the
                 # driver: a traceback through this string would be ours to explain, not the user's.
+                # ValueError is what an expression compile mode gives for a statement source.
                 sys.stderr.write("".join(traceback.format_exception_only(error)))
                 raise SystemExit(1)
             sys.stdout.buffer.write(marshal.dumps(code))
@@ -94,7 +98,7 @@ public final class Cpython314Compiler {
      */
     public static Compiled compileFile(Path script) {
         String resolved = absolutePath(script);
-        return new Compiled(compile("f", script.toString(), resolved), resolved);
+        return new Compiled(compile("f", script.toString(), resolved, "exec"), resolved);
     }
 
     /**
@@ -104,7 +108,19 @@ public final class Cpython314Compiler {
      *     {@code <stdin>} for these two
      */
     public static PyCode compileSource(String source, String fileName) {
-        return compile("s", source, fileName);
+        return compile("s", source, fileName, "exec");
+    }
+
+    /**
+     * Compile one expression, the way {@code eval()} does rather than {@code exec()}.
+     *
+     * <p>The difference is not a wrapper around {@code exec}: an {@code eval}-mode code object leaves
+     * the value of the expression as its return value, while a module's top level returns {@code None}
+     * and communicates only through its namespace. A statement source is refused the way CPython
+     * refuses it, as {@link CompilationRefused}.
+     */
+    public static PyCode compileExpression(String source, String fileName) {
+        return compile("s", source, fileName, "eval");
     }
 
     /** The reference interpreter this build will invoke, for reporting and for tests. */
@@ -123,10 +139,10 @@ public final class Cpython314Compiler {
         return Path.of("").toAbsolutePath().resolve(script).normalize().toString();
     }
 
-    private static PyCode compile(String mode, String payload, String fileName) {
+    private static PyCode compile(String payloadKind, String payload, String fileName, String codeKind) {
         File diagnostics = temporaryFile();
         try {
-            Process process = invoke(mode, payload, fileName, diagnostics);
+            Process process = invoke(payloadKind, payload, fileName, codeKind, diagnostics);
             byte[] marshal;
             try (InputStream out = process.getInputStream()) {
                 marshal = out.readAllBytes();
@@ -153,11 +169,13 @@ public final class Cpython314Compiler {
         }
     }
 
-    private static Process invoke(String mode, String payload, String fileName, File diagnostics)
+    private static Process invoke(
+            String payloadKind, String payload, String fileName, String codeKind, File diagnostics)
             throws IOException {
         ProcessBuilder builder =
                 new ProcessBuilder(
-                        executable(), "-I", "-S", "-c", DRIVER, mode, payload, fileName)
+                        executable(), "-I", "-S", "-c", DRIVER,
+                        payloadKind, payload, fileName, codeKind)
                         .redirectError(diagnostics);
         return builder.start();
     }

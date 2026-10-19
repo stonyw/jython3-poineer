@@ -446,11 +446,13 @@ public final class Interpreter {
                             frame.push(attribute);
                             break;
                         }
-                        // Method form hands CALL a receiver as well. A method that is already bound to
-                        // this owner carries its own receiver, so it asks for a null one.
+                        // Method form hands CALL a receiver as well, and CPython hands a null one in two
+                        // cases: an attribute that is already bound to this very owner carries its own
+                        // receiver, and a class — including a Java class reached through its package —
+                        // is never a method of the object it was found on. `java.util.ArrayList()` must
+                        // construct an ArrayList, not pass the package as a first argument.
                         frame.push(attribute);
-                        frame.push(attribute instanceof PyBoundMethod method
-                                && method.receives(owner) ? null : owner);
+                        frame.push(needsReceiver(attribute, owner) ? owner : null);
                         break;
                     }
                     case Opcodes.STORE_ATTR: {
@@ -560,8 +562,22 @@ public final class Interpreter {
 
     // --- helpers -------------------------------------------------------------------------
 
-    private static void jumpIf(Frame frame, int index, boolean take) {
-        if (take) {
+    /**
+     * Whether a method-form attribute load has to hand {@code CALL} this owner as a receiver.
+     *
+     * <p>CPython's rule, stated where the runtime can apply it without knowing what a Java class is: a
+     * class is not a method of the object it was reached through, and a method already bound to that
+     * object carries its own receiver. Everything else — a Python function found on an instance above
+     * all — is called with the owner as its first argument.
+     */
+    private static boolean needsReceiver(PyObject attribute, PyObject owner) {
+        if (attribute instanceof PyType) {
+            return false;
+        }
+        return !(attribute instanceof PyBoundMethod method && method.receives(owner));
+    }
+
+    private static void jumpIf(Frame frame, int index, boolean take) {        if (take) {
             frame.setIp(frame.jumpTarget(index));
         }
     }
@@ -881,20 +897,45 @@ public final class Interpreter {
 
     private static PyObject importModule(Frame frame, int nameIndex) {
         PyObject fromlist = frame.pop();
-        frame.pop();
+        frame.pop(); // the level: only absolute imports exist until the M4 finder reads sys.path
         String dotted = frame.name(nameIndex);
-        return PyRuntime.importModule(dotted);
+        // Loading the full name is what makes `import a.b` work at all, because the loader installs
+        // `b` into `a` on the way. What the statement then binds is the head, and only a from-import
+        // — or `import a.b as c`, which is a from-import in disguise — asks for the leaf.
+        PyObject leaf = PyRuntime.importModule(dotted);
+        int at = dotted.indexOf('.');
+        if (at >= 0 && (fromlist instanceof PyNone || isBlank(fromlist))) {
+            return PyRuntime.importModule(dotted.substring(0, at));
+        }
+        return leaf;
+    }
+
+    private static boolean isBlank(PyObject fromlist) {
+        // CPython's own spelling for "no names asked for" when __import__ is called by hand.
+        return fromlist instanceof PyStr text && text.getValue().isEmpty();
     }
 
     private static PyObject importFrom(Frame frame, String attribute) {
         PyObject module = frame.peek(0);
-        PyObject value = Slots.getAttr(module, attribute);
-        if (value == null) {
+        try {
+            return Slots.getAttr(module, attribute);
+        } catch (PyRaise missing) {
+            // CPython converts this one: an attribute that is not there during an import is an
+            // ImportError that names both the attribute and the module it was wanted from.
+            if (!missing.value().exceptionType().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                throw missing;
+            }
             throw Slots.importError(
-                    "cannot import '%s' from '%s' (consider adding it to the module)",
-                    attribute, module.getType().name());
+                    "cannot import name '%s' from '%s'", attribute, moduleName(module));
         }
-        return value;
+    }
+
+    /** {@code module.__name__} when it has one, since that is what CPython puts in the message. */
+    private static String moduleName(PyObject module) {
+        PyObject name = module.getAttr("__name__");
+        return name instanceof PyStr text
+                ? text.getValue()
+                : module.getType().name();
     }
 
     private static void raise(Frame frame, int count) {

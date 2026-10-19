@@ -24,7 +24,14 @@ public class PyBaseException extends PyObject {
     /** The exception this one replaced, which CPython chains implicitly as {@code __context__}. */
     private PyObject context = PyNone.INSTANCE;
 
-    PyBaseException(PyType exceptionType, PyObject[] args) {
+    /**
+     * An exception raised as {@code exceptionType} with {@code args}.
+     *
+     * <p>Protected rather than package-private because the class system is not the only subclass this
+     * needs: a Java failure crossing the boundary arrives as an exception whose attributes are read off
+     * the {@code Throwable}, which is a subclass of this one and lives in the interop module.
+     */
+    protected PyBaseException(PyType exceptionType, PyObject[] args) {
         super(exceptionType);
         this.exceptionType = exceptionType;
         this.args = args;

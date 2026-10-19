@@ -72,7 +72,12 @@ public class PyType extends PyObject {
      */
     private final PyType parent;
 
-    private PyType(String name, PyType parent) {
+    /**
+     * Protected because a type declared outside this package has to be able to name its parent:
+     * {@code PyJavaType} in the interop module is a {@code PyType} like any other, and the seam that
+     * lets it exist is this constructor rather than a copy of the dispatch above it.
+     */
+    protected PyType(String name, PyType parent) {
         this.name = name;
         this.parent = parent;
     }
@@ -103,6 +108,17 @@ public class PyType extends PyObject {
     }
 
     public final String name() {
+        return name;
+    }
+
+    /**
+     * How an uncaught exception of this class is named.
+     *
+     * CPython qualifies a class that does not live in {@code builtins} — {@code mymodule.Error} — and
+     * a Java exception is never in {@code builtins}, so {@code java.lang.IllegalStateException} is the
+     * answer the interop layer has to be able to give. A builtin type keeps its bare name.
+     */
+    public String qualifiedName() {
         return name;
     }
 
@@ -137,6 +153,19 @@ public class PyType extends PyObject {
             }
         }
         return false;
+    }
+
+    /**
+     * {@code isinstance(value, self)}: the question asked of the type that has to answer it.
+     *
+     * <p>It is a method on the required type rather than a walk the caller performs, because a Java
+     * class has interfaces and several supertypes — {@code isinstance(x, java.io.Serializable)} is true
+     * with no parent pointer leading there — and because the answer for a Python value can depend on
+     * whether that value is acceptable where the class is expected, which only the class's own type
+     * can judge.
+     */
+    public boolean instanceOf(PyObject value) {
+        return value.getType().matches(this);
     }
 
     /** {@code ValueError("x")}, {@code list(range(3))} — a type is its own constructor. */

@@ -1,21 +1,17 @@
 package org.python.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.python.util.Jy3Process.lastLine;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.python.util.Jy3Process.Result;
 
 /**
  * M1's done criterion, measured rather than declared: the same source, run by CPython 3.14 and by
@@ -32,8 +28,6 @@ import org.junit.jupiter.params.provider.MethodSource;
  * gaps are named where they are taken rather than left for someone to discover.
  */
 class Jy3LauncherTest {
-
-    private static final long TIMEOUT_SECONDS = 120;
 
     @TempDir
     Path work;
@@ -325,9 +319,13 @@ class Jy3LauncherTest {
     }
 
     // --- running -------------------------------------------------------------------------
+    //
+    // The process plumbing is Jy3Process, shared with the interop tests: two copies of "start the
+    // launcher, drain both streams, refuse to wait forever" drift, and the drift looks like a product
+    // bug when it shows up in only one of them.
 
     private Result jy3(List<String> arguments) throws Exception {
-        return run(jy3Command(), arguments);
+        return Jy3Process.run(work, Jy3Process.jy3Command(), arguments, null);
     }
 
     private Result jy3(Path script) throws Exception {
@@ -335,11 +333,11 @@ class Jy3LauncherTest {
     }
 
     private Result jy3(List<String> arguments, String stdin) throws Exception {
-        return run(jy3Command(), arguments, stdin);
+        return Jy3Process.run(work, Jy3Process.jy3Command(), arguments, stdin);
     }
 
     private Result cpython(List<String> arguments) throws Exception {
-        return run(cpythonCommand(), arguments);
+        return Jy3Process.run(work, cpythonCommand(), arguments, null);
     }
 
     private Result cpython(Path script) throws Exception {
@@ -347,21 +345,7 @@ class Jy3LauncherTest {
     }
 
     private Result cpython(List<String> arguments, String stdin) throws Exception {
-        return run(cpythonCommand(), arguments, stdin);
-    }
-
-    /** The launcher, in this same JVM's classpath, as a process rather than as a method call. */
-    private static List<String> jy3Command() {
-        String classpath = System.getProperty("java.class.path");
-        if (classpath == null || classpath.isEmpty()) {
-            throw new IllegalStateException(
-                    "this test must run with the runtime classpath visible to java.class.path");
-        }
-        return List.of(
-                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-cp",
-                classpath,
-                "org.python.util.jy3");
+        return Jy3Process.run(work, cpythonCommand(), arguments, stdin);
     }
 
     private static List<String> cpythonCommand() {
@@ -380,57 +364,13 @@ class Jy3LauncherTest {
         return options;
     }
 
-    private Result run(List<String> command, List<String> arguments) throws Exception {
-        return run(command, arguments, null);
-    }
-
-    private Result run(List<String> command, List<String> arguments, String input)
-            throws Exception {
-        List<String> line = new ArrayList<>(command);
-        line.addAll(arguments);
-        Process process =
-                new ProcessBuilder(line).directory(work.toFile()).redirectErrorStream(false).start();
-        if (input != null) {
-            process.getOutputStream()
-                    .write(input.getBytes(StandardCharsets.UTF_8));
-        }
-        process.getOutputStream().close();
-        String out = read(process.getInputStream());
-        String err = read(process.getErrorStream());
-        if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            process.destroyForcibly();
-            throw new IllegalStateException(
-                    command + " " + arguments + " did not finish in " + TIMEOUT_SECONDS + "s");
-        }
-        return new Result(process.exitValue(), out, err);
-    }
-
-    private static String read(InputStream stream) throws IOException {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        stream.transferTo(buffer);
-        return buffer.toString(StandardCharsets.UTF_8);
-    }
-
     private Path write(String name, String source) throws IOException {
-        return Files.writeString(work.resolve(name), source);
+        return Jy3Process.write(work, name, source);
     }
 
     /** M1's acceptance script, kept in one place so the test and a human run the same file. */
     private static String resource(String name) {
-        try (InputStream in = Jy3LauncherTest.class.getClassLoader().getResourceAsStream(name)) {
-            if (in == null) {
-                throw new IllegalStateException("test resource " + name + " is not on the classpath");
-            }
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    private static String lastLine(String text) {
-        String trimmed = text.strip();
-        int end = trimmed.lastIndexOf('\n');
-        return end < 0 ? trimmed : trimmed.substring(end + 1);
+        return Jy3Process.resource(name);
     }
 
     /** The part of a launcher complaint that names neither the program nor the working directory. */
@@ -438,6 +378,4 @@ class Jy3LauncherTest {
         int at = stderr.indexOf("can't open file");
         return at < 0 ? stderr : stderr.substring(at);
     }
-
-    private record Result(int exit, String out, String err) {}
 }

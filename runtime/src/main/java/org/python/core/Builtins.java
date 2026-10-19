@@ -4,6 +4,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * {@code builtins}: the namespace every module frame falls back to when a name is not its own.
@@ -737,8 +738,8 @@ final class Builtins {
     // --- types and attributes --------------------------------------------------------------
 
     private static PyObject isInstanceOf(PyObject value, PyObject classes) {
-        return PyBool.of(matchesType(
-                value.getType(), classes,
+        return PyBool.of(anyType(
+                classes, required -> required.instanceOf(value),
                 "isinstance() arg 2 must be a type, a tuple of types, or a union"));
     }
 
@@ -753,11 +754,16 @@ final class Builtins {
      * <p>A tuple is scanned in order and its first match wins, which is why
      * {@code issubclass(int, (int, 1))} is true: the {@code 1} is only complained about when nothing
      * matched.
+     *
+     * <p>The question is put to the required type rather than answered from the candidate's parent
+     * chain, because a Java class has interfaces and several supertypes and no single parent pointer
+     * can reach them; {@code PyType.instanceOf} is where that answer lives.
      */
-    private static boolean matchesType(PyType candidate, PyObject classes, String argTwo) {
+    private static boolean anyType(
+            PyObject classes, Predicate<PyType> test, String argTwo) {
         if (classes instanceof PyTuple tuple) {
             for (int i = 0; i < tuple.size(); i++) {
-                if (matchesType(candidate, tuple.at(i), argTwo)) {
+                if (anyType(tuple.at(i), test, argTwo)) {
                     return true;
                 }
             }
@@ -766,15 +772,15 @@ final class Builtins {
         if (!(classes instanceof PyType required)) {
             throw Slots.typeError(argTwo);
         }
-        return candidate.matches(required);
+        return test.test(required);
     }
 
     private static PyObject isSubclass(PyObject child, PyObject classes) {
-        if (!(child instanceof PyType)) {
+        if (!(child instanceof PyType type)) {
             throw Slots.typeError("issubclass() arg 1 must be a class");
         }
-        return PyBool.of(matchesType(
-                (PyType) child, classes,
+        return PyBool.of(anyType(
+                classes, required -> type.matches(required),
                 "issubclass() arg 2 must be a class, a tuple of classes, or a union"));
     }
 

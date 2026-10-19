@@ -18,6 +18,7 @@ import org.python.core.PyObject;
 import org.python.core.PyRaise;
 import org.python.core.PyRuntime;
 import org.python.core.PyStr;
+import org.python.javaclass.JavaInterop;
 import org.python.front.cpython314.Cpython314Compiler;
 
 /**
@@ -171,6 +172,8 @@ public final class jy3 {
             operands.add(args[i]);
         }
         PyRuntime.startup();
+        // After startup, because the finder it registers goes into the module table startup builds.
+        JavaInterop.install();
 
         if (command != null) {
             PyRuntime.setArgv("-c", operands);
@@ -222,7 +225,8 @@ public final class jy3 {
     }
 
     private static int execute(PyCode code, String fileName) {
-        PyRuntime.run(code, "__main__", fileName);
+        // Into __main__, the same namespace an embedder reaches with PythonInterpreter.interp().
+        PyRuntime.exec(code, PyRuntime.mainModule(), fileName);
         return PASSED;
     }
 
@@ -257,7 +261,12 @@ public final class jy3 {
             return exitStatus(value);
         }
         String message = value.str();
-        write(value.exceptionType().name() + (message.isEmpty() ? "" : ": " + message) + "\n");
+        // The qualified name, so a Java failure reports java.lang.IllegalStateException and a Python
+        // class outside builtins would report its own module too.
+        write(
+                value.exceptionType().qualifiedName()
+                        + (message.isEmpty() ? "" : ": " + message)
+                        + "\n");
         return FAILED;
     }
 

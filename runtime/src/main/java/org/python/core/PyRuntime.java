@@ -3,6 +3,7 @@ package org.python.core;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,9 +28,13 @@ public final class PyRuntime {
 
     private static PyDict builtins;
     private static PyModule sysModule;
+    private static PyModule main;
     private static PyStream stdout;
     private static PyStream stderr;
     private static final Map<String, PyObject> modules = new LinkedHashMap<>();
+
+    /** What a milestone has installed to answer imports the runtime cannot. */
+    private static final List<ModuleFinder> finders = new ArrayList<>();
 
     private PyRuntime() {
     }
@@ -72,9 +77,10 @@ public final class PyRuntime {
     /**
      * {@code import name}.
      *
-     * Only the two namespaces the runtime itself builds are reachable, which is the whole of what M1
-     * claims. The finder that walks {@code sys.path} and reads {@code .pyc} files is M4; until then a
-     * missing module is reported as missing rather than silently returning an empty one.
+     * The two namespaces the runtime builds itself are the first answer, then whatever a milestone has
+     * installed: the interop module registers the finder that turns {@code java.util} into a package,
+     * and the M4 finder will add the one that walks {@code sys.path}. A name no finder owns is
+     * reported as missing rather than answered with an empty module.
      */
     public static PyObject importModule(String dotted) {
         startup();
@@ -82,30 +88,81 @@ public final class PyRuntime {
         if (module != null) {
             return module;
         }
+        for (ModuleFinder finder : finders) {
+            PyObject found = finder.find(dotted);
+            if (found != null) {
+                // Cached like any other module, because a second import must be the same object:
+                // a package holds its loaded classes, and two copies would hold two states.
+                modules.put(dotted, found);
+                return found;
+            }
+        }
         throw PyRaise.raise(
                 ExceptionTypes.MODULE_NOT_FOUND_ERROR,
                 "No module named '" + dotted + "'");
     }
 
+    /** Install a finder, in order of preference: the first that answers wins. */
+    public static synchronized void addModuleFinder(ModuleFinder finder) {
+        startup();
+        if (!finders.contains(finder)) {
+            finders.add(finder);
+        }
+    }
+
     // --- running code --------------------------------------------------------------------
 
     /**
-     * Run a module's top-level code object in a fresh module namespace.
+     * {@code __main__}: the namespace a script runs in, and the one an embedding caller shares with it.
+     *
+     * <p>Created on first use and kept for the life of the process, because the point of this module is
+     * that names written into it are readable afterwards — by the next line the same caller executes,
+     * and by the next caller in the same JVM.
+     */
+    public static synchronized PyModule mainModule() {
+        startup();
+        if (main == null) {
+            main = namespace(new PyModule("__main__"));
+            modules.put("__main__", main);
+        }
+        return main;
+    }
+
+    /** Prepare a module the runtime has been handed for its top level, as {@code import} would. */
+    public static PyModule namespace(PyModule module) {
+        startup();
+        if (module.get("__builtins__") == null) {
+            module.set("__builtins__", builtins);
+        }
+        return module;
+    }
+
+    /**
+     * Run a module's top-level code object in {@code module}.
      *
      * @param fileName what {@code __file__} reports; a script's own path, or null for code with no
-     *     file, which is how CPython leaves {@code -c} and stdin
+     *     file, which is how CPython leaves {@code -c}, stdin and an embedded snippet
      */
-    public static PyModule run(PyCode code, String moduleName, String fileName) {
-        startup();
-        PyModule module = new PyModule(moduleName);
+    public static void exec(PyCode code, PyModule module, String fileName) {
         if (fileName != null) {
-            module.set("__file__", PyStr.of(fileName));
+            namespace(module).set("__file__", PyStr.of(fileName));
         }
-        module.set("__builtins__", builtins);
-        Frame frame = new Frame(code, module.dictionary(), new PyObject[code.localCount()]);
         // A module's top level returns None; what a script means is the namespace it leaves behind.
-        Interpreter.run(frame);
-        return module;
+        Interpreter.run(frame(code, namespace(module)));
+    }
+
+    /**
+     * Run one expression's code object in {@code module} and give back what it evaluated to.
+     *
+     * <p>Only an {@code eval}-mode code object returns a value, which is why this takes a different
+     * code object from {@link #exec} rather than a flag.
+     */
+    public static PyObject eval(PyCode code, PyModule module) {
+        return Interpreter.run(frame(code, namespace(module)));
+    }
+
+    private static Frame frame(PyCode code, PyModule module) {
+        return new Frame(code, module.dictionary(), new PyObject[code.localCount()]);
     }
 
     /**
