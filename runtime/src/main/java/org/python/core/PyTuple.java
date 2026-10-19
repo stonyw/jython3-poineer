@@ -65,7 +65,7 @@ public final class PyTuple extends PyObject {
         if (Slices.isSlice(key)) {
             return new PyTuple(Sequences.gather(items, Slices.of((PySlice) key, items.length)));
         }
-        return items[Slices.index(key, items.length, "tuple")];
+        return items[Slices.index(key, items.length, "tuple", "tuple index out of range")];
     }
 
     /** {@code a + b}, which is defined for a tuple and a tuple only. */
@@ -116,7 +116,7 @@ public final class PyTuple extends PyObject {
 
     @Override
     public PyObject getAttr(String name) {
-        return METHODS.bind(this, name);
+        return Members.find(this, name);
     }
 
     /** {@code count} and {@code index}, the only two a tuple has, since nothing may change it. */

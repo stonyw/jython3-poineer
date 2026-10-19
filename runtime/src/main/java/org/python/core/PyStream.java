@@ -107,7 +107,7 @@ public final class PyStream extends PyObject {
                 return PyInt.of(fd);
             });
             case "__doc__" -> PyNone.INSTANCE;
-            default -> METHODS.bind(this, attribute);
+            default -> Members.find(this, attribute);
         };
     }
 

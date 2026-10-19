@@ -81,6 +81,24 @@ public final class Interpreter {
                     case Opcodes.LOAD_COMMON_CONSTANT:
                         frame.push(commonConstant(arg));
                         break;
+                    case Opcodes.LOAD_BUILD_CLASS: {
+                        // CPython reads the helper from the builtins of the frame rather than from the
+                        // interpreter's own, and raises a NameError of its own wording when it is not
+                        // there: `__build_class__` is looked up, not compiled in.
+                        PyObject builder =
+                                PyRuntime.builtins().get(PyStr.interned("__build_class__"));
+                        if (builder == null) {
+                            throw PyRaise.raise(
+                                    ExceptionTypes.NAME_ERROR, "__build_class__ not found");
+                        }
+                        frame.push(builder);
+                        break;
+                    }
+                    case Opcodes.LOAD_LOCALS:
+                        // A snapshot, which is what `locals()` in a class body is: the dictionary the
+                        // body keeps writing into goes on living, and this copy does not follow it.
+                        frame.push(nameSpace(frame).copy());
+                        break;
 
                     // --- moving values on the stack ----------------------------------------
                     //

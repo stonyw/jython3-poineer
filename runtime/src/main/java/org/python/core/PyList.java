@@ -67,7 +67,8 @@ public final class PyList extends PyObject {
         if (Slices.isSlice(key)) {
             return gathered(Sequences.gather(elements(), Slices.of((PySlice) key, items.size())));
         }
-        return items.get(Slices.index(key, items.size(), "list"));
+        return items.get(
+                Slices.index(key, items.size(), "list", "list index out of range"));
     }
 
     @Override
@@ -155,7 +156,7 @@ public final class PyList extends PyObject {
 
     @Override
     public PyObject getAttr(String name) {
-        return METHODS.bind(this, name);
+        return Members.find(this, name);
     }
 
     /** Mutable, therefore unhashable; {@link #hashCode()} inherits the same refusal. */

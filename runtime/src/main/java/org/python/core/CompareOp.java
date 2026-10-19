@@ -57,4 +57,9 @@ public enum CompareOp {
     public String symbol() {
         return symbol;
     }
+
+    /** The method this comparison asks of an operand: {@code __lt__} for {@link #LT}. */
+    public String dunder() {
+        return "__" + name().toLowerCase() + "__";
+    }
 }

@@ -11,9 +11,8 @@ package org.python.core;
  *
  * Two rules from CPython are reproduced rather than approximated. The left operand is asked first
  * and the right operand's reflected slot only after a refusal — with the exception of a proper
- * subclass on the right, which CPython asks first, and which cannot happen until user-defined classes
- * exist (M3). And a refusal is {@link PyNotImplemented}, never an error: only the protocol knows
- * whether both sides declined.
+ * subclass on the right, which CPython asks first and {@link #compare} does too. And a refusal is
+ * {@link PyNotImplemented}, never an error: only the protocol knows whether both sides declined.
  */
 public final class Slots {
 
@@ -81,15 +80,33 @@ public final class Slots {
      * not an optimisation: {@code [] == []} is False because {@code list.__eq__} answered, while
      * {@code object() == object()} reaches here. For an ordering test there is no fallback — refusing
      * twice is a {@code TypeError}.
+     *
+     * <p>CPython asks the right operand first when its type is a proper subclass of the left's, because
+     * a subclass is the more specific answer to the question. That priority is only worth reproducing
+     * for a class Python wrote: a built-in type's comparison is a Java method rather than a looked-up
+     * method, and swapping it in front of {@code int}'s own answer would change {@code 1 == True} from
+     * the arithmetic CPython does to a method call it never makes.
      */
     public static PyObject compare(CompareOp cmp, PyObject left, PyObject right) {
+        boolean reversedFirst = false;
+        if (right instanceof PyInstance
+                && right.getType() != left.getType()
+                && right.getType().matches(left.getType())) {
+            PyObject result = right.richCompare(cmp.reflected(), left);
+            if (result != PyNotImplemented.INSTANCE) {
+                return result;
+            }
+            reversedFirst = true;
+        }
         PyObject result = left.richCompare(cmp, right);
         if (result != PyNotImplemented.INSTANCE) {
             return result;
         }
-        result = right.richCompare(cmp.reflected(), left);
-        if (result != PyNotImplemented.INSTANCE) {
-            return result;
+        if (!reversedFirst) {
+            result = right.richCompare(cmp.reflected(), left);
+            if (result != PyNotImplemented.INSTANCE) {
+                return result;
+            }
         }
         if (cmp == CompareOp.EQ) {
             return PyBool.of(left == right);
@@ -121,7 +138,7 @@ public final class Slots {
         if (answer instanceof PyBool bool) {
             return bool.getValue();
         }
-        throw typeError("__bool__ should return bool, not '%s'", answer.getType().name());
+        throw typeError("__bool__ should return bool, returned %s", answer.getType().name());
     }
 
     private static boolean isEmpty(PyObject value) {
@@ -129,18 +146,7 @@ public final class Slots {
         if (length == PyNotImplemented.INSTANCE) {
             return false;
         }
-        if (!(length instanceof PyInt i)) {
-            throw typeError("'%.200s' object representing its length is not an int",
-                    length.getType().name());
-        }
-        if (!i.fitsLong()) {
-            throw overflowError("cannot fit 'int' into an index-sized integer");
-        }
-        long v = i.getValue().longValue();
-        if (v < 0) {
-            throw valueError("__len__() should return >= 0");
-        }
-        return v == 0;
+        return counted(length) == 0;
     }
 
     /** {@code len(x)} as a Python value, so a huge length stays a Python int. */
@@ -149,7 +155,32 @@ public final class Slots {
         if (answer == PyNotImplemented.INSTANCE) {
             throw typeError("object of type '%s' has no len()", value.getType().name());
         }
-        return answer;
+        return PyInt.of(counted(answer));
+    }
+
+    /**
+     * A {@code __len__} answer reduced to a size, which is what {@code slot_sq_length} does with a
+     * Python-level one.
+     *
+     * <p>The three refusals are CPython's and each is a different exception: an answer that is not an
+     * integer at all is a {@code TypeError} about interpretation, one too wide for a machine word is an
+     * {@code OverflowError}, and a negative one is a {@code ValueError} — a length is a count, and only
+     * the last of those is about the number rather than its type.
+     */
+    private static long counted(PyObject answer) {
+        java.math.BigInteger value = Numbers.asInteger(answer);
+        if (value == null) {
+            throw typeError(
+                    "'%s' object cannot be interpreted as an integer", answer.getType().name());
+        }
+        if (value.bitLength() >= 64) {
+            throw overflowError("cannot fit 'int' into an index-sized integer");
+        }
+        long length = value.longValue();
+        if (length < 0) {
+            throw valueError("__len__() should return >= 0");
+        }
+        return length;
     }
 
     /** {@code x[key]}. */
@@ -222,8 +253,33 @@ public final class Slots {
         if (answer instanceof PyIterator iterator) {
             return iterator;
         }
-        // A __iter__ that returns something that is not an iterator is CPython's next TypeError.
+        // A __iter__ that returns something that is not an iterator is CPython's next TypeError. That
+        // question is the same one asIterator answers: a value of a class that declares __next__ *is* an
+        // iterator, however ordinary a PyInstance it looks like from Java.
+        PyIterator iterator = asIterator(answer);
+        if (iterator != null) {
+            return iterator;
+        }
         throw typeError("iter() returned non-iterator of type '%s'", answer.getType().name());
+    }
+
+    /**
+     * The iterator an object answers with, or null when it is not one.
+     *
+     * <p>CPython's test is {@code PyIter_Check}: the type has to have an iteration slot, and for a class
+     * Python wrote that means a {@code __next__}. A {@link PyIterator} is the runtime's own answer to the
+     * same question, so both are accepted. The two callers word their refusal differently — {@code iter()}
+     * complains about what it was handed, {@code next()} about what it was asked to drive — so the choice
+     * of message stays with them.
+     */
+    public static PyIterator asIterator(PyObject value) {
+        if (value instanceof PyIterator iterator) {
+            return iterator;
+        }
+        if (value instanceof PyInstance instance) {
+            return instance.declaredIterator();
+        }
+        return null;
     }
 
     /** {@code getattr(x, name)} for the builtin types. */
@@ -283,8 +339,9 @@ public final class Slots {
      *
      * <p>One list, read by both the builtin and the interop layer: a caller who is told
      * {@code callable(x)} is true and then gets a {@code TypeError} from a Java parameter has been lied
-     * to. Every callable value in this runtime is one of these Java classes; a user-defined class and an
-     * instance with {@code __call__} join the list when the class system arrives (M3).
+     * to. A class Python wrote joins it only when it declares {@code __call__}, which is CPython's rule
+     * too: an instance of a class that defines no {@code __call__} has no call slot, and
+     * {@code callable(Marker())} is false.
      */
     public static boolean isCallable(PyObject value) {
         return value instanceof PyType
@@ -292,7 +349,9 @@ public final class Slots {
                 || value instanceof PyFunction
                 || value instanceof PyNativeFunction
                 || value instanceof PyBoundMethod
-                || value instanceof PyBaseException;
+                || value instanceof PyBaseException
+                || (value instanceof PyInstance instance
+                        && Specials.defines(instance.getType(), "__call__"));
     }
 
     /**

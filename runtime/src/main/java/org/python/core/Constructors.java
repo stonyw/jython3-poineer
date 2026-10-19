@@ -34,6 +34,9 @@ final class Constructors {
         if (type.matches(ExceptionTypes.BASE_EXCEPTION)) {
             return exception(type, args, keywordNames);
         }
+        if (type instanceof PyClass kind) {
+            return Classes.construct(kind, args, kwNames);
+        }
         if (type == PyType.BOOL) {
             return booleanValue(args, keywordNames);
         }
@@ -690,17 +693,20 @@ final class Constructors {
     // --- type itself -----------------------------------------------------------------------
 
     /**
-     * {@code type(x)}, the one-argument form.
+     * {@code type(x)}, the one-argument form, and {@code type(name, bases, dict)}, the three-argument
+     * one.
      *
-     * The three-argument form builds a class, which is M3 work; it is refused rather than half-built,
-     * since a half-built class would answer {@code isinstance} wrongly instead of failing.
+     * <p>The two counts are the whole of the signature: a call with keywords has them counted among its
+     * arguments here, because {@code type} takes none, so {@code type(name='X')} reads as one positional
+     * argument plus one keyword and answers the arity refusal rather than building a class without a
+     * name.
      */
     private static PyObject metatype(PyObject[] args, String[] kwNames) {
         if (kwNames == null && args.length == 1) {
             return args[0].getType();
         }
         if (kwNames == null && args.length == 3) {
-            throw Slots.notImplemented("type() with bases and a namespace");
+            return Classes.newType(args);
         }
         throw Slots.typeError("type() takes 1 or 3 arguments");
     }

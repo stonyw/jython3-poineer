@@ -58,7 +58,7 @@ public final class PyFloat extends PyObject {
         return switch (name) {
             case "real" -> this;
             case "imag" -> PyFloat.of(0.0);
-            default -> METHODS.bind(this, name);
+            default -> Members.find(this, name);
         };
     }
 

@@ -3,10 +3,11 @@ package org.python.core;
 /**
  * Type objects.
  *
- * This slice needs a type to be an instance of {@code type}, to carry a name, and to be callable as a
- * constructor; bases beyond the single parent an exception class needs, the MRO, the metaclass
- * protocol and slot lookup on user-defined classes arrive with the class system at M3, and are
- * deliberately not stubbed here.
+ * A type is an instance of {@code type}, carries a name, is callable as a constructor, and answers for
+ * the members its values inherit: {@link #mro()} is the order both a member lookup and {@code
+ * isinstance} walk, and a class built by the class system ({@link PyClass}) computes it with CPython's
+ * C3 merge instead of using the single-parent chain a built-in type declares. The metaclass protocol is
+ * a later M3 slice, so every class here is built by {@code type} and is an instance of {@code type}.
  *
  * The built-in types are {@code static final} fields rather than a registry, so that a slot
  * implementation can compare against its type by identity — which is what CPython does, and what
@@ -62,17 +63,26 @@ public class PyType extends PyObject {
     public static final PyType ITERATOR = builtin("iterator");
     public static final PyType RANGE = builtin("range");
 
-    private final String name;
+    private String name;
 
     /**
      * The one base this type has.
      *
      * A built-in type's base is {@code object} and an exception class's is the exception it derives
-     * from, because both {@code except} matching and {@code isinstance} are a walk up this chain.
-     * User-defined classes with several bases and a computed MRO are M3, at which point this field
-     * becomes the head of that walk rather than the whole of it.
+     * from. For a class built by the class system this is {@code __base__} — the first of its bases —
+     * and the lookup that matters is {@link #mro()}, which a class computes once when it is built and
+     * stores here.
      */
     private final PyType parent;
+
+    /**
+     * This type's lookup order, or null while it is still only the parent chain.
+     *
+     * Package-visible because a class built by {@link Classes} arrives with its linearization already
+     * computed: C3 is not a walk up {@link #parent}, and asking for it twice would give two different
+     * arrays for the same class.
+     */
+    PyType[] order;
 
     /**
      * Protected because a type declared outside this package has to be able to name its parent:
@@ -114,6 +124,16 @@ public class PyType extends PyObject {
     }
 
     /**
+     * {@code Point.__name__ = 'Other'}, which a class built by Python is allowed to do to itself.
+     *
+     * <p>Package-private because a built-in type's name is not the runtime's to change: CPython refuses
+     * that on the type, and {@link #setAttr} here is the place that says so.
+     */
+    void setName(String name) {
+        this.name = name;
+    }
+
+    /**
      * How an uncaught exception of this class is named.
      *
      * CPython qualifies a class that does not live in {@code builtins} — {@code mymodule.Error} — and
@@ -129,36 +149,117 @@ public class PyType extends PyObject {
     }
 
     /**
-     * {@code int.__name__}, {@code int.__base__} and {@code int.bit_length}.
+     * The order this type's members are looked up in: itself, then its bases, then {@code object}.
+     *
+     * A built-in type has only the chain its parents declare, and that is already C3's answer for a
+     * single base — {@code bool}, {@code int}, {@code object}. A class built by the class system arrives
+     * with its linearization in {@link #order}, computed once because multiple inheritance cannot be
+     * walked as a parent pointer and because {@code X.__mro__ is X.__mro__} has to keep being the same
+     * order.
+     *
+     * <p>The array is the type's own and is shared with every caller: read it, do not change it.
+     */
+    public PyType[] mro() {
+        if (order == null) {
+            java.util.List<PyType> chain = new java.util.ArrayList<>();
+            for (PyType type = this; type != null; type = type.parent) {
+                chain.add(type);
+            }
+            order = chain.toArray(new PyType[0]);
+        }
+        return order;
+    }
+
+    /**
+     * {@code int.__name__}, {@code int.__base__}, {@code int.bit_length}.
      *
      * A method reached through the type rather than through one of its values is a
      * {@link PyMethodDescriptor}, the same object CPython keeps in the type's own dictionary: it takes
      * the value as its first argument, which is what makes {@code str.upper("abc")} and
      * {@code sorted(words, key=str.lower)} answer.
      *
-     * Only the two dunders the exception hierarchy can already answer truthfully; {@code __bases__} as a
-     * tuple, and a {@code __module__} that is not always {@code builtins}, wait for M3.
+     * <p>A type has the methods it inherits as well as the ones it declares, so the lookup walks
+     * {@link #mro()} and stops at the first table that defines the name — which is why
+     * {@code bool.bit_length} is {@code int.bit_length} and not an {@code AttributeError}.
      */
     @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "__name__", "__qualname__" -> PyStr.of(name);
             case "__base__" -> parent == null ? PyNone.INSTANCE : parent;
-            default -> {
-                Members methods = Members.registered(this);
-                yield methods == null ? PyNotImplemented.INSTANCE : methods.describe(attribute);
-            }
+            case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(parent);
+            case "__mro__" -> PyTuple.of(mro());
+            case "__class__" -> type;
+            case "mro" -> MRO.withReceiver(this);
+            default -> inherited(attribute);
         };
     }
 
     /**
-     * Python {@code isinstance} for the builtin types: a walk up {@link #parent}, by identity. A
+     * {@code int.mro()}: the order as a list, of the type the method was reached through.
+     *
+     * <p>The receiver arrives as {@code args[0]} because {@link PyNativeFunction#withReceiver} attaches it,
+     * which is what lets {@code Point.mro()} and {@code int.mro()} share one body and each name itself
+     * {@code Point.mro()} in an arity message.
+     */
+    private static final PyNativeFunction MRO =
+            new PyNativeFunction(
+                    "mro",
+                    (args, kwNames) -> {
+                        PyType owner = (PyType) args[0];
+                        String qualified = owner.name() + ".mro()";
+                        if (kwNames != null) {
+                            throw Slots.typeError("%s takes no keyword arguments", qualified);
+                        }
+                        if (args.length != 1) {
+                            throw Slots.typeError(
+                                    "%s takes no arguments (%d given)", qualified, args.length - 1);
+                        }
+                        return PyList.of(owner.mro());
+                    });
+
+    /** The member named {@code attribute} in this type's lookup order, or a refusal if none has it. */
+    private PyObject inherited(String attribute) {
+        for (PyType owner : mro()) {
+            Members methods = Members.tableOf(owner);
+            if (methods == null) {
+                continue;
+            }
+            PyObject descriptor = methods.describe(attribute);
+            if (descriptor != PyNotImplemented.INSTANCE) {
+                return descriptor;
+            }
+        }
+        return PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * {@code int.x = 1}.
+     *
+     * <p>A built-in type's members are compiled in, so there is nowhere to put the value and CPython
+     * says that rather than reporting a missing attribute. {@link PyClass} overrides both this and
+     * {@link #delAttr} because a class does have a dictionary to write into.
+     */
+    @Override
+    public PyObject setAttr(String attribute, PyObject value) {
+        throw Slots.typeError(
+                "cannot set '%s' attribute of immutable type '%s'", attribute, name);
+    }
+
+    @Override
+    public PyObject delAttr(String attribute) {
+        throw Slots.typeError(
+                "cannot delete '%s' attribute of immutable type '%s'", attribute, name);
+    }
+
+    /**
+     * Python {@code isinstance} for the builtin types: a walk of {@link #mro()}, by identity. A
      * {@code PyInt} is not an instance of {@code PyFloat}, so {@code int} and {@code float} are
      * unrelated here even though the numeric tower treats a value of one as acceptable to the other.
      */
     public boolean matches(PyType other) {
-        for (PyType t = this; t != null; t = t.parent) {
-            if (t == other) {
+        for (PyType candidate : mro()) {
+            if (candidate == other) {
                 return true;
             }
         }

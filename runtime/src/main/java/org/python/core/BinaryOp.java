@@ -69,6 +69,27 @@ public enum BinaryOp {
         return symbol;
     }
 
+    /**
+     * The method this operator asks of the left operand: {@code __add__} for {@link #ADD}.
+     *
+     * <p>The enum constants are CPython's slot names already, so the spelling is the name — which holds
+     * for all thirteen, including the two that look like they would not: {@code //} is {@code __floordiv__}
+     * and {@code @} is {@code __matmul__}.
+     */
+    public String dunder() {
+        return "__" + name().toLowerCase() + "__";
+    }
+
+    /** {@code __radd__}: the method the right operand is asked for after a refusal. */
+    public String reflectedDunder() {
+        return "__r" + name().toLowerCase() + "__";
+    }
+
+    /** {@code __iadd__}: the method an augmented assignment tries before either of the other two. */
+    public String inPlaceDunder() {
+        return "__i" + name().toLowerCase() + "__";
+    }
+
     /** {@code +=} for {@link #ADD}: the spelling an augmented statement reports when it fails. */
     public String augmentedSymbol() {
         return symbol + "=";

@@ -6,6 +6,12 @@ package org.python.core;
  *
  * The receiver is kept here rather than curried into the body so that {@code __self__} and
  * {@code __name__} are answerable, both of which CPython's own tests read.
+ *
+ * <p>There are two kinds, and they are the same thing seen from the two halves of the runtime: a
+ * method of a built-in type has a {@link Body} written in Java, and a method of a class Python wrote is
+ * a {@link PyFunction} whose first parameter is the receiver. Both come back from an attribute lookup on
+ * a value, both are of type {@code method}, and both are unboxed by {@code LOAD_ATTR}'s method form so
+ * that the receiver is not also passed as an argument.
  */
 public final class PyBoundMethod extends PyObject {
 
@@ -18,11 +24,24 @@ public final class PyBoundMethod extends PyObject {
     private final String name;
     private final Body body;
 
+    /** The Python method this value wraps, or null when the body is Java's. */
+    private final PyFunction function;
+
     public PyBoundMethod(PyObject target, String name, Body body) {
         super(PyType.METHOD);
         this.target = target;
         this.name = name;
         this.body = body;
+        this.function = null;
+    }
+
+    /** {@code p.as_text}: a function found on the instance's class, with the instance attached to it. */
+    PyBoundMethod(PyObject target, PyFunction function) {
+        super(PyType.METHOD);
+        this.target = target;
+        this.name = function.code().name();
+        this.body = null;
+        this.function = function;
     }
 
     /** The keywords of a vectorcall argument list, as Java strings. */
@@ -50,15 +69,28 @@ public final class PyBoundMethod extends PyObject {
 
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
-        return body.apply(target, args, keywordNames(kwNames));
+        if (function == null) {
+            return body.apply(target, args, keywordNames(kwNames));
+        }
+        // The receiver is the function's first parameter, which is the whole of how self arrives.
+        PyObject[] withSelf = new PyObject[args.length + 1];
+        withSelf[0] = target;
+        System.arraycopy(args, 0, withSelf, 1, args.length);
+        return function.call(withSelf, kwNames);
     }
 
     @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "__self__" -> target;
+            case "__func__" -> function == null ? PyNotImplemented.INSTANCE : function;
             case "__name__" -> PyStr.of(name);
-            case "__doc__" -> PyNone.INSTANCE;
+            case "__qualname__" -> function != null
+                    ? function.getAttr("__qualname__")
+                    : PyStr.of(target.getType().name() + "." + name);
+            case "__doc__" -> function == null
+                    ? PyNone.INSTANCE
+                    : function.getAttr("__doc__");
             default -> PyNotImplemented.INSTANCE;
         };
     }
@@ -79,6 +111,13 @@ public final class PyBoundMethod extends PyObject {
 
     @Override
     public String repr() {
-        return "<built-in method " + name + " of " + target.getType().name() + " object>";
+        if (function == null) {
+            return "<built-in method " + name + " of " + target.getType().name() + " object>";
+        }
+        return "<bound method "
+                + function.getAttr("__qualname__").str()
+                + " of "
+                + target.repr()
+                + ">";
     }
 }

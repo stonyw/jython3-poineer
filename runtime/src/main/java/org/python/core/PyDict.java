@@ -147,7 +147,7 @@ public final class PyDict extends PyObject {
 
     @Override
     public PyObject getAttr(String name) {
-        return METHODS.bind(this, name);
+        return Members.find(this, name);
     }
 
     @Override
@@ -287,7 +287,8 @@ public final class PyDict extends PyObject {
         }
     }
 
-    private PyDict copy() {
+    /** {@code dict.copy()}, and the snapshot {@code LOAD_LOCALS} pushes in a class body. */
+    PyDict copy() {
         PyDict out = new PyDict(new LinkedHashMap<>());
         out.putAll(this);
         return out;

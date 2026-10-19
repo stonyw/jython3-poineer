@@ -29,6 +29,22 @@ public abstract class PyObject {
         return type;
     }
 
+    /**
+     * This value as the type that declares an inherited method expects its receiver to look like.
+     *
+     * <p>{@link Members} walks a value's type in lookup order, so a {@code bool} is answered by the
+     * methods {@code int} declares — and those bodies read an integer's storage. In CPython the question
+     * does not arise, because a bool <em>is</em> an int object with two more display rules; here the two
+     * are separate Java classes, so crossing that gap in an inheritance walk means handing over the
+     * value the body was written for. A value that has no such gap, which is every value but {@code bool},
+     * answers for itself.
+     *
+     * @param declaring the type whose table the method was found in
+     */
+    PyObject adaptedFor(PyType declaring) {
+        return this;
+    }
+
     // --- slots: arithmetic -------------------------------------------------------------
 
     /**

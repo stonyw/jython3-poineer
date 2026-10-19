@@ -30,12 +30,13 @@ final class Slices {
     }
 
     /**
-     * An index, wrapped if negative, with the sequence's own {@code IndexError} wording.
+     * An index, wrapped if negative, with the sequence's own two refusals.
      *
-     * @param what the type name CPython puts in the message, usually the sequence's own
+     * @param indices the word CPython puts in front of "indices must be integers or slices"
+     * @param outOfRange the whole sentence for an index past the end
      */
-    static int index(PyObject key, int length, String what) {
-        return Numbers.wrapIndex(Numbers.index(key, what), length, what);
+    static int index(PyObject key, int length, String indices, String outOfRange) {
+        return Numbers.wrapIndex(Numbers.index(key, indices), length, outOfRange);
     }
 
     /** {@code slice.indices(length)}, as CPython resolves it. */

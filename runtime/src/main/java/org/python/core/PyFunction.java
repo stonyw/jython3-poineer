@@ -127,6 +127,20 @@ public final class PyFunction extends PyObject {
         return Interpreter.run(frame);
     }
 
+    /**
+     * Run this function as a class body, filling {@code namespace} with what the body defines.
+     *
+     * <p>The frame is the difference from an ordinary call: its names go to the prepared class
+     * dictionary while its global names still come from the module the class is written in. What comes
+     * back is what the body returns, which is the {@code __class__} cell when the body mentions
+     * {@code __class__} and {@code None} when it does not.
+     */
+    PyObject runClassBody(PyDict namespace) {
+        Frame frame = new Frame(code, globals, namespace, new PyObject[code.localCount()]);
+        frame.function = this;
+        return Interpreter.run(frame);
+    }
+
     /** The cells an inner function of this one will receive, in {@code co_freevars} order. */
     PyCell[] closureCells() {
         return closure;
@@ -148,11 +162,6 @@ public final class PyFunction extends PyObject {
         boolean varKeywords = (code.flags() & PyCode.CO_VARKEYWORDS) != 0;
         PyObject[] slots = new PyObject[code.localCount()];
 
-        if (positional > parameters && !varArgs) {
-            throw Slots.typeError(
-                    "%s() takes %d positional argument%s but %d were given",
-                    code.name(), parameters, parameters == 1 ? "" : "s", positional);
-        }
         for (int i = 0; i < parameters; i++) {
             slots[i] = i < positional ? args[i] : null;
         }
@@ -182,7 +191,7 @@ public final class PyFunction extends PyObject {
             if (!shadowed.isEmpty()) {
                 throw Slots.typeError(
                         "%s() got some positional-only arguments passed as keyword arguments: '%s'",
-                        code.name(), String.join(", ", shadowed));
+                        signature(), String.join(", ", shadowed));
             }
         }
         for (int i = 0; i < keywords; i++) {
@@ -193,7 +202,7 @@ public final class PyFunction extends PyObject {
                 if (collected == null) {
                     throw Slots.typeError(
                             "%s() got an unexpected keyword argument '%s'",
-                            code.name(), key.getValue());
+                            signature(), key.getValue());
                 }
                 collected.put(key, value);
                 continue;
@@ -202,9 +211,14 @@ public final class PyFunction extends PyObject {
                 // Rejected even when the positional came from *args: CPython lifted that exemption in
                 // 3.11, and a call like f(*[1], a=2) is a bug worth naming rather than a choice.
                 throw Slots.typeError(
-                        "%s() got multiple values for argument '%s'", code.name(), key.getValue());
+                        "%s() got multiple values for argument '%s'", signature(), key.getValue());
             }
             slots[at] = value;
+        }
+        // CPython raises this only once every keyword has been placed, which is why f(1, 2, a=3)
+        // complains about the duplicate `a` rather than about the count.
+        if (positional > parameters && !varArgs) {
+            throw tooManyPositional(parameters, keywordOnly, positional, slots);
         }
         if (varKeywords) {
             slots[varKeywordsAt] = collected;
@@ -212,6 +226,62 @@ public final class PyFunction extends PyObject {
 
         applyDefaults(slots, parameters, keywordOnly);
         return slots;
+    }
+
+    /**
+     * {@code f() takes 1 positional argument but 2 were given}, and its two siblings.
+     *
+     * <p>Three decisions are made together here, in CPython's {@code too_many_positional}, and all three
+     * show up in the sentence a person reads: the signature becomes a range as soon as the function has
+     * defaults, the verb agrees with the count — {@code but 1 was given} against {@code but 3 were
+     * given} — and a keyword-only argument that arrived is named in a tail of its own.
+     *
+     * @param slots the arguments already laid out, so the keyword-only ones the call gave can be counted
+     */
+    private PyRaise tooManyPositional(
+            int parameters, int keywordOnly, int positional, PyObject[] slots) {
+        int keywordGivens = 0;
+        for (int i = 0; i < keywordOnly; i++) {
+            if (slots[parameters + i] != null) {
+                keywordGivens++;
+            }
+        }
+        String signature;
+        boolean plural;
+        if (defaults.length > 0) {
+            plural = true;
+            signature = "from " + (parameters - defaults.length) + " to " + parameters;
+        } else {
+            plural = parameters != 1;
+            signature = String.valueOf(parameters);
+        }
+        // The tail repeats the word `positional` with the count's own plurality, which is the one part
+        // of the sentence that agrees with what was given rather than with what was expected.
+        String tail = keywordGivens == 0
+                ? ""
+                : String.format(
+                        " positional argument%s (and %d keyword-only argument%s)",
+                        positional == 1 ? "" : "s", keywordGivens, keywordGivens == 1 ? "" : "s");
+        return Slots.typeError(
+                "%s() takes %s positional argument%s but %d%s %s given",
+                signature(),
+                signature,
+                plural ? "s" : "",
+                positional,
+                tail,
+                positional == 1 && keywordGivens == 0 ? "was" : "were");
+    }
+
+    /**
+     * The name a call's complaint is filed under.
+     *
+     * <p>CPython prints the qualified name, which is what makes a method's own arity error read
+     * {@code Point.__init__() takes from 2 to 3 positional arguments} — a sentence that says whose
+     * initializer was called, and the reason a bare {@code co_name} is not enough. A function that is
+     * given a new {@code __qualname__} is then complained about under that one, too.
+     */
+    private String signature() {
+        return qualName.str();
     }
 
     /**
@@ -237,7 +307,7 @@ public final class PyFunction extends PyObject {
         if (!missing.isEmpty()) {
             throw Slots.typeError(
                     "%s() missing %d required positional argument%s: %s",
-                    code.name(), missing.size(), missing.size() == 1 ? "" : "s", listed(missing));
+                    signature(), missing.size(), missing.size() == 1 ? "" : "s", listed(missing));
         }
         List<String> missingKeyword = new ArrayList<>();
         for (int i = 0; i < keywordOnly; i++) {
@@ -257,14 +327,19 @@ public final class PyFunction extends PyObject {
         if (!missingKeyword.isEmpty()) {
             throw Slots.typeError(
                     "%s() missing %d required keyword-only argument%s: %s",
-                    code.name(),
+                    signature(),
                     missingKeyword.size(),
                     missingKeyword.size() == 1 ? "" : "s",
                     listed(missingKeyword));
         }
     }
 
-    /** {@code 'a', 'b', and 'c'} — CPython's Oxford-comma list, one message at a time. */
+    /**
+     * {@code 'a'}, {@code 'a' and 'b'}, {@code 'a', 'b', and 'c'} — CPython's {@code join_names}.
+     *
+     * Two names are joined without a comma at all, and the Oxford comma only appears from the third name
+     * on. Both are visible in the message a person reads, and neither follows from the other case.
+     */
     private static String listed(List<String> names) {
         List<String> quoted = new ArrayList<>(names.size());
         for (String name : names) {
@@ -274,7 +349,11 @@ public final class PyFunction extends PyObject {
             return quoted.get(0);
         }
         String last = quoted.remove(quoted.size() - 1);
-        return String.join(", ", quoted) + ", and " + last;
+        if (quoted.size() == 1) {
+            return quoted.get(0) + " and " + last;
+        }
+        String secondToLast = quoted.remove(quoted.size() - 1);
+        return String.join(", ", quoted) + ", " + secondToLast + ", and " + last;
     }
 
     private String parameterName(int index) {

@@ -28,4 +28,19 @@ public enum UnaryOp {
     public String symbol() {
         return symbol;
     }
+
+    /**
+     * The method this operator asks of its one operand.
+     *
+     * <p>{@code ABSOLUTE} is the reason this is a table rather than the name lowercased: {@code abs(x)}
+     * is {@code x.__abs__()}, and the constant names the slot after the builtin, not after the method.
+     */
+    public String dunder() {
+        return switch (this) {
+            case NEGATIVE -> "__neg__";
+            case POSITIVE -> "__pos__";
+            case INVERT -> "__invert__";
+            case ABSOLUTE -> "__abs__";
+        };
+    }
 }

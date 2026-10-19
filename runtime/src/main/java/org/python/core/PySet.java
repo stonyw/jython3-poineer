@@ -132,7 +132,7 @@ public class PySet extends PyObject {
 
     @Override
     public PyObject getAttr(String name) {
-        return (mutable() ? METHODS : FROZEN_METHODS).bind(this, name);
+        return Members.find(this, name);
     }
 
     /** Equality is content, both ways round a {@code set} and a {@code frozenset}. */

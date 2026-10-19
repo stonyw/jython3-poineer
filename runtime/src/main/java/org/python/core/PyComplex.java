@@ -65,7 +65,7 @@ public final class PyComplex extends PyObject {
         return switch (name) {
             case "real" -> realPart();
             case "imag" -> PyFloat.of(imaginary);
-            default -> METHODS.bind(this, name);
+            default -> Members.find(this, name);
         };
     }
 

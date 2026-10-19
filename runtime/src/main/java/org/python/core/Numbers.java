@@ -42,13 +42,14 @@ final class Numbers {
     /**
      * An index, as a sequence wants it: an integer, or a {@code long} of that integer.
      *
-     * @param what the sequence's own name, for CPython's message
+     * @param what the word CPython puts in front of "indices" — "list", "tuple", or "byte" for a
+     *     {@code bytes}, which is the one sequence whose refusal names the element rather than itself
      */
     static BigInteger index(PyObject key, String what) {
         BigInteger value = asInteger(key);
         if (value == null) {
             throw Slots.typeError(
-                    "%s indices must be integers or slices, not %s", quoted(what), key.getType().name());
+                    "%s indices must be integers or slices, not %s", what, key.getType().name());
         }
         return value;
     }
@@ -80,25 +81,23 @@ final class Numbers {
     /**
      * An integer index made non-negative against {@code length}, and checked.
      *
+     * @param outOfRange the sequence's whole sentence for an index past the end, since {@code bytes}
+     *     says only "index out of range" while the others name themselves
      * @throws IndexError for a value outside the sequence, including one too wide for an {@code int}
      */
-    static int wrapIndex(BigInteger value, int length, String what) {
+    static int wrapIndex(BigInteger value, int length, String outOfRange) {
         if (!fitsInt(value)) {
-            throw Slots.indexError("%s index out of range", quoted(what));
+            // CPython checks the width before the bounds, so a huge index is not "out of range".
+            throw Slots.indexError("cannot fit 'int' into an index-sized integer");
         }
         int at = value.intValue();
         if (at < 0) {
             at += length;
         }
         if (at < 0 || at >= length) {
-            throw Slots.indexError("%s index out of range", quoted(what));
+            throw Slots.indexError(outOfRange);
         }
         return at;
-    }
-
-    /** CPython quotes a type name in a message but not a variable name. */
-    private static String quoted(String what) {
-        return "'" + what + "'";
     }
 
     /** {@code o} as a Java {@code String}, if it is a {@code str} and nothing else. */

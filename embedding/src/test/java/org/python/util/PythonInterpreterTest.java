@@ -16,6 +16,7 @@ import org.python.core.PyRaise;
 import org.python.core.PyRuntime;
 import org.python.core.PyStr;
 import org.python.core.PyTuple;
+import org.python.core.Slots;
 import org.python.interop.fixtures.Panel;
 import org.python.interop.fixtures.Widget;
 import org.python.javaclass.PyJavaThrowable;
@@ -519,6 +520,122 @@ class PythonInterpreterTest {
         // the route a real script takes, and it has to reach the same object rather than a copy.
         assertThat(py.invoke("relay"))
                 .isEqualTo("IllegalStateException: widget is broken / widget is broken");
+    }
+
+    // --- classes -------------------------------------------------------------------------
+    //
+    // The same surface {@code src/test/resources/m3/corpus/05}–{@code 08} measure against CPython,
+    // seen from the side an embedder stands on: a Java call that names a Python class, and the
+    // instance that comes back.
+
+    @Test
+    void aJavaValueCrossesIntoAPythonConstructorAndTheInstanceKeepsIt() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                class Row:
+                    def __init__(self, cells):
+                        self.cells = cells
+                        self.count = len(cells)
+
+                    def total(self):
+                        return sum(self.cells)
+                """);
+        py.set("cells", java.util.List.of(1, 2, 3));
+        py.exec("row = Row(cells)\n");
+
+        PyObject row = py.getPyObject("row");
+
+        assertThat(row.getType().name()).isEqualTo("Row");
+        assertThat(Slots.getAttr(row, "count")).isEqualTo(PyInt.of(3));
+        assertThat(Slots.getAttr(row, "cells")).isSameAs(py.getPyObject("cells"));
+        assertThat(Slots.call(Slots.getAttr(row, "total"), new PyObject[0], null))
+                .isEqualTo(PyInt.of(6));
+    }
+
+    @Test
+    void aMethodReachedThroughAClassTakesTheInstanceAsItsReceiver() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("class Greeter:\n    def greet(self, name):\n        return 'hi ' + name\n");
+
+        PyObject unbound = py.getPyObject("Greeter").getAttr("greet");
+        PyObject instance = py.getPyObject("Greeter").call(new PyObject[0], null);
+
+        assertThat(unbound.getType().name()).isEqualTo("function");
+        assertThat(Slots.getAttr(instance, "greet").getType().name()).isEqualTo("method");
+        assertThat(Slots.call(unbound, new PyObject[] {instance, PyStr.of("Java")}, null))
+                .isEqualTo(PyStr.of("hi Java"));
+    }
+
+    @Test
+    void inheritanceAndItsErrorsAnswerTheSameFromJava() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                class Animal:
+                    legs = 4
+
+                    def __init__(self, name):
+                        self.name = name
+
+                    def describe(self):
+                        return type(self).__name__ + ': ' + self.name
+
+                class Dog(Animal):
+                    def describe(self):
+                        return self.name + ' woofs'
+
+                class Puppy(Dog):
+                    pass
+
+                pup = Puppy('Bud')
+                """);
+
+        PyObject bud = py.getPyObject("pup");
+
+        assertThat(Slots.call(Slots.getAttr(bud, "describe"), new PyObject[0], null))
+                .isEqualTo(PyStr.of("Bud woofs"));
+        assertThat(Slots.getAttr(bud, "legs")).isEqualTo(PyInt.of(4));
+        assertThat(py.eval("isinstance(pup, Animal)")).isEqualTo(true);
+        assertThat(py.eval("Animal.describe(pup)")).isEqualTo("Puppy: Bud");
+        assertThat(py.eval("[t.__name__ for t in Puppy.__mro__]", List.class))
+                .containsExactly("Puppy", "Dog", "Animal", "object");
+
+        assertThatThrownBy(() -> py.exec("class Bad(Animal, Dog):\n    pass\n"))
+                .isInstanceOf(PyRaise.class)
+                .hasMessage(
+                        "TypeError: Cannot create a consistent method resolution"
+                            + " order (MRO) for bases Animal, Dog");
+    }
+
+    @Test
+    void aBoolInheritsTheMembersOfTheIntItIs() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        assertThat(py.eval("True.bit_length()")).isEqualTo(1);
+        assertThat(py.eval("(255).bit_length()")).isEqualTo(8);
+        assertThat(py.eval("int.bit_length(True)")).isEqualTo(1);
+        assertThat(py.eval("bool.bit_length is int.bit_length")).isEqualTo(true);
+        assertThat(py.eval("float.is_integer(2.0)")).isEqualTo(true);
+        assertThatThrownBy(() -> py.eval("float.is_integer(True)"))
+                .isInstanceOf(PyRaise.class)
+                .hasMessage(
+                        "TypeError: descriptor 'is_integer' for 'float' objects"
+                            + " doesn't apply to a 'bool' object");
+    }
+
+    @Test
+    void aClassIsCallableAndItsInstanceIsNot() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("class Marker:\n    pass\n");
+
+        assertThat(py.eval("callable(Marker)")).isEqualTo(true);
+        assertThat(py.eval("callable(Marker())")).isEqualTo(false);
+        assertThat(py.eval("type(Marker()) is Marker")).isEqualTo(true);
+        assertThat(py.eval("type(Marker) is type")).isEqualTo(true);
+        assertThatThrownBy(() -> py.eval("Marker(1)"))
+                .isInstanceOf(PyRaise.class)
+                .hasMessage("TypeError: Marker() takes no arguments");
     }
 
     // --- failures across the boundary ----------------------------------------------------

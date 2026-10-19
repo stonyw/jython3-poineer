@@ -92,7 +92,7 @@ public final class PyInt extends PyObject {
             case "real", "numerator" -> this;
             case "imag" -> ZERO;
             case "denominator" -> ONE;
-            default -> METHODS.bind(this, name);
+            default -> Members.find(this, name);
         };
     }
 

@@ -159,24 +159,30 @@ class Jy3LauncherTest {
     }
 
     /**
-     * M3's catching surface, one file per area, under {@code src/test/resources/m3/corpus}.
+     * M3's language surface, one file per area, under {@code src/test/resources/m3/corpus}.
      *
      * <p>The same rule as M1's corpus: no expectation is written down, the reference interpreter that
      * compiled the script also answers it. Each script here ends on its own two feet, because an
-     * escaped exception would be comparing traceback lines that a later slice has to build.
+     * escaped exception would be comparing traceback lines that a later slice has to build. Nothing here
+     * prints a value whose {@code repr} carries an address, which is the one thing the two interpreters
+     * can never agree on.
      */
     @ParameterizedTest(name = "{0}")
-    @MethodSource("catchingCorpus")
-    void aCatchingCorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
+    @MethodSource("m3Corpus")
+    void anM3CorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
         answersExactlyAsCpython("m3/corpus", scriptName);
     }
 
-    private static List<String> catchingCorpus() {
+    private static List<String> m3Corpus() {
         return List.of(
                 "01_handlers.py",
                 "02_finally_and_reraise.py",
                 "03_chaining.py",
-                "04_exc_info.py");
+                "04_exc_info.py",
+                "05_classes.py",
+                "06_inheritance.py",
+                "07_dunders.py",
+                "08_inherited_members.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

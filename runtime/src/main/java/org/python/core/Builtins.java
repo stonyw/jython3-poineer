@@ -11,11 +11,11 @@ import java.util.function.Predicate;
  *
  * The entries are the ones M1's done-criterion needs — the type constructors, the exception names a
  * script can raise or catch, and the functions that arithmetic, branching, looping and calling a
- * function are written with. What is absent is deliberate and short: {@code exec}, {@code eval},
- * {@code compile}, {@code super}, {@code property}, {@code classmethod}, {@code staticmethod} and
- * {@code __build_class__} are all the class system or the code-evaluation path, which are M3, and
- * {@code open} plus the rest of the file API is M4. A name that is not here raises {@code NameError},
- * which points at the missing feature; a half-implemented one would point at nothing.
+ * function are written with. What is absent is deliberate and short: {@code exec}, {@code eval} and
+ * {@code compile} are the code-evaluation path, {@code super}, {@code property}, {@code classmethod}
+ * and {@code staticmethod} are the parts of the class system still to come, and {@code open} plus the
+ * rest of the file API is M4. A name that is not here raises {@code NameError}, which points at the
+ * missing feature; a half-implemented one would point at nothing.
  *
  * Every message is as CPython 3.14 words it, including the count family a builtin belongs to —
  * {@code len() takes exactly one argument (2 given)} against {@code min expected at least 1 argument,
@@ -140,6 +140,7 @@ final class Builtins {
         put(out, "hasattr", new PyNativeFunction("hasattr", Builtins::hasAttribute));
         put(out, "setattr", new PyNativeFunction("setattr", Builtins::setAttribute));
         put(out, "delattr", new PyNativeFunction("delattr", Builtins::deleteAttribute));
+        put(out, "__build_class__", new PyNativeFunction("__build_class__", Classes::buildClass));
     }
 
     // --- one argument ----------------------------------------------------------------------
@@ -557,7 +558,10 @@ final class Builtins {
     private static PyObject next(PyObject[] args, String[] kwNames) {
         Arguments.noKeywords("next()", kwNames);
         Arguments.between("next", args, kwNames, 1, 2);
-        if (!(args[0] instanceof PyIterator iterator)) {
+        // Not only the built-in iterators: a class that declares __next__ is driven the same way, which
+        // is what PyIter_Check means for a value of a Python class.
+        PyIterator iterator = Slots.asIterator(args[0]);
+        if (iterator == null) {
             throw Slots.typeError(
                     "'%s' object is not an iterator", args[0].getType().name());
         }

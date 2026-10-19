@@ -140,7 +140,7 @@ public final class PyStr extends PyObject {
 
     @Override
     public PyObject getAttr(String name) {
-        return METHODS.bind(this, name);
+        return Members.find(this, name);
     }
 
     @Override

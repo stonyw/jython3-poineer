@@ -191,7 +191,8 @@ public final class PyBytes extends PyObject {
             }
             return PyBytes.wrap(out);
         }
-        return PyInt.of(value[Slices.index(key, value.length, "bytes")] & 0xff);
+        return PyInt.of(
+                value[Slices.index(key, value.length, "byte", "index out of range")] & 0xff);
     }
 
     @Override
@@ -278,7 +279,7 @@ public final class PyBytes extends PyObject {
 
     @Override
     public PyObject getAttr(String name) {
-        return METHODS.bind(this, name);
+        return Members.find(this, name);
     }
 
     // --- methods -----------------------------------------------------------------------

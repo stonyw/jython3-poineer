@@ -24,10 +24,39 @@ public final class PyNativeFunction extends PyObject {
     private final String name;
     private final Body body;
 
+    /**
+     * The owner this method was reached through, or null when it is a plain function.
+     *
+     * {@code int.mro} is one of these: a builtin method that needs no receiver of its own keeps its body
+     * and gains the type it was read from, which is what makes {@code int.mro()} answer for {@code int}
+     * while {@code str.upper} — a method that does take a receiver — stays a
+     * {@link PyMethodDescriptor}. CPython hands out a fresh object each time, so {@code int.mro is int.mro}
+     * is false, and this is a fresh object for the same reason.
+     */
+    private final PyObject receiver;
+
     public PyNativeFunction(String name, Body body) {
+        this(name, body, null);
+    }
+
+    private PyNativeFunction(String name, Body body, PyObject receiver) {
         super(PyType.BUILTIN_FUNCTION);
         this.name = name;
         this.body = body;
+        this.receiver = receiver;
+    }
+
+    /** This method read through {@code owner}, with the receiver already attached to it. */
+    PyNativeFunction withReceiver(PyObject owner) {
+        return new PyNativeFunction(name, body, owner);
+    }
+
+    /** The name CPython qualifies a receiver-bound method with: {@code int.mro}. */
+    String qualifiedName() {
+        if (receiver instanceof PyType owner) {
+            return owner.name() + "." + name;
+        }
+        return name;
     }
 
     /** A body that takes positionals only; a keyword argument reaching it is an error, as in Python. */
@@ -46,20 +75,30 @@ public final class PyNativeFunction extends PyObject {
 
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
-        return body.apply(args, PyBoundMethod.keywordNames(kwNames));
+        if (receiver == null) {
+            return body.apply(args, PyBoundMethod.keywordNames(kwNames));
+        }
+        PyObject[] withSelf = new PyObject[args.length + 1];
+        withSelf[0] = receiver;
+        System.arraycopy(args, 0, withSelf, 1, args.length);
+        return body.apply(withSelf, PyBoundMethod.keywordNames(kwNames));
     }
 
     @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
-            case "__name__", "__qualname__" -> PyStr.of(name);
+            case "__name__" -> PyStr.of(name);
+            case "__qualname__" -> PyStr.of(qualifiedName());
             case "__doc__" -> PyNone.INSTANCE;
+            case "__self__" -> receiver == null ? PyNotImplemented.INSTANCE : receiver;
             default -> PyNotImplemented.INSTANCE;
         };
     }
 
     @Override
     public String repr() {
-        return "<built-in function " + name + ">";
+        return receiver == null
+                ? "<built-in function " + name + ">"
+                : "<built-in method " + name + " of " + receiver.getType().name() + " object>";
     }
 }

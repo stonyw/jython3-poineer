@@ -48,9 +48,21 @@ public final class Frame {
     PyFunction function;
 
     Frame(PyCode code, PyDict globals, PyObject[] slots) {
+        this(code, globals, (code.flags() & PyCode.CO_OPTIMIZED) == 0 ? globals : null, slots);
+    }
+
+    /**
+     * A frame whose names go into a dictionary the caller chose.
+     *
+     * <p>A class body is the case that needs it: its code object is unoptimized, so the rule above would
+     * make its names land in the module, while CPython runs the body against the namespace the metaclass
+     * prepared. The two dictionaries stay separate — {@code LOAD_NAME} reads the class dictionary first
+     * and the module's only for a name the body has not defined.
+     */
+    Frame(PyCode code, PyDict globals, PyDict locals, PyObject[] slots) {
         this.code = code;
         this.globals = globals;
-        this.locals = (code.flags() & PyCode.CO_OPTIMIZED) == 0 ? globals : null;
+        this.locals = locals;
         this.slots = slots;
         // co_stacksize bounds the frame's own needs; the extra room is for the values a call opcode
         // has not yet moved into the callee.

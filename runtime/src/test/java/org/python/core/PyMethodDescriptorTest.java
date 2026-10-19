@@ -2,10 +2,7 @@ package org.python.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.catchThrowable;
 
-import org.assertj.core.api.ThrowableAssert;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -17,18 +14,6 @@ import org.junit.jupiter.api.Test;
  * lambda.
  */
 class PyMethodDescriptorTest {
-
-    /**
-     * A method table is registered while the value class that declares it is loaded, so a type nobody
-     * has made a value of yet has no table to answer from. Making one of each here keeps these tests
-     * independent of which one the JVM happens to run first.
-     */
-    @BeforeAll
-    static void loadTheValueClassesTheseTestsAsk() throws ClassNotFoundException {
-        for (Class<?> values : new Class<?>[] {PyStr.class, PyInt.class, PyBool.class}) {
-            Class.forName(values.getName());
-        }
-    }
 
     /** {@code repr(str.upper)}, {@code type(str.upper)} and the names CPython gives it. */
     @Test
@@ -55,23 +40,41 @@ class PyMethodDescriptorTest {
     }
 
     /**
-     * A value whose type answers nothing for the method is refused in the value's own words.
+     * A subtype is answered by the methods its base declares, both ways round.
      *
-     * <p>{@code bool} is a subtype of {@code int}, so the receiver passes the type check, but reaching an
-     * inherited method through the parent's table is the MRO walk that M3's class system owns. Until it
-     * exists the two spellings have to agree with each other — which is what a caller such as
-     * {@code Optional.map(int)} depends on — so {@code int.bit_length(True)} says exactly what
-     * {@code True.bit_length()} says rather than reaching past the value's own answer.
+     * <p>{@code bool} is a subtype of {@code int}, so {@code True.bit_length()} is the {@code int} body
+     * run on the integer the bool stands for, and {@code int.bit_length(True)} is the same call asked
+     * through the type. {@code bool.bit_length} is not a copy of the descriptor: a type has its bases'
+     * members, so it hands out the one {@code int} declares.
      */
     @Test
-    void bothSpellingsOfTheSameMethodAgree() {
-        assertThat(messageOf(() -> Slots.getAttr(PyBool.TRUE, "bit_length")))
-                .isEqualTo("AttributeError: 'bool' object has no attribute 'bit_length'")
-                .isEqualTo(messageOf(() -> call(PyType.INT, "bit_length", PyBool.TRUE)));
+    void aSubtypeAnswersWithTheMembersItInherits() {
+        PyObject inherited = Slots.getAttr(PyBool.TRUE, "bit_length");
+
+        assertThat(inherited).isInstanceOf(PyBoundMethod.class);
+        assertThat(Slots.call(inherited, new PyObject[0], null)).isEqualTo(PyInt.of(1));
+        assertThat(call(PyType.INT, "bit_length", PyBool.TRUE)).isEqualTo(PyInt.of(1));
+        assertThat(PyType.BOOL.getAttr("bit_length")).isSameAs(PyType.INT.getAttr("bit_length"));
+        assertThat(call(PyType.INT, "as_integer_ratio", PyBool.TRUE))
+                .isEqualTo(PyTuple.of(PyInt.ONE, PyInt.ONE));
     }
 
-    private static String messageOf(ThrowableAssert.ThrowingCallable call) {
-        return catchThrowable(call).getMessage();
+    /**
+     * A value whose type answers nothing for the method is refused in the value's own words.
+     *
+     * <p>Subclassing goes one way: {@code bool} is an {@code int}, but {@code float.is_integer} was
+     * written for a float's storage, and applying it to a bool is refused before any body runs.
+     */
+    @Test
+    void aMethodOfAnUnrelatedTypeRefusesTheReceiver() {
+        assertThatThrownBy(() -> call(PyType.FLOAT, "is_integer", PyBool.TRUE))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        raised ->
+                                assertThat(raised.getMessage())
+                                        .isEqualTo(
+                                                "TypeError: descriptor 'is_integer' for 'float'"
+                                                    + " objects doesn't apply to a 'bool' object"));
     }
 
     /** {@code str.upper()} — CPython 3.14's wording for a descriptor nobody has given a value yet. */
