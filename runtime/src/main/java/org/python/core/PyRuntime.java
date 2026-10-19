@@ -33,6 +33,21 @@ public final class PyRuntime {
     private static PyStream stderr;
     private static final Map<String, PyObject> modules = new LinkedHashMap<>();
 
+    /**
+     * What CPython keeps as {@code tstate->exc_info->exc_value}: the exception the handler now running
+     * is handling.
+     *
+     * <p>It is not the exception in flight — that one is carried by {@link PyRaise} while the loop
+     * searches the table — and only two opcodes write it: a handler's {@code PUSH_EXC_INFO} stores the
+     * exception it caught, and {@code POP_EXCEPT} puts back whatever the enclosing handler was running
+     * for. That is the whole of how {@code sys.exc_info()}, a bare {@code raise} and an implicit
+     * {@code __context__} all know which exception they mean.
+     *
+     * <p>Per thread because CPython's is per thread state; {@code None} is its "no handler here".
+     */
+    private static final ThreadLocal<PyObject> handledException =
+            ThreadLocal.withInitial(() -> PyNone.INSTANCE);
+
     /** What a milestone has installed to answer imports the runtime cannot. */
     private static final List<ModuleFinder> finders = new ArrayList<>();
 
@@ -108,6 +123,21 @@ public final class PyRuntime {
         if (!finders.contains(finder)) {
             finders.add(finder);
         }
+    }
+
+    // --- the exception a handler is running for -----------------------------------------
+
+    /** The handled exception, or {@code None} where no handler is running. */
+    public static PyObject handledException() {
+        return handledException.get();
+    }
+
+    /**
+     * Store the exception a handler is now running for, as {@code PUSH_EXC_INFO} and
+     * {@code POP_EXCEPT} do.
+     */
+    public static void setHandledException(PyObject value) {
+        handledException.set(value);
     }
 
     // --- running code --------------------------------------------------------------------
@@ -224,8 +254,22 @@ public final class PyRuntime {
         sys.set("defaultencoding", PyStr.of("utf-8"));
         sys.set("getdefaultencoding", PyNativeFunction.positional(
                 "getdefaultencoding", args -> PyStr.of("utf-8")));
+        sys.set("exc_info", PyNativeFunction.positional("exc_info", args -> excInfo()));
         sys.set("exit", new PyNativeFunction("exit", PyRuntime::systemExit));
         return sys;
+    }
+
+    /**
+     * {@code sys.exc_info()}: the handled exception as a {@code (type, value, traceback)} triple.
+     *
+     * <p>The traceback is {@code None} because a traceback is rebuilt from the frames above the raise,
+     * which this runtime does not yet keep; type and value are exactly what {@code PUSH_EXC_INFO} stored.
+     */
+    private static PyObject excInfo() {
+        if (!(handledException() instanceof PyBaseException error)) {
+            return PyTuple.of(PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE);
+        }
+        return PyTuple.of(error.getType(), error, PyNone.INSTANCE);
     }
 
     /**

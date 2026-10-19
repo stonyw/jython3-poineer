@@ -74,4 +74,28 @@ public interface PyCode {
     int localCount();
 
     CodeInstructions instructions();
+
+    /**
+     * The handler that covers the instruction at {@code index}, or null where nothing guards it.
+     *
+     * <p>An exception is answered here by a table rather than by a block stack: when a frame has one to
+     * deal with, the instruction it was executing names a handler, and that handler says where to resume,
+     * how much of the value stack to discard, and whether to leave the offset of the raising instruction
+     * on the stack under the exception so a {@code RERAISE} can put it back. {@code index} is that
+     * instruction, which after a failed call is the call itself — so a handler written in the caller
+     * covers what the callee raised.
+     *
+     * <p>How a front-end records its own ranges is its business (D2); what it has to answer is the
+     * question the interpreter asks while unwinding.
+     */
+    Handler handlerFor(int index);
+
+    /**
+     * What an unwinding frame does about one exception.
+     *
+     * @param targetIndex the instruction the handler begins at
+     * @param stackLevel how many values the frame keeps, counted from the bottom of its own stack
+     * @param pushLasti whether to push the raising instruction's offset below the exception
+     */
+    record Handler(int targetIndex, int stackLevel, boolean pushLasti) {}
 }

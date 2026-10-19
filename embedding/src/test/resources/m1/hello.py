@@ -1,8 +1,9 @@
 """M1's done criterion in one file: hello world, arithmetic, branches, loops, function calls.
 
-Scope note: ``try``/``except``, generator expressions and classes are deliberately absent. They need
-the exception table and generator frames, which are M3; reaching one here would fail with a
-NotImplementedError naming the opcode rather than with a wrong answer, which is the point.
+Scope note: ``try``/``except``, generator expressions and classes are deliberately absent. Catching is
+M3's own surface and is measured by the m3 corpus; generator frames and classes are still later M3
+slices, where reaching one would fail with a NotImplementedError naming the opcode rather than with a
+wrong answer, which is the point.
 """
 
 import sys

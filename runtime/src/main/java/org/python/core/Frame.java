@@ -24,6 +24,26 @@ public final class Frame {
     private int sp;
     private int ip;
 
+    /**
+     * The instruction this frame is executing, which is CPython's {@code next_instr - 1}.
+     *
+     * <p>An exception is looked up by this: the row that covers the instruction that just failed names
+     * the handler, and after a failed call the failing instruction is the call itself, not whatever the
+     * callee was doing.
+     */
+    private int executing;
+
+    /**
+     * The instruction a report would name, which is CPython's {@code instr_ptr} and whose offset is
+     * what {@code f_lasti} gives back.
+     *
+     * <p>The two are the same instruction until a handler re-raises: {@code RERAISE} moves this one
+     * back to wherever the exception first failed, so a traceback and a re-entered handler speak of the
+     * raise rather than of the instruction that repeated it. The lookup keeps using {@link #executing},
+     * because a re-raise is answered by the rows around the re-raise.
+     */
+    private int raisedAt;
+
     /** The function whose closure fills this frame's free variables; null for a module frame. */
     PyFunction function;
 
@@ -58,6 +78,37 @@ public final class Frame {
 
     void setIp(int ip) {
         this.ip = ip;
+    }
+
+    /** The instruction an exception is looked up by: {@link #executing}, not the reported site. */
+    int executing() {
+        return executing;
+    }
+
+    /** Step onto instruction {@code index}; the reported site starts out the same instruction. */
+    void setExecuting(int index) {
+        this.executing = index;
+        this.raisedAt = index;
+    }
+
+    /**
+     * Put the reported site back where the exception first failed, as {@code RERAISE} does.
+     *
+     * @param unit the front-end's own offset of that instruction, which is the form a handler leaves it
+     *     in below the exception
+     */
+    void restoreRaisedAt(int unit) {
+        int index = instructions().indexOfUnitAt(unit);
+        if (index < 0) {
+            throw Slots.runtimeError("a handler left code unit " + unit + " as the reported site, "
+                    + "which no instruction starts at (a bug in the interpreter)");
+        }
+        this.raisedAt = index;
+    }
+
+    /** The reported site, in the units a handler's lasti is pushed in. */
+    int unitRaisedAt() {
+        return instructions().unitOffsetAt(raisedAt);
     }
 
     CodeInstructions instructions() {
@@ -104,6 +155,24 @@ public final class Frame {
 
     int stackDepth() {
         return sp;
+    }
+
+    /**
+     * Discard everything above {@code level}, which is how a handler gets the stack it was compiled
+     * against.
+     *
+     * <p>The level is the handler's own stack depth counted from the bottom of this frame's stack, so
+     * it is comparable with {@link #stackDepth()} without knowing anything about the code object.
+     */
+    void popTo(int level) {
+        if (level > sp) {
+            throw Slots.runtimeError("an exception handler for " + code.qualName() + " expects "
+                    + level + " values on the value stack, which holds " + sp
+                    + " (a bug in the interpreter)");
+        }
+        while (sp > level) {
+            pop();
+        }
     }
 
     /** The {@code n} values on top, in the order they were pushed, leaving them popped. */

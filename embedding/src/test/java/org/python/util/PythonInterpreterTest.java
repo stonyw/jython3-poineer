@@ -299,6 +299,228 @@ class PythonInterpreterTest {
                 .hasMessageContaining("onClose");
     }
 
+    // --- catching ------------------------------------------------------------------------
+    //
+    // The same behaviour {@code src/test/resources/m3/corpus} measures against CPython, seen from the
+    // inside of a JVM. What is only testable here is what an embedder depends on: the exception that
+    // no clause matched arriving in Java unchanged, and a Java failure being catchable in Python.
+
+    @Test
+    void aHandlerRunsInCpythonsOrderAndBindsTheException() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                order = []
+                try:
+                    order.append('try')
+                    raise ValueError('bad')
+                except TypeError:
+                    order.append('unreachable')
+                except ValueError as error:
+                    order.append('handler ' + str(error))
+                else:
+                    order.append('no except taken')
+                finally:
+                    order.append('finally')
+                """);
+
+        assertThat(py.get("order", List.class))
+                .containsExactly("try", "handler bad", "finally");
+    }
+
+    @Test
+    void aTupleClauseCatchesAnyOfItsClassesAndAnUnmatchedOneLetsTheRaiseEscape() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                def classify(n):
+                    try:
+                        if n == 0:
+                            raise KeyError('none')
+                        if n == 1:
+                            raise IndexError('out')
+                        raise ValueError('other')
+                    except (KeyError, IndexError) as error:
+                        return 'handled ' + type(error).__name__
+                """);
+
+        assertThat(py.invoke("classify", 0)).isEqualTo("handled KeyError");
+        assertThat(py.invoke("classify", 1)).isEqualTo("handled IndexError");
+        assertThatThrownBy(() -> py.invoke("classify", 2))
+                .isInstanceOf(PyRaise.class)
+                .hasMessage("ValueError: other");
+    }
+
+    @Test
+    void theClauseVariableIsGoneOnceTheHandlerHasRun() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                def show():
+                    try:
+                        raise ValueError('kept')
+                    except ValueError as bound:
+                        inside = str(bound)
+                    try:
+                        return 'after: ' + str(bound)
+                    except NameError as error:
+                        return 'after: ' + str(error)
+                """);
+
+        // CPython deletes the name when the handler ends — the binding exists to keep a reference
+        // alive through the traceback, and keeping it past that is a leak CPython chose to prevent.
+        assertThat(py.invoke("show"))
+                .isEqualTo("after: cannot access local variable 'bound' where it is not"
+                        + " associated with a value");
+    }
+
+    @Test
+    void theExceptionBeingHandledIsTheOneSysExcInfoReports() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                import sys
+
+                def probe():
+                    seen = []
+                    seen.append(str(sys.exc_info()))
+                    try:
+                        raise ValueError('outer')
+                    except ValueError:
+                        seen.append(sys.exc_info()[0].__name__)
+                        seen.append(str(sys.exc_info()[1]))
+                        try:
+                            raise KeyError('inner')
+                        except KeyError:
+                            seen.append(str(sys.exc_info()[1]))
+                        seen.append(str(sys.exc_info()[1]))
+                    seen.append(str(sys.exc_info()))
+                    return seen
+                """);
+
+        // The outer exception is restored, not discarded, when the inner handler ends.
+        assertThat(py.invoke("probe")).isEqualTo(List.of(
+                "(None, None, None)", "ValueError", "outer", "'inner'", "outer",
+                "(None, None, None)"));
+    }
+
+    @Test
+    void aBareRaiseRepeatsTheExceptionItsHandlerIsRunningFor() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                order = []
+
+                def relay():
+                    try:
+                        raise ValueError('original')
+                    except ValueError:
+                        order.append('handler')
+                        try:
+                            raise
+                        except ValueError as again:
+                            order.append('caught the re-raise ' + str(again))
+                            raise
+                    finally:
+                        order.append('finally')
+                """);
+
+        assertThatThrownBy(() -> py.invoke("relay"))
+                .isInstanceOf(PyRaise.class)
+                .hasMessage("ValueError: original");
+        assertThat(py.get("order", List.class))
+                .containsExactly("handler", "caught the re-raise original", "finally");
+    }
+
+    @Test
+    void aReturnInAFinallyReplacesTheExceptionUnderway() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        // CPython warns about this at compile time. The warning is the Stage-A compiler's stderr,
+        // which is read only when compilation fails, so it is not what this measures: the point is
+        // that the ValueError never reaches the Java caller.
+        py.exec("""
+                def swallow():
+                    try:
+                        raise ValueError('swallowed')
+                    finally:
+                        return 'returned instead'
+                """);
+
+        assertThat(py.invoke("swallow")).isEqualTo("returned instead");
+    }
+
+    @Test
+    void aRaiseInsideAHandlerBecomesTheNewExceptionsContext() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                def chained():
+                    try:
+                        raise ValueError('first')
+                    except ValueError:
+                        raise TypeError('second')
+                """);
+
+        PyRaise raised = assertThrows(PyRaise.class, () -> py.invoke("chained"));
+        py.set("failure", raised.value());
+
+        assertThat(py.eval("type(failure).__name__ + ': ' + str(failure)"))
+                .isEqualTo("TypeError: second");
+        assertThat(py.eval("type(failure.__context__).__name__")).isEqualTo("ValueError");
+        assertThat(py.eval("str(failure.__context__)")).isEqualTo("first");
+        assertThat(py.eval("failure.__cause__")).isNull();
+        assertThat(py.eval("failure.__suppress_context__")).isEqualTo(false);
+    }
+
+    @Test
+    void anExplicitCauseSuppressesTheContextItDidNotNeed() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                def from_clause():
+                    try:
+                        raise ValueError('first')
+                    except ValueError as inner:
+                        raise TypeError('second') from inner
+
+                def from_none():
+                    try:
+                        raise ValueError('first')
+                    except ValueError:
+                        raise TypeError('second') from None
+                """);
+
+        py.set("failure", assertThrows(PyRaise.class, () -> py.invoke("from_clause")).value());
+        assertThat(py.eval("failure.__cause__ is failure.__context__")).isEqualTo(true);
+        assertThat(py.eval("failure.__suppress_context__")).isEqualTo(true);
+
+        py.set("failure", assertThrows(PyRaise.class, () -> py.invoke("from_none")).value());
+        assertThat(py.eval("failure.__cause__")).isNull();
+        // from None hides the context from the report; the attribute still holds it.
+        assertThat(py.eval("type(failure.__context__).__name__")).isEqualTo("ValueError");
+        assertThat(py.eval("failure.__suppress_context__")).isEqualTo(true);
+    }
+
+    @Test
+    void aJavaThrowableCaughtByAnExceptClauseKeepsItsJavaIdentity() {
+        PythonInterpreter py = new PythonInterpreter();
+
+        py.exec("""
+                from org.python.interop.fixtures import Widget
+
+                def relay():
+                    try:
+                        Widget().boom()
+                    except Exception as error:
+                        return type(error).__name__ + ': ' + str(error) + ' / ' + error.getMessage()
+                """);
+
+        // The sibling of the test below, which hands a Java failure over by setting it. Catching it is
+        // the route a real script takes, and it has to reach the same object rather than a copy.
+        assertThat(py.invoke("relay"))
+                .isEqualTo("IllegalStateException: widget is broken / widget is broken");
+    }
+
     // --- failures across the boundary ----------------------------------------------------
 
     @Test
@@ -330,10 +552,10 @@ class PythonInterpreterTest {
     /**
      * A Java failure, handed to Python, keeps the Java methods on it.
      *
-     * <p>The exception reaches Python by being set rather than by an {@code except} clause, because
-     * {@code try} needs the code object's exception table, which is M3. What is being pinned here is
-     * the object, not the handler: whatever route a Java {@code Throwable} takes into Python, it arrives
-     * as a Python exception that still answers {@code getMessage()}.
+     * <p>This is the embedder's route rather than a handler's: the failure reaches Python because Java
+     * caught it and set it, which is what a caller that inspects a Python exception on both sides does.
+     * The sibling test above pins the same object arriving through an {@code except} clause instead.
+     * Either way it is a Python exception that still answers {@code getMessage()}.
      */
     @Test
     void aJavaExceptionThatReachesPythonAnswersItsJavaMethods() {

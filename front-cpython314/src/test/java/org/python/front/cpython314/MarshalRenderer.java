@@ -153,11 +153,21 @@ final class MarshalRenderer {
                     .append(2 * instructions.unitOffsetAt(i)).append(':')
                     .append(instructions.argAt(i));
         }
+        StringBuilder handles = new StringBuilder();
+        for (ExceptionTable.Entry entry : ExceptionTable.parse(co.exceptionTable()).entries()) {
+            if (!handles.isEmpty()) {
+                handles.append(' ');
+            }
+            handles.append(2 * entry.start()).append(':').append(2 * entry.end()).append(':')
+                    .append(2 * entry.target()).append(':').append(entry.depth()).append(':')
+                    .append(entry.pushLasti() ? 1 : 0);
+        }
         return ("code(argcount=%d,posonly=%d,kwonly=%d,stack=%d,flags=%d,first=%d)\n"
                 + "  file=%s name=%s qualname=%s\n"
                 + "  wordcode=%s\n"
                 + "  linetable=%s\n"
                 + "  exceptiontable=%s\n"
+                + "  exchandles=%s\n"
                 + "  varnames=%s cellvars=%s freevars=%s nlocals=%d\n"
                 + "  consts=%s\n"
                 + "  names=%s\n"
@@ -165,7 +175,7 @@ final class MarshalRenderer {
                 co.argCount(), co.posOnlyArgCount(), co.kwOnlyArgCount(), co.stackSize(),
                 co.flags(), co.firstLine(),
                 text(co.fileName()), text(co.name()), text(co.qualName()),
-                hex(co.codeArray()), hex(co.lineTable()), hex(co.exceptionTable()),
+                hex(co.codeArray()), hex(co.lineTable()), hex(co.exceptionTable()), handles,
                 value(co.varNames()), value(co.cellVars()), value(co.freeVars()), co.nLocals(),
                 value(co.constants()), value(co.names()), decoded);
     }

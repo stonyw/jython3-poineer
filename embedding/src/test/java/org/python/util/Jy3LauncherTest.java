@@ -23,9 +23,9 @@ import org.python.util.Jy3Process.Result;
  * as a process: {@code print} reaches the OS descriptor, which is what a user sees.
  *
  * <p>Two cases compare less than the whole stream on purpose. An uncaught exception is matched on its
- * last line only, because a traceback needs the frame chain and the exception table (M3), and a
- * usage error is matched on its exit status, because the program's own name is in the message. Both
- * gaps are named where they are taken rather than left for someone to discover.
+ * last line only, because a traceback needs the frame chain above the raise and jy3 has only the
+ * exception to print, and a usage error is matched on its exit status, because the program's own name is
+ * in the message. Both gaps are named where they are taken rather than left for someone to discover.
  */
 class Jy3LauncherTest {
 
@@ -130,9 +130,10 @@ class Jy3LauncherTest {
      * The language surface M1 claims, one file per area, under {@code src/test/resources/m1/corpus}.
      *
      * <p>Each case is a script rather than a Java assertion so that growing M1 means adding a file,
-     * not inventing an expectation. Nothing here needs the exception table, a class body or a
-     * generator: {@code try}, {@code class} and a bare {@code (x for x in y)} belong to M3, and
-     * {@code int.to_bytes} and {@code sys.version_info.major} to a later slice.
+     * not inventing an expectation. Nothing here needs a class body or a generator: {@code class} and a
+     * bare {@code (x for x in y)} belong to later M3 slices, and so does {@code try}, whose catching is
+     * measured by the corpus below. {@code int.to_bytes} and {@code sys.version_info.major} are further
+     * slices still.
      */
     private static final List<String> CORPUS =
             List.of(
@@ -150,7 +151,36 @@ class Jy3LauncherTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("corpus")
     void aCorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
-        Path script = write(scriptName, resource("m1/corpus/" + scriptName));
+        answersExactlyAsCpython("m1/corpus", scriptName);
+    }
+
+    private static List<String> corpus() {
+        return CORPUS;
+    }
+
+    /**
+     * M3's catching surface, one file per area, under {@code src/test/resources/m3/corpus}.
+     *
+     * <p>The same rule as M1's corpus: no expectation is written down, the reference interpreter that
+     * compiled the script also answers it. Each script here ends on its own two feet, because an
+     * escaped exception would be comparing traceback lines that a later slice has to build.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("catchingCorpus")
+    void aCatchingCorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
+        answersExactlyAsCpython("m3/corpus", scriptName);
+    }
+
+    private static List<String> catchingCorpus() {
+        return List.of(
+                "01_handlers.py",
+                "02_finally_and_reraise.py",
+                "03_chaining.py",
+                "04_exc_info.py");
+    }
+
+    private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
+        Path script = write(scriptName, resource(folder + "/" + scriptName));
 
         Result reference = cpython(script);
         Result jy3 = jy3(script);
@@ -158,10 +188,6 @@ class Jy3LauncherTest {
         assertThat(jy3.exit()).as("%s exit", scriptName).isEqualTo(reference.exit());
         assertThat(jy3.out()).as("%s stdout", scriptName).isEqualTo(reference.out());
         assertThat(jy3.err()).as("%s stderr", scriptName).isEqualTo(reference.err());
-    }
-
-    private static List<String> corpus() {
-        return CORPUS;
     }
 
     @Test
@@ -200,9 +226,9 @@ class Jy3LauncherTest {
     /**
      * Only the last line of an uncaught exception is compared.
      *
-     * <p>The frame lines above it are M3: a traceback is rebuilt from the frame chain and the code
-     * object's exception table, and until both exist jy3 has only the exception to print. Comparing
-     * the whole stream would either fail the build or buy a fake traceback.
+     * <p>The frame lines above it are a later slice: a traceback is rebuilt from the frame chain above
+     * the raise, which jy3 does not keep yet, so it has only the exception to print. Comparing the whole
+     * stream would either fail the build or buy a fake traceback.
      */
     @Test
     void anUncaughtExceptionNamesItsTypeAndFails() throws Exception {

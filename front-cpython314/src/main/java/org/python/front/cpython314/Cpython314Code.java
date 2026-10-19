@@ -40,6 +40,7 @@ public final class Cpython314Code extends PyObject implements PyCode {
     private final byte[] lineTable;
     private final byte[] exceptionTable;
     private final Wordcode instructions;
+    private final ExceptionTable handlers;
 
     Cpython314Code(
             int argCount,
@@ -80,6 +81,7 @@ public final class Cpython314Code extends PyObject implements PyCode {
         this.lineTable = lineTable.getValue();
         this.exceptionTable = exceptionTable.getValue();
         this.instructions = Wordcode.decode(codeArray);
+        this.handlers = ExceptionTable.parse(this.exceptionTable);
     }
 
     @Override
@@ -140,6 +142,29 @@ public final class Cpython314Code extends PyObject implements PyCode {
     @Override
     public CodeInstructions instructions() {
         return instructions;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>CPython looks the row up by the last code unit of the instruction that was executing
+     * ({@code INSTR_OFFSET() - 1}, its own byte arithmetic); the first unit of that instruction is in the
+     * same row, because a row is emitted per run of whole instructions and so never ends inside an opcode
+     * and the caches that follow it.
+     */
+    @Override
+    public Handler handlerFor(int index) {
+        ExceptionTable.Entry entry = handlers.handlerFor(instructions.unitOffsetAt(index));
+        if (entry == null) {
+            return null;
+        }
+        int target = instructions.indexOfUnitAt(entry.target());
+        if (target < 0) {
+            throw MarshalFormatException.badData(
+                    "exception handler targets code unit " + entry.target()
+                            + ", which no instruction starts at");
+        }
+        return new Handler(target, entry.depth(), entry.pushLasti());
     }
 
     /**

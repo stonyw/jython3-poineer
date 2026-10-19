@@ -87,6 +87,43 @@ def guarded():
         cleanup()
 ''',
     ),
+    # Every shape an ``except`` clause can take, nested and mixed with a ``with``, so one code object
+    # carries a dozen rows that overlap and point at each other: the rows covering a handler's own body
+    # are the ones a reader that assumes a table only describes ``try`` blocks gets wrong.
+    (
+        "handlers_inside_handlers",
+        '''
+def guarded(x):
+    try:
+        try:
+            v = f(x)
+        except ValueError as e:
+            caught = str(e)
+        except (TypeError, KeyError):
+            caught = "other"
+        else:
+            caught = "none"
+        finally:
+            tail = 1
+        with open(path()) as fh:
+            pass
+        try:
+            g()
+        except Exception:
+            raise RuntimeError("wrapped") from None
+    finally:
+        done()
+    return caught, tail
+''',
+    ),
+    # A long table: each of the 90 guarded statements adds a row, so offsets run past one varint byte
+    # and a reader that reads only the six low bits of a continuation byte, or that stops at the first
+    # row whose start is behind it, shows up here rather than in a five-row table.
+    (
+        "many_handlers",
+        "def wide():\n    for i in range(%d):\n        try:\n            work(i)\n        except ValueError:\n            note(i)\n"
+        % 90,
+    ),
     (
         "star_except",
         '''
@@ -332,6 +369,13 @@ def render_code(co, shared):
         "  wordcode=" + co.co_code.hex(),
         "  linetable=" + co.co_linetable.hex(),
         "  exceptiontable=" + co.co_exceptiontable.hex(),
+        # The same bytes, read by CPython's own table parser. dis reports byte offsets and returns
+        # ``lasti`` as a bool; the reader under test keeps code units and a bit, and doubles on the
+        # way out here rather than anywhere in the interpreter.
+        "  exchandles=" + " ".join(
+            "%d:%d:%d:%d:%d" % (e.start, e.end, e.target, e.depth, int(e.lasti))
+            for e in dis._parse_exception_table(co)
+        ),
         "  varnames=%s cellvars=%s freevars=%s nlocals=%d"
         % (
             render(co.co_varnames, shared),

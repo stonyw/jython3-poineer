@@ -19,6 +19,8 @@ val refPython =
                 ?: System.getenv("JY3_REF_PYTHON")
                 ?: "python3.14"
 
+val marshalFixtures: File = layout.buildDirectory.file("marshal-fixtures.txt").get().asFile
+
 val syncMarshalFixtures =
         tasks.register("syncMarshalFixtures") {
             description = "Generates marshal expectations with the reference interpreter"
@@ -28,7 +30,7 @@ val syncMarshalFixtures =
             // a doLast closure may not reference the build script itself.
             val pythonExec: String = refPython
             val generator: File = file("tools/gen_marshal_fixtures.py")
-            val fixtures: File = layout.buildDirectory.file("marshal-fixtures.txt").get().asFile
+            val fixtures: File = marshalFixtures
             inputs.file(generator)
             outputs.file(fixtures)
 
@@ -53,7 +55,8 @@ val syncMarshalFixtures =
 
 tasks.withType<Test>().configureEach {
     dependsOn(syncMarshalFixtures)
-    systemProperty(
-            "jython3.marshalFixtures",
-            layout.buildDirectory.file("marshal-fixtures.txt").get().asFile.absolutePath)
+    // The expectations are read through a path rather than off the classpath, so without this the
+    // tests stay up to date when only they change — a regenerated table can then go unread.
+    inputs.file(marshalFixtures)
+    systemProperty("jython3.marshalFixtures", marshalFixtures.absolutePath)
 }

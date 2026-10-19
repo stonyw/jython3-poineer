@@ -9,10 +9,10 @@ package org.python.core;
  * that closes its loop, {@code MAKE_FUNCTION} pops only a code object, and the container-append
  * opcodes leave their container on the stack.
  *
- * What this slice does not cover is reported rather than guessed at. Generators, coroutines, the
- * exception table, user-defined classes and pattern matching are M3; an opcode belonging to one of
- * them raises {@code NotImplementedError} naming the opcode, so a script that reaches one fails with
- * a sentence instead of a wrong answer.
+ * What this slice does not cover is reported rather than guessed at. Generators, coroutines,
+ * {@code with}, user-defined classes and pattern matching are later M3 slices; an opcode belonging to
+ * one of them raises {@code NotImplementedError} naming the opcode, so a script that reaches one fails
+ * with a sentence instead of a wrong answer.
  */
 public final class Interpreter {
 
@@ -22,17 +22,38 @@ public final class Interpreter {
     /**
      * Run {@code frame} to a {@code RETURN_VALUE}.
      *
+     * <p>An exception this frame has no handler for leaves by the Java carry-over: it escapes here and
+     * is caught by the caller's own {@code run}, whose table is asked about the call that failed.
+     *
      * @return the value Python returned from the code object
      */
     public static PyObject run(Frame frame) {
         CodeInstructions code = frame.instructions();
         int limit = code.length();
         try {
-            while (frame.ip() < limit) {
-                int index = frame.ip();
-                frame.setIp(index + 1);
-                int opcode = code.opcodeAt(index);
-                int arg = code.argAt(index);
+            return interpret(frame, code, limit);
+        } catch (StackOverflowError overflow) {
+            throw PyRaise.raise(
+                    ExceptionTypes.RECURSION_ERROR, "maximum recursion depth exceeded");
+        }
+    }
+
+    /**
+     * The dispatch loop: one instruction at a time, until the frame returns.
+     *
+     * <p>The {@code catch} is CPython's {@code error:} label. It is per instruction rather than around
+     * the whole loop because that is what makes a handler work: an exception this frame guards is
+     * answered by re-pointing this frame's own instruction pointer and falling through to the next
+     * iteration, so the handler runs in the frame that raised with the stack the compiler expected.
+     */
+    private static PyObject interpret(Frame frame, CodeInstructions code, int limit) {
+        while (frame.ip() < limit) {
+            int index = frame.ip();
+            frame.setIp(index + 1);
+            frame.setExecuting(index);
+            int opcode = code.opcodeAt(index);
+            int arg = code.argAt(index);
+            try {
                 switch (opcode) {
 
                     // --- instructions with no observable effect at this stage ---------------
@@ -508,6 +529,44 @@ public final class Interpreter {
                         raise(frame, arg);
                         break;
 
+                    // --- handling an exception ---------------------------------------------
+                    //
+                    // A handler is entered with its exception on top of the stack, put there while
+                    // unwinding. These four opcodes are the only way it becomes Python-visible state:
+                    // there is no block stack and no runtime stack of handlers to consult.
+                    case Opcodes.PUSH_EXC_INFO: {
+                        // The exception the enclosing handler was running for, if any, goes under this
+                        // one so that POP_EXCEPT can put it back; a bare None is "no handler outside me".
+                        PyObject inHandler = frame.pop();
+                        PyObject enclosing = PyRuntime.handledException();
+                        PyRuntime.setHandledException(inHandler);
+                        frame.push(enclosing);
+                        frame.push(inHandler);
+                        break;
+                    }
+                    case Opcodes.CHECK_EXC_MATCH: {
+                        // Neither value is taken off the stack first: CPython leaves both where they are
+                        // when it refuses the clause itself, and the level an unwind pops to discards any
+                        // leftovers regardless.
+                        PyObject clause = frame.peek(0);
+                        frame.replace(0, PyBool.of(catches((PyBaseException) frame.peek(1), clause)));
+                        break;
+                    }
+                    case Opcodes.POP_EXCEPT:
+                        PyRuntime.setHandledException(frame.pop());
+                        break;
+                    case Opcodes.RERAISE: {
+                        PyObject again = frame.pop();
+                        if (arg != 0) {
+                            // The offset the handler came in with, kept under the exception for this
+                            // moment: the report names where the exception first failed, not this
+                            // instruction. The table is still searched from the re-raise itself, which is
+                            // why moving the report site must not move the lookup site.
+                            frame.restoreRaisedAt(lastiUnit(frame, arg));
+                        }
+                        throw PyRaise.of(asException(again));
+                    }
+
                     // --- importing -----------------------------------------------------------
                     case Opcodes.IMPORT_NAME:
                         frame.push(importModule(frame, arg));
@@ -551,13 +610,41 @@ public final class Interpreter {
                     default:
                         throw notCovered(opcode, arg);
                 }
+            } catch (PyRaise raised) {
+                unwind(frame, raised);
             }
-            throw Slots.runtimeError(
-                    "ran off the end of " + frame.code().qualName() + " without returning");
-        } catch (StackOverflowError overflow) {
-            throw PyRaise.raise(
-                    ExceptionTypes.RECURSION_ERROR, "maximum recursion depth exceeded");
         }
+        throw Slots.runtimeError(
+                "ran off the end of " + frame.code().qualName() + " without returning");
+    }
+
+    /**
+     * CPython's {@code exception_unwind}, for this frame and this exception only.
+     *
+     * <p>The row covering the instruction that failed says how much of the value stack the handler
+     * expects, whether to leave the offset of the failed instruction below the exception for a
+     * {@code RERAISE} to restore, and where to resume. Resuming is done by pointing the instruction
+     * pointer there and returning, so the loop above runs a handler as what it always was: more
+     * instructions of the same frame, on a stack the compiler already knew the depth of.
+     *
+     * <p>No exception is stored on the way in: Java is carrying it, and the runtime's handled slot is
+     * written by the handler's own {@code PUSH_EXC_INFO}, which is what lets {@code sys.exc_info()}, a
+     * bare {@code raise} and an implicit {@code __context__} read the exception a handler is running for
+     * rather than whatever is merely in flight.
+     *
+     * @throws PyRaise unchanged, when this frame has no row covering that instruction
+     */
+    private static void unwind(Frame frame, PyRaise raised) {
+        PyCode.Handler handler = frame.code().handlerFor(frame.executing());
+        if (handler == null) {
+            throw raised;
+        }
+        frame.popTo(handler.stackLevel());
+        if (handler.pushLasti()) {
+            frame.push(PyInt.of(frame.unitRaisedAt()));
+        }
+        frame.push(raised.value());
+        frame.setIp(handler.targetIndex());
     }
 
     // --- helpers -------------------------------------------------------------------------
@@ -582,7 +669,8 @@ public final class Interpreter {
         return !(attribute instanceof PyBoundMethod method && method.receives(owner));
     }
 
-    private static void jumpIf(Frame frame, int index, boolean take) {        if (take) {
+    private static void jumpIf(Frame frame, int index, boolean take) {
+        if (take) {
             frame.setIp(frame.jumpTarget(index));
         }
     }
@@ -966,20 +1054,128 @@ public final class Interpreter {
                 : module.getType().name();
     }
 
+    /**
+     * {@code RAISE_VARARGS}: turn what is on the stack into an exception and let the loop's
+     * {@code catch} take it to the table.
+     *
+     * <p>CPython keeps two pieces of exception state, and only the second is Python-visible: the
+     * exception in flight ({@code tstate->current_exception}) and the exception a handler is running
+     * for ({@code exc_info->exc_value}). A raise reads the second for its implicit {@code __context__}
+     * and leaves it alone — {@code PUSH_EXC_INFO} in the handler that catches this one is what changes
+     * it — and a bare {@code raise} re-raises exactly that second one, which is why a bare raise works
+     * in a function called from a handler.
+     */
     private static void raise(Frame frame, int count) {
         if (count == 0) {
-            throw Slots.runtimeError("No active exception to re-raise");
+            if (!(PyRuntime.handledException() instanceof PyBaseException active)) {
+                throw Slots.runtimeError("No active exception to re-raise");
+            }
+            throw PyRaise.of(active);
         }
         PyObject cause = count == 2 ? frame.pop() : null;
-        PyObject value = frame.pop();
-        PyBaseException raised = asException(value);
+        PyBaseException raised = asException(frame.pop());
         if (cause != null) {
-            raised.setCause(asException(cause));
+            // `from None` names no cause but still says the context is not to be reported.
+            raised.setCause(
+                    cause instanceof PyNone ? null : asException(
+                            cause, "exception causes must derive from BaseException"));
+        }
+        if (PyRuntime.handledException() instanceof PyBaseException previous
+                && previous != raised) {
+            cutContextCycle(previous, raised);
+            raised.setContext(previous);
         }
         throw PyRaise.of(raised);
     }
 
+    /**
+     * CPython's guard against a {@code __context__} cycle: walk the handled exception's own chain and
+     * cut it where it would reach the one about to be raised.
+     *
+     * <p>Without the cut, {@code except E: e.__context__ = e; raise F} leaves a chain a report cannot
+     * finish walking. The slow pointer is CPython's own answer to a cycle that already exists, which the
+     * walk would otherwise spin on forever.
+     */
+    private static void cutContextCycle(PyBaseException handled, PyBaseException raised) {
+        PyBaseException slow = handled;
+        boolean moveSlow = false;
+        for (PyBaseException at = handled; ; ) {
+            PyBaseException next = at.context() instanceof PyBaseException following ? following : null;
+            if (next == null) {
+                return;
+            }
+            if (next == raised) {
+                at.setContext(null);
+                return;
+            }
+            at = next;
+            if (moveSlow) {
+                if (!(slow.context() instanceof PyBaseException following)) {
+                    return;
+                }
+                slow = following;
+                if (slow == at) {
+                    return;
+                }
+            }
+            moveSlow = !moveSlow;
+        }
+    }
+
+    /**
+     * Whether {@code clause} catches {@code error}, which is CPython's two steps in its own order:
+     * validate the clause, then ask the exception.
+     *
+     * <p>The validation is one level deep on purpose. {@code except ((TypeError, KeyError), ValueError):}
+     * is refused rather than flattened, because a tuple inside the clause is not an exception class, and
+     * {@code CHECK_EXC_MATCH} answers with a {@code TypeError} about the clause before the exception is
+     * ever compared to it.
+     */
+    private static boolean catches(PyBaseException error, PyObject clause) {
+        if (clause instanceof PyTuple items) {
+            for (int i = 0; i < items.size(); i++) {
+                requireExceptionClass(items.at(i));
+            }
+            for (int i = 0; i < items.size(); i++) {
+                if (error.matches((PyType) items.at(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        requireExceptionClass(clause);
+        return error.matches((PyType) clause);
+    }
+
+    /** {@code PyExceptionClass_Check}, whose refusal is the sentence Python users recognise. */
+    private static void requireExceptionClass(PyObject clause) {
+        if (!(clause instanceof PyType type) || !type.matches(ExceptionTypes.BASE_EXCEPTION)) {
+            throw Slots.typeError(
+                    "catching classes that do not inherit from BaseException is not allowed");
+        }
+    }
+
+    /** The offset a {@code RERAISE} restores, read off the value its handler left under the exception. */
+    private static int lastiUnit(Frame frame, int kept) {
+        PyObject value = frame.peek(kept - 1);
+        if (!(value instanceof PyInt offset) || !offset.fitsLong()) {
+            throw Slots.runtimeError(
+                    "a handler left something that is not an offset for a re-raise to restore");
+        }
+        return (int) offset.getValue().longValue();
+    }
+
     private static PyBaseException asException(PyObject value) {
+        return asException(value, "exceptions must derive from BaseException");
+    }
+
+    /**
+     * What {@code raise} accepts: an instance, or a class to instantiate with no arguments.
+     *
+     * <p>The refusal differs between the two places CPython checks it, so the message is this
+     * function's to name — a bad raise says "exceptions", a bad {@code from} says "exception causes".
+     */
+    private static PyBaseException asException(PyObject value, String refusal) {
         if (value instanceof PyBaseException exception) {
             return exception;
         }
@@ -990,6 +1186,6 @@ public final class Interpreter {
                 return exception;
             }
         }
-        throw Slots.typeError("exceptions must derive from BaseException");
+        throw Slots.typeError(refusal);
     }
 }

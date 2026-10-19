@@ -86,7 +86,7 @@ public final class Jy3Process {
     /**
      * The last non-empty line of a stream, which is where a Python report puts its complaint.
      *
-     * <p>A traceback needs the frame chain and the code object's exception table (M3), so the two
+     * <p>A traceback needs the frame chain above the raise, which jy3 does not keep yet, so the two
      * things a test can compare today are the last line and the exit code.
      */
     public static String lastLine(String text) {

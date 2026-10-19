@@ -9,9 +9,9 @@ package org.python.core;
  * answer, and {@code getType()} is set to the same object so {@code type(e)} agrees with
  * {@code e.__class__}.
  *
- * No traceback yet. CPython 3.14 keeps exception state in the frame and reconstructs the traceback
- * from its exception table, which is a Stage-A byte-table concern (M3); until then a raise carries
- * only what the user wrote.
+ * No traceback yet. CPython 3.14 keeps exception state in the frame and reconstructs the traceback from
+ * its exception table: the table is read and used, but a traceback needs the frame chain above it too,
+ * which is a later M3 slice. Until then a raise carries only what the user wrote.
  */
 public class PyBaseException extends PyObject {
 
@@ -23,6 +23,9 @@ public class PyBaseException extends PyObject {
 
     /** The exception this one replaced, which CPython chains implicitly as {@code __context__}. */
     private PyObject context = PyNone.INSTANCE;
+
+    /** Whether to hide {@code __context__} from the report, which {@code raise X from Y} decides. */
+    private PyObject suppressContext = PyBool.FALSE;
 
     /**
      * An exception raised as {@code exceptionType} with {@code args}.
@@ -50,9 +53,16 @@ public class PyBaseException extends PyObject {
      * {@code str(e)}: the single argument on its own, every argument as a tuple, nothing at all for an
      * exception raised without arguments. This is CPython's rule, and it is observable —
      * {@code str(ValueError(1, 2))} is {@code "(1, 2)"} while {@code str(ValueError())} is {@code ""}.
+     *
+     * <p>KeyError is the one exception with a rule of its own: its single argument is the missing key,
+     * and CPython reports it with {@code repr} so that {@code {}['']} reads as {@code KeyError: ''}
+     * rather than as a bare {@code KeyError}. The quotes are CPython's, not a bug to smooth over.
      */
     @Override
     public String str() {
+        if (args.length == 1 && exceptionType.matches(ExceptionTypes.KEY_ERROR)) {
+            return args[0].repr();
+        }
         if (args.length == 0) {
             return "";
         }
@@ -72,16 +82,36 @@ public class PyBaseException extends PyObject {
         return exceptionType.name() + arguments;
     }
 
+    /**
+     * {@code raise X from Y}: the cause, and with it the decision not to report a context.
+     *
+     * <p>CPython's {@code PyException_SetCause} sets both at once, so an explicit {@code from} always
+     * suppresses the implicit chain — even when the two name the same exception, which is what
+     * {@code except E as inner: raise F from inner} does.
+     *
+     * @param other the cause, or null for {@code from None}, which reports no cause at all
+     */
     void setCause(PyBaseException other) {
-        cause = other;
+        cause = other == null ? PyNone.INSTANCE : other;
+        suppressContext = PyBool.TRUE;
+    }
+
+    /** The exception this one replaced, or {@code None} when nothing did. */
+    PyObject context() {
+        return context;
+    }
+
+    /** The implicit chain, built from the exception the enclosing handler was running for. */
+    void setContext(PyBaseException other) {
+        context = other == null ? PyNone.INSTANCE : other;
     }
 
     /**
      * The attributes an exception instance carries.
      *
-     * {@code __traceback__} is always {@code None} here: a traceback is rebuilt from the frame chain
-     * and the code object's exception table, both of which are M3 work, and reporting no traceback is
-     * honest where inventing a Java one would not be.
+     * {@code __traceback__} is always {@code None} here: a traceback is built from the frame chain above
+     * the raise, which this runtime does not keep yet, and reporting no traceback is honest where
+     * inventing a Java one would not be.
      */
     @Override
     public PyObject getAttr(String name) {
@@ -89,6 +119,7 @@ public class PyBaseException extends PyObject {
             case "args" -> PyTuple.of(args);
             case "__cause__" -> cause;
             case "__context__" -> context;
+            case "__suppress_context__" -> suppressContext;
             case "__traceback__", "__module__" -> PyNone.INSTANCE;
             case "__class__" -> exceptionType;
             default -> PyNotImplemented.INSTANCE;
@@ -100,6 +131,7 @@ public class PyBaseException extends PyObject {
         switch (name) {
             case "__cause__" -> cause = value;
             case "__context__" -> context = value;
+            case "__suppress_context__" -> suppressContext = value;
             default -> {
             }
         }
