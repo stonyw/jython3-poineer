@@ -25,13 +25,15 @@ import org.python.front.cpython314.Cpython314Compiler;
  * Jython3 launcher: the {@code jy3} command.
  *
  * <p>M1 status: a script, a {@code -c} command and stdin all run end to end — Stage A compiles, the
- * interpreter executes, {@code sys.argv} is what the script sees. The option surface is therefore
- * small, and every omission is reported rather than quietly ignored: {@code -m} needs the import
- * finder (M4), {@code -O} needs {@code __debug__} to mean something to the code object (M3), and the
- * interactive prompt needs a terminal, a line editor and a read-eval-print loop (M4). Those exit 3,
- * which the harness records as {@code NOT_IMPLEMENTED}. The handful of options accepted and ignored
- * are ones that change nothing a script can observe yet — {@code -B}, because no {@code .pyc} is ever
- * written, and {@code -u}, because both streams are already the JVM's own.
+ * interpreter executes, {@code sys.argv} is what the script sees. M2 put the JVM on the other side of
+ * that same script, so {@code import java.util} is an ordinary import now, and changed nothing about the
+ * options below. The option surface is therefore small, and every omission is reported rather than
+ * quietly ignored: {@code -m} needs the import finder (M4), {@code -O} needs {@code __debug__} to mean
+ * something to the code object (M3), and the interactive prompt needs a terminal, a line editor and a
+ * read-eval-print loop (M4). Those exit 3, which the harness records as {@code NOT_IMPLEMENTED}. The
+ * handful of options accepted and ignored are ones that change nothing a script can observe yet — {@code
+ * -B}, because no {@code .pyc} is ever written, and {@code -u}, because both streams are already the
+ * JVM's own.
  *
  * <p>Harness protocol, shared with {@code org.jython3.tools.harness.Jython3Backend}:
  *
@@ -61,7 +63,7 @@ public final class jy3 {
     private static final int INTERNAL_CRASH = 70;
 
     private static final String PROGRAM = "jy3";
-    private static final String PROGRAM_VERSION = "0.1.0-M1";
+    private static final String PROGRAM_VERSION = "0.1.0-M2";
 
     private static final String USAGE =
             "usage: " + PROGRAM + " [option] ... [-c cmd | -m mod | file | -] [arg] ...\n"
