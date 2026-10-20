@@ -183,7 +183,9 @@ class Jy3LauncherTest {
                 "06_inheritance.py",
                 "07_dunders.py",
                 "08_inherited_members.py",
-                "09_descriptors.py");
+                "09_descriptors.py",
+                "10_super.py",
+                "11_super_attribute_form.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

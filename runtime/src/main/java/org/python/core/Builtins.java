@@ -72,6 +72,7 @@ final class Builtins {
         put(out, "property", PyType.PROPERTY);
         put(out, "classmethod", PyType.CLASS_METHOD);
         put(out, "staticmethod", PyType.STATIC_METHOD);
+        put(out, "super", PyType.SUPER);
     }
 
     private static void addExceptions(PyDict out) {

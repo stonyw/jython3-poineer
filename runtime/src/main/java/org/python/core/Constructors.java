@@ -88,6 +88,9 @@ final class Constructors {
         if (type == PyType.STATIC_METHOD) {
             return staticMethod(args, keywordNames);
         }
+        if (type == PyType.SUPER) {
+            return superProxy(args, keywordNames);
+        }
         throw Slots.notImplemented("calling '" + type.name() + "'");
     }
 
@@ -133,6 +136,25 @@ final class Constructors {
     private static void oneArgument(String name, PyObject[] args, String[] kwNames) {
         Arguments.noKeywords(name + "()", kwNames);
         Arguments.exactly(name, args, kwNames, 1);
+    }
+
+    /**
+     * {@code super()}, {@code super(C)}, {@code super(C, x)}.
+     *
+     * <p>Three counts, three meanings, and only the middle one looks at nothing: {@code super(C)} holds
+     * the class with no value, which is a proxy that can read {@code __thisclass__} and no member, even
+     * when a frame would have something to say. The one-argument form is why {@code repr(super(Right))}
+     * prints {@code NULL} inside a method — only the empty call asks the frame, in the legacy family's
+     * own words about its arity.
+     */
+    private static PyObject superProxy(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("super()", kwNames);
+        Arguments.atMost("super()", args, kwNames, 2);
+        return switch (args.length) {
+            case 0 -> PySuper.fromFrame();
+            case 1 -> PySuper.withoutValue(args[0]);
+            default -> PySuper.of(args[0], args[1]);
+        };
     }
 
     /**

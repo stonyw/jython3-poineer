@@ -16,7 +16,21 @@ package org.python.core;
  */
 public final class Interpreter {
 
+    /**
+     * The frame this thread is executing, which a no-argument {@code super()} reads.
+     *
+     * <p>A link rather than a stack, because {@link #run} is Java recursion: the value a frame replaces
+     * is its caller, and restoring it on the way out — by any exit, including an escaping exception —
+     * is what keeps the link pointing at the frame Python is really in.
+     */
+    private static final ThreadLocal<Frame> EXECUTING = new ThreadLocal<>();
+
     private Interpreter() {
+    }
+
+    /** The frame Python is running, or null in Java code that was reached from outside any script. */
+    static Frame currentFrame() {
+        return EXECUTING.get();
     }
 
     /**
@@ -30,11 +44,15 @@ public final class Interpreter {
     public static PyObject run(Frame frame) {
         CodeInstructions code = frame.instructions();
         int limit = code.length();
+        Frame caller = EXECUTING.get();
+        EXECUTING.set(frame);
         try {
             return interpret(frame, code, limit);
         } catch (StackOverflowError overflow) {
             throw PyRaise.raise(
                     ExceptionTypes.RECURSION_ERROR, "maximum recursion depth exceeded");
+        } finally {
+            EXECUTING.set(caller);
         }
     }
 
@@ -491,6 +509,32 @@ public final class Interpreter {
                             // let an attribute that came back unbound be called as it came: which is
                             // why `self.weight(2)` to a `@staticmethod` and `span.fget(m)` to a
                             // property's getter are both one-argument calls.
+                            frame.push(null);
+                        }
+                        break;
+                    }
+                    case Opcodes.LOAD_SUPER_ATTR: {
+                        // Three values down: the loaded `super`, then the class to start after and the
+                        // value whose order to walk. The compiler puts both there itself — `LOAD_DEREF
+                        // __class__` and `LOAD_FAST self` — so this instruction never asks the frame,
+                        // and a method with no first argument never reaches it. Not every `super().name`
+                        // does reach it: a name write, a one-argument `super(C).name`, and any implicit
+                        // form in a module that also names `super` in module-level code are compiled as
+                        // a call of whatever `super` loaded to, which is PySuper.fromFrame()'s business.
+                        String attributeName = frame.name(arg >> 2);
+                        PyObject self = frame.pop();
+                        PyObject klass = frame.pop();
+                        PyObject loaded = frame.pop();
+                        boolean given = (arg & 2) != 0;
+                        PyObject proxy =
+                                loaded == PyType.SUPER
+                                        ? PySuper.of(klass, self)
+                                        : Slots.call(
+                                                loaded,
+                                                given ? new PyObject[] {klass, self} : new PyObject[0],
+                                                null);
+                        frame.push(Slots.getAttr(proxy, attributeName));
+                        if ((arg & 1) != 0) {
                             frame.push(null);
                         }
                         break;

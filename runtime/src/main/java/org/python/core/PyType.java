@@ -66,6 +66,13 @@ public class PyType extends PyObject {
     public static final PyType CELL = builtin("cell");
     public static final PyType ITERATOR = builtin("iterator");
     public static final PyType RANGE = builtin("range");
+    /**
+     * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
+     * the order measured against that value, and reads names out of the classes after the class it was
+     * given. It is named here because {@link Interpreter} compares a loaded {@code super} against it by
+     * identity, exactly as CPython compares a pointer against {@code &PySuper_Type}.
+     */
+    public static final PyType SUPER = builtin("super");
 
     private String name;
 

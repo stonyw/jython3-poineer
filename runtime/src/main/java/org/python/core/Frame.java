@@ -245,6 +245,41 @@ public final class Frame {
     }
 
     /**
+     * The cell {@code co_freevars} names {@code __class__}, or null when this frame's code has no such
+     * free variable.
+     *
+     * <p>A no-argument {@code super()} reads it: the class body made the cell, the compiler handed it
+     * down to every function written inside that body, and {@code COPY_FREE_VARS} placed it in the
+     * trailing slot the moment this frame started. The cell can be there and still empty, which is a
+     * different complaint, so the cell itself comes back rather than its contents.
+     */
+    PyCell classVar() {
+        PyTuple free = code.freeVars();
+        int first = code.localCount() - free.size();
+        for (int i = 0; i < free.size(); i++) {
+            if ("__class__".equals(((PyStr) free.at(i)).getValue())) {
+                return slots[first + i] instanceof PyCell cell ? cell : null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The value a method calls {@code self} and a classmethod calls {@code cls}, or null when the frame
+     * has deleted it.
+     *
+     * <p>Slot 0, because that is where CPython's {@code super()} reads it out of {@code f_localsplus} —
+     * and a cell when the parameter is also a captured one, which is how a method that stores {@code
+     * self} into a variable used by a nested function still hands it over. An emptied cell reads back
+     * null like a deleted slot, which is why the caller asks rather than assuming a frame with a
+     * parameter has a value in it.
+     */
+    PyObject firstArgument() {
+        PyObject value = slots[0];
+        return value instanceof PyCell cell ? cell.value() : value;
+    }
+
+    /**
      * The cell at {@code index}, which {@code LOAD_DEREF}, {@code STORE_DEREF} and {@code DELETE_DEREF}
      * all require: the compiler only emits them for slots it has made into cells.
      */
