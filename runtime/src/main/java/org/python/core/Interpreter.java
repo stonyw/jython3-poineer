@@ -9,10 +9,10 @@ package org.python.core;
  * that closes its loop, {@code MAKE_FUNCTION} pops only a code object, and the container-append
  * opcodes leave their container on the stack.
  *
- * What this slice does not cover is reported rather than guessed at. Generators, coroutines,
- * {@code with}, user-defined classes and pattern matching are later M3 slices; an opcode belonging to
- * one of them raises {@code NotImplementedError} naming the opcode, so a script that reaches one fails
- * with a sentence instead of a wrong answer.
+ * What this slice does not cover is reported rather than guessed at. Generators, coroutines and
+ * pattern matching are later M3 slices; an opcode belonging to one of them raises {@code
+ * NotImplementedError} naming the opcode, so a script that reaches one fails with a sentence instead
+ * of a wrong answer.
  */
 public final class Interpreter {
 
@@ -24,6 +24,19 @@ public final class Interpreter {
      * is what keeps the link pointing at the frame Python is really in.
      */
     private static final ThreadLocal<Frame> EXECUTING = new ThreadLocal<>();
+
+    /**
+     * The names {@code LOAD_SPECIAL} can be asked for, in the order CPython's {@code
+     * _Py_SpecialMethods} table gives them and so by the argument the instruction carries.
+     *
+     * <p>The argument is an index into this table rather than a constant: the compiler emits {@code
+     * LOAD_SPECIAL 1} for {@code __exit__} and {@code LOAD_SPECIAL 0} for {@code __enter__}, in that
+     * order, because it loads the exit before the enter so that the value is protected the moment it
+     * exists.
+     */
+    private static final String[] SPECIAL_METHODS = {
+        "__enter__", "__exit__", "__aenter__", "__aexit__"
+    };
 
     private Interpreter() {
     }
@@ -630,6 +643,57 @@ public final class Interpreter {
                         throw PyRaise.of(asException(again));
                     }
 
+                    // --- the with statement --------------------------------------------------
+                    //
+                    // A `with` is compiled into a value stack a handler can be re-entered on: `__exit__`
+                    // and the value it belongs to are put there before the body runs and live under it
+                    // the whole time, so the exception path finds them again at a depth the compiler
+                    // already knew. These two instructions are the only ones that read that arrangement,
+                    // and `POP_EXCEPT`, `PUSH_EXC_INFO` and `RERAISE` above are the rest of it.
+                    case Opcodes.LOAD_SPECIAL: {
+                        PyObject self = frame.pop();
+                        PyType owner = self.getType();
+                        PyObject member = Specials.member(owner, SPECIAL_METHODS[arg]);
+                        // Read off the type and from nowhere else, which is why this asks Specials
+                        // rather than Slots.getAttr: `held.__enter__ = f` does not make a value usable
+                        // by `with`, and the refusal says so about the type.
+                        if (member == null) {
+                            throw Slots.typeError(noSpecialMethod(owner, arg));
+                        }
+                        // The receiver is left in its slot only for a member that takes it as an argument
+                        // — CPython's `Py_TPFLAGS_METHOD_DESCRIPTOR`, which is an unbound built-in method
+                        // such as `str.upper` and nothing else. Every other member is read through: a
+                        // function binds, a staticmethod unwraps, a property hands back what its getter
+                        // says, and a member that answers for nothing at all is handed over as it is with
+                        // the receiver gone, which is why `__enter__ = len` is a call of `len()` and
+                        // `__enter__ = 1` is CPython's "not callable" rather than a call of `1(self)`.
+                        if (member instanceof PyMethodDescriptor unbound) {
+                            frame.push(unbound);
+                            frame.push(self);
+                        } else {
+                            frame.push(Descriptors.get(member, self, owner));
+                            frame.push(null);
+                        }
+                        break;
+                    }
+                    case Opcodes.WITH_EXCEPT_START: {
+                        // Five deep, in the order the compiler put them: `__exit__`, its receiver or
+                        // nothing, the offset this handler came in with, the exception the enclosing
+                        // handler was running for, and this one. Only the last two are read; the rest
+                        // stay for POP_EXCEPT and for the three POP_TOPs a suppressed exception ends on.
+                        PyBaseException error = (PyBaseException) frame.peek(0);
+                        PyObject receiver = frame.peek(3);
+                        PyObject exit = frame.peek(4);
+                        PyObject[] arguments =
+                                new PyObject[] {error.getType(), error, error.traceback()};
+                        frame.push(
+                                Slots.call(
+                                        exit,
+                                        receiver == null ? arguments : prepend(receiver, arguments),
+                                        null));
+                        break;
+                    }
+
                     // --- importing -----------------------------------------------------------
                     case Opcodes.IMPORT_NAME:
                         frame.push(importModule(frame, arg));
@@ -1206,6 +1270,48 @@ public final class Interpreter {
                     "a handler left something that is not an offset for a re-raise to restore");
         }
         return (int) offset.getValue().longValue();
+    }
+
+    /**
+     * CPython's {@code _Py_SpecialMethods} refusal for a {@code LOAD_SPECIAL} that found nothing,
+     * including the second half of the sentence it only says when the type answers for the other
+     * protocol: a class with both {@code __aenter__} and {@code __aexit__} and neither synchronous one
+     * is told it looks like a context manager that forgot to be used by {@code async with}.
+     *
+     * <p>Named for the half the type is missing first, which is {@code __exit__} for a value with
+     * neither: the compiler loads the exit before the enter, so that is the lookup that fails.
+     */
+    private static String noSpecialMethod(PyType owner, int index) {
+        String name = SPECIAL_METHODS[index];
+        boolean asynchronous = index >= 2;
+        String protocol = asynchronous ? "asynchronous context manager" : "context manager";
+        String complaint =
+                "'" + owner.dottedName() + "' object does not support the " + protocol + " protocol"
+                        + " (missed " + name + " method)";
+        if (!answersForOtherProtocol(owner, asynchronous)) {
+            return complaint;
+        }
+        return asynchronous
+                ? complaint + " but it supports the context manager protocol."
+                        + " Did you mean to use 'with'?"
+                : complaint + " but it supports the asynchronous context manager protocol."
+                        + " Did you mean to use 'async with'?";
+    }
+
+    /**
+     * {@code _PyEval_SpecialMethodCanSuggest}: whether both halves of the protocol this value was not
+     * asked for are answered by a descriptor, which a plain value filed under the name is not.
+     */
+    private static boolean answersForOtherProtocol(PyType owner, boolean wasAsynchronous) {
+        String first = wasAsynchronous ? "__enter__" : "__aenter__";
+        String second = wasAsynchronous ? "__exit__" : "__aexit__";
+        return describedBy(owner, first) && describedBy(owner, second);
+    }
+
+    /** {@code type_has_special_method}: the name is on the type, and reading it runs through itself. */
+    private static boolean describedBy(PyType owner, String name) {
+        PyObject member = Specials.member(owner, name);
+        return member != null && Descriptors.binds(member);
     }
 
     private static PyBaseException asException(PyObject value) {

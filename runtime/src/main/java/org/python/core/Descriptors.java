@@ -38,6 +38,17 @@ final class Descriptors {
         }
 
         /**
+         * Whether this object is a descriptor at all, which is what {@link #binds} asks and what
+         * CPython answers from the type's {@code tp_descr_get} slot.
+         *
+         * <p>Every one of them answers true, {@code staticmethod} included: its getter hands back the
+         * plain function and so takes the receiver away just as surely as a binding one does.
+         */
+        default boolean binds() {
+            return true;
+        }
+
+        /**
          * {@code obj.name = value}, or {@code del obj.name} when {@code value} is null.
          *
          * <p>Only asked when {@link #writes()} said the descriptor owns the name. A Java-written
@@ -58,6 +69,14 @@ final class Descriptors {
             return protocol.writes();
         }
         return declared(value, "__set__") != null || declared(value, "__delete__") != null;
+    }
+
+    /** Whether reading this member as an attribute asks it to answer for itself: {@code tp_descr_get}. */
+    static boolean binds(PyObject value) {
+        if (value instanceof Protocol protocol) {
+            return protocol.binds();
+        }
+        return declared(value, "__get__") != null;
     }
 
     /** {@code value.__get__(obj, owner)}, or the value itself when it is not a descriptor at all. */

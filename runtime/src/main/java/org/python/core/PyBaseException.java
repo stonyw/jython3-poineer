@@ -74,12 +74,13 @@ public class PyBaseException extends PyObject {
 
     @Override
     public String repr() {
-        String arguments = PyTuple.of(args).repr();
-        // A one-element tuple reprs with its trailing comma, which the exception form does not use.
+        // CPython's two halves of one format string: `%s(%R)` when there is exactly one argument, so
+        // `ValueError(1)` reads without a tuple's trailing comma, and `%s%R` of the argument tuple
+        // otherwise — which is how no argument at all still gets its parentheses, as `ValueError()`.
         if (args.length == 1) {
-            arguments = "(" + args[0].repr() + ",)";
+            return exceptionType.name() + "(" + args[0].repr() + ")";
         }
-        return exceptionType.name() + arguments;
+        return exceptionType.name() + PyTuple.of(args).repr();
     }
 
     /**
@@ -107,6 +108,19 @@ public class PyBaseException extends PyObject {
     }
 
     /**
+     * The {@code __traceback__} field, which CPython reads as a field and not as an attribute — so a
+     * class that files a property under the name is not asked what an escaped exception looks like.
+     *
+     * <p>A traceback is built from the frame chain above the raise, which this runtime does not keep
+     * yet, and reporting none is honest where inventing a Java one would not be. The name of the
+     * exception {@code with} hands to {@code __exit__} is read here, so that the day a chain is kept,
+     * the third argument a context manager sees follows from it.
+     */
+    PyObject traceback() {
+        return PyNone.INSTANCE;
+    }
+
+    /**
      * The attributes an exception instance carries.
      *
      * {@code __traceback__} is always {@code None} here: a traceback is built from the frame chain above
@@ -120,7 +134,8 @@ public class PyBaseException extends PyObject {
             case "__cause__" -> cause;
             case "__context__" -> context;
             case "__suppress_context__" -> suppressContext;
-            case "__traceback__", "__module__" -> PyNone.INSTANCE;
+            case "__traceback__" -> traceback();
+            case "__module__" -> PyNone.INSTANCE;
             case "__class__" -> exceptionType;
             default -> PyNotImplemented.INSTANCE;
         };
