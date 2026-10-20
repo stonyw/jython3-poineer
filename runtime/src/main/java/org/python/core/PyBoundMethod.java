@@ -56,15 +56,16 @@ public final class PyBoundMethod extends PyObject {
         return names;
     }
 
-    /**
-     * Whether this method already carries {@code owner} as its receiver.
-     *
-     * {@code LOAD_ATTR}'s method form hands {@code CALL} a receiver slot, and CPython fills it with
-     * NULL when the attribute it found is a method bound to the very object it looked up — an
-     * unboxing that is why {@code "a".upper()} does not pass {@code "a"} twice.
-     */
-    boolean receives(PyObject owner) {
-        return target == owner;
+    /** The other direction, for a body that was given names as Java strings and has to call again. */
+    static PyTuple keywordTuple(String[] kwNames) {
+        if (kwNames == null) {
+            return null;
+        }
+        PyObject[] names = new PyObject[kwNames.length];
+        for (int i = 0; i < names.length; i++) {
+            names[i] = PyStr.interned(kwNames[i]);
+        }
+        return PyTuple.of(names);
     }
 
     @Override

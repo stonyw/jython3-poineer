@@ -341,12 +341,15 @@ public final class Slots {
      * {@code callable(x)} is true and then gets a {@code TypeError} from a Java parameter has been lied
      * to. A class Python wrote joins it only when it declares {@code __call__}, which is CPython's rule
      * too: an instance of a class that defines no {@code __call__} has no call slot, and
-     * {@code callable(Marker())} is false.
+     * {@code callable(Marker())} is false. Of the three descriptor builtins only a {@code staticmethod}
+     * object is on the list, because CPython made it callable in 3.11 and left {@code classmethod} and
+     * {@code property} out: {@code callable(C.__dict__["m"])} is false.
      */
     public static boolean isCallable(PyObject value) {
         return value instanceof PyType
                 || value instanceof PyMethodDescriptor
                 || value instanceof PyFunction
+                || value instanceof PyStaticMethod
                 || value instanceof PyNativeFunction
                 || value instanceof PyBoundMethod
                 || value instanceof PyBaseException

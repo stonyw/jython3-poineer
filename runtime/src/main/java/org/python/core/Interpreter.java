@@ -481,17 +481,18 @@ public final class Interpreter {
                         String attributeName = frame.name(arg >> 1);
                         PyObject owner = frame.pop();
                         PyObject attribute = Slots.getAttr(owner, attributeName);
-                        if ((arg & 1) == 0) {
-                            frame.push(attribute);
-                            break;
-                        }
-                        // Method form hands CALL a receiver as well, and CPython hands a null one in two
-                        // cases: an attribute that is already bound to this very owner carries its own
-                        // receiver, and a class — including a Java class reached through its package —
-                        // is never a method of the object it was found on. `java.util.ArrayList()` must
-                        // construct an ArrayList, not pass the package as a first argument.
                         frame.push(attribute);
-                        frame.push(needsReceiver(attribute, owner) ? owner : null);
+                        if ((arg & 1) != 0) {
+                            // The method form hands CALL a receiver slot as well, and CPython fills it
+                            // only to avoid making a bound method it would immediately take apart. The
+                            // lookup above has already bound whatever binds itself — a class's function
+                            // reached through one of its values, a Java method to its object, a
+                            // classmethod to its class — so what is left is to hand over nothing, and
+                            // let an attribute that came back unbound be called as it came: which is
+                            // why `self.weight(2)` to a `@staticmethod` and `span.fget(m)` to a
+                            // property's getter are both one-argument calls.
+                            frame.push(null);
+                        }
                         break;
                     }
                     case Opcodes.STORE_ATTR: {
@@ -666,26 +667,6 @@ public final class Interpreter {
     }
 
     // --- helpers -------------------------------------------------------------------------
-
-    /**
-     * Whether a method-form attribute load has to hand {@code CALL} this owner as a receiver.
-     *
-     * <p>CPython's rule, stated where the runtime can apply it without knowing what a Java class is: a
-     * class is not a method of the object it was reached through, and a method already bound to that
-     * object carries its own receiver. Everything else — a Python function found on an instance above
-     * all — is called with the owner as its first argument.
-     *
-     * <p>A class owns the second half of the first clause: {@code str.upper("abc")} is CPython's way of
-     * calling a method whose receiver is not yet known, so the method found on a class is never handed
-     * that class. Its {@code __name__} and a nested class are covered by the same test, and a Java
-     * class's unbound method already binds itself to the class it was found on.
-     */
-    private static boolean needsReceiver(PyObject attribute, PyObject owner) {
-        if (attribute instanceof PyType || owner instanceof PyType) {
-            return false;
-        }
-        return !(attribute instanceof PyBoundMethod method && method.receives(owner));
-    }
 
     private static void jumpIf(Frame frame, int index, boolean take) {
         if (take) {

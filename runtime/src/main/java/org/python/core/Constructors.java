@@ -79,7 +79,60 @@ final class Constructors {
         if (type == PyType.TYPE) {
             return metatype(args, keywordNames);
         }
+        if (type == PyType.PROPERTY) {
+            return property(args, keywordNames);
+        }
+        if (type == PyType.CLASS_METHOD) {
+            return classMethod(args, keywordNames);
+        }
+        if (type == PyType.STATIC_METHOD) {
+            return staticMethod(args, keywordNames);
+        }
         throw Slots.notImplemented("calling '" + type.name() + "'");
+    }
+
+    // --- the descriptor builtins ---------------------------------------------------------------
+
+    private static final String[] PROPERTY_NAMES = {"fget", "fset", "fdel", "doc"};
+    private static final PyObject[] PROPERTY_DEFAULTS = {
+        PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE,
+    };
+
+    /**
+     * {@code property(fget, fset, fdel, doc)}.
+     *
+     * <p>The four arguments may all be given by name, and {@code None} is what an omitted one is read
+     * as — including {@code doc=None}, which does not mean "no docstring" but "take the getter's". The
+     * count refusal counts a keyword among the arguments, which puts {@code property} in the qualified
+     * family rather than the legacy one {@code classmethod} belongs to.
+     */
+    private static PyObject property(PyObject[] args, String[] kwNames) {
+        Arguments.atMostQualified("property", args, kwNames, PROPERTY_NAMES.length);
+        PyObject[] given =
+                Arguments.fill("property", args, kwNames, PROPERTY_NAMES, PROPERTY_DEFAULTS);
+        return new PyProperty(given[0], given[1], given[2], given[3]);
+    }
+
+    /**
+     * {@code classmethod(func)} and {@code staticmethod(func)}: one argument, never by name.
+     *
+     * Both are still written against {@code _PyArg_UnpackStack}, so the refusal says {@code classmethod
+     * expected 1 argument, got 2} with nothing qualified about it, and naming the argument is refused
+     * before the count is even looked at.
+     */
+    private static PyObject classMethod(PyObject[] args, String[] kwNames) {
+        oneArgument("classmethod", args, kwNames);
+        return new PyClassMethod(args[0]);
+    }
+
+    private static PyObject staticMethod(PyObject[] args, String[] kwNames) {
+        oneArgument("staticmethod", args, kwNames);
+        return new PyStaticMethod(args[0]);
+    }
+
+    private static void oneArgument(String name, PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords(name + "()", kwNames);
+        Arguments.exactly(name, args, kwNames, 1);
     }
 
     /**

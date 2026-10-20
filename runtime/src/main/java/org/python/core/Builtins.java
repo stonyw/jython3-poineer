@@ -12,10 +12,10 @@ import java.util.function.Predicate;
  * The entries are the ones M1's done-criterion needs — the type constructors, the exception names a
  * script can raise or catch, and the functions that arithmetic, branching, looping and calling a
  * function are written with. What is absent is deliberate and short: {@code exec}, {@code eval} and
- * {@code compile} are the code-evaluation path, {@code super}, {@code property}, {@code classmethod}
- * and {@code staticmethod} are the parts of the class system still to come, and {@code open} plus the
- * rest of the file API is M4. A name that is not here raises {@code NameError}, which points at the
- * missing feature; a half-implemented one would point at nothing.
+ * {@code compile} are the code-evaluation path, {@code super} is the class system's other half,
+ * {@code open} plus the rest of the file API is M4, and {@code property}, {@code classmethod} and
+ * {@code staticmethod} are here as the descriptor builtins they are. A name that is not here raises
+ * {@code NameError}, which points at the missing feature; a half-implemented one would point at nothing.
  *
  * Every message is as CPython 3.14 words it, including the count family a builtin belongs to —
  * {@code len() takes exactly one argument (2 given)} against {@code min expected at least 1 argument,
@@ -69,6 +69,9 @@ final class Builtins {
         put(out, "function", PyType.FUNCTION);
         put(out, "method", PyType.METHOD);
         put(out, "module", PyType.MODULE);
+        put(out, "property", PyType.PROPERTY);
+        put(out, "classmethod", PyType.CLASS_METHOD);
+        put(out, "staticmethod", PyType.STATIC_METHOD);
     }
 
     private static void addExceptions(PyDict out) {

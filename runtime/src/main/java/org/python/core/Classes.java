@@ -185,7 +185,25 @@ final class Classes {
         PyClass kind = new PyClass(name, bases, dict, qualified);
         kind.order = linearize(kind, bases);
         propagateCells(dict, kind);
+        setNames(dict, kind);
         return kind;
+    }
+
+    /**
+     * {@code insert_members} with {@code check_set_name}: each member tells the class it belongs to.
+     *
+     * <p>The dictionary order is the order the class body wrote the names in, and it is observable: a
+     * {@code __set_name__} that reads a counter sees the members declared before it and none declared
+     * after. The class is handed over as the owner, so a descriptor can keep it — that is how a property
+     * learns the {@code __qualname__} it reports — and a member with nothing to be told is passed over
+     * without a lookup being made on it.
+     */
+    private static void setNames(PyDict dict, PyClass kind) {
+        PyObject[] names = dict.keys();
+        PyObject[] members = dict.values();
+        for (int i = 0; i < names.length; i++) {
+            Descriptors.setName(members[i], kind, ((PyStr) names[i]).str());
+        }
     }
 
     /**

@@ -58,6 +58,10 @@ public class PyType extends PyObject {
     public static final PyType METHOD = builtin("method");
     /** What {@code str.upper} is: a method reached through its type rather than through a value. */
     public static final PyType METHOD_DESCRIPTOR = builtin("method_descriptor");
+    /** The three members that are nothing but the descriptor protocol, each its own type. */
+    public static final PyType PROPERTY = builtin("property");
+    public static final PyType CLASS_METHOD = builtin("classmethod");
+    public static final PyType STATIC_METHOD = builtin("staticmethod");
     public static final PyType MODULE = builtin("module");
     public static final PyType CELL = builtin("cell");
     public static final PyType ITERATOR = builtin("iterator");

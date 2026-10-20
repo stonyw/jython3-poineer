@@ -41,9 +41,10 @@ public class PyClass extends PyType {
     /**
      * {@code Point.__name__}, {@code Point.__mro__}, {@code Point.as_text}.
      *
-     * <p>A function found here is handed over <em>unbound</em>: {@code Point.as_text} is a
-     * {@code function}, and the instance it will be called with arrives as the first argument. Binding
-     * happens on the value, in {@link PyInstance#getAttr}.
+     * <p>A class-level read runs the descriptor protocol with no value: {@code Point.as_text} stays a
+     * {@code function}, {@code Point.counted} hands over the property itself rather than asking for a
+     * value it has no instance to compute, and {@code Point.kind} gives back the class. Binding to a
+     * receiver happens on the value, in {@link PyInstance#getAttr}.
      */
     @Override
     public PyObject getAttr(String attribute) {
@@ -55,7 +56,9 @@ public class PyClass extends PyType {
             case "__dict__" -> namespace;
             default -> {
                 PyObject declared = Specials.lookUp(this, attribute);
-                yield declared != null ? declared : super.getAttr(attribute);
+                yield declared != null
+                        ? Descriptors.get(declared, null, this)
+                        : super.getAttr(attribute);
             }
         };
     }

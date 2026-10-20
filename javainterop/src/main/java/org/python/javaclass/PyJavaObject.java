@@ -72,9 +72,10 @@ public final class PyJavaObject extends PyObject {
      * <p>{@code owner} is an argument rather than always {@code this} because one Java object can be
      * reached by two Python values: {@link PyJavaThrowable} is a Python exception whose attributes are
      * the {@code Throwable}'s methods, and the method it exposes has to be bound to the exception, not
-     * to a wrapper sitting behind it. {@code LOAD_ATTR} clears its receiver slot only for a callable
-     * bound to the very object it looked the attribute up on, so binding to anything else hands the
-     * receiver over twice and {@code e.getMessage()} reads as {@code e.getMessage(e)}.
+     * to a wrapper sitting behind it. The lookup is what binds: {@code LOAD_ATTR} hands {@code CALL}
+     * exactly what it returned, with no receiver of its own, so a method bound to anything but
+     * {@code owner} would run against the wrong object — {@code e.getMessage()} reaching the wrapper
+     * behind the exception rather than the {@code Throwable} itself.
      */
     static PyObject memberOf(Object target, PyObject owner, String attribute) {
         if (attribute.equals("__class__")) {

@@ -14,8 +14,11 @@ import java.util.List;
  * The slots are indexed by the code's own variable array, not by {@code co_varnames}: a parameter
  * captured by an inner function is a local <em>and</em> a cell, and appears once in that array, which
  * is the one the bytecodes address.
+ *
+ * <p>A function is also the reason a method read off a value is bound to it: that is the descriptor
+ * protocol, and a function is its simplest case.
  */
-public final class PyFunction extends PyObject {
+public final class PyFunction extends PyObject implements Descriptors.Protocol {
 
     /**
      * The {@code SET_FUNCTION_ATTRIBUTE} argument values, read off {@code dis} of 3.14.8.
@@ -371,6 +374,17 @@ public final class PyFunction extends PyObject {
         return -1;
     }
 
+    /**
+     * The function as an attribute: itself through a class, bound through a value.
+     *
+     * <p>{@code Point.as_text} is a function and {@code p.as_text} a method, and nothing else about the
+     * two differs — which is the whole of what binding is.
+     */
+    @Override
+    public PyObject asAttribute(PyObject obj, PyObject owner) {
+        return obj == null ? this : new PyBoundMethod(obj, this);
+    }
+
     @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
@@ -386,6 +400,8 @@ public final class PyFunction extends PyObject {
                     : PyTuple.of(closure.clone());
             case "__dict__" -> attributes();
             case "__globals__" -> globals;
+            case "__get__" -> new PyNativeFunction(
+                    "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> PyNotImplemented.INSTANCE;
         };
     }

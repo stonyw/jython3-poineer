@@ -18,7 +18,7 @@ import java.util.Arrays;
  * method. That check against the receiver happens first, because a {@link ClassCastException} from
  * inside a {@link Members} body would be a runtime bug dressed up as a Python error.
  */
-public final class PyMethodDescriptor extends PyObject {
+public final class PyMethodDescriptor extends PyObject implements Descriptors.Protocol {
 
     private final PyType owner;
     private final String name;
@@ -34,16 +34,32 @@ public final class PyMethodDescriptor extends PyObject {
         if (args.length == 0) {
             throw Slots.typeError("unbound method %s.%s() needs an argument", owner.name(), name);
         }
-        PyObject self = args[0];
+        PyObject self = checked(args[0]);
+        return Slots.call(
+                Slots.getAttr(self, name),
+                Arrays.copyOfRange(args, 1, args.length),
+                kwNames);
+    }
+
+    /**
+     * The method as an attribute: itself through the class, bound through a value.
+     *
+     * <p>{@code int.__dict__["bit_length"].__get__(3)} and {@code (3).bit_length} are the same method
+     * object by CPython's account, and this is the one place both are answered.
+     */
+    @Override
+    public PyObject asAttribute(PyObject obj, PyObject unused) {
+        return obj == null ? this : Slots.getAttr(checked(obj), name);
+    }
+
+    /** The receiver, checked against the type whose method this is. */
+    private PyObject checked(PyObject self) {
         if (!owner.instanceOf(self)) {
             throw Slots.typeError(
                     "descriptor '%s' for '%s' objects doesn't apply to a '%s' object",
                     name, owner.name(), self.getType().name());
         }
-        return Slots.call(
-                Slots.getAttr(self, name),
-                Arrays.copyOfRange(args, 1, args.length),
-                kwNames);
+        return self;
     }
 
     @Override
@@ -51,6 +67,8 @@ public final class PyMethodDescriptor extends PyObject {
         return switch (attribute) {
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> PyStr.of(owner.name() + "." + name);
+            case "__get__" -> new PyNativeFunction(
+                    "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> PyNotImplemented.INSTANCE;
         };
     }

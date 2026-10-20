@@ -27,65 +27,84 @@ public final class PyInstance extends PyObject {
     // --- attributes ----------------------------------------------------------------------
 
     /**
-     * {@code self.name}, in CPython's order: the instance's own dictionary first, then the class and
-     * its bases, then {@code __getattr__}.
+     * {@code self.name}, in CPython's order: a descriptor that writes, then the instance's own
+     * dictionary, then the class and its bases, then {@code __getattr__}.
      *
-     * <p>A function found on the class comes back bound, which is the whole of what makes
-     * {@code p.as_text()} pass {@code p} as {@code self} without anyone writing that down; a class
-     * reached through a class is not a method of it, and {@link Interpreter}'s rule about who receives
-     * an argument already covers that half.
+     * <p>The class is consulted first and the answer run through {@link Descriptors} because that is
+     * what the descriptor protocol is: a function found there comes back bound, which is the whole of how
+     * {@code p.as_text()} passes {@code p} as {@code self} without anyone writing that down, and a member
+     * that can write owns the name outright. A member that can only read is the one thing the dictionary
+     * outranks, which is what lets {@code a.quiet = "mine"} shadow it.
      */
     @Override
     public PyObject getAttr(String name) {
         return switch (name) {
             case "__dict__" -> dictionary;
             case "__class__" -> type;
-            default -> {
-                PyObject held = dictionary.get(PyStr.interned(name));
-                if (held != null) {
-                    yield held;
-                }
-                PyObject declared = Specials.lookUp(type, name);
-                if (declared instanceof PyFunction function) {
-                    yield new PyBoundMethod(this, function);
-                }
-                if (declared != null) {
-                    yield declared;
-                }
-                yield Specials.invoke(this, "__getattr__", PyStr.of(name));
-            }
+            default -> owned(name);
         };
     }
 
+    private PyObject owned(String name) {
+        PyObject member = Specials.lookUp(type, name);
+        if (member != null && Descriptors.writes(member)) {
+            return Descriptors.get(member, this, type);
+        }
+        PyObject held = dictionary.get(PyStr.interned(name));
+        if (held != null) {
+            return held;
+        }
+        if (member != null) {
+            return Descriptors.get(member, this, type);
+        }
+        return Specials.invoke(this, "__getattr__", PyStr.of(name));
+    }
+
     /**
-     * {@code self.name = value}, which a class may take over with {@code __setattr__}.
+     * {@code self.name = value}, which a descriptor or a {@code __setattr__} may take over.
      *
      * <p>The method is called rather than consulted for advice, and it is the class's declaration that
      * decides whether the instance dictionary is written at all — which is why a class that logs its
-     * assignments has to write to {@code self.__dict__} itself to store anything.
+     * assignments has to write to {@code self.__dict__} itself to store anything. Without one, the
+     * dictionary is the fallback only for a name no member of the class owns: {@code thing.keep = 7} goes
+     * to {@code Kept.__set__} and leaves {@code thing.__dict__} empty.
      */
     @Override
     public PyObject setAttr(String name, PyObject value) {
-        PyObject declared = Specials.lookUp(type, "__setattr__");
-        if (declared instanceof PyFunction function) {
-            return function.call(
-                    new PyObject[] {this, PyStr.of(name), value}, null);
+        PyObject hook = Specials.lookUp(type, "__setattr__");
+        if (hook instanceof PyFunction function) {
+            return function.call(new PyObject[] {this, PyStr.of(name), value}, null);
+        }
+        PyObject member = Specials.lookUp(type, name);
+        if (member != null && Descriptors.writes(member)) {
+            Descriptors.set(member, this, value);
+            return PyNone.INSTANCE;
         }
         dictionary.put(PyStr.interned(name), value);
         return PyNone.INSTANCE;
     }
 
-    /** {@code del self.name}, the other half of {@link #setAttr}. */
+    /**
+     * {@code del self.name}, the other half of {@link #setAttr}.
+     *
+     * <p>A descriptor that owns the name is asked before the dictionary, exactly as it is when writing,
+     * and the {@code AttributeError} naming the value's class is what CPython says when the name is on the
+     * class but not on the value — an attribute the instance does not have, rather than one that is merely
+     * not deletable from here.
+     */
     @Override
     public PyObject delAttr(String name) {
-        PyObject declared = Specials.lookUp(type, "__delattr__");
-        if (declared instanceof PyFunction function) {
+        PyObject hook = Specials.lookUp(type, "__delattr__");
+        if (hook instanceof PyFunction function) {
             return function.call(new PyObject[] {this, PyStr.of(name)}, null);
+        }
+        PyObject member = Specials.lookUp(type, name);
+        if (member != null && Descriptors.writes(member)) {
+            Descriptors.delete(member, this);
+            return PyNone.INSTANCE;
         }
         PyStr key = PyStr.interned(name);
         if (dictionary.get(key) == null) {
-            // What CPython says when the name is on the class but not on the value: an attribute the
-            // instance does not have, rather than one that is merely not deletable from here.
             throw Slots.attributeError("'%s' object has no attribute '%s'", type.name(), name);
         }
         dictionary.remove(key);
