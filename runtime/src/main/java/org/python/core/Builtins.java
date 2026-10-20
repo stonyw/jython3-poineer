@@ -4,7 +4,6 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.function.Predicate;
 
 /**
  * {@code builtins}: the namespace every module frame falls back to when a name is not its own.
@@ -735,51 +734,21 @@ final class Builtins {
 
     // --- types and attributes --------------------------------------------------------------
 
-    private static PyObject isInstanceOf(PyObject value, PyObject classes) {
-        return PyBool.of(anyType(
-                classes, required -> required.instanceOf(value),
-                "isinstance() arg 2 must be a type, a tuple of types, or a union"));
-    }
-
     /**
-     * The class test, including the tuple form and the one exception to it.
+     * {@code isinstance(x, C)}: {@link Classes#instanceOf}, which is {@code object_recursive_isinstance}.
      *
-     * {@code isinstance(x, type)} is false for a value that is not a type even though every type is an
-     * instance of {@code type}, because the walk starts at {@code type(x)}: a class object's own class
-     * is {@code type}, and {@code type}'s bases are {@code object}'s. {@code bool} is a subtype of
-     * {@code int}, so {@code isinstance(True, int)} holds.
-     *
-     * <p>A tuple is scanned in order and its first match wins, which is why
-     * {@code issubclass(int, (int, 1))} is true: the {@code 1} is only complained about when nothing
-     * matched.
-     *
-     * <p>The question is put to the required type rather than answered from the candidate's parent
-     * chain, because a Java class has interfaces and several supertypes and no single parent pointer
-     * can reach them; {@code PyType.instanceOf} is where that answer lives.
+     * <p>The builtin answers nothing of its own. That is what lets a metaclass take over the test, and
+     * it is why the exact-class shortcut and the {@code __instancecheck__} hook behave the same whether
+     * the question came from {@code isinstance}, from {@code type.__instancecheck__} or from a metaclass
+     * that calls {@code super()} to get the ordinary answer.
      */
-    private static boolean anyType(
-            PyObject classes, Predicate<PyType> test, String argTwo) {
-        if (classes instanceof PyTuple tuple) {
-            for (int i = 0; i < tuple.size(); i++) {
-                if (anyType(tuple.at(i), test, argTwo)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (!(classes instanceof PyType required)) {
-            throw Slots.typeError(argTwo);
-        }
-        return test.test(required);
+    private static PyObject isInstanceOf(PyObject value, PyObject classes) {
+        return PyBool.of(Classes.instanceOf(value, classes));
     }
 
+    /** {@code issubclass(A, B)}: {@link Classes#subclassOf}, which is {@code object_issubclass}. */
     private static PyObject isSubclass(PyObject child, PyObject classes) {
-        if (!(child instanceof PyType type)) {
-            throw Slots.typeError("issubclass() arg 1 must be a class");
-        }
-        return PyBool.of(anyType(
-                classes, required -> type.matches(required),
-                "issubclass() arg 2 must be a class, a tuple of classes, or a union"));
+        return PyBool.of(Classes.subclassOf(child, classes));
     }
 
     private static PyObject getAttribute(PyObject[] args, String[] kwNames) {

@@ -39,21 +39,46 @@ public final class PySuper extends PyObject {
      * <p>CPython hands {@code None} to the same initializer as a missing second argument, so {@code
      * super(C, None)} is the valueless proxy that {@code super(C)} builds rather than a complaint about
      * {@code NoneType} not being a subtype of {@code C}.
+     *
+     * <p>{@code supercheck} then decides which order to walk, in three answers: a class that derives from
+     * the starting one walks its own order, a value walks its type's, and a value that only claims a
+     * class — a proxy that answers {@code __class__} — is taken at its word. Anything else is refused by
+     * naming what the second argument was.
      */
     static PySuper of(PyObject type, PyObject obj) {
         PyType kind = asType(type);
         if (obj == PyNone.INSTANCE) {
             return new PySuper(kind, null, null);
         }
-        // A class as the second argument is the class form: the order walked is that class's own, which
-        // is what makes `super(Right, Bottom)` answer for the rest of Bottom's linearization.
-        PyType start = obj instanceof PyType owner ? owner : obj.getType();
-        if (!start.matches(kind)) {
-            throw Slots.typeError(
-                    "super(type, obj): obj (%s %s) is not an instance or subtype of type (%s).",
-                    obj instanceof PyType ? "type" : "instance of", start.name(), kind.name());
+        return new PySuper(kind, obj, superCheck(kind, obj));
+    }
+
+    /** {@code supercheck}: the class whose order the proxy is allowed to walk past {@code kind}. */
+    private static PyType superCheck(PyType kind, PyObject obj) {
+        // A class as the second argument is the class form, and it is the only form a metaclass
+        // assignment is made from: `super(Meta, Meta)` walks Meta's own bases.
+        if (obj instanceof PyType owner && owner.matches(kind)) {
+            return owner;
         }
-        return new PySuper(kind, obj, start);
+        if (obj.getType().matches(kind)) {
+            return obj.getType();
+        }
+        // The slow way round, which is what lets a proxy stand in for the class it reports.
+        PyObject claimed = obj.getAttr("__class__");
+        if (claimed instanceof PyType icls && icls != obj.getType() && icls.matches(kind)) {
+            return icls;
+        }
+        boolean classForm = obj instanceof PyType;
+        throw notAnInstance(
+                kind,
+                classForm ? "type" : "instance of",
+                classForm ? ((PyType) obj).name() : obj.getType().name());
+    }
+
+    private static PyRaise notAnInstance(PyType kind, String asWhat, String name) {
+        return Slots.typeError(
+                "super(type, obj): obj (%s %s) is not an instance or subtype of type (%s).",
+                asWhat, name, kind.name());
     }
 
     /**
@@ -119,6 +144,12 @@ public final class PySuper extends PyObject {
      * <p>Only a value gets that walk, so {@code super(C)} — which has a class and no value, and so no
      * order to walk — reads nothing but the names below, exactly as CPython's first pass finds nothing
      * when {@code obj} is null.
+     *
+     * <p>The descriptor is asked for {@link #obj} unless the proxy was built in class form, when the
+     * value <em>is</em> the order being walked. That is {@code do_super_lookup}'s one conditional, and it
+     * is why {@code super(Meta, Meta).__prepare__} binds {@code Meta} as the receiver of a classmethod
+     * while {@code super(C, instance).name} binds the instance: {@link Descriptors} has to be told in the
+     * first case that there is no instance at all, or a {@code classmethod} would report the proxy.
      */
     @Override
     public PyObject getAttr(String attribute) {
@@ -146,32 +177,14 @@ public final class PySuper extends PyObject {
                 continue;
             }
             for (int next = at + 1; next < order.length; next++) {
-                PyObject member = declared(order[next], attribute);
+                PyObject member = Specials.declared(order[next], attribute);
                 if (member != null) {
-                    return Descriptors.get(member, obj, startType);
+                    return Descriptors.get(member, obj == startType ? null : obj, startType);
                 }
             }
             return null;
         }
         return null;
-    }
-
-    /**
-     * The raw member one class of the order holds, before its descriptor has been asked anything.
-     *
-     * <p>A class written in Python keeps its members in a namespace; a built-in type keeps them in a
-     * {@link Members} table, whose unbound form is the same object its dictionary would have held.
-     */
-    private static PyObject declared(PyType owner, String attribute) {
-        if (owner instanceof PyClass declaring) {
-            return declaring.namespace().get(PyStr.interned(attribute));
-        }
-        Members methods = Members.tableOf(owner);
-        if (methods == null) {
-            return null;
-        }
-        PyObject descriptor = methods.describe(attribute);
-        return descriptor == PyNotImplemented.INSTANCE ? null : descriptor;
     }
 
     @Override

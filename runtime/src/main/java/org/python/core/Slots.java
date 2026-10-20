@@ -183,11 +183,20 @@ public final class Slots {
         return length;
     }
 
-    /** {@code x[key]}. */
+    /**
+     * {@code x[key]}.
+     *
+     * <p>A class is named by what it is rather than by its metatype, because {@code int[x]} has to say
+     * {@code type 'int' is not subscriptable} while every other value says {@code '<type>' object is not
+     * subscriptable} — the two wordings CPython keeps in {@code PyObject_GetItem} itself.
+     */
     public static PyObject getItem(PyObject container, PyObject key) {
         PyObject answer = container.getItem(key);
         if (answer != PyNotImplemented.INSTANCE) {
             return answer;
+        }
+        if (container instanceof PyType kind) {
+            throw typeError("type '%s' is not subscriptable", kind.name());
         }
         throw typeError(
                 "'%s' object is not subscriptable", container.getType().name());

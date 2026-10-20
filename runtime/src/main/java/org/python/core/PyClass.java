@@ -25,9 +25,14 @@ public class PyClass extends PyType {
 
     private PyStr qualName;
 
-    PyClass(String name, PyTuple bases, PyDict namespace, String qualName) {
+    PyClass(
+            String name,
+            PyTuple bases,
+            PyDict namespace,
+            String qualName,
+            PyType metatype) {
         super(name, bases.size() == 0 ? PyType.OBJECT : (PyType) bases.at(0));
-        this.type = PyType.TYPE;
+        this.type = metatype;
         this.bases = bases;
         this.namespace = namespace;
         this.qualName = PyStr.of(qualName);
@@ -45,22 +50,37 @@ public class PyClass extends PyType {
      * {@code function}, {@code Point.counted} hands over the property itself rather than asking for a
      * value it has no instance to compute, and {@code Point.kind} gives back the class. Binding to a
      * receiver happens on the value, in {@link PyInstance#getAttr}.
+     *
+     * <p>The names a class keeps for its own identity are answered here, and CPython answers them from
+     * getset descriptors on {@code type} — data descriptors, so they outrank anything the class body
+     * wrote. {@code __class__} is the metatype rather than {@code type}, which is what a program reads
+     * back after {@code class Sub(Meta, tag=3)}. The metatype step that decides the rest is
+     * {@link PyType#classMember}, and it is why a {@code property} written in a metaclass answers for a
+     * class that never mentions the name.
      */
     @Override
     public PyObject getAttr(String attribute) {
-        return switch (attribute) {
-            case "__qualname__" -> qualName;
-            case "__bases__" -> bases;
-            case "__mro__" -> PyTuple.of(mro());
-            case "__class__" -> PyType.TYPE;
-            case "__dict__" -> namespace;
-            default -> {
-                PyObject declared = Specials.lookUp(this, attribute);
-                yield declared != null
-                        ? Descriptors.get(declared, null, this)
-                        : super.getAttr(attribute);
-            }
-        };
+        PyObject identity =
+                switch (attribute) {
+                    case "__qualname__" -> qualName;
+                    case "__bases__" -> bases;
+                    case "__mro__" -> PyTuple.of(mro());
+                    case "__class__" -> type;
+                    default -> null;
+                };
+        if (identity != null) {
+            return identity;
+        }
+        // `__dict__` is a getset descriptor on `type` like the names above, and its answer has to be
+        // this class's own dictionary; asking classMember would hand the dictionary to a metaclass's
+        // property first, which is a thing a program can write but never means by `C.__dict__`.
+        if (attribute.equals("__dict__")) {
+            return namespace;
+        }
+        PyObject member = classMember(attribute);
+        // The rest of the names a type answers for itself — `__name__`, `__base__` — are the
+        // built-in type's own, and a class has nothing to say about them.
+        return member == PyNotImplemented.INSTANCE ? super.getAttr(attribute) : member;
     }
 
     /**
@@ -116,6 +136,18 @@ public class PyClass extends PyType {
                     "can only assign string to %s.%s, not '%s'", name(), attribute, value.getType().name());
         }
         return name.getValue();
+    }
+
+    /**
+     * The name a member of this class reports itself with, which is the qualified one.
+     *
+     * <p>{@code Outer.Inner.__init_subclass__() takes no keyword arguments} — CPython binds a
+     * {@code METH_CLASS} member to the class and takes {@code tp_qualname} for the complaint, so a
+     * nested class names its enclosing one even when the hook was inherited from a base.
+     */
+    @Override
+    String dottedName() {
+        return qualName.str();
     }
 
     /** The module this class was defined in, which {@code type} takes from the frame that built it. */

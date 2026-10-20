@@ -28,7 +28,13 @@ final class Constructors {
     private Constructors() {
     }
 
-    /** {@code type(args, **kw)}; {@link PyType#call} delegates here rather than guessing per class. */
+    /**
+     * {@code type(args, **kw)} for a type the runtime builds in Java.
+     *
+     * <p>{@link Classes#typeCall} reaches here once {@code type} itself and every class Python wrote have
+     * been answered, so this is the one place that knows each built-in's constructor by identity rather
+     * than guessing per class.
+     */
     static PyObject instantiate(PyType type, PyObject[] args, PyTuple kwNames) {
         String[] keywordNames = PyBoundMethod.keywordNames(kwNames);
         if (type.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -75,9 +81,6 @@ final class Constructors {
         }
         if (type == PyType.SLICE) {
             return slice(args, keywordNames);
-        }
-        if (type == PyType.TYPE) {
-            return metatype(args, keywordNames);
         }
         if (type == PyType.PROPERTY) {
             return property(args, keywordNames);
@@ -766,25 +769,6 @@ final class Constructors {
     }
 
     // --- type itself -----------------------------------------------------------------------
-
-    /**
-     * {@code type(x)}, the one-argument form, and {@code type(name, bases, dict)}, the three-argument
-     * one.
-     *
-     * <p>The two counts are the whole of the signature: a call with keywords has them counted among its
-     * arguments here, because {@code type} takes none, so {@code type(name='X')} reads as one positional
-     * argument plus one keyword and answers the arity refusal rather than building a class without a
-     * name.
-     */
-    private static PyObject metatype(PyObject[] args, String[] kwNames) {
-        if (kwNames == null && args.length == 1) {
-            return args[0].getType();
-        }
-        if (kwNames == null && args.length == 3) {
-            return Classes.newType(args);
-        }
-        throw Slots.typeError("type() takes 1 or 3 arguments");
-    }
 
     // --- keyword plumbing ------------------------------------------------------------------
 

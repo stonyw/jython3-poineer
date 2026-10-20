@@ -13,16 +13,20 @@ import java.util.Map;
  *
  * <p>Each piece is a transcription of the CPython 3.14 function of the same name, down to the order the
  * refusals come in, because the messages are what a Python program reports and CPython's own test suite
- * reads them. {@link #buildClass} is {@code builtin___build_class__}, {@link #newType} is the half of
- * {@code type_new} that this runtime implements, {@link #linearize} is {@code mro_implementation} with
- * its {@code pmerge}, and {@link #construct} is {@code type_call}.
+ * reads them. {@link #buildClass} is {@code builtin___build_class__}, {@link #newType} is
+ * {@code type_new}, {@link #linearize} is {@code mro_implementation} with its {@code pmerge}, and
+ * {@link #typeCall} is {@code type_call}.
  *
- * <p>What is left out is the metaclass protocol. Every class here is built by {@code type}, so the
- * lookup order is a list of types rather than a slot table a metaclass chose, {@code __prepare__} has
- * no say in what the body writes into, and a class statement with keyword arguments is refused instead
- * of being silently handed to {@code type}. Subclassing a built-in type is refused for the same reason:
- * a {@link PyClass}'s members are a dictionary, and the compiled-in Java slots of {@code int} or
- * {@code str} have nowhere to be carried into it.
+ * <p>The metaclass protocol is the interesting half. A class statement names its metatype — by
+ * {@code metaclass=}, by the class of its first base, or by the most derived of the bases' own classes —
+ * lets that metatype choose the namespace the body writes into with {@code __prepare__}, hands it the
+ * leftover keyword arguments as well as the three it always gets, and files the result under that
+ * metatype so that {@code C.__class__} and every class-level read go through it. What is left out is the
+ * part of {@code type_new} that has no model here: {@code __slots__} and instance layout,
+ * {@code __mro_entries__} and {@code __orig_bases__}, subclassing a built-in type whose members are Java
+ * slots, and the {@code tp_new} delegation that lets a metatype whose own creator is not {@code type}
+ * build the class instead — every metatype this runtime makes is built by {@code type_new}, so there is
+ * nothing to delegate to.
  */
 final class Classes {
 
@@ -32,16 +36,23 @@ final class Classes {
     // --- the class statement ---------------------------------------------------------------
 
     /**
-     * {@code __build_class__(func, name, *bases)}: the helper a {@code class} statement calls.
+     * {@code __build_class__(func, name, *bases, metaclass=?, **kwds)}: the helper a {@code class}
+     * statement calls.
      *
-     * <p>Two things about it are easy to get wrong and are copied exactly. The body runs against the
+     * <p>Four things about it are easy to get wrong and are copied exactly. The body runs against the
      * namespace as its <em>locals</em> while its global names still come from the module the class is
      * written in, and what the body returns is the {@code __class__} cell rather than the class: the
      * class comes from calling the metaclass on the finished namespace, and the two answers are then
-     * compared, which is how a method that stole {@code __class__} is caught.
+     * compared, which is how a method that stole {@code __class__} is caught. {@code metaclass} is taken
+     * out of the keyword arguments before anything is called with them, so a metaclass never sees the
+     * word among its {@code **kwds}. The namespace is asked of {@code __prepare__} with two positionals
+     * and the leftovers, which is why a {@code __prepare__} written without {@code @classmethod} sees
+     * the class name where {@code mcs} belongs. And when no metaclass is named, the one used is
+     * {@code type} for a class with no bases and the class of the first base otherwise — that is what
+     * makes {@code class C(1)} be refused by {@code int} rather than by the class system.
      */
     static PyObject buildClass(PyObject[] args, String[] kwNames) {
-        int positional = kwNames == null ? args.length : args.length - kwNames.length;
+        int positional = Arguments.positional(args, kwNames);
         if (positional < 2) {
             throw Slots.typeError("__build_class__: not enough arguments");
         }
@@ -51,21 +62,77 @@ final class Classes {
         if (!(args[1] instanceof PyStr name)) {
             throw Slots.typeError("__build_class__: name is not a string");
         }
-        if (kwNames != null) {
-            // CPython pops `metaclass` from these and asks it to build the class, giving it
-            // `__prepare__` a chance to choose the namespace first. Neither exists yet.
-            throw Slots.notImplemented("a class with keyword arguments");
-        }
         PyTuple bases = PyTuple.of(Arrays.copyOfRange(args, 2, positional));
-        // With no metaclass named, the metatype is `type` for a class with no bases and the type of the
-        // first base otherwise — which is why `class C(1)` is refused by `int`, not by the class system.
-        PyObject meta = bases.size() == 0 ? PyType.TYPE : bases.at(0).getType();
+        PyObject[] keywords = Arrays.copyOfRange(args, positional, args.length);
+        String[] left = kwNames;
 
-        PyDict namespace = PyDict.empty();
-        PyObject returned = body.runClassBody(namespace);
-        PyObject built = Slots.call(meta, new PyObject[] {name, bases, namespace}, null);
+        PyObject meta = null;
+        boolean isclass = false;
+        if (kwNames != null) {
+            int at = indexOf(kwNames, "metaclass");
+            if (at >= 0) {
+                meta = keywords[at];
+                // A `metaclass` that is not a class is used exactly as it stands: no order can be
+                // calculated from it, and calling it is what builds the class.
+                isclass = meta instanceof PyType;
+                left = without(kwNames, at);
+                keywords = without(keywords, at);
+            }
+        }
+        if (meta == null) {
+            meta = bases.size() == 0 ? PyType.TYPE : bases.at(0).getType();
+            isclass = true;
+        }
+        if (isclass) {
+            meta = calculateMetaclass((PyType) meta, bases);
+        }
+
+        PyObject prepare = optional(meta, "__prepare__");
+        PyObject namespace =
+                prepare == null
+                        ? PyDict.empty()
+                        : Slots.call(
+                                prepare,
+                                joined(new PyObject[] {name, bases}, keywords),
+                                PyBoundMethod.keywordTuple(left));
+        if (!(namespace instanceof PyDict dict)) {
+            throw Slots.typeError(
+                    "%s.__prepare__() must return a mapping, not %s",
+                    isclass ? ((PyType) meta).name() : "<metaclass>", namespace.getType().name());
+        }
+
+        PyObject returned = body.runClassBody(dict);
+        PyObject built =
+                Slots.call(
+                        meta,
+                        joined(new PyObject[] {name, bases, dict}, keywords),
+                        PyBoundMethod.keywordTuple(left));
         checkClassCell(returned, name, built);
         return built;
+    }
+
+    /**
+     * {@code _PyType_CalculateMetaclass}: the most derived of the bases' own classes wins.
+     *
+     * <p>A base whose metaclass is neither the winner nor a subclass of it is the conflict every
+     * {@code class C(A, B)} with two unrelated metaclasses reports, and it is reported before any
+     * namespace is prepared — which is why such a class never reaches its own body's names.
+     */
+    private static PyType calculateMetaclass(PyType winner, PyTuple bases) {
+        for (int i = 0; i < bases.size(); i++) {
+            PyType tmptype = bases.at(i).getType();
+            if (winner.matches(tmptype)) {
+                continue;
+            }
+            if (tmptype.matches(winner)) {
+                winner = tmptype;
+                continue;
+            }
+            throw Slots.typeError(
+                    "metaclass conflict: the metaclass of a derived class"
+                            + " must be a (non-strict) subclass of the metaclasses of all its bases");
+        }
+        return winner;
     }
 
     /**
@@ -97,14 +164,30 @@ final class Classes {
     // --- type(name, bases, dict) ------------------------------------------------------------
 
     /**
-     * {@code type('Point', (), {...})}, reached from {@code Constructors}'s three-argument {@code type}
-     * and from {@link #buildClass}'s call on the metatype.
-     *
-     * <p>The argument checks come in CPython's order — {@code PyArg_ParseTuple}'s "UO!O!" before the
-     * bases are looked at — and each names the position it rejected, because a namespace passed where a
-     * tuple belongs is the mistake a hand-built class makes most often.
+     * {@code type('Point', (), {...})}, reached from {@link #typeCall} and from {@code Constructors}'s
+     * three-argument {@code type}.
      */
-    static PyObject newType(PyObject[] args) {
+    static PyObject newType(PyObject[] args, String[] kwNames) {
+        return newType(PyType.TYPE, args, kwNames);
+    }
+
+    /**
+     * {@code type_new}: the three-argument call that makes a class, whatever metatype it is asked to make
+     * it for.
+     *
+     * <p>The refusals come in CPython's order and each names the position it rejected, because a
+     * namespace passed where a tuple belongs is the mistake a hand-built class makes most often. The
+     * count comes first — {@code type.__new__()} says {@code takes exactly 3 arguments (1 given)} about a
+     * call that also has the wrong kind of first argument, because {@code PyArg_ParseTuple} only reaches
+     * the argument it cannot use once it has one to look at. An empty base tuple means {@code object} and
+     * is written back into {@code __bases__} as such.
+     */
+    static PyObject newType(PyType metatype, PyObject[] args, String[] kwNames) {
+        int positional = Arguments.positional(args, kwNames);
+        if (positional != 3) {
+            throw Slots.typeError(
+                    "type.__new__() takes exactly 3 arguments (%d given)", positional);
+        }
         if (!(args[0] instanceof PyStr name)) {
             throw Slots.typeError(
                     "type.__new__() argument 1 must be str, not %s", args[0].getType().name());
@@ -121,43 +204,82 @@ final class Classes {
         PyTuple bases = declared.size() == 0 ? PyTuple.of(PyType.OBJECT) : declared;
         for (int i = 0; i < bases.size(); i++) {
             PyObject base = bases.at(i);
+            if (base instanceof PyType || optional(base, "__mro_entries__") == null) {
+                continue;
+            }
+            // `type()` cannot ask a base what it stands in for; that resolution is `types.new_class`'s.
+            throw Slots.typeError(
+                    "type() doesn't support MRO entry resolution; use types.new_class()");
+        }
+        PyType winner = calculateMetaclass(metatype, bases);
+        // CPython hands the class to the winner's own `tp_new` when that is not `type_new`. Every
+        // metatype here is built by `type_new`, so there is nothing to hand it to.
+        for (int i = 0; i < bases.size(); i++) {
+            PyObject base = bases.at(i);
             if (!(base instanceof PyType kind)) {
-                throw Slots.typeError(
-                        "metaclass conflict: the metaclass of a derived class must be a"
-                                + " (non-strict) subclass of the metaclasses of all its bases");
+                throw Slots.typeError("bases must be types");
             }
             if (!canDeriveFrom(kind)) {
                 throw Slots.notImplemented("subclassing '" + kind.name() + "'");
             }
         }
-        return declare(name.getValue(), bases, namespace);
+        return declare(
+                name.getValue(),
+                bases,
+                namespace,
+                winner,
+                Arrays.copyOfRange(args, 3, args.length),
+                kwNames);
     }
 
     /**
      * Which types a Python class may take as a base.
      *
      * <p>A {@link PyClass} always, since its members are a dictionary and that is what deriving from
-     * another class means. {@code object} and the exception hierarchy are the two built-in families
-     * whose values this runtime already builds — an exception class carries its args and traceback
-     * whatever Python class derives from it — and every other built-in has Java slots no dictionary can
-     * stand in for.
+     * another class means. {@code type} is the one built-in on the list, because a metaclass is written
+     * exactly that way and a class made by {@link #newType} needs nothing a {@link PyClass} does not
+     * have. {@code object} and the exception hierarchy are the two other built-in families whose values
+     * this runtime already builds — an exception class carries its args and traceback whatever Python
+     * class derives from it — and every other built-in has Java slots no dictionary can stand in for,
+     * which is the refusal a {@code class C(str)} still gets.
      */
     private static boolean canDeriveFrom(PyType base) {
         return base instanceof PyClass
                 || base == PyType.OBJECT
+                || base == PyType.TYPE
                 || base.matches(ExceptionTypes.BASE_EXCEPTION);
     }
 
     /**
-     * {@code type_new} once its arguments are in hand: copy the namespace, take the identity names out
-     * of it, settle {@code __hash__}, then compute the order the class inherits by.
+     * {@code type_new_impl} once the bases are settled: copy the namespace, give the class its identity
+     * names, compute the order it inherits by, tell each member the class it belongs to, then report the
+     * new class to its bases.
      *
      * <p>The copy is what makes {@code X.__dict__ is namespace} false, exactly as it is in CPython, and
      * it is why a class built by hand and the namespace it was built from go their separate ways
-     * afterwards.
+     * afterwards. The last step is the one a program sees: {@code __init_subclass__} runs with the new
+     * class as its only receiver and the class statement's leftover keywords as its own arguments, which
+     * is how {@code class Sub(Base, tag=3)} reaches {@code Base}.
      */
-    private static PyClass declare(String name, PyTuple bases, PyDict given) {
+    private static PyClass declare(
+            String name,
+            PyTuple bases,
+            PyDict given,
+            PyType metatype,
+            PyObject[] keywordValues,
+            String[] kwNames) {
         PyDict dict = given.copy();
+
+        // `type_new_set_module`: the frame that built the class names its module, unless the body already
+        // did — which a class statement's body always does, since the compiler writes `__module__` first.
+        if (dict.get(PyStr.interned("__module__")) == null) {
+            Frame caller = Interpreter.currentFrame();
+            PyObject module =
+                    caller == null ? null : caller.globals().get(PyStr.interned("__name__"));
+            if (module != null) {
+                dict.put(PyStr.interned("__module__"), module);
+            }
+        }
 
         String qualified = name;
         PyStr qualNameKey = PyStr.interned("__qualname__");
@@ -175,6 +297,9 @@ final class Classes {
         if (dict.get(PyStr.interned("__doc__")) == null) {
             dict.put(PyStr.interned("__doc__"), PyNone.INSTANCE);
         }
+        autoWrap(dict, "__new__", false);
+        autoWrap(dict, "__init_subclass__", true);
+        autoWrap(dict, "__class_getitem__", true);
         // Defining equality without a hash makes a class unhashable, which CPython expresses by
         // putting None under the name in the declaring class's own dictionary.
         if (dict.get(PyStr.interned("__eq__")) != null
@@ -182,11 +307,47 @@ final class Classes {
             dict.put(PyStr.interned("__hash__"), PyNone.INSTANCE);
         }
 
-        PyClass kind = new PyClass(name, bases, dict, qualified);
+        PyClass kind = new PyClass(name, bases, dict, qualified, metatype);
         kind.order = linearize(kind, bases);
         propagateCells(dict, kind);
         setNames(dict, kind);
+        initSubclass(kind, keywordValues, kwNames);
         return kind;
+    }
+
+    /**
+     * {@code type_new_staticmethod} and {@code type_new_classmethod}: a plain function filed under one
+     * of these names is not what the class ends up holding.
+     *
+     * <p>{@code __new__} becomes a static method — a class that makes its own values is not sent
+     * {@code self} as an instance, and the class arrives at the call instead — and
+     * {@code __init_subclass__} and {@code __class_getitem__} become class methods. {@code __prepare__}
+     * is deliberately absent from that list, which is the trap in writing a metaclass in Python: a plain
+     * {@code __prepare__} is handed the new class's name where its {@code mcs} belongs, and the
+     * {@code TypeError} says so about a method the program never called.
+     */
+    private static void autoWrap(PyDict dict, String name, boolean classMethod) {
+        PyObject member = dict.get(PyStr.interned(name));
+        if (!(member instanceof PyFunction function)) {
+            return;
+        }
+        dict.put(
+                PyStr.interned(name),
+                classMethod ? new PyClassMethod(function) : new PyStaticMethod(function));
+    }
+
+    /**
+     * {@code type_new_init_subclass}: {@code super(type, type).__init_subclass__(**kwds)}.
+     *
+     * <p>The proxy is built from the new class on both sides, which is what makes the hook start at the
+     * class's <em>bases</em> rather than at itself: a class that defines {@code __init_subclass__} does
+     * not get it called about its own definition, only its subclasses do. The keyword arguments are the
+     * class statement's leftovers, so {@code class Sub(Base, tag=3)} reaches {@code Base} with
+     * {@code tag} and never mentions {@code Sub}.
+     */
+    private static void initSubclass(PyClass kind, PyObject[] values, String[] kwNames) {
+        PyObject hook = Slots.getAttr(PySuper.of(kind, kind), "__init_subclass__");
+        Slots.call(hook, values, PyBoundMethod.keywordTuple(kwNames));
     }
 
     /**
@@ -373,6 +534,40 @@ final class Classes {
     // --- calling a class -------------------------------------------------------------------
 
     /**
+     * {@code type_call}, the slot Python runs when it calls a class.
+     *
+     * <p>{@code type} itself answers the one-argument question before anything is built — {@code type(x)}
+     * names the value's class — and refuses a call that is neither one nor three arguments. Both of those
+     * belong to {@code type} alone: a metaclass that derives from it takes the three arguments and calls
+     * {@code __new__} like any other class, which is what {@code Meta('C', (), {})} means.
+     *
+     * <p>A built-in receiver has its own {@code tp_new} and {@code tp_init}, and {@code Constructors}
+     * dispatches those by identity, so asking it is the same answer for every type this runtime builds.
+     */
+    static PyObject typeCall(PyType kind, PyObject[] args, PyTuple kwNames) {
+        String[] names = PyBoundMethod.keywordNames(kwNames);
+        if (kind == PyType.TYPE) {
+            int positional = Arguments.positional(args, names);
+            if (positional == 1) {
+                if (kwNames != null && kwNames.size() > 0) {
+                    throw Slots.typeError("type() takes no keyword arguments");
+                }
+                return args[0].getType();
+            }
+            if (positional != 3) {
+                throw Slots.typeError("type() takes 1 or 3 arguments");
+            }
+            PyObject built = newType(PyType.TYPE, args, names);
+            typeInit(args, names);
+            return built;
+        }
+        if (kind instanceof PyClass declaring) {
+            return construct(declaring, args, kwNames);
+        }
+        return Constructors.instantiate(kind, args, kwNames);
+    }
+
+    /**
      * {@code Point(1, 2)}: {@code type.__call__} for a class Python wrote.
      *
      * <p>{@code __new__} first, then {@code __init__} — and the second of those only when the first made
@@ -403,14 +598,16 @@ final class Classes {
     }
 
     /**
-     * {@code tp_new}: the class's own {@code __new__} with the class as its first argument, or
-     * {@code object.__new__} when it declares none.
+     * {@code tp_new}: the class's own {@code __new__} with the class as its first argument,
+     * {@code type_new} for a metaclass that declares none, and {@code object.__new__} otherwise.
      *
-     * <p>The fallback is the one place a constructor refuses arguments before a method has said anything
-     * about them, and it refuses only when nothing in the order declares {@code __init__} either —
-     * CPython's {@code object_new} checks the init slot for exactly that reason, so that a class with an
-     * {@code __init__} of its own gets the arity message that names the method rather than one that
-     * names the class.
+     * <p>The middle case is what makes a metaclass a metaclass: {@code Meta('C', (), {})} inherits
+     * {@code type}'s creator rather than making a value of {@code Meta}, so the class it hands back is
+     * the instance, and its own class is {@code Meta}. The fallback is the one place a constructor
+     * refuses arguments before a method has said anything about them, and it refuses only when nothing in
+     * the order declares {@code __init__} either — CPython's {@code object_new} checks the init slot for
+     * exactly that reason, so that a class with an {@code __init__} of its own gets the arity message
+     * that names the method rather than one that names the class.
      */
     private static PyObject allocate(PyClass kind, PyObject[] args, PyTuple kwNames) {
         PyObject declared = Specials.lookUp(kind, "__new__");
@@ -420,10 +617,200 @@ final class Classes {
                     ? creator.call(withClass, kwNames)
                     : Slots.call(declared, withClass, kwNames);
         }
+        String[] names = PyBoundMethod.keywordNames(kwNames);
+        if (kind.matches(PyType.TYPE)) {
+            PyObject built = newType(kind, args, names);
+            typeInit(args, names);
+            return built;
+        }
         if (excess(args, kwNames) && !Specials.defines(kind, "__init__")) {
             throw Slots.typeError("%s() takes no arguments", kind.name());
         }
         return new PyInstance(kind);
+    }
+
+    /** {@code type_init}: the two things a class built by a metatype call is checked for afterwards. */
+    static void typeInit(PyObject[] args, String[] kwNames) {
+        int given = Arguments.positional(args, kwNames);
+        boolean keywords = kwNames != null && kwNames.length > 0;
+        if (keywords && given == 1) {
+            throw Slots.typeError("type.__init__() takes no keyword arguments");
+        }
+        if (given != 1 && given != 3) {
+            throw Slots.typeError("type.__init__() takes 1 or 3 arguments");
+        }
+    }
+
+    /**
+     * {@code object_isinstance}: the test {@code isinstance} makes once no {@code __instancecheck__} has
+     * answered, and the one {@code type.__instancecheck__} always makes.
+     *
+     * <p>It starts at the value's class rather than at the value, which is why {@code isinstance(x, type)}
+     * is false for anything that is not a class even though every class is an <em>instance</em> of
+     * {@code type}. A value that answers {@code __class__} with a different class is taken at its word —
+     * that is how a proxy gets to pass for the thing it stands in for.
+     *
+     * <p>The first question is put to the required type instead of being answered from the candidate's
+     * parent chain, because a Java class has interfaces and several supertypes and no single parent
+     * pointer reaches them; {@link PyType#instanceOf} is where that answer lives.
+     */
+    static boolean plainInstanceOf(PyType kind, PyObject value) {
+        if (kind.instanceOf(value)) {
+            return true;
+        }
+        PyObject claimed = optional(value, "__class__");
+        return claimed instanceof PyType icls && icls != value.getType() && icls.matches(kind);
+    }
+
+    /**
+     * {@code recursive_issubclass}: the walk {@code issubclass} falls back to, and the whole of what
+     * {@code type.__subclasscheck__} does.
+     *
+     * <p>CPython reaches this only when both arguments are classes, or complains about whichever one is
+     * not. A value that merely looks like a class — anything with a {@code __bases__}, which
+     * {@code check_class} accepts — is not modelled, and is refused as the first argument rather than
+     * walked.
+     */
+    static boolean plainSubclass(PyType kind, PyObject sub) {
+        if (!(sub instanceof PyType derived)) {
+            throw Slots.typeError("issubclass() arg 1 must be a class");
+        }
+        return derived.matches(kind);
+    }
+
+    // --- isinstance and issubclass ---------------------------------------------------------
+
+    /**
+     * {@code object_recursive_isinstance}: the whole of what {@code isinstance(x, C)} asks.
+     *
+     * <p>The order is the one CPython keeps and each step answers a different question. A value whose own
+     * class <em>is</em> the required class matches before anything is asked, which is why a metaclass
+     * {@code __instancecheck__} that refuses {@code C()} still sees {@code isinstance(C(), C)} as true.
+     * {@code type} needs no hook because its answer is known. A tuple is scanned in order and its first
+     * match wins, so {@code isinstance(x, (int, 1))} is true for an {@code int} and only complains about
+     * the {@code 1} when nothing matched. Then, and only then, comes the hook — read from the
+     * <em>metatype's</em> members and called with the value as its one argument, which is why
+     * {@code __instancecheck__} written in the class's own body is never run: {@code C.__instancecheck__}
+     * is a member of {@code C}, not of {@code type}, and a class answering for its own instances is not
+     * what this protocol is.
+     */
+    static boolean instanceOf(PyObject value, PyObject classes) {
+        if (value.getType() == classes) {
+            return true;
+        }
+        if (classes == PyType.TYPE) {
+            return plainInstanceOf(PyType.TYPE, value);
+        }
+        if (classes instanceof PyTuple tuple) {
+            for (int i = 0; i < tuple.size(); i++) {
+                if (instanceOf(value, tuple.at(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        PyObject checker = hook(classes, "__instancecheck__");
+        if (checker != null) {
+            return Slots.truth(Slots.call(checker, new PyObject[] {value}, null));
+        }
+        if (!(classes instanceof PyType kind)) {
+            throw Slots.typeError(
+                    "isinstance() arg 2 must be a type, a tuple of types, or a union");
+        }
+        return plainInstanceOf(kind, value);
+    }
+
+    /**
+     * {@code object_issubclass}: the whole of what {@code issubclass(A, B)} asks.
+     *
+     * <p>Same shape as {@link #instanceOf}, with the same three shortcuts and the same hook read from
+     * {@code B}'s metatype — and with the argument complaints of its own, since a class test can be
+     * refused on either side. A tuple is scanned in order and its first match wins, which is why
+     * {@code issubclass(int, (int, 1))} is true: the {@code 1} is only complained about when nothing
+     * matched.
+     */
+    static boolean subclassOf(PyObject derived, PyObject classes) {
+        if (classes == PyType.TYPE) {
+            return derived == classes || plainSubclass(PyType.TYPE, derived);
+        }
+        if (classes instanceof PyTuple tuple) {
+            for (int i = 0; i < tuple.size(); i++) {
+                if (subclassOf(derived, tuple.at(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        PyObject checker = hook(classes, "__subclasscheck__");
+        if (checker != null) {
+            return Slots.truth(Slots.call(checker, new PyObject[] {derived}, null));
+        }
+        if (!(classes instanceof PyType kind)) {
+            if (!(derived instanceof PyType)) {
+                throw Slots.typeError("issubclass() arg 1 must be a class");
+            }
+            throw Slots.typeError(
+                    "issubclass() arg 2 must be a class, a tuple of classes, or a union");
+        }
+        return plainSubclass(kind, derived);
+    }
+
+    /**
+     * {@code _PyObject_LookupSpecial}: the member {@code target}'s own metatype holds under {@code name},
+     * bound to {@code target} and ready to call.
+     *
+     * <p>Both {@code None} and no member at all mean "no hook", which is how {@code __hash__ = None}
+     * stops a class from being hashed and, here, how a class that wrote {@code __instancecheck__ = None}
+     * is left with the ordinary test. The receiver is the class rather than its metatype, so a metaclass
+     * that defines the hook sees the class {@code isinstance} was asked about as its {@code cls}.
+     */
+    private static PyObject hook(PyObject target, String name) {
+        PyType metatype = target.getType();
+        PyObject member = Specials.member(metatype, name);
+        if (member == null || member == PyNone.INSTANCE) {
+            return null;
+        }
+        return Descriptors.get(member, target, metatype);
+    }
+
+    // --- the calling convention ------------------------------------------------------------
+
+    /** {@code PyObject_GetOptionalAttr}: null for a value with nothing under the name. */
+    private static PyObject optional(PyObject target, String name) {
+        PyObject found = target.getAttr(name);
+        return found == PyNotImplemented.INSTANCE ? null : found;
+    }
+
+    /** The position of {@code name} in a call's keyword names, or -1 when the call did not give it. */
+    private static int indexOf(String[] kwNames, String name) {
+        for (int i = 0; i < kwNames.length; i++) {
+            if (kwNames[i].equals(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** {@code positionals} then the keyword values, which is the layout every callee reads. */
+    private static PyObject[] joined(PyObject[] positionals, PyObject[] keywords) {
+        PyObject[] all = new PyObject[positionals.length + keywords.length];
+        System.arraycopy(positionals, 0, all, 0, positionals.length);
+        System.arraycopy(keywords, 0, all, positionals.length, keywords.length);
+        return all;
+    }
+
+    private static String[] without(String[] values, int at) {
+        String[] rest = new String[values.length - 1];
+        System.arraycopy(values, 0, rest, 0, at);
+        System.arraycopy(values, at + 1, rest, at, values.length - at - 1);
+        return rest;
+    }
+
+    private static PyObject[] without(PyObject[] values, int at) {
+        PyObject[] rest = new PyObject[values.length - 1];
+        System.arraycopy(values, 0, rest, 0, at);
+        System.arraycopy(values, at + 1, rest, at, values.length - at - 1);
+        return rest;
     }
 
     /** Whether the call brought anything at all, which is {@code object}'s test before it makes a value. */

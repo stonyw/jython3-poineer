@@ -3,11 +3,13 @@ package org.python.core;
 /**
  * Type objects.
  *
- * A type is an instance of {@code type}, carries a name, is callable as a constructor, and answers for
+ * A type is an instance of a metatype, carries a name, is callable as a constructor, and answers for
  * the members its values inherit: {@link #mro()} is the order both a member lookup and {@code
  * isinstance} walk, and a class built by the class system ({@link PyClass}) computes it with CPython's
- * C3 merge instead of using the single-parent chain a built-in type declares. The metaclass protocol is
- * a later M3 slice, so every class here is built by {@code type} and is an instance of {@code type}.
+ * C3 merge instead of using the single-parent chain a built-in type declares. Every class the class
+ * system builds is an instance of {@code type} unless a metaclass was named for it, in which case
+ * {@link #classMember} reads its members through that metatype first — the protocol {@link TypeDict}
+ * exists to answer.
  *
  * The built-in types are {@code static final} fields rather than a registry, so that a slot
  * implementation can compare against its type by identity — which is what CPython does, and what
@@ -58,6 +60,12 @@ public class PyType extends PyObject {
     public static final PyType METHOD = builtin("method");
     /** What {@code str.upper} is: a method reached through its type rather than through a value. */
     public static final PyType METHOD_DESCRIPTOR = builtin("method_descriptor");
+    /** What {@code type.__call__} is: a slot of a built-in type, reached the same way. */
+    static final PyType WRAPPER_DESCRIPTOR = builtin("wrapper_descriptor");
+    /** What {@code type.__prepare__} is before a class reads it: a class method of a built-in type. */
+    static final PyType CLASS_METHOD_DESCRIPTOR = builtin("classmethod_descriptor");
+    /** What {@code Plain.__call__} is: a built-in slot already bound to a value. */
+    static final PyType METHOD_WRAPPER = builtin("method-wrapper");
     /** The three members that are nothing but the descriptor protocol, each its own type. */
     public static final PyType PROPERTY = builtin("property");
     public static final PyType CLASS_METHOD = builtin("classmethod");
@@ -192,6 +200,10 @@ public class PyType extends PyObject {
      * <p>A type has the methods it inherits as well as the ones it declares, so the lookup walks
      * {@link #mro()} and stops at the first table that defines the name — which is why
      * {@code bool.bit_length} is {@code int.bit_length} and not an {@code AttributeError}.
+     *
+     * <p>The names that are not methods at all — {@code __name__}, {@code __base__}, {@code __mro__} —
+     * are answered above, as CPython answers them from {@code type}'s getset descriptors; everything
+     * else, including the class-system members, goes through {@link #classMember}.
      */
     @Override
     public PyObject getAttr(String attribute) {
@@ -201,47 +213,48 @@ public class PyType extends PyObject {
             case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(parent);
             case "__mro__" -> PyTuple.of(mro());
             case "__class__" -> type;
-            case "mro" -> MRO.withReceiver(this);
-            default -> inherited(attribute);
+            default -> classMember(attribute);
         };
     }
 
     /**
-     * {@code int.mro()}: the order as a list, of the type the method was reached through.
+     * {@code X.name} in CPython's {@code _Py_type_getattro_impl} order: a data descriptor of the
+     * metatype owns the name, then this type and its bases, then the metatype's other members.
      *
-     * <p>The receiver arrives as {@code args[0]} because {@link PyNativeFunction#withReceiver} attaches it,
-     * which is what lets {@code Point.mro()} and {@code int.mro()} share one body and each name itself
-     * {@code Point.mro()} in an arity message.
+     * <p>The middle step reads with no receiver and the last two with the class as the receiver, and that
+     * difference is what a program sees. A class whose own order holds {@code type} — anything built by
+     * {@code type}, and any metaclass — finds the member there and gets it back unbound, so
+     * {@code Meta.mro()} complains about an unbound method; a class whose order does not, like {@code int}
+     * or {@code Plain}, is left with the metatype step and gets the same method bound to itself, which is
+     * why {@code Plain.mro()} answers.
+     *
+     * @return the attribute, or {@link PyNotImplemented} when neither this type's order nor the
+     *     metatype's names it, which is what {@link Slots#getAttr} turns into the complaint about a type
+     *     object having no such attribute
      */
-    private static final PyNativeFunction MRO =
-            new PyNativeFunction(
-                    "mro",
-                    (args, kwNames) -> {
-                        PyType owner = (PyType) args[0];
-                        String qualified = owner.name() + ".mro()";
-                        if (kwNames != null) {
-                            throw Slots.typeError("%s takes no keyword arguments", qualified);
-                        }
-                        if (args.length != 1) {
-                            throw Slots.typeError(
-                                    "%s takes no arguments (%d given)", qualified, args.length - 1);
-                        }
-                        return PyList.of(owner.mro());
-                    });
-
-    /** The member named {@code attribute} in this type's lookup order, or a refusal if none has it. */
-    private PyObject inherited(String attribute) {
-        for (PyType owner : mro()) {
-            Members methods = Members.tableOf(owner);
-            if (methods == null) {
-                continue;
-            }
-            PyObject descriptor = methods.describe(attribute);
-            if (descriptor != PyNotImplemented.INSTANCE) {
-                return descriptor;
-            }
+    final PyObject classMember(String attribute) {
+        PyObject fromMeta = Specials.member(type, attribute);
+        if (fromMeta != null && Descriptors.writes(fromMeta)) {
+            return Descriptors.get(fromMeta, this, type);
         }
-        return PyNotImplemented.INSTANCE;
+        PyObject declared = Specials.member(this, attribute);
+        if (declared != null) {
+            return Descriptors.get(declared, null, this);
+        }
+        return fromMeta == null
+                ? PyNotImplemented.INSTANCE
+                : Descriptors.get(fromMeta, this, type);
+    }
+
+    /**
+     * The name a member of this class reports itself with.
+     *
+     * <p>{@code Outer.Inner.__init_subclass__() takes no keyword arguments} is worded with this rather
+     * than with {@code __name__}, because CPython builds the qualified name of a bound {@code METH_CLASS}
+     * method out of the class it bound to — {@code type->tp_qualname}, {@code __qualname__} in Python.
+     */
+    String dottedName() {
+        return name;
     }
 
     /**
@@ -290,10 +303,47 @@ public class PyType extends PyObject {
         return value.getType().matches(this);
     }
 
-    /** {@code ValueError("x")}, {@code list(range(3))} — a type is its own constructor. */
+    /**
+     * {@code ValueError("x")}, {@code list(range(3))} — a type is its own constructor.
+     *
+     * <p>A class is called through its metatype first, which is {@code slot_tp_call} doing the work of
+     * {@code Py_TYPE(cls)->tp_call}: a metaclass that declares {@code __call__} owns every call of every
+     * class it built, and reaches ordinary construction only by asking for it — {@code type.__call__(cls,
+     * *args)} — because that call comes back to {@link Classes#typeCall} and not here. A class whose
+     * metatype is {@code type} has no such declaration to find, since {@code type}'s own {@code __call__}
+     * is the slot this method is standing in for, and the {@link Specials} lookup reads only the
+     * namespaces of classes Python wrote.
+     */
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
-        return Constructors.instantiate(this, args, kwNames);
+        PyObject declared = Specials.invoke(this, "__call__", args, kwNames);
+        if (declared != PyNotImplemented.INSTANCE) {
+            return declared;
+        }
+        return Classes.typeCall(this, args, kwNames);
+    }
+
+    /**
+     * {@code C[key]}: the two questions {@code PyObject_GetItem} puts to a class, in its order.
+     *
+     * <p>A {@code __getitem__} on the metatype is answered before {@code __class_getitem__}, because the
+     * first is a real {@code mp_subscript} slot and the special case for classes in the generic
+     * {@code PyObject_GetItem} only runs when the type has no subscript of its own. Nothing here is
+     * subscriptable by itself: a refusal leaves {@link Slots#getItem} to word it as {@code type 'C' is not
+     * subscriptable}, which is what CPython says for {@code int[int]}, and the two built-in families that
+     * do answer in CPython — {@code type[int]} and {@code list[int]} — hand back a {@code types.GenericAlias},
+     * which this runtime has no model of.
+     */
+    @Override
+    public PyObject getItem(PyObject key) {
+        PyObject fromMeta = Specials.invoke(this, "__getitem__", key);
+        if (fromMeta != PyNotImplemented.INSTANCE) {
+            return fromMeta;
+        }
+        PyObject generic = getAttr("__class_getitem__");
+        return generic == PyNotImplemented.INSTANCE
+                ? PyNotImplemented.INSTANCE
+                : Slots.call(generic, new PyObject[] {key}, null);
     }
 
     /**

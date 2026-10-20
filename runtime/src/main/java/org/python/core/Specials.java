@@ -48,6 +48,55 @@ final class Specials {
     }
 
     /**
+     * The raw member {@code name} in this type's lookup order, descriptor or not.
+     *
+     * <p>CPython's {@code _PyType_Lookup} is what {@link PyClass}'s four-step attribute read and {@link
+     * PySuper} both need, and it answers from three places for each class in the order: the namespace a
+     * Python class wrote, the class-system members {@link TypeDict} keeps for {@code type} and {@code
+     * object}, and the {@link Members} table a built-in type compiles in — whose unbound method
+     * descriptor is the same object that class's dictionary would have held.
+     *
+     * @return the member, or null when no type in the order names it
+     */
+    static PyObject member(PyType type, String name) {
+        for (PyType owner : type.mro()) {
+            PyObject declared = declared(owner, name);
+            if (declared != null) {
+                return declared;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The raw member {@code owner} holds under {@code name}, with no walk past it.
+     *
+     * <p>This is CPython's {@code lookup_tp_dict} step of {@code _super_lookup_descr} and of
+     * {@code _PyType_Lookup}: one class's own dictionary, which for a built-in type is the {@link Members}
+     * table and the {@link TypeDict} entry it is named in.
+     *
+     * @return the member, or null when this class holds nothing under the name
+     */
+    static PyObject declared(PyType owner, String name) {
+        PyObject fromDict = TypeDict.member(owner, name);
+        if (fromDict != null) {
+            return fromDict;
+        }
+        if (owner instanceof PyClass namespace) {
+            PyObject value = namespace.namespace().get(PyStr.interned(name));
+            if (value != null) {
+                return value;
+            }
+        }
+        Members methods = Members.tableOf(owner);
+        if (methods == null) {
+            return null;
+        }
+        PyObject descriptor = methods.describe(name);
+        return descriptor == PyNotImplemented.INSTANCE ? null : descriptor;
+    }
+
+    /**
      * The function declared under {@code name}, or null.
      *
      * <p>A class that holds {@code None} under the name — which is what a class that declares

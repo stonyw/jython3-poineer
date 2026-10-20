@@ -40,11 +40,21 @@ public final class PyInstance extends PyObject {
     public PyObject getAttr(String name) {
         return switch (name) {
             case "__dict__" -> dictionary;
-            case "__class__" -> type;
             default -> owned(name);
         };
     }
 
+    /**
+     * {@code self.name} for every other name, with {@code __class__} answered where CPython answers it.
+     *
+     * <p>{@code __class__} is a getset of {@code object}, so it sits <em>inside</em> the type lookup
+     * rather than above it: a class that files a member under that name — a property, or the class itself
+     * written out — is what the walk finds first, and only a class that declares nothing falls back to
+     * the value's real type. That is the whole of how {@code isinstance(p, int)} is true for a
+     * {@code Proxy} that claims to be an {@code int}, and it is why the fallback comes before
+     * {@code __getattr__} rather than after: {@code object}'s getset outranks a {@code __getattr__} the
+     * same way it outranks the instance dictionary.
+     */
     private PyObject owned(String name) {
         PyObject member = Specials.lookUp(type, name);
         if (member != null && Descriptors.writes(member)) {
@@ -57,7 +67,9 @@ public final class PyInstance extends PyObject {
         if (member != null) {
             return Descriptors.get(member, this, type);
         }
-        return Specials.invoke(this, "__getattr__", PyStr.of(name));
+        return name.equals("__class__")
+                ? type
+                : Specials.invoke(this, "__getattr__", PyStr.of(name));
     }
 
     /**
