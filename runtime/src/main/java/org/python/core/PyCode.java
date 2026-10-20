@@ -19,11 +19,28 @@ public interface PyCode {
     /** {@code CO_OPTIMIZED}: the frame has its own locals rather than sharing a module's. */
     int CO_OPTIMIZED = 0x1;
 
+    /** {@code CO_NEWLOCALS}: the frame gets its own locals dict, which is what a function body does. */
+    int CO_NEWLOCALS = 0x2;
+
     /** A trailing {@code *args} parameter, which collects what the caller gave beyond the rest. */
     int CO_VARARGS = 0x4;
 
     /** A trailing {@code **kwargs} parameter, which collects the leftover keywords. */
     int CO_VARKEYWORDS = 0x8;
+
+    /**
+     * {@code CO_GENERATOR}: calling this code object answers a generator rather than running the body,
+     * which is what {@code RETURN_GENERATOR} reads. A body compiled with it begins with that opcode, so
+     * the driver never needs to consult this flag to know a frame came from a generator — only
+     * {@code PyFunction} asks, and it asks the same way CPython's {@code _Py_MakeCoro} does.
+     */
+    int CO_GENERATOR = 0x20;
+
+    /** {@code CO_COROUTINE}: the body of an {@code async def}, which is awaited rather than iterated. */
+    int CO_COROUTINE = 0x80;
+
+    /** {@code CO_ASYNC_GENERATOR}: an {@code async def} body with a yield in it. */
+    int CO_ASYNC_GENERATOR = 0x200;
 
     String fileName();
 

@@ -42,6 +42,12 @@ public final class ExceptionTypes {
     public static final PyType FILE_NOT_FOUND_ERROR = child("FileNotFoundError", OS_ERROR);
     public static final PyType SYSTEM_EXIT = child("SystemExit", BASE_EXCEPTION);
     public static final PyType KEYBOARD_INTERRUPT = child("KeyboardInterrupt", BASE_EXCEPTION);
+    /**
+     * What {@code gen.close()} throws into the frame, and the one exception a generator is not allowed
+     * to answer with: an error that reaches the caller from a {@code close} is either this, which the
+     * call swallows, or whatever the body raised while handling it, which escapes.
+     */
+    public static final PyType GENERATOR_EXIT = child("GeneratorExit", BASE_EXCEPTION);
 
     private static PyType child(String name, PyType parent) {
         return PyType.declare(name, parent);

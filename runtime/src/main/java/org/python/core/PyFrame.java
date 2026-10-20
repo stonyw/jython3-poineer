@@ -14,10 +14,9 @@ package org.python.core;
  * frame read from two places can disagree with the traceback entry that holds it — an entry froze its
  * offset when the error passed through, and a dead frame froze it by stopping.
  *
- * <p>CPython's frame object is a debugging surface, and the parts of it that only a debugger drives are
- * not here: there is no trace function until {@code sys.settrace}, so {@code f_lineno} refuses every
- * write, and no generator owns a frame yet, so {@code f_generator} only ever answers {@code None}. Both
- * are what the corresponding name would answer in the runtime CPython runs today with no tracer attached.
+ * <p>CPython's frame object is a debugging surface, and the part of it that only a debugger drives is not
+ * here: there is no trace function until {@code sys.settrace}, so {@code f_lineno} refuses every write.
+ * That is what the name answers in the runtime CPython runs today with no tracer attached.
  */
 public final class PyFrame extends PyObject {
 
@@ -61,7 +60,8 @@ public final class PyFrame extends PyObject {
             case "f_locals" -> frame.localValues();
             case "f_lineno" -> frame.line() < 0 ? PyNone.INSTANCE : PyInt.of(frame.line());
             case "f_lasti" -> PyInt.of(frame.lasti());
-            case "f_generator" -> PyNone.INSTANCE;
+            case "f_generator" ->
+                    frame.generator == null ? PyNone.INSTANCE : frame.generator;
             case "f_trace" -> trace;
             case "f_trace_lines" -> PyBool.of(traceLines);
             case "f_trace_opcodes" -> PyBool.of(traceOpcodes);
@@ -134,11 +134,30 @@ public final class PyFrame extends PyObject {
     /**
      * {@code frame.clear()}: let go of the names, if the frame has finished.
      *
-     * <p>The check is CPython's, and it is the only reason the runtime tells this object whether the
-     * activation is over: a frame that is still running is still being read by the interpreter, and a
-     * name it has not stored yet would be dropped out from under it.
+     * <p>Who owns the frame decides what "finished" means. A generator-owned frame is asked of the
+     * generator, because a generator keeps a frame after the run that parked it and a frame parked at a
+     * yield is neither running nor over: {@code EXECUTING} and {@code SUSPENDED} each get their own
+     * complaint, and a frame the generator has done with is cleared by closing the generator, which is
+     * what drops the names and marks the end. A frame an ordinary call owns has only the one test —
+     * whether the loop that ran it has left — and it is the only thing {@code frame.clear()} can point at
+     * to tell a dead activation from a live one.
      */
     private void clear() {
+        PyGenerator owner = frame.generator;
+        if (owner != null) {
+            switch (owner.state()) {
+                case EXECUTING:
+                    throw Slots.runtimeError("cannot clear an executing frame");
+                case SUSPENDED:
+                    throw Slots.runtimeError("cannot clear a suspended frame");
+                default:
+                    // _PyGen_Finalize: the generator is already over, so closing it drops the names.
+                    // CPython turns anything it raises into an unraisable report; here it travels out to
+                    // the caller, which is the one difference this route makes.
+                    owner.finalizeFromClear();
+                    return;
+            }
+        }
         if (!frame.isFinished()) {
             throw Slots.runtimeError("cannot clear an executing frame");
         }

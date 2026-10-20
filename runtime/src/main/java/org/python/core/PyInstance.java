@@ -246,16 +246,30 @@ public final class PyInstance extends PyObject {
     /** {@code iter(self)}, driven by the {@code __next__} this class declares. */
     private final class Walking extends PyIterator {
 
+        /** The {@code StopIteration} the step that ended the iteration was made of, kept for one read. */
+        private PyBaseException stopped;
+
         @Override
         public PyObject nextOrNull() {
+            stopped = null;
             try {
                 return Specials.invoke(PyInstance.this, "__next__");
-            } catch (PyRaise stopped) {
-                if (!stopped.value().exceptionType().matches(ExceptionTypes.STOP_ITERATION)) {
-                    throw stopped;
+            } catch (PyRaise raised) {
+                if (!raised.value().exceptionType().matches(ExceptionTypes.STOP_ITERATION)) {
+                    throw raised;
                 }
+                // Kept rather than re-thrown: a `for` loop ends on the null, and only whoever asks for
+                // the exception — `next(it)`, and nothing else here — is owed the one it was made with.
+                stopped = raised.value();
                 return null;
             }
+        }
+
+        @Override
+        public PyBaseException exhaustion() {
+            PyBaseException value = stopped;
+            stopped = null;
+            return value;
         }
     }
 

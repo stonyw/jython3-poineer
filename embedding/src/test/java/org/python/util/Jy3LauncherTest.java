@@ -190,7 +190,11 @@ class Jy3LauncherTest {
                 "13_class_hooks.py",
                 "14_with.py",
                 "15_exceptions.py",
-                "16_traceback.py");
+                "16_traceback.py",
+                "17_generators.py",
+                "18_generator_send.py",
+                "19_generator_throw_close.py",
+                "20_generator_exc_state.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
@@ -253,7 +257,12 @@ class Jy3LauncherTest {
                 "20_exit_status.py",
                 "21_limit_that_is_not_a_number.py",
                 "22_limit_of_true_is_one_frame.py",
-                "23_context_cycle.py");
+                "23_context_cycle.py",
+                "24_generator_frames.py",
+                "25_generator_pep479.py",
+                "26_generator_throw_escape.py",
+                "27_generator_nested.py",
+                "28_generator_throw_from_handler.py");
     }
 
     @Test

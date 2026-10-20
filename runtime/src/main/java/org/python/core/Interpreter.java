@@ -9,10 +9,10 @@ package org.python.core;
  * that closes its loop, {@code MAKE_FUNCTION} pops only a code object, and the container-append
  * opcodes leave their container on the stack.
  *
- * What this slice does not cover is reported rather than guessed at. Generators, coroutines and
- * pattern matching are later M3 slices; an opcode belonging to one of them raises {@code
- * NotImplementedError} naming the opcode, so a script that reaches one fails with a sentence instead
- * of a wrong answer.
+ * What this slice does not cover is reported rather than guessed at. Coroutines, async generators and
+ * pattern matching are later M3 slices, and so is the {@code yield from} family — {@code SEND}, {@code
+ * END_SEND} and the {@code YIELD_VALUE} argument that means "delegate" — so a script that reaches one of
+ * those fails with a sentence naming the opcode instead of with a wrong answer.
  */
 public final class Interpreter {
 
@@ -47,31 +47,55 @@ public final class Interpreter {
     }
 
     /**
-     * Run {@code frame} to a {@code RETURN_VALUE}.
+     * Run {@code frame} to a {@code RETURN_VALUE}, or to the yield that parks it.
      *
-     * <p>An exception this frame has no handler for leaves by the Java carry-over: it escapes here and
-     * is caught by the caller's own {@code run}, whose table is asked about the call that failed.
+     * <p>An exception this frame has no handler for leaves by the Java carry-over: it escapes here and is
+     * caught by the caller's own {@code run}, whose table is asked about the call that failed.
      *
      * <p>Two things happen around the loop that the loop itself does not need and Python does. The frame
      * is linked under the one that called it, which is what makes a Python stack exist for a traceback to
      * walk and for {@code f_back} to answer; and it is marked finished on the way out, by any exit, which
-     * is the only thing {@code frame.clear()} can point at to tell a dead activation from a live one.
+     * is the only thing {@code frame.clear()} can point at to tell a dead activation from a live one. A
+     * frame a yield parked is the exception: it is not finished, it is waiting, and the generator that
+     * owns it is what says so.
      *
      * @return the value Python returned from the code object
      */
     public static PyObject run(Frame frame) {
+        return enter(frame, null);
+    }
+
+    /**
+     * Run {@code frame}, or enter it with an exception already in flight.
+     *
+     * <p>The second route is CPython's throw flag, and it is how {@code generator.throw} and {@code
+     * close} reach a parked frame: the loop is not started at all, and the frame is failed at the
+     * instruction it waits on as though that instruction had raised. The lookup site moves back onto the
+     * yield that parked it, but the traceback entry keeps the resume's offset, because that is the one the
+     * frame carries. Everything after the handler was found is the ordinary loop.
+     *
+     * @param thrown the exception to enter with, or null to run the frame from where it stands
+     */
+    static PyObject enter(Frame frame, PyRaise thrown) {
         CodeInstructions code = frame.instructions();
         int limit = code.length();
         Frame caller = EXECUTING.get();
         frame.setBack(caller);
         EXECUTING.set(frame);
         try {
+            if (thrown != null) {
+                frame.lookUpFromPreviousUnit();
+                PyTraceback.logFrame(frame, thrown.value());
+                unwind(frame, thrown);
+            }
             return interpret(frame, code, limit);
         } catch (StackOverflowError overflow) {
             throw PyRaise.raise(
                     ExceptionTypes.RECURSION_ERROR, "maximum recursion depth exceeded");
         } finally {
-            frame.finish();
+            if (!frame.isParked()) {
+                frame.finish();
+            }
             EXECUTING.set(caller);
         }
     }
@@ -104,8 +128,10 @@ public final class Interpreter {
                     // --- instructions with no observable effect at this stage ---------------
                     //
                     // EXTENDED_ARG carries an argument already folded into the instruction it extends, so
-                    // stepping over it is all it needs. RESUME is a no-op at entry to a frame and would
-                    // only matter for generators, which are M3.
+                    // stepping over it is all it needs. RESUME says which of a frame's blocks is being
+                    // entered, and the driver already stands at the right instruction to be entering it —
+                    // an ordinary call at the first, a generator step at the one the yield parked — so the
+                    // argument is read by whoever enters a frame with an exception in flight, not here.
                     case Opcodes.NOP:
                     case Opcodes.CACHE:
                     case Opcodes.EXTENDED_ARG:
@@ -612,6 +638,38 @@ public final class Interpreter {
                         break;
                     }
 
+                    // --- generators ----------------------------------------------------------
+                    //
+                    // Both of these are returns: the value goes out to whatever asked, and the frame is
+                    // left behind rather than finished — parked on the instruction the next entry runs,
+                    // with nothing above it. Neither one raises. CPython's note on YIELD_VALUE says why
+                    // that matters: an exception raised while parking would be taken for a failed
+                    // {@code close()} or {@code throw()}, and the compiler treats it as exactly that.
+                    case Opcodes.RETURN_GENERATOR: {
+                        int flags = frame.code().flags();
+                        if ((flags & (PyCode.CO_COROUTINE | PyCode.CO_ASYNC_GENERATOR)) != 0) {
+                            // _Py_MakeCoro answers one of three objects by these bits; only the
+                            // generator one is compiled in.
+                            throw Slots.notImplemented(
+                                    "a coroutine or async generator body: "
+                                            + frame.code().qualName());
+                        }
+                        // The frame the call was making is handed over with its arguments bound and its
+                        // cells shared, and the POP_TOP that would have discarded this call's None is
+                        // what the first step runs.
+                        PyGenerator generator = new PyGenerator(frame);
+                        frame.park(index + 1);
+                        return generator;
+                    }
+                    case Opcodes.YIELD_VALUE: {
+                        if (arg != 0) {
+                            throw Slots.notImplemented(
+                                    "YIELD_VALUE " + arg + ": `yield from` and the SEND family");
+                        }
+                        frame.park(index + 1);
+                        return frame.pop();
+                    }
+
                     // --- returning and raising ----------------------------------------------
                     case Opcodes.RETURN_VALUE:
                         return frame.pop();
@@ -629,8 +687,11 @@ public final class Interpreter {
                     case Opcodes.PUSH_EXC_INFO: {
                         // The exception the enclosing handler was running for, if any, goes under this
                         // one so that POP_EXCEPT can put it back; a bare None is "no handler outside me".
+                        // Read off the head of the chain rather than by the walk that `sys.exc_info()`
+                        // takes: CPython writes and reads this item directly, so a generator that handles
+                        // nothing hands back its own None here, not the caller's exception under it.
                         PyObject inHandler = frame.pop();
-                        PyObject enclosing = PyRuntime.handledException();
+                        PyObject enclosing = PyRuntime.handlerValue();
                         PyRuntime.setHandledException(inHandler);
                         frame.push(enclosing);
                         frame.push(inHandler);
@@ -1088,8 +1149,27 @@ public final class Interpreter {
                 importAll(frame, frame.pop());
                 return PyNone.INSTANCE;
             case 3: {
+                // `stopiteration_error`: what the implicit handler at the tail of a generator body hands
+                // back. It returns rather than raises, because the instruction after it is the `RERAISE`
+                // that puts the error in flight — which is what gives the report the generator's own frame
+                // exactly once, and the offset the body failed at.
                 PyObject value = frame.pop();
-                throw PyRaise.raise(ExceptionTypes.STOP_ITERATION, value);
+                if (!(value instanceof PyBaseException error)
+                        || !error.matches(ExceptionTypes.STOP_ITERATION)) {
+                    // Any other exception travels out of the body as it came, unchanged and unchained.
+                    return value;
+                }
+                PyObject rebuilt =
+                        Slots.call(
+                                ExceptionTypes.RUNTIME_ERROR,
+                                new PyObject[] {PyStr.of("generator raised StopIteration")},
+                                null);
+                PyBaseException error2 = (PyBaseException) rebuilt;
+                // The same exception in both chain fields: the `raise from` that a person writes is not
+                // what happens here, and a report reads whichever is there.
+                error2.setCause(error);
+                error2.setContext(error);
+                return error2;
             }
             default:
                 throw Slots.notImplemented("intrinsic " + id);

@@ -41,17 +41,18 @@ final class Members {
      * script that only ever asks {@code set.add} has never made a set. {@link #tableOf} initializes the
      * class named here, which is what makes a type's members answerable before any value of it exists.
      */
-    private static final Map<PyType, Class<?>> VALUE_CLASSES = Map.of(
-            PyType.INT, PyInt.class,
-            PyType.FLOAT, PyFloat.class,
-            PyType.COMPLEX, PyComplex.class,
-            PyType.STR, PyStr.class,
-            PyType.BYTES, PyBytes.class,
-            PyType.TUPLE, PyTuple.class,
-            PyType.LIST, PyList.class,
-            PyType.DICT, PyDict.class,
-            PyType.SET, PySet.class,
-            PyType.FROZENSET, PySet.class);
+    private static final Map<PyType, Class<?>> VALUE_CLASSES = Map.ofEntries(
+            Map.entry(PyType.INT, PyInt.class),
+            Map.entry(PyType.FLOAT, PyFloat.class),
+            Map.entry(PyType.COMPLEX, PyComplex.class),
+            Map.entry(PyType.STR, PyStr.class),
+            Map.entry(PyType.BYTES, PyBytes.class),
+            Map.entry(PyType.TUPLE, PyTuple.class),
+            Map.entry(PyType.LIST, PyList.class),
+            Map.entry(PyType.DICT, PyDict.class),
+            Map.entry(PyType.SET, PySet.class),
+            Map.entry(PyType.FROZENSET, PySet.class),
+            Map.entry(PyType.GENERATOR, PyGenerator.class));
 
     private final PyType owner;
 

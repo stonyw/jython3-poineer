@@ -83,6 +83,12 @@ public class PyType extends PyObject {
     public static final PyType MODULE = builtin("module");
     public static final PyType CELL = builtin("cell");
     public static final PyType ITERATOR = builtin("iterator");
+    /**
+     * What calling a generator function answers: {@code type(gen)} is {@code generator}, and the name is
+     * not in {@code builtins}, so {@code generator} is unreachable from Python — same as CPython, where
+     * {@code TypesGenerator} is added to the structmember table but not to the builtins dict.
+     */
+    public static final PyType GENERATOR = builtin("generator");
     public static final PyType RANGE = builtin("range");
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and

@@ -42,6 +42,23 @@ public class PyBaseException extends PyObject {
     private PyObject traceback = PyNone.INSTANCE;
 
     /**
+     * {@code StopIteration.value}, the value a generator's {@code return} hands out.
+     *
+     * <p>It lives on the exception rather than in its arguments because CPython declares it as a member of
+     * {@code PyStopIterationObject} beside {@code args}, and keeps the two independent: {@code StopIteration
+     * (1).value} is {@code 1}, and re-assigning {@code args} leaves it {@code 1} all the same. Only an
+     * exception of that class or a subclass of it has the field, which is why it is null — read as {@code
+     * None} — on every other value, and why deleting it is allowed and reads back as {@code None} rather
+     * than complaining.
+     *
+     * <p>Deviation, and the only way to reach it: CPython fills this in {@code StopIteration_init}, so
+     * {@code StopIteration.__new__(StopIteration, 1).value} is {@code None} there and {@code 1} here, and a
+     * subclass whose {@code __init__} skips {@code super().__init__} loses the value in CPython but keeps it
+     * here. The runtime builds an exception's arguments and its value in the one step.
+     */
+    private PyObject stopIterationValue;
+
+    /**
      * An exception raised as {@code exceptionType} with {@code args}.
      *
      * <p>Protected rather than package-private because the class system is not the only subclass this
@@ -52,6 +69,14 @@ public class PyBaseException extends PyObject {
         super(exceptionType);
         this.exceptionType = exceptionType;
         setArguments(args);
+        if (carriesValue()) {
+            stopIterationValue = args.length > 0 ? args[0] : PyNone.INSTANCE;
+        }
+    }
+
+    /** Whether this class has the {@code value} member: {@code StopIteration} and what derives from it. */
+    private boolean carriesValue() {
+        return exceptionType.matches(ExceptionTypes.STOP_ITERATION);
     }
 
     /** {@code BaseException.__init__} and {@code __new__}: the arguments of the call, taken over. */
@@ -258,6 +283,10 @@ public class PyBaseException extends PyObject {
             case "__suppress_context__" -> suppressContext;
             case "__traceback__" -> traceback();
             case "__dict__" -> held();
+            case "value" ->
+                    carriesValue()
+                            ? (stopIterationValue == null ? PyNone.INSTANCE : stopIterationValue)
+                            : owned(name);
             default -> owned(name);
         };
     }
@@ -305,6 +334,12 @@ public class PyBaseException extends PyObject {
                 setArguments(value);
                 return PyNone.INSTANCE;
             }
+            case "value" -> {
+                if (carriesValue()) {
+                    stopIterationValue = value;
+                    return PyNone.INSTANCE;
+                }
+            }
             case "__cause__" -> {
                 cause = chain("exception cause", value);
                 return PyNone.INSTANCE;
@@ -344,6 +379,10 @@ public class PyBaseException extends PyObject {
     /**
      * {@code del e.name}: the arguments cannot be taken away, and everything else is the ordinary
      * deletion of a value's own attribute.
+     *
+     * <p>{@code StopIteration.value} is the exception, because a member of {@code _Py_T_OBJECT} type
+     * deletes by writing null to the field: {@code del si.value} succeeds, reading it afterwards gives
+     * {@code None}, and deleting it a second time is still silent.
      */
     @Override
     public PyObject delAttr(String name) {
@@ -353,6 +392,10 @@ public class PyBaseException extends PyObject {
         }
         if (name.equals("args")) {
             throw Slots.typeError("args may not be deleted");
+        }
+        if (name.equals("value") && carriesValue()) {
+            stopIterationValue = null;
+            return PyNone.INSTANCE;
         }
         PyStr key = PyStr.interned(name);
         if (held().get(key) == null) {

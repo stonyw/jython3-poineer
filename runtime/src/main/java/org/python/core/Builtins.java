@@ -81,6 +81,7 @@ final class Builtins {
         put(out, "AssertionError", ExceptionTypes.ASSERTION_ERROR);
         put(out, "AttributeError", ExceptionTypes.ATTRIBUTE_ERROR);
         put(out, "FileNotFoundError", ExceptionTypes.FILE_NOT_FOUND_ERROR);
+        put(out, "GeneratorExit", ExceptionTypes.GENERATOR_EXIT);
         put(out, "ImportError", ExceptionTypes.IMPORT_ERROR);
         put(out, "IndexError", ExceptionTypes.INDEX_ERROR);
         put(out, "KeyError", ExceptionTypes.KEY_ERROR);
@@ -572,9 +573,24 @@ final class Builtins {
         if (value != null) {
             return value;
         }
+        // The three outcomes of `PyIter_Next` returning NULL, which CPython tells apart by whether an
+        // exception was left set. A generator that ended with a value was; one that simply ran out, or one
+        // whose frame had already finished when this step was made, was not — and the difference is what
+        // decides whether the default is taken or the real StopIteration, with its value, travels on.
+        PyBaseException stopped = iterator.exhaustion();
+        if (stopped != null) {
+            if (args.length > 1) {
+                return args[1];
+            }
+            // Re-raised as it was made: `_PyErr_SetRaisedException`, so no context is taken from whatever
+            // the caller happens to be handling.
+            throw PyRaise.reraise(stopped);
+        }
         if (args.length > 1) {
             return args[1];
         }
+        // `PyErr_SetNone`, which is the route that does chain: this invented exception gets the caller's
+        // handled exception as its context, exactly as a bare `raise StopIteration` inside a handler would.
         throw PyRaise.of(new PyBaseException(ExceptionTypes.STOP_ITERATION, new PyObject[0]));
     }
 

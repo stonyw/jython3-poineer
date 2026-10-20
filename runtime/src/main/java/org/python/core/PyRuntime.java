@@ -34,19 +34,34 @@ public final class PyRuntime {
     private static final Map<String, PyObject> modules = new LinkedHashMap<>();
 
     /**
-     * What CPython keeps as {@code tstate->exc_info->exc_value}: the exception the handler now running
-     * is handling.
+     * One item of {@code tstate->exc_info}: the exception a handler is running for, and the item the
+     * handler outside it was running for.
      *
-     * <p>It is not the exception in flight — that one is carried by {@link PyRaise} while the loop
-     * searches the table — and only two opcodes write it: a handler's {@code PUSH_EXC_INFO} stores the
-     * exception it caught, and {@code POP_EXCEPT} puts back whatever the enclosing handler was running
-     * for. That is the whole of how {@code sys.exc_info()}, a bare {@code raise} and an implicit
-     * {@code __context__} all know which exception they mean.
-     *
-     * <p>Per thread because CPython's is per thread state; {@code None} is its "no handler here".
+     * <p>The chain is there because CPython's two reads of it differ. Every ordinary one — {@code
+     * sys.exc_info()}, a bare {@code raise}, the implicit {@code __context__} — goes through {@code
+     * _PyErr_GetTopmostException}, which steps past the items holding nothing. {@code PUSH_EXC_INFO} and
+     * {@code _PyErr_ChainStackItem} read the head itself, and that is what lets a generator which is
+     * handling nothing at all chain nothing onto a {@code throw}, even though the code that stepped it is
+     * standing in a handler of its own.
      */
-    private static final ThreadLocal<PyObject> handledException =
-            ThreadLocal.withInitial(() -> PyNone.INSTANCE);
+    private static final class Handled {
+        private PyObject value;
+        private final Handled outer;
+
+        Handled(PyObject value, Handled outer) {
+            this.value = value;
+            this.outer = outer;
+        }
+    }
+
+    /**
+     * The head of that chain — per thread, because CPython's is per thread state.
+     *
+     * <p>The bottom item belongs to the thread and is never taken off; {@code None} in it is CPython's
+     * "no handler here", which the walking read above moves straight past.
+     */
+    private static final ThreadLocal<Handled> handledException =
+            ThreadLocal.withInitial(() -> new Handled(PyNone.INSTANCE, null));
 
     /** What a milestone has installed to answer imports the runtime cannot. */
     private static final List<ModuleFinder> finders = new ArrayList<>();
@@ -127,17 +142,51 @@ public final class PyRuntime {
 
     // --- the exception a handler is running for -----------------------------------------
 
-    /** The handled exception, or {@code None} where no handler is running. */
+    /**
+     * The exception the innermost handler that has one is running for: {@code
+     * _PyErr_GetTopmostException}.
+     *
+     * <p>Items holding nothing are stepped over rather than reported, which is what lets a generator
+     * parked with no handler of its own leave the caller's exception as the answer both to {@code
+     * sys.exc_info()} and to where an error raised inside it gets chained.
+     */
     public static PyObject handledException() {
-        return handledException.get();
+        Handled item = handledException.get();
+        while (item.value == PyNone.INSTANCE && item.outer != null) {
+            item = item.outer;
+        }
+        return item.value;
+    }
+
+    /** The head of the chain, which is what {@code PUSH_EXC_INFO} and a {@code throw} are read from. */
+    static PyObject handlerValue() {
+        return handledException.get().value;
     }
 
     /**
-     * Store the exception a handler is now running for, as {@code PUSH_EXC_INFO} and
+     * Store the exception the innermost handler is running for, as {@code PUSH_EXC_INFO} and
      * {@code POP_EXCEPT} do.
      */
     public static void setHandledException(PyObject value) {
-        handledException.set(value);
+        handledException.get().value = value;
+    }
+
+    /**
+     * Put a generator's own record at the head of the chain for the length of one step.
+     *
+     * <p>A new item rather than a swap of the head's value: CPython's {@code gi_exc_state} is an item with
+     * a {@code previous_item} link, so the caller's handler stays underneath it — out of reach of the two
+     * reads above, and back in reach the moment the step is over.
+     */
+    static void openHandlerItem(PyObject value) {
+        handledException.set(new Handled(value, handledException.get()));
+    }
+
+    /** Take the head off and hand back what it was holding, which is the generator's record to keep. */
+    static PyObject closeHandlerItem() {
+        Handled item = handledException.get();
+        handledException.set(item.outer);
+        return item.value;
     }
 
     // --- running code --------------------------------------------------------------------

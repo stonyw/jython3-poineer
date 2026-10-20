@@ -48,6 +48,18 @@ public final class Frame {
     PyFunction function;
 
     /**
+     * The generator this activation belongs to, or null while an ordinary call owns it.
+     *
+     * <p>Owning is more than keeping: {@code f_generator} answers the owner, and {@code frame.clear()}
+     * asks it what state it is in rather than deciding from the loop, because a generator keeps a frame
+     * after the run that parked it. Ownership also explains why this frame is never linked under the code
+     * that resumed it — CPython's {@code _PyFrame_Copy} leaves {@code previous} NULL and {@code
+     * YIELD_VALUE} unlinks the frame on the way out — so {@code f_back} of a generator's frame answers
+     * {@code None} however it is reached.
+     */
+    PyGenerator generator;
+
+    /**
      * The frame that called this one, which is what makes a Python stack exist.
      *
      * <p>CPython keeps the same link as {@code frame->previous} for the interpreter and {@code f_back}
@@ -73,6 +85,9 @@ public final class Frame {
 
     /** Whether {@code clear()} has already dropped this frame's names, which {@code f_locals} reports. */
     private boolean cleared;
+
+    /** Whether this frame is between two runs, which is the state a generator leaves it in. */
+    private boolean parked;
 
     Frame(PyCode code, PyDict globals, PyObject[] slots) {
         this(code, globals, (code.flags() & PyCode.CO_OPTIMIZED) == 0 ? globals : null, slots);
@@ -198,6 +213,54 @@ public final class Frame {
 
     void setIp(int ip) {
         this.ip = ip;
+    }
+
+    /**
+     * Leave this frame at {@code index}, with nothing of the run that parked it left behind.
+     *
+     * <p>The three pointers land on the same instruction on purpose, because CPython's {@code instr_ptr}
+     * does: both {@code RETURN_GENERATOR} and {@code YIELD_VALUE} step past themselves before they hand the
+     * frame over, so what a parked frame waits on is the {@code POP_TOP} after the one that made it, or the
+     * {@code RESUME} after the yield that stopped it. That instruction is what the next entry runs, what
+     * {@code f_lasti} gives back and what a traceback entry names — and the line a report prints for it is
+     * the yield's, because the compiler leaves the resume on the line the yield was written on.
+     *
+     * <p>Unlinking from the caller is the other half. A yield is an exit from the interpreter's stack, so
+     * nothing above this frame is there any more; the generator that owns it is what keeps it alive.
+     */
+    void park(int index) {
+        parked = true;
+        setIp(index);
+        setExecuting(index);
+        back = null;
+    }
+
+    /**
+     * Move the lookup site back onto the instruction that parked this frame, as an entry with an exception
+     * already in flight does.
+     *
+     * <p>{@code _PyEval_EvalFrame} with the throw flag set skips the resume and goes straight to the
+     * handler table, and the table is searched at {@code next_instr - 1}: the yield, not the resume the
+     * frame waits at. That is what runs a {@code finally} written around a yield when the exception comes
+     * in from outside, and what leaves a throw into a generator that never started with nowhere to be
+     * caught. The reported site stays on the resume, because a traceback entry keeps the offset the frame
+     * carries rather than the one the table was read at.
+     *
+     * <p>Both park sites are instructions that carry no cache entries of their own, so the unit before one
+     * is always the start of the instruction before it.
+     */
+    void lookUpFromPreviousUnit() {
+        executing = instructions().indexOfUnitAt(instructions().unitOffsetAt(executing) - 1);
+    }
+
+    /** Whether this frame is waiting to be entered again, rather than running or finished. */
+    boolean isParked() {
+        return parked;
+    }
+
+    /** Take this frame back off the park, which is the first thing an entry does. */
+    void unpark() {
+        parked = false;
     }
 
     /** The instruction an exception is looked up by: {@link #executing}, not the reported site. */

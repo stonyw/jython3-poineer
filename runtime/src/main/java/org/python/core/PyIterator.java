@@ -14,11 +14,36 @@ import java.util.List;
 public abstract class PyIterator extends PyObject {
 
     protected PyIterator() {
-        super(PyType.ITERATOR);
+        this(PyType.ITERATOR);
+    }
+
+    /**
+     * An iterator whose type is its own, which is what {@code generator} is: CPython declares a
+     * {@code PyType} with a {@code tp_iternext} of its own rather than reusing {@code iterator}.
+     */
+    protected PyIterator(PyType type) {
+        super(type);
     }
 
     /** @return the next value, or null when the iteration is over. */
     public abstract PyObject nextOrNull();
+
+    /**
+     * The exception the step that just ended this iteration was made of, or null when it simply ran out.
+     *
+     * <p>CPython keeps the difference inside {@code tp_iternext}: a generator whose body executes {@code
+     * return 42} comes back through {@code gen_iternext} with a {@code StopIteration} carrying 42, while a
+     * finished one returns null with no exception at all and {@code next()} has to invent the bare one. Two
+     * of {@code next}'s three outcomes are that difference, and {@code FOR_ITER} ignores it — CPython's
+     * loop ends the iteration on either.
+     *
+     * <p>An iterator that reports null here has already stopped, so the answer belongs to the step that
+     * stopped it: {@code next(it)} is asked after reading it, and a second read gives nothing, exactly as a
+     * second {@code next()} on a finished generator does.
+     */
+    public PyBaseException exhaustion() {
+        return null;
+    }
 
     /** {@code iter(it)} is {@code it}: an iterator is its own iterator. */
     @Override
