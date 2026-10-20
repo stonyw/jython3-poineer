@@ -18,6 +18,7 @@ import org.python.core.PyObject;
 import org.python.core.PyRaise;
 import org.python.core.PyRuntime;
 import org.python.core.PyStr;
+import org.python.core.TracebackReport;
 import org.python.javaclass.JavaInterop;
 import org.python.front.cpython314.Cpython314Compiler;
 
@@ -179,7 +180,12 @@ public final class jy3 {
 
         if (command != null) {
             PyRuntime.setArgv("-c", operands);
-            return execute(Cpython314Compiler.compileSource(command, "<string>"), null);
+            PyCode compiled = Cpython314Compiler.compileSource(command, "<string>");
+            // The command is the only copy of this source there is: a report of a failure in it has
+            // to quote it, because no file named <string> exists to read. CPython registers the same
+            // text in linecache, for the same reason.
+            TracebackReport.registerSource(compiled, command);
+            return execute(compiled, null);
         }
         if (stdin) {
             PyRuntime.setArgv("-", operands);
@@ -253,23 +259,18 @@ public final class jy3 {
     /**
      * Report an exception that outlived every {@code except}.
      *
-     * <p>Only the complaint is printed, not the frames it travelled through. The chain those frames are
-     * read from is kept, and one entry per frame an error exits; formatting it as CPython does — file,
-     * line, source text and the anchors under the failing expression — is the next slice.
-     * {@code SystemExit} is not an error at all, and its argument is the status, exactly as CPython's is.
+     * <p>{@link TracebackReport} writes what CPython's own printer writes: the header, one entry per
+     * frame the error travelled out of with the source line quoted under it, the chain of causes and
+     * contexts, and the complaint last. {@code SystemExit} is not an error at all, and its argument is
+     * the status, exactly as CPython's is — which is why the status rule is applied before any of that
+     * text is produced, and why {@code sys.exit(3)} prints nothing.
      */
     private static int reportUncaught(PyRaise raised) {
         PyBaseException value = raised.value();
         if (value.exceptionType().matches(ExceptionTypes.SYSTEM_EXIT)) {
             return exitStatus(value);
         }
-        String message = value.str();
-        // The qualified name, so a Java failure reports java.lang.IllegalStateException and a Python
-        // class outside builtins would report its own module too.
-        write(
-                value.exceptionType().qualifiedName()
-                        + (message.isEmpty() ? "" : ": " + message)
-                        + "\n");
+        TracebackReport.print(value);
         return FAILED;
     }
 

@@ -1,7 +1,6 @@
 package org.python.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.python.util.Jy3Process.lastLine;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -22,10 +21,11 @@ import org.python.util.Jy3Process.Result;
  * down in 2026. That is the whole value of a differential test and the reason these run the launcher
  * as a process: {@code print} reaches the OS descriptor, which is what a user sees.
  *
- * <p>Two cases compare less than the whole stream on purpose. An uncaught exception is matched on its
- * last line only, because the frames a traceback is printed from are kept but not yet rendered, and a
- * usage error is matched on its exit status, because the program's own name is in the message. Both gaps
- * are named where they are taken rather than left for someone to discover.
+ * <p>One case compares less than the whole stream on purpose: a usage error is matched on its exit status
+ * and on the tail of its message, because the program's own name and the working directory are both in
+ * the sentence. Everything else is compared byte for byte, the report an uncaught exception leaves on
+ * stderr included — that report is M3 slice 9's, and it is matched against the reference asked to leave
+ * its anchors out.
  */
 class Jy3LauncherTest {
 
@@ -162,10 +162,10 @@ class Jy3LauncherTest {
      * M3's language surface, one file per area, under {@code src/test/resources/m3/corpus}.
      *
      * <p>The same rule as M1's corpus: no expectation is written down, the reference interpreter that
-     * compiled the script also answers it. Each script here ends on its own two feet, because an
-     * escaped exception would be comparing traceback lines that a later slice has to build. Nothing here
-     * prints a value whose {@code repr} carries an address, which is the one thing the two interpreters
-     * can never agree on.
+     * compiled the script also answers it. Each script here ends on its own two feet; the ones that end on
+     * an escaped exception live beside them in {@code m3/uncaught}, where the report is the thing being
+     * compared. Nothing here prints a value whose {@code repr} carries an address, which is the one thing
+     * the two interpreters can never agree on.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("m3Corpus")
@@ -194,14 +194,66 @@ class Jy3LauncherTest {
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
+        answersExactlyAsCpython(folder, scriptName, cpythonCommand());
+    }
+
+    private void answersExactlyAsCpython(String folder, String scriptName, List<String> command)
+            throws Exception {
         Path script = write(scriptName, resource(folder + "/" + scriptName));
 
-        Result reference = cpython(script);
+        Result reference = Jy3Process.run(work, command, List.of(script.toString()), null);
         Result jy3 = jy3(script);
 
         assertThat(jy3.exit()).as("%s exit", scriptName).isEqualTo(reference.exit());
         assertThat(jy3.out()).as("%s stdout", scriptName).isEqualTo(reference.out());
         assertThat(jy3.err()).as("%s stderr", scriptName).isEqualTo(reference.err());
+    }
+
+    /**
+     * M3 slice 9's report: an exception nobody caught, printed the way CPython prints it.
+     *
+     * <p>The reference runs with {@code -X no_debug_ranges}, and that is not a convenience. CPython's
+     * default report puts an anchor line under each frame — the {@code ~~~^~~~} of PEP 657, built from
+     * the column ranges this runtime does not carry yet — and switching the ranges off makes the
+     * interpreter answer with the report its own C printer writes, which is the one {@code jy3}
+     * transcribes. The missing anchor is the named difference of this slice and is recorded in PLAN.md.
+     *
+     * <p>Unlike the M3 corpus, every script here ends on an uncaught exception: the report is what is
+     * being compared. Stdout is compared alongside it because a script catches and prints before it
+     * fails, and the absolute path each frame names is the temp directory's own spelling of itself, so
+     * these cases cover that too.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("uncaughtReports")
+    void anUncaughtExceptionIsReportedAsCpythonReportsIt(String scriptName) throws Exception {
+        answersExactlyAsCpython("m3/uncaught", scriptName, cpythonWithoutAnchorsCommand());
+    }
+
+    private static List<String> uncaughtReports() {
+        return List.of(
+                "01_frames.py",
+                "02_cause.py",
+                "03_handled_then_raise.py",
+                "04_context.py",
+                "05_operation_in_handler.py",
+                "06_from_none.py",
+                "07_limit.py",
+                "08_repeated_line.py",
+                "09_notes.py",
+                "10_notes_tuple.py",
+                "11_notes_string.py",
+                "12_empty_message.py",
+                "13_str_fails.py",
+                "14_type_names.py",
+                "15_deep_chain.py",
+                "16_context_of_cause.py",
+                "17_zero_limit.py",
+                "18_cleared_traceback.py",
+                "19_bare_raise_without_an_exception.py",
+                "20_exit_status.py",
+                "21_limit_that_is_not_a_number.py",
+                "22_limit_of_true_is_one_frame.py",
+                "23_context_cycle.py");
     }
 
     @Test
@@ -238,22 +290,28 @@ class Jy3LauncherTest {
     }
 
     /**
-     * Only the last line of an uncaught exception is compared.
+     * The whole report is compared, not the complaint alone.
      *
-     * <p>The frame lines above it are a later slice: the chain they are read from is kept, but the
-     * launcher prints only the exception itself, so this test compares the one line jy3 answers.
-     * Comparing the whole stream would either fail the build or buy a half-rendered traceback.
+     * <p>The frame lines above the message are what M3 slice 9 added, and they are why this test asks the
+     * reference for its anchor-free report: see {@link #anUncaughtExceptionIsReportedAsCpythonReportsIt}.
      */
     @Test
     void anUncaughtExceptionNamesItsTypeAndFails() throws Exception {
         Path script = write("raises.py", "raise ValueError('bad value')\n");
 
         Result jy3 = jy3(script);
-        Result reference = cpython(script);
+        Result reference = cpythonWithoutAnchors(List.of(script.toString()));
 
         assertThat(jy3.exit()).isEqualTo(1);
-        assertThat(lastLine(jy3.err())).isEqualTo(lastLine(reference.err()));
-        assertThat(lastLine(jy3.err())).isEqualTo("ValueError: bad value");
+        assertThat(jy3.err()).isEqualTo(reference.err());
+        assertThat(jy3.err())
+                .isEqualTo(
+                        "Traceback (most recent call last):\n"
+                                + "  File \""
+                                + script.toAbsolutePath()
+                                + "\", line 1, in <module>\n"
+                                + "    raise ValueError('bad value')\n"
+                                + "ValueError: bad value\n");
     }
 
     /**
@@ -261,9 +319,11 @@ class Jy3LauncherTest {
      * words it.
      *
      * <p>A corpus script cannot carry these: one uncaught exception ends the program, so every
-     * wording needs a process of its own. Only the last line is compared, because the traceback above it
-     * is a later M3 slice. The passing lines are here for the same reason as the refusals — each one used
-     * to answer wrongly rather than loudly.
+     * wording needs a process of its own. The whole report is compared, which makes these the cases that
+     * cover a {@code <string>} frame: a command has no file to read a source line from, so the command
+     * itself has to be what the report quotes, the way CPython hands the text to {@code linecache}. The
+     * passing lines are here for the same reason as the refusals — each one used to answer wrongly rather
+     * than loudly.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("signatureCases")
@@ -271,11 +331,11 @@ class Jy3LauncherTest {
         List<String> arguments = commandOptions(List.of(program), List.of());
 
         Result jy3 = jy3(arguments);
-        Result reference = cpython(arguments);
+        Result reference = cpythonWithoutAnchors(arguments);
 
         assertThat(jy3.exit()).as(program).isEqualTo(reference.exit());
         assertThat(jy3.out()).as(program).isEqualTo(reference.out());
-        assertThat(lastLine(jy3.err())).as(program).isEqualTo(lastLine(reference.err()));
+        assertThat(jy3.err()).as(program).isEqualTo(reference.err());
     }
 
     private static List<String> signatureCases() {
@@ -388,12 +448,33 @@ class Jy3LauncherTest {
         return Jy3Process.run(work, cpythonCommand(), arguments, stdin);
     }
 
+    /**
+     * The reference asked for the report without anchors: {@code -X no_debug_ranges} leaves the PEP 657
+     * ranges unrecorded, and the report CPython then writes is the one its own C printer writes.
+     */
+    private Result cpythonWithoutAnchors(List<String> arguments) throws Exception {
+        return Jy3Process.run(work, cpythonWithoutAnchorsCommand(), arguments, null);
+    }
+
+    private static List<String> cpythonWithoutAnchorsCommand() {
+        return cpythonCommand(List.of("-X", "no_debug_ranges"));
+    }
+
     private static List<String> cpythonCommand() {
+        return cpythonCommand(List.of());
+    }
+
+    /** The reference interpreter, with any interpreter options ahead of the script. */
+    private static List<String> cpythonCommand(List<String> options) {
         String configured = System.getProperty("jython3.refPython");
         if (configured == null || configured.isEmpty()) {
             configured = System.getenv("JY3_REF_PYTHON");
         }
-        return List.of(configured == null || configured.isEmpty() ? "python3.14" : configured);
+        List<String> command =
+                new ArrayList<>(
+                        List.of(configured == null || configured.isEmpty() ? "python3.14" : configured));
+        command.addAll(options);
+        return command;
     }
 
     private static List<String> commandOptions(List<String> program, List<String> arguments) {

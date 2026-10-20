@@ -211,6 +211,18 @@ public final class PyRuntime {
         sysModule.set("argv", PyList.of(values));
     }
 
+    /**
+     * {@code sys.name}, or null where the module has no such entry.
+     *
+     * <p>{@code _PySys_GetAttrString} is how CPython reaches {@code sys.tracebacklimit} from the
+     * traceback printer, and this is the same read: a knob a script sets, not a name the runtime may
+     * assume is there.
+     */
+    public static PyObject sysAttribute(String name) {
+        startup();
+        return sysModule.get(name);
+    }
+
     /** Drain both streams, which a process about to exit must do because stdout is block-buffered. */
     public static void flushStreams() {
         if (stdout != null) {

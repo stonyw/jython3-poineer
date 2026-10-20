@@ -86,8 +86,8 @@ public final class Jy3Process {
     /**
      * The last non-empty line of a stream, which is where a Python report puts its complaint.
      *
-     * <p>The frames a traceback prints are kept but not yet rendered, so the two things a test can
-     * compare today are the last line and the exit code.
+     * <p>The frames above it are rendered, but an interop failure's frames name Java code that this test
+     * is not comparing, so those cases ask for the complaint alone.
      */
     public static String lastLine(String text) {
         String trimmed = text.strip();

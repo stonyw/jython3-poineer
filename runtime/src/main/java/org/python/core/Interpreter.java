@@ -660,7 +660,7 @@ public final class Interpreter {
                         // was caught in keeps the traceback it came in with, so this frame is not entered
                         // again on top of it.
                         logsFrame = false;
-                        throw PyRaise.of(asException(again));
+                        throw PyRaise.reraise(asException(again));
                     }
 
                     // --- the with statement --------------------------------------------------
@@ -1190,10 +1190,11 @@ public final class Interpreter {
      *
      * <p>CPython keeps two pieces of exception state, and only the second is Python-visible: the
      * exception in flight ({@code tstate->current_exception}) and the exception a handler is running
-     * for ({@code exc_info->exc_value}). A raise reads the second for its implicit {@code __context__}
-     * and leaves it alone — {@code PUSH_EXC_INFO} in the handler that catches this one is what changes
-     * it — and a bare {@code raise} re-raises exactly that second one, which is why a bare raise works
-     * in a function called from a handler.
+     * for ({@code exc_info->exc_value}). A raise leaves the second alone — {@code PUSH_EXC_INFO} in the
+     * handler that catches this one is what changes it — and a bare {@code raise} re-raises exactly that
+     * second one, which is why a bare raise works in a function called from a handler. The implicit
+     * {@code __context__} is not taken here: {@code do_raise} ends by calling {@code _PyErr_SetObject}
+     * the way every other error does, so {@link PyRaise#of} links it for both.
      */
     private static Raised raise(Frame frame, int count) {
         if (count == 0) {
@@ -1201,9 +1202,11 @@ public final class Interpreter {
                 // Nothing to repeat is an error of its own, and CPython takes it the way an error is
                 // taken: through the label that puts this frame in the traceback.
                 return new Raised(
-                        Slots.runtimeError("No active exception to re-raise"), true);
+                        Slots.runtimeError("No active exception to reraise"), true);
             }
-            return new Raised(PyRaise.of(active), false);
+            // _PyErr_SetRaisedException rather than _PyErr_SetObject: the value keeps the context it was
+            // made with instead of being chained onto itself.
+            return new Raised(PyRaise.reraise(active), false);
         }
         PyObject cause = count == 2 ? frame.pop() : null;
         PyBaseException raised = asException(frame.pop());
@@ -1212,11 +1215,6 @@ public final class Interpreter {
             raised.setCause(
                     cause instanceof PyNone ? null : asException(
                             cause, "exception causes must derive from BaseException"));
-        }
-        if (PyRuntime.handledException() instanceof PyBaseException previous
-                && previous != raised) {
-            cutContextCycle(previous, raised);
-            raised.setContext(previous);
         }
         return new Raised(PyRaise.of(raised), true);
     }
@@ -1232,40 +1230,6 @@ public final class Interpreter {
      * fails the way any other instruction fails and is logged.
      */
     private record Raised(PyRaise error, boolean logged) {}
-
-    /**
-     * CPython's guard against a {@code __context__} cycle: walk the handled exception's own chain and
-     * cut it where it would reach the one about to be raised.
-     *
-     * <p>Without the cut, {@code except E: e.__context__ = e; raise F} leaves a chain a report cannot
-     * finish walking. The slow pointer is CPython's own answer to a cycle that already exists, which the
-     * walk would otherwise spin on forever.
-     */
-    private static void cutContextCycle(PyBaseException handled, PyBaseException raised) {
-        PyBaseException slow = handled;
-        boolean moveSlow = false;
-        for (PyBaseException at = handled; ; ) {
-            PyBaseException next = at.context() instanceof PyBaseException following ? following : null;
-            if (next == null) {
-                return;
-            }
-            if (next == raised) {
-                at.setContext(null);
-                return;
-            }
-            at = next;
-            if (moveSlow) {
-                if (!(slow.context() instanceof PyBaseException following)) {
-                    return;
-                }
-                slow = following;
-                if (slow == at) {
-                    return;
-                }
-            }
-            moveSlow = !moveSlow;
-        }
-    }
 
     /**
      * Whether {@code clause} catches {@code error}, which is CPython's two steps in its own order:
