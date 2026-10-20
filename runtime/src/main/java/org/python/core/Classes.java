@@ -599,15 +599,18 @@ final class Classes {
 
     /**
      * {@code tp_new}: the class's own {@code __new__} with the class as its first argument,
-     * {@code type_new} for a metaclass that declares none, and {@code object.__new__} otherwise.
+     * {@code type_new} for a metaclass that declares none, {@code BaseException_new} for an exception
+     * subclass, and {@code object.__new__} otherwise.
      *
-     * <p>The middle case is what makes a metaclass a metaclass: {@code Meta('C', (), {})} inherits
-     * {@code type}'s creator rather than making a value of {@code Meta}, so the class it hands back is
-     * the instance, and its own class is {@code Meta}. The fallback is the one place a constructor
-     * refuses arguments before a method has said anything about them, and it refuses only when nothing in
-     * the order declares {@code __init__} either — CPython's {@code object_new} checks the init slot for
-     * exactly that reason, so that a class with an {@code __init__} of its own gets the arity message
-     * that names the method rather than one that names the class.
+     * <p>The middle two cases are what the two families inherit instead of declaring: a metaclass takes
+     * the three arguments and makes a class rather than a value of {@code Meta}, so the class it hands
+     * back is the instance and its own class is {@code Meta}; an exception subclass takes any number of
+     * arguments and keeps them, which is why {@code Bare("x")} is a value and {@code Bare("x") == 1} is
+     * not an arity complaint about a class that declares nothing. The last case is the one place a
+     * constructor refuses arguments before a method has said anything about them, and it refuses only
+     * when nothing in the order declares {@code __init__} either — CPython's {@code object_new} checks
+     * the init slot for exactly that reason, so that a class with an {@code __init__} of its own gets the
+     * arity message that names the method rather than one that names the class.
      */
     private static PyObject allocate(PyClass kind, PyObject[] args, PyTuple kwNames) {
         PyObject declared = Specials.lookUp(kind, "__new__");
@@ -622,6 +625,15 @@ final class Classes {
             PyObject built = newType(kind, args, names);
             typeInit(args, names);
             return built;
+        }
+        if (kind.matches(ExceptionTypes.BASE_EXCEPTION)) {
+            // CPython's exception subclasses inherit `BaseException`'s creator rather than `object`'s,
+            // which keeps the arguments on the value: `Bare("x").args` is `("x",)` even when the class
+            // declares no `__init__` at all, and that is what makes a written exception raisable.
+            if (kwNames != null && kwNames.size() > 0) {
+                throw Slots.typeError("%s() takes no keyword arguments", kind.name());
+            }
+            return new PyBaseException(kind, args);
         }
         if (excess(args, kwNames) && !Specials.defines(kind, "__init__")) {
             throw Slots.typeError("%s() takes no arguments", kind.name());
