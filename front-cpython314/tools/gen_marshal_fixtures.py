@@ -368,6 +368,13 @@ def render_code(co, shared):
         ),
         "  wordcode=" + co.co_code.hex(),
         "  linetable=" + co.co_linetable.hex(),
+        # The same table, read by CPython's own walker: one line per code unit, which is the first
+        # field of `co_positions()` and what `PyCode_Addr2Line` answers for that unit. A unit with no
+        # location of its own — an inline cache, the run past the last instruction — reads as ``-``.
+        "  unitlines=" + " ".join(
+            "-" if position[0] is None else str(position[0])
+            for position in co.co_positions()
+        ),
         "  exceptiontable=" + co.co_exceptiontable.hex(),
         # The same bytes, read by CPython's own table parser. dis reports byte offsets and returns
         # ``lasti`` as a bool; the reader under test keeps code units and a bit, and doubles on the

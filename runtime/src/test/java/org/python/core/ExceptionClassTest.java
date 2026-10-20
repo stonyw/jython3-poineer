@@ -263,8 +263,8 @@ class ExceptionClassTest {
                 "TypeError: __traceback__ must be a traceback or None",
                 () -> Slots.call(TypeDict.WITH_TRACEBACK, new PyObject[] {held, PyInt.ONE}, null));
 
-        // A traceback is the object a raise builds from the frames above it, which this runtime does not
-        // keep yet, so the only value the field takes is the absence of one.
+        // A chain is hung on the value as the error leaves each frame it travels out of, so a value that
+        // was made rather than raised has none, and the field reads the absence of one.
         assertThat(Slots.getAttr(held, "__traceback__")).isSameAs(PyNone.INSTANCE);
         refuses(
                 "TypeError: __traceback__ must be a traceback or None", () -> held.setAttr("__traceback__", PyInt.ONE));

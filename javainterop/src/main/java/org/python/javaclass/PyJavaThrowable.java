@@ -19,9 +19,10 @@ import org.python.core.PyStr;
  * has to bind {@code getMessage} to the value Python is holding, or the interpreter hands it its
  * receiver twice. {@code args} and {@code __cause__} stay Python's own.
  *
- * <p>A Java stack trace is not a Python traceback, so {@code e.__traceback__} stays {@code None} as it
- * is for every exception in this runtime; {@code e.getStackTrace()} is the Java one, and it is honest
- * about which side of the boundary it came from.
+ * <p>A Java stack trace is not a Python traceback, and the two stay apart: {@code getStackTrace()} is the
+ * Java one and is honest about which side of the boundary it came from, while {@code __traceback__} is
+ * filled with the Python frames the failure travelled out of. That is CPython's answer for an exception
+ * made by a C call, whose chain starts at the frame that made the call and names no C frame at all.
  */
 public final class PyJavaThrowable extends PyBaseException {
 

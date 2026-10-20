@@ -262,14 +262,15 @@ public final class PyRuntime {
     /**
      * {@code sys.exc_info()}: the handled exception as a {@code (type, value, traceback)} triple.
      *
-     * <p>The traceback is {@code None} because a traceback is rebuilt from the frames above the raise,
-     * which this runtime does not yet keep; type and value are exactly what {@code PUSH_EXC_INFO} stored.
+     * <p>The third is the traceback the exception travelled in on, which is the one thing a handler can
+     * report that a fresh exception could not: it names the frames above the raise, including this handler's
+     * own frame at the call that failed. Type and value are exactly what {@code PUSH_EXC_INFO} stored.
      */
     private static PyObject excInfo() {
         if (!(handledException() instanceof PyBaseException error)) {
             return PyTuple.of(PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE);
         }
-        return PyTuple.of(error.getType(), error, PyNone.INSTANCE);
+        return PyTuple.of(error.getType(), error, error.traceback());
     }
 
     /**

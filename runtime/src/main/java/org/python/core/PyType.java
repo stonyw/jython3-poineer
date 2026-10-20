@@ -55,6 +55,16 @@ public class PyType extends PyObject {
     public static final PyType FROZENSET = builtin("frozenset");
     public static final PyType SLICE = builtin("slice");
     public static final PyType CODE = builtin("code");
+    /**
+     * {@code sys.exc_info()[2]} and {@code e.__traceback__}.
+     *
+     * <p>Named here because a traceback is a value Python reads attributes off, and because CPython's
+     * {@code PyTraceBack_Type} is a type in {@code builtins} like any other — its values are instances of
+     * it and nothing else.
+     */
+    public static final PyType TRACEBACK = builtin("traceback");
+    /** One activation of one code object, as Python sees it through {@code tb_frame} and {@code f_back}. */
+    public static final PyType FRAME = builtin("frame");
     public static final PyType FUNCTION = builtin("function");
     public static final PyType BUILTIN_FUNCTION = builtin("builtin_function_or_method");
     public static final PyType METHOD = builtin("method");

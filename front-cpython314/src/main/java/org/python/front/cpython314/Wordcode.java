@@ -9,6 +9,10 @@ import org.python.core.Opcodes;
  *
  * Decoding happens once, eagerly, into parallel arrays; {@link CodeInstructions} is then pure index
  * arithmetic, so the interpreter never sees a unit, a cache or an extension.
+ *
+ * <p>The line table arrives with the code array because the two are read together: every question about
+ * where an instruction came from is answered here, in whichever of the two conventions — code units for
+ * the exception table, bytes for a traceback — the answer is asked in.
  */
 final class Wordcode implements CodeInstructions {
 
@@ -17,15 +21,25 @@ final class Wordcode implements CodeInstructions {
     private final int[] units;
     /** Instruction index per code unit, or -1 for a unit that starts nothing. */
     private final int[] indexByUnit;
+    private final LineTable lines;
+    private final int firstLine;
 
-    private Wordcode(int[] opcodes, int[] args, int[] units, int[] indexByUnit) {
+    private Wordcode(
+            int[] opcodes,
+            int[] args,
+            int[] units,
+            int[] indexByUnit,
+            LineTable lines,
+            int firstLine) {
         this.opcodes = opcodes;
         this.args = args;
         this.units = units;
         this.indexByUnit = indexByUnit;
+        this.lines = lines;
+        this.firstLine = firstLine;
     }
 
-    static Wordcode decode(byte[] code) {
+    static Wordcode decode(byte[] code, byte[] lineTable, int firstLine) {
         if ((code.length & 1) != 0) {
             throw MarshalFormatException.badData("code array has an odd length");
         }
@@ -57,7 +71,9 @@ final class Wordcode implements CodeInstructions {
                 java.util.Arrays.copyOf(opcodes, n),
                 java.util.Arrays.copyOf(args, n),
                 java.util.Arrays.copyOf(units, n),
-                indexByUnit);
+                indexByUnit,
+                new LineTable(lineTable, firstLine, total),
+                firstLine);
     }
 
     @Override
@@ -83,6 +99,24 @@ final class Wordcode implements CodeInstructions {
     @Override
     public int indexOfUnitAt(int unit) {
         return unit >= 0 && unit < indexByUnit.length ? indexByUnit[unit] : -1;
+    }
+
+    /** The one place the two conventions meet: a traceback counts bytes, this array counts units. */
+    @Override
+    public int lastiAt(int index) {
+        return 2 * units[index];
+    }
+
+    @Override
+    public int lineAtLasti(int lasti) {
+        // An offset from before the first instruction names the line the code object starts on, which
+        // is what CPython's `PyCode_Addr2Line` answers for a frame that never executed anything.
+        return lasti < 0 ? firstLine : lines.lineAtUnit(lasti / 2);
+    }
+
+    /** One line number per code unit, for the expectation file to compare against CPython's reading. */
+    int[] lineByUnit() {
+        return lines.lineByUnit();
     }
 
     /**

@@ -47,6 +47,33 @@ public final class Frame {
     /** The function whose closure fills this frame's free variables; null for a module frame. */
     PyFunction function;
 
+    /**
+     * The frame that called this one, which is what makes a Python stack exist.
+     *
+     * <p>CPython keeps the same link as {@code frame->previous} for the interpreter and {@code f_back}
+     * for Python, and needs it for two things: a traceback is one entry per frame an error travelled
+     * out of, so the entries have to be read back down the chain, and {@code tb_frame.f_back} is a name
+     * Python asks. Null only for the outermost frame a run starts, which is where {@code f_back} reads
+     * {@code None}.
+     */
+    private Frame back;
+
+    /**
+     * This activation as Python sees it, made the first time anything asks.
+     *
+     * <p>One per frame, not one per ask, because CPython materialises the {@code PyFrameObject} once and
+     * every traceback entry for this activation holds that same object: {@code a.tb_frame is b.tb_frame}
+     * is true for two entries of one call, and {@code fr.f_back is} the frame a caller's entry names is
+     * true as well.
+     */
+    private PyFrame frameObject;
+
+    /** Whether this frame has run its last instruction, which is what {@code frame.clear()} asks. */
+    private boolean finished;
+
+    /** Whether {@code clear()} has already dropped this frame's names, which {@code f_locals} reports. */
+    private boolean cleared;
+
     Frame(PyCode code, PyDict globals, PyObject[] slots) {
         this(code, globals, (code.flags() & PyCode.CO_OPTIMIZED) == 0 ? globals : null, slots);
     }
@@ -80,6 +107,87 @@ public final class Frame {
     /** The dictionary {@code LOAD_NAME} and {@code STORE_NAME} address, or null when there is none. */
     public PyDict locals() {
         return locals;
+    }
+
+    /** The frame whose call this one is an activation of, or null for the outermost one. */
+    Frame back() {
+        return back;
+    }
+
+    /**
+     * Link this frame under the one that called it, as CPython does when it pushes a frame.
+     *
+     * <p>Set by {@link Interpreter#run}, which is where the caller is known: the Java recursion that runs
+     * a callee keeps the caller in a thread-local, and the link a traceback walks is that same one.
+     */
+    void setBack(Frame caller) {
+        this.back = caller;
+    }
+
+    /**
+     * {@code f_locals}, as the frame's own view of its names.
+     *
+     * <p>A module or class-body frame answers with the dictionary it writes its names into, which is the
+     * live one — {@code fr.f_locals is fr.f_globals} is true at module level because CPython's frame
+     * holds the same pointer twice. A function frame has no dictionary, and CPython builds a proxy over
+     * its slots on request; this reads the slots into a new dict in the same order, following a cell to
+     * what it holds and leaving a name out while its slot is empty.
+     */
+    PyDict localValues() {
+        if (cleared) {
+            return PyDict.empty();
+        }
+        if (locals != null) {
+            return locals;
+        }
+        PyDict names = PyDict.empty();
+        PyTuple localsPlus = code.localNames();
+        for (int i = 0; i < localsPlus.size() && i < slots.length; i++) {
+            PyObject value = slots[i] instanceof PyCell cell ? cell.value() : slots[i];
+            if (value != null) {
+                names.put((PyStr) localsPlus.at(i), value);
+            }
+        }
+        return names;
+    }
+
+    // --- frame object ----------------------------------------------------------------------
+
+    /**
+     * This activation as a Python value, made once and kept.
+     *
+     * <p>Every traceback entry for this frame hands out the same object, and so does {@code f_back} from
+     * the entry above it, which is the identity CPython's one {@code frame_obj} per activation gives.
+     */
+    PyFrame frameObject() {
+        if (frameObject == null) {
+            frameObject = new PyFrame(this);
+        }
+        return frameObject;
+    }
+
+    /** Called once this frame's loop is over, so that {@code frame.clear()} can tell it from a live one. */
+    void finish() {
+        finished = true;
+    }
+
+    /** Whether Python is still running this activation. */
+    boolean isFinished() {
+        return finished;
+    }
+
+    /**
+     * Drop every name this frame holds, which is all {@code frame.clear()} does to a finished frame.
+     *
+     * <p>The slots go to null — including the cells, so a closure made here loses its reference the way
+     * CPython's {@code frame_tp_clear} does — and the dictionary a module or class-body frame shared
+     * stops being the frame's own answer. It is not emptied: CPython clears the frame's <em>pointer</em>
+     * to it, so {@code f_locals} reads back an empty dict while {@code f_globals} still holds every name
+     * the module has.
+     */
+    void clearLocals() {
+        java.util.Arrays.fill(slots, null);
+        cleared = true;
     }
 
     // --- instruction pointer -------------------------------------------------------------
@@ -121,6 +229,27 @@ public final class Frame {
     /** The reported site, in the units a handler's lasti is pushed in. */
     int unitRaisedAt() {
         return instructions().unitOffsetAt(raisedAt);
+    }
+
+    /**
+     * The reported site as a traceback and {@code f_lasti} keep it: in bytes.
+     *
+     * <p>CPython's one field answers both — {@code instr_ptr} minus the start of the code, times the
+     * width of a unit — and it keeps answering it after the frame has run its last instruction, which is
+     * why a dead frame reached through {@code tb_frame} still names where it stopped.
+     */
+    int lasti() {
+        return instructions().lastiAt(raisedAt);
+    }
+
+    /**
+     * {@code f_lineno}: the line the reported site was compiled from, or -1 where it has no line.
+     *
+     * <p>Live rather than remembered, exactly as CPython reads it: a frame that caught an exception and
+     * went on executing reports the line it is on now, not the one the traceback entry below it names.
+     */
+    int line() {
+        return instructions().lineAtLasti(lasti());
     }
 
     CodeInstructions instructions() {

@@ -23,9 +23,9 @@ import org.python.util.Jy3Process.Result;
  * as a process: {@code print} reaches the OS descriptor, which is what a user sees.
  *
  * <p>Two cases compare less than the whole stream on purpose. An uncaught exception is matched on its
- * last line only, because a traceback needs the frame chain above the raise and jy3 has only the
- * exception to print, and a usage error is matched on its exit status, because the program's own name is
- * in the message. Both gaps are named where they are taken rather than left for someone to discover.
+ * last line only, because the frames a traceback is printed from are kept but not yet rendered, and a
+ * usage error is matched on its exit status, because the program's own name is in the message. Both gaps
+ * are named where they are taken rather than left for someone to discover.
  */
 class Jy3LauncherTest {
 
@@ -189,7 +189,8 @@ class Jy3LauncherTest {
                 "12_metaclass.py",
                 "13_class_hooks.py",
                 "14_with.py",
-                "15_exceptions.py");
+                "15_exceptions.py",
+                "16_traceback.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
@@ -239,9 +240,9 @@ class Jy3LauncherTest {
     /**
      * Only the last line of an uncaught exception is compared.
      *
-     * <p>The frame lines above it are a later slice: a traceback is rebuilt from the frame chain above
-     * the raise, which jy3 does not keep yet, so it has only the exception to print. Comparing the whole
-     * stream would either fail the build or buy a fake traceback.
+     * <p>The frame lines above it are a later slice: the chain they are read from is kept, but the
+     * launcher prints only the exception itself, so this test compares the one line jy3 answers.
+     * Comparing the whole stream would either fail the build or buy a half-rendered traceback.
      */
     @Test
     void anUncaughtExceptionNamesItsTypeAndFails() throws Exception {
@@ -260,9 +261,9 @@ class Jy3LauncherTest {
      * words it.
      *
      * <p>A corpus script cannot carry these: one uncaught exception ends the program, so every
-     * wording needs a process of its own. Only the last line is compared, because the traceback above
-     * it is M3. The passing lines are here for the same reason as the refusals — each one used to
-     * answer wrongly rather than loudly.
+     * wording needs a process of its own. Only the last line is compared, because the traceback above it
+     * is a later M3 slice. The passing lines are here for the same reason as the refusals — each one used
+     * to answer wrongly rather than loudly.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("signatureCases")

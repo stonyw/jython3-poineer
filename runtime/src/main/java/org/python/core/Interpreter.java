@@ -52,12 +52,18 @@ public final class Interpreter {
      * <p>An exception this frame has no handler for leaves by the Java carry-over: it escapes here and
      * is caught by the caller's own {@code run}, whose table is asked about the call that failed.
      *
+     * <p>Two things happen around the loop that the loop itself does not need and Python does. The frame
+     * is linked under the one that called it, which is what makes a Python stack exist for a traceback to
+     * walk and for {@code f_back} to answer; and it is marked finished on the way out, by any exit, which
+     * is the only thing {@code frame.clear()} can point at to tell a dead activation from a live one.
+     *
      * @return the value Python returned from the code object
      */
     public static PyObject run(Frame frame) {
         CodeInstructions code = frame.instructions();
         int limit = code.length();
         Frame caller = EXECUTING.get();
+        frame.setBack(caller);
         EXECUTING.set(frame);
         try {
             return interpret(frame, code, limit);
@@ -65,6 +71,7 @@ public final class Interpreter {
             throw PyRaise.raise(
                     ExceptionTypes.RECURSION_ERROR, "maximum recursion depth exceeded");
         } finally {
+            frame.finish();
             EXECUTING.set(caller);
         }
     }
@@ -78,10 +85,17 @@ public final class Interpreter {
      * iteration, so the handler runs in the frame that raised with the stack the compiler expected.
      */
     private static PyObject interpret(Frame frame, CodeInstructions code, int limit) {
+        // Whether the exception leaving this instruction gets this frame into the traceback. It is a
+        // local rather than a property of the exception because CPython's answer is a `goto`: only the two
+        // ways a frame repeats an exception that already carries a traceback — a bare `raise` and a
+        // `RERAISE` — jump straight to the handler table without logging, and every other failure,
+        // including a call into Java that raises, passes the way that logs.
+        boolean logsFrame = true;
         while (frame.ip() < limit) {
             int index = frame.ip();
             frame.setIp(index + 1);
             frame.setExecuting(index);
+            logsFrame = true;
             int opcode = code.opcodeAt(index);
             int arg = code.argAt(index);
             try {
@@ -601,9 +615,11 @@ public final class Interpreter {
                     // --- returning and raising ----------------------------------------------
                     case Opcodes.RETURN_VALUE:
                         return frame.pop();
-                    case Opcodes.RAISE_VARARGS:
-                        raise(frame, arg);
-                        break;
+                    case Opcodes.RAISE_VARARGS: {
+                        Raised raised = raise(frame, arg);
+                        logsFrame = raised.logged();
+                        throw raised.error();
+                    }
 
                     // --- handling an exception ---------------------------------------------
                     //
@@ -640,6 +656,10 @@ public final class Interpreter {
                             // why moving the report site must not move the lookup site.
                             frame.restoreRaisedAt(lastiUnit(frame, arg));
                         }
+                        // The other jump past the logging: an exception coming back out of the handler it
+                        // was caught in keeps the traceback it came in with, so this frame is not entered
+                        // again on top of it.
+                        logsFrame = false;
                         throw PyRaise.of(asException(again));
                     }
 
@@ -738,6 +758,9 @@ public final class Interpreter {
                         throw notCovered(opcode, arg);
                 }
             } catch (PyRaise raised) {
+                if (logsFrame) {
+                    PyTraceback.logFrame(frame, raised.value());
+                }
                 unwind(frame, raised);
             }
         }
@@ -1162,8 +1185,8 @@ public final class Interpreter {
     }
 
     /**
-     * {@code RAISE_VARARGS}: turn what is on the stack into an exception and let the loop's
-     * {@code catch} take it to the table.
+     * {@code RAISE_VARARGS}: turn what is on the stack into an exception, and say whether this frame is
+     * logged on its way to the handler table.
      *
      * <p>CPython keeps two pieces of exception state, and only the second is Python-visible: the
      * exception in flight ({@code tstate->current_exception}) and the exception a handler is running
@@ -1172,12 +1195,15 @@ public final class Interpreter {
      * it — and a bare {@code raise} re-raises exactly that second one, which is why a bare raise works
      * in a function called from a handler.
      */
-    private static void raise(Frame frame, int count) {
+    private static Raised raise(Frame frame, int count) {
         if (count == 0) {
             if (!(PyRuntime.handledException() instanceof PyBaseException active)) {
-                throw Slots.runtimeError("No active exception to re-raise");
+                // Nothing to repeat is an error of its own, and CPython takes it the way an error is
+                // taken: through the label that puts this frame in the traceback.
+                return new Raised(
+                        Slots.runtimeError("No active exception to re-raise"), true);
             }
-            throw PyRaise.of(active);
+            return new Raised(PyRaise.of(active), false);
         }
         PyObject cause = count == 2 ? frame.pop() : null;
         PyBaseException raised = asException(frame.pop());
@@ -1192,8 +1218,20 @@ public final class Interpreter {
             cutContextCycle(previous, raised);
             raised.setContext(previous);
         }
-        throw PyRaise.of(raised);
+        return new Raised(PyRaise.of(raised), true);
     }
+
+    /**
+     * What {@code RAISE_VARARGS} settles: the exception to unwind with, and whether this frame is entered
+     * in its traceback on the way.
+     *
+     * <p>The second half is CPython's {@code do_raise} return value, and it answers {@code false} for one
+     * case only — a bare raise that found the exception it should repeat. That case is a re-raise, and the
+     * traceback it carries already says where the exception failed, so the instruction jumps straight to
+     * the handler table past the logging. Every other raise, including the one with nothing to repeat,
+     * fails the way any other instruction fails and is logged.
+     */
+    private record Raised(PyRaise error, boolean logged) {}
 
     /**
      * CPython's guard against a {@code __context__} cycle: walk the handled exception's own chain and

@@ -3,8 +3,10 @@ package org.python.front.cpython314;
 import java.util.ArrayList;
 import java.util.List;
 import org.python.core.CodeInstructions;
+import org.python.core.CodeMembers;
 import org.python.core.PyBytes;
 import org.python.core.PyCode;
+import org.python.core.PyNone;
 import org.python.core.PyObject;
 import org.python.core.PyTuple;
 import org.python.core.PyType;
@@ -80,7 +82,7 @@ public final class Cpython314Code extends PyObject implements PyCode {
         this.codeArray = code.getValue();
         this.lineTable = lineTable.getValue();
         this.exceptionTable = exceptionTable.getValue();
-        this.instructions = Wordcode.decode(codeArray);
+        this.instructions = Wordcode.decode(codeArray, this.lineTable, firstLine);
         this.handlers = ExceptionTable.parse(this.exceptionTable);
     }
 
@@ -214,6 +216,11 @@ public final class Cpython314Code extends PyObject implements PyCode {
         return lineTable;
     }
 
+    /** The same table as {@link #lineTable()}, read: one line number per code unit, -1 for no location. */
+    int[] lineByUnit() {
+        return instructions.lineByUnit();
+    }
+
     byte[] exceptionTable() {
         return exceptionTable;
     }
@@ -226,5 +233,67 @@ public final class Cpython314Code extends PyObject implements PyCode {
             }
         }
         return PyTuple.of(selected.toArray(new PyObject[0]));
+    }
+
+    /**
+     * {@code co.name}: the two byte tables this format writes, and the rest from the runtime.
+     *
+     * <p>The split is the one decision D2 draws. {@code co_linetable} and {@code co_exceptiontable} are
+     * the bytes that came off the wire and mean something only to the reader that decoded them, and
+     * {@code co_code} is the instruction stream in the same front-end's packing; every other name is a
+     * number, a tuple, or a string the {@link PyCode} interface already answers, and {@link CodeMembers}
+     * holds those so that a native parser can publish the same surface without copying this class.
+     */
+    @Override
+    public PyObject getAttr(String attribute) {
+        return switch (attribute) {
+            case "co_code" -> PyBytes.wrap(codeArray);
+            case "co_linetable" -> PyBytes.wrap(lineTable);
+            case "co_exceptiontable" -> PyBytes.wrap(exceptionTable);
+            default -> CodeMembers.getAttr(this, attribute);
+        };
+    }
+
+    /**
+     * A code object is immutable, and CPython says so one name at a time.
+     *
+     * <p>The wording depends on which table the name is in, which is why the refusal lives with the
+     * tables in {@link CodeMembers} rather than here.
+     */
+    @Override
+    public PyObject setAttr(String attribute, PyObject value) {
+        CodeMembers.refuse(attribute);
+        return PyNone.INSTANCE;
+    }
+
+    @Override
+    public PyObject delAttr(String attribute) {
+        CodeMembers.refuse(attribute);
+        return PyNone.INSTANCE;
+    }
+
+    @Override
+    public long hash() {
+        return System.identityHashCode(this);
+    }
+
+    /**
+     * {@code repr(co)}: CPython's shape, with this object's address where a pointer would be.
+     *
+     * <p>A code object appears in the {@code co_consts} of the code object that encloses it, so this is
+     * what a script reads when it prints a function's constants. The address cannot match the oracle's
+     * and is not meant to; the name, file and first line are the parts a report is about.
+     */
+    @Override
+    public String repr() {
+        return "<code object "
+                + name
+                + " at 0x"
+                + Integer.toHexString(System.identityHashCode(this))
+                + ", file \""
+                + fileName
+                + "\", line "
+                + firstLine
+                + ">";
     }
 }

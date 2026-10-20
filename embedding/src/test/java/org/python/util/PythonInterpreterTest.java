@@ -4,17 +4,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
+import org.python.core.PyFrame;
 import org.python.core.PyInt;
+import org.python.core.PyList;
 import org.python.core.PyModule;
 import org.python.core.PyNone;
 import org.python.core.PyObject;
 import org.python.core.PyRaise;
 import org.python.core.PyRuntime;
 import org.python.core.PyStr;
+import org.python.core.PyTraceback;
 import org.python.core.PyTuple;
 import org.python.core.Slots;
 import org.python.interop.fixtures.Panel;
@@ -520,6 +524,252 @@ class PythonInterpreterTest {
         // the route a real script takes, and it has to reach the same object rather than a copy.
         assertThat(py.invoke("relay"))
                 .isEqualTo("IllegalStateException: widget is broken / widget is broken");
+    }
+
+    // --- the traceback ---------------------------------------------------------------------
+    //
+    // The same chain {@code src/test/resources/m3/corpus/16_traceback.py} walks against CPython, read
+    // from the side an embedder stands on. What only a Java caller can settle is what arrives in Java:
+    // the exception a {@code catch} gets has to carry the frames it travelled through, because the
+    // report an embedder writes is made of nothing else.
+
+    @Test
+    void anExceptionReachingJavaCarriesOneEntryPerFrameItLeft() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                def inner():
+                    raise ValueError('deep')
+
+                def middle():
+                    return inner()
+
+                def start():
+                    return middle()
+                """);
+
+        PyRaise raised = assertThrows(PyRaise.class, () -> py.invoke("start"));
+        List<PyObject> entries = entriesOf(raised.value());
+        assertThat(namesOf(entries)).containsExactly("start", "middle", "inner");
+
+        // Reached from Java, the head of the chain has no Python frame above it, which is CPython's
+        // answer for a function reached from C as well.
+        assertThat(Slots.getAttr(Slots.getAttr(entries.get(0), "tb_frame"), "f_back"))
+                .isSameAs(PyNone.INSTANCE);
+
+        py.set("entry", entries.get(2));
+        assertThat(py.eval("type(entry.tb_lineno).__name__")).isEqualTo("int");
+        assertThat((Integer) py.eval("entry.tb_lineno")).isPositive();
+        assertThat((Integer) py.eval("entry.tb_lasti")).isNotNegative();
+        assertThat(py.eval("entry.tb_frame.f_code.co_name")).isEqualTo("inner");
+
+        // An entry freezes the offset it was made at while the frame reads its own live, so for a frame
+        // that has stopped running the two name the same instruction — and so does the line derived
+        // from each of them.
+        assertThat(py.eval("entry.tb_lasti == entry.tb_frame.f_lasti")).isEqualTo(true);
+        assertThat(py.eval("entry.tb_lineno == entry.tb_frame.f_lineno")).isEqualTo(true);
+    }
+
+    @Test
+    void aBareRaiseAddsNoEntryAndAnExplicitRaiseAddsTheFrameThatRepeatsIt() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                def raiser():
+                    raise ValueError('once')
+
+                def bare():
+                    try:
+                        raiser()
+                    except ValueError:
+                        raise
+
+                def explicit():
+                    try:
+                        raiser()
+                    except ValueError as error:
+                        raise error
+                """);
+
+        List<PyObject> repeated =
+                entriesOf(assertThrows(PyRaise.class, () -> py.invoke("explicit")).value());
+        // The handler's own frame is entered twice: once for the call that failed and once for the
+        // raise that repeated it, and both entries name the one activation held between them.
+        assertThat(namesOf(repeated)).containsExactly("explicit", "explicit", "raiser");
+        assertThat(Slots.getAttr(repeated.get(0), "tb_frame"))
+                .isSameAs(Slots.getAttr(repeated.get(1), "tb_frame"));
+
+        // A bare raise repeats the exception the handler is already running for and adds nothing, because
+        // that exception already carries the frames it travelled through.
+        List<PyObject> asIs = entriesOf(assertThrows(PyRaise.class, () -> py.invoke("bare")).value());
+        assertThat(namesOf(asIs)).containsExactly("bare", "raiser");
+    }
+
+    @Test
+    void aFailureMadeInsideACallIsEnteredWhereTheCallWasMade() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                def parses(text):
+                    return [int(text)]
+
+                def calls():
+                    return parses('not a number')
+                """);
+
+        PyRaise raised = assertThrows(PyRaise.class, () -> py.invoke("calls"));
+        // The built-in has no Python frame of its own, so the chain names the frame that called it.
+        assertThat(namesOf(entriesOf(raised.value()))).containsExactly("calls", "parses");
+    }
+
+    @Test
+    void aJavaFailureTravellingThroughPythonKeepsTheFramesAboveItsCall() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                from org.python.interop.fixtures import Widget
+
+                def boom():
+                    return Widget().boom()
+
+                def above():
+                    return boom()
+                """);
+
+        PyRaise raised = assertThrows(PyRaise.class, () -> py.invoke("above"));
+        assertThat(raised.value()).isInstanceOf(PyJavaThrowable.class);
+        assertThat(namesOf(entriesOf(raised.value()))).containsExactly("above", "boom");
+    }
+
+    @Test
+    void aTracebackCanBeTruncatedFromJavaAndItsLoopsAreRefused() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                def raiser():
+                    raise ValueError('chain')
+
+                def head():
+                    return raiser()
+                """);
+
+        PyObject error = assertThrows(PyRaise.class, () -> py.invoke("head")).value();
+        List<PyObject> entries = entriesOf(error);
+        assertThat(namesOf(entries)).containsExactly("head", "raiser");
+
+        assertThatThrownBy(() -> Slots.setAttr(entries.get(0), "tb_next", PyInt.of(5)))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused ->
+                                assertThat(refused.getMessage())
+                                        .isEqualTo(
+                                                "TypeError: expected traceback object, got 'int'"));
+        // Hanging an entry below itself is refused before anything is changed.
+        assertThatThrownBy(() -> Slots.setAttr(entries.get(0), "tb_next", entries.get(0)))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused ->
+                                assertThat(refused.getMessage())
+                                        .isEqualTo("ValueError: traceback loop detected"));
+        assertThat(namesOf(entriesOf(error))).containsExactly("head", "raiser");
+
+        Slots.setAttr(entries.get(0), "tb_next", PyNone.INSTANCE);
+        assertThat(namesOf(entriesOf(error))).containsExactly("head");
+    }
+
+    @Test
+    void theFrameAnEntryNamesStillAnswersAfterItsCallIsOver() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                def raiser(alpha, beta=3):
+                    gamma = alpha + beta
+                    raise ValueError('dead frame')
+
+                seen = []
+                try:
+                    raiser(4)
+                except ValueError as error:
+                    seen.append(error.__traceback__.tb_next.tb_frame)
+                """);
+
+        PyObject frame = ((PyList) py.getPyObject("seen")).at(0);
+        assertThat(frame).isInstanceOf(PyFrame.class);
+        assertThat(py.eval("sorted(seen[0].f_locals)")).isEqualTo(List.of("alpha", "beta", "gamma"));
+        assertThat(py.eval("seen[0].f_code.co_name")).isEqualTo("raiser");
+        // The frame a traceback names is the same object f_back reaches, because one activation has one
+        // frame object, made the first time anything asks for it.
+        py.set("back", Slots.getAttr(frame, "f_back"));
+        assertThat(py.eval("back is seen[0].f_back")).isEqualTo(true);
+        assertThat(py.eval("back.f_code.co_name")).isEqualTo("<module>");
+        assertThat(py.eval("type(seen[0].f_builtins).__name__")).isEqualTo("dict");
+        // A dead frame still reads its globals: clearing names is not losing the module it ran in.
+        assertThat(py.eval("'raiser' in seen[0].f_globals")).isEqualTo(true);
+
+        py.exec("seen[0].clear()");
+        assertThat(py.eval("sorted(seen[0].f_locals)")).isEqualTo(List.of());
+        // Clearing drops the names, not the line the error reported or the module it came out of.
+        assertThat((Integer) py.eval("seen[0].f_lineno")).isPositive();
+        assertThat(py.eval("len(seen[0].f_globals) > 0")).isEqualTo(true);
+        assertThatThrownBy(() -> py.exec("seen[0].f_locals = {}"))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused ->
+                                assertThat(refused.getMessage())
+                                        .startsWith(
+                                                "AttributeError: attribute 'f_locals' of 'frame'"
+                                                        + " objects is not writable"));
+    }
+
+    @Test
+    void theTracebackAHandlerSeesIsTheOneItsExceptionCarries() {
+        PythonInterpreter py = new PythonInterpreter();
+        py.exec("""
+                import sys
+
+                def raiser():
+                    raise ValueError('shared')
+
+                def handled():
+                    try:
+                        raiser()
+                    except ValueError as error:
+                        return sys.exc_info()[2] is error.__traceback__
+
+                def escaped():
+                    try:
+                        raiser()
+                    except ValueError:
+                        raise
+                """);
+
+        // The chain an except clause finds is the chain on the value it bound: what the handler reads is
+        // what the caller hands Java, with the handler's own frame already entered on the way in.
+        assertThat(py.invoke("handled")).isEqualTo(true);
+
+        PyRaise raised = assertThrows(PyRaise.class, () -> py.invoke("escaped"));
+        assertThat(namesOf(entriesOf(raised.value()))).containsExactly("escaped", "raiser");
+    }
+
+    /**
+     * The entries an exception carries, outermost first, read through the names Python reads.
+     *
+     * <p>Walked with {@code __traceback__} and {@code tb_next} rather than the Java accessors, because
+     * those are what an embedder's report is made of, and a report that stops at the first
+     * non-traceback is how {@code tb_next} ending in {@code None} is meant to read.
+     */
+    private static List<PyObject> entriesOf(PyObject error) {
+        List<PyObject> entries = new ArrayList<>();
+        PyObject at = Slots.getAttr(error, "__traceback__");
+        while (at instanceof PyTraceback traceback) {
+            entries.add(traceback);
+            at = Slots.getAttr(traceback, "tb_next");
+        }
+        return entries;
+    }
+
+    /** The code each entry names, which is the part of a chain that carries no address. */
+    private static List<String> namesOf(List<PyObject> entries) {
+        List<String> names = new ArrayList<>();
+        for (PyObject entry : entries) {
+            PyObject code = Slots.getAttr(Slots.getAttr(entry, "tb_frame"), "f_code");
+            names.add(((PyStr) Slots.getAttr(code, "co_name")).getValue());
+        }
+        return names;
     }
 
     // --- classes -------------------------------------------------------------------------

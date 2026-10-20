@@ -147,9 +147,12 @@ class ContextManagerTest {
         assertThat(raised(ExceptionTypes.KEY_ERROR, PyInt.of(3)).str()).isEqualTo("3");
     }
 
-    /** The third argument {@code __exit__} is handed, which is a traceback CPython has and this has not. */
+    /**
+     * The value {@code __exit__} is handed for a failure that never travelled a Python frame. An entry is
+     * made as an error leaves a frame, so one made in Java and never raised has no chain to report.
+     */
     @Test
-    void anEscapedExceptionCarriesNoTracebackYet() {
+    void anExceptionThatEscapedNoFrameCarriesNoTraceback() {
         PyBaseException error = raised(ExceptionTypes.VALUE_ERROR, PyStr.of("kept"));
         assertThat(error.traceback()).isSameAs(PyNone.INSTANCE);
         assertThat(error.getAttr("__traceback__")).isSameAs(PyNone.INSTANCE);

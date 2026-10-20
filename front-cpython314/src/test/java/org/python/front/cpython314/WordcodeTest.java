@@ -38,6 +38,15 @@ class WordcodeTest {
     }
 
     /**
+     * A code array with an empty line table, which is all these tests need: what a real table decodes
+     * to is measured against CPython's own reading by {@link MarshalFixturesTest} and against each of
+     * its seven forms by {@link LineTableTest}.
+     */
+    private static Wordcode decode(byte[] code) {
+        return Wordcode.decode(code, new byte[0], 1);
+    }
+
+    /**
      * A cache unit is a data word and the only way to know that is the table, so the five bytes
      * behind {@code BINARY_OP} are deliberately filled with a valid instruction. {@code dis} reads
      * the three that follow as separate instructions; the five in between are never seen.
@@ -50,7 +59,7 @@ class WordcodeTest {
         units[0] = unit(BINARY_OP, 0);
         Arrays.fill(units, 1, units.length, unit(RETURN_VALUE, 0));
 
-        Wordcode decoded = Wordcode.decode(code(units));
+        Wordcode decoded = decode(code(units));
 
         assertThat(decoded.length()).isEqualTo(4);
         assertThat(decoded.opcodeAt(0)).isEqualTo(BINARY_OP);
@@ -67,7 +76,7 @@ class WordcodeTest {
      */
     @Test
     void foldsAChainOfExtendedArgs() {
-        Wordcode decoded = Wordcode.decode(code(
+        Wordcode decoded = decode(code(
                 unit(EXTENDED_ARG, 1),
                 unit(EXTENDED_ARG, 2),
                 unit(LOAD_GLOBAL, 3)));
@@ -86,7 +95,7 @@ class WordcodeTest {
      */
     @Test
     void foldsAChainThatOverflowsASignedInt() {
-        Wordcode decoded = Wordcode.decode(code(
+        Wordcode decoded = decode(code(
                 unit(EXTENDED_ARG, 0xff),
                 unit(EXTENDED_ARG, 0xff),
                 unit(EXTENDED_ARG, 0xff),
@@ -108,7 +117,7 @@ class WordcodeTest {
         units[0] = unit(BINARY_OP, 0);
         Arrays.fill(units, 1, 1 + caches, unit(RETURN_VALUE, 0));
         units[units.length - 1] = unit(RETURN_VALUE, 0);
-        Wordcode decoded = Wordcode.decode(code(units));
+        Wordcode decoded = decode(code(units));
 
         assertThat(decoded.indexOfUnitAt(0)).isZero();
         assertThat(decoded.indexOfUnitAt(1)).as("a cache unit starts no instruction").isEqualTo(-1);
@@ -121,14 +130,14 @@ class WordcodeTest {
     /** Wordcode is two bytes a unit, with no partial unit at the end. */
     @Test
     void refusesACodeArrayOfOddLength() {
-        assertThatThrownBy(() -> Wordcode.decode(new byte[] {RETURN_VALUE & 0xff}))
+        assertThatThrownBy(() -> decode(new byte[] {RETURN_VALUE & 0xff}))
                 .isInstanceOf(MarshalFormatException.class)
                 .hasMessageContaining("odd length");
     }
 
     @Test
     void decodesAnEmptyCodeArray() {
-        Wordcode decoded = Wordcode.decode(new byte[0]);
+        Wordcode decoded = decode(new byte[0]);
         assertThat(decoded.length()).isZero();
         assertThat(decoded.indexOfUnitAt(0)).isEqualTo(-1);
     }
@@ -136,7 +145,45 @@ class WordcodeTest {
     /** A no-argument opcode still carries an argument byte on the wire, and CPython always writes 0. */
     @Test
     void readsAnAbsentArgumentAsZero() {
-        Wordcode decoded = Wordcode.decode(code(unit(RETURN_VALUE, 0)));
+        Wordcode decoded = decode(code(unit(RETURN_VALUE, 0)));
         assertThat(decoded.argAt(0)).isZero();
+    }
+
+    /**
+     * A handler and a traceback name the same instruction in two different units — CPython keeps a
+     * resume offset in code units and a {@code tb_lasti} in bytes — so the line of an instruction is
+     * asked for in whichever of the two the reader holds.
+     */
+    @Test
+    void answersTheLineOfAnInstructionInWhicheverUnitsTheReaderHas() {
+        int caches = InlineCaches.of(BINARY_OP);
+        int[] units = new int[1 + caches + 1];
+        units[0] = unit(BINARY_OP, 0);
+        Arrays.fill(units, 1, units.length, unit(RETURN_VALUE, 0));
+        // ONE_LINE1 two units wide, then a short form on one more: a short form repeats the line the
+        // entry before it reached, and nothing covers the five cache units or the instruction after
+        // them.
+        Wordcode decoded = Wordcode.decode(code(units), table(0xd9, 0x00, 0x00, 0x80, 0x00), 3);
+
+        assertThat(decoded.lineAtLasti(decoded.lastiAt(0)))
+                .as("the instruction the table covers")
+                .isEqualTo(4);
+        assertThat(decoded.lineAtLasti(decoded.lastiAt(1)))
+                .as("the unit the table stops before")
+                .isEqualTo(-1);
+        assertThat(decoded.lastiAt(1)).as("a traceback counts bytes: 6 units").isEqualTo(12);
+        assertThat(decoded.lineAtLasti(0)).isEqualTo(4);
+        assertThat(decoded.lineAtLasti(2)).as("the second byte of the first unit").isEqualTo(4);
+        assertThat(decoded.lineAtLasti(4)).as("a short form's own unit repeats the line").isEqualTo(4);
+        assertThat(decoded.lineAtLasti(12)).as("a byte past every entry").isEqualTo(-1);
+        assertThat(decoded.lineAtLasti(-1)).as("a frame that never ran").isEqualTo(3);
+    }
+
+    private static byte[] table(int... values) {
+        byte[] out = new byte[values.length];
+        for (int i = 0; i < values.length; i++) {
+            out[i] = (byte) values[i];
+        }
+        return out;
     }
 }

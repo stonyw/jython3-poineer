@@ -253,9 +253,10 @@ public final class jy3 {
     /**
      * Report an exception that outlived every {@code except}.
      *
-     * <p>The frame lines are missing: a traceback is rebuilt from the frame chain above the raise, which
-     * this runtime does not keep yet. {@code SystemExit} is not an error at all, and its argument is the
-     * status, exactly as CPython's is.
+     * <p>Only the complaint is printed, not the frames it travelled through. The chain those frames are
+     * read from is kept, and one entry per frame an error exits; formatting it as CPython does — file,
+     * line, source text and the anchors under the failing expression — is the next slice.
+     * {@code SystemExit} is not an error at all, and its argument is the status, exactly as CPython's is.
      */
     private static int reportUncaught(PyRaise raised) {
         PyBaseException value = raised.value();

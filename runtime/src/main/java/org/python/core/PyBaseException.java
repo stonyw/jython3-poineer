@@ -11,9 +11,10 @@ import java.math.BigInteger;
  * answer, and {@code getType()} is set to the same object so {@code type(e)} agrees with
  * {@code e.__class__}.
  *
- * No traceback yet. CPython 3.14 keeps exception state in the frame and reconstructs the traceback from
- * its exception table: the table is read and used, but a traceback needs the frame chain above it too,
- * which is a later M3 slice. Until then a raise carries only what the user wrote.
+ * The traceback is the exception's own to carry. CPython 3.14 builds it as an error travels out of each
+ * frame — {@link PyTraceback#logFrame} is that step — and a raise of an exception that already has one
+ * keeps it, which is why {@code raise e} from a handler shows the frame it was caught in twice rather
+ * than once. Until the frame chain existed this field could only ever be {@code None}.
  */
 public class PyBaseException extends PyObject {
 
@@ -71,9 +72,7 @@ public class PyBaseException extends PyObject {
 
     /** {@code e.__traceback__ = value}: a traceback, or nothing at all. */
     void setTraceback(PyObject value) {
-        if (value != PyNone.INSTANCE) {
-            // No traceback type exists yet, so nothing this runtime can hand out would pass the check;
-            // the refusal is CPython's own wording and a None is stored as CPython stores it.
+        if (value != PyNone.INSTANCE && !(value instanceof PyTraceback)) {
             throw Slots.typeError("__traceback__ must be a traceback or None");
         }
         traceback = value;
@@ -229,10 +228,10 @@ public class PyBaseException extends PyObject {
      * The {@code __traceback__} field, which CPython reads as a field and not as an attribute — so a
      * class that files a property under the name is not asked what an escaped exception looks like.
      *
-     * <p>A traceback is built from the frame chain above the raise, which this runtime does not keep
-     * yet, and reporting none is honest where inventing a Java one would not be. The name of the
-     * exception {@code with} hands to {@code __exit__} is read here, so that the day a chain is kept,
-     * the third argument a context manager sees follows from it.
+     * <p>The chain is built as the error travels out of each frame, by {@link PyTraceback#logFrame}, and
+     * an exception that reaches a handler with one keeps it: what is read here is exactly what was hung
+     * on the front. The value {@code with} hands to {@code __exit__} is read here for the same reason, so
+     * a context manager sees the traceback the raiser had.
      */
     PyObject traceback() {
         return traceback;

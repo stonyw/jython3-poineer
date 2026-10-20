@@ -162,10 +162,19 @@ final class MarshalRenderer {
                     .append(2 * entry.target()).append(':').append(entry.depth()).append(':')
                     .append(entry.pushLasti() ? 1 : 0);
         }
+        StringBuilder lines = new StringBuilder();
+        for (int line : co.lineByUnit()) {
+            if (!lines.isEmpty()) {
+                lines.append(' ');
+            }
+            // The same `-` the expectation file uses for a unit that carries no location.
+            lines.append(line < 0 ? "-" : line);
+        }
         return ("code(argcount=%d,posonly=%d,kwonly=%d,stack=%d,flags=%d,first=%d)\n"
                 + "  file=%s name=%s qualname=%s\n"
                 + "  wordcode=%s\n"
                 + "  linetable=%s\n"
+                + "  unitlines=%s\n"
                 + "  exceptiontable=%s\n"
                 + "  exchandles=%s\n"
                 + "  varnames=%s cellvars=%s freevars=%s nlocals=%d\n"
@@ -175,7 +184,7 @@ final class MarshalRenderer {
                 co.argCount(), co.posOnlyArgCount(), co.kwOnlyArgCount(), co.stackSize(),
                 co.flags(), co.firstLine(),
                 text(co.fileName()), text(co.name()), text(co.qualName()),
-                hex(co.codeArray()), hex(co.lineTable()), hex(co.exceptionTable()), handles,
+                hex(co.codeArray()), hex(co.lineTable()), lines, hex(co.exceptionTable()), handles,
                 value(co.varNames()), value(co.cellVars()), value(co.freeVars()), co.nLocals(),
                 value(co.constants()), value(co.names()), decoded);
     }
