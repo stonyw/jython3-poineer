@@ -409,8 +409,12 @@ final class Classes {
      * answer, which is why {@code Point.__mro__} is {@code (Point, object)} without any of the machinery
      * below being consulted. From two bases up, each base contributes its own order and the declared
      * bases contribute themselves as the last sequence.
+     *
+     * <p>Package-private rather than private to the class system because {@link PyType#declare(String,
+     * PyType...)} has the same question to answer for {@code ExceptionGroup}: a built-in type over two
+     * bases is linearized by C3 like any other, not by a rule of its own.
      */
-    private static PyType[] linearize(PyClass kind, PyTuple bases) {
+    static PyType[] linearize(PyType kind, PyTuple bases) {
         if (bases.size() == 1) {
             PyType[] tail = ((PyType) bases.at(0)).mro();
             PyType[] order = new PyType[tail.length + 1];
@@ -625,6 +629,15 @@ final class Classes {
             PyObject built = newType(kind, args, names);
             typeInit(args, names);
             return built;
+        }
+        if (kind.matches(ExceptionTypes.BASE_EXCEPTION_GROUP)) {
+            // A class a person wrote under a group inherits the group's creator, which takes exactly the
+            // two arguments — and is never promoted: `Named("m", [ValueError()])` stays a `Named`, since
+            // only the two built-in classes are ever swapped for the narrower one.
+            return PyBaseExceptionGroup.create(
+                    kind,
+                    Arguments.positionals(args, names),
+                    kwNames != null && kwNames.size() > 0);
         }
         if (kind.matches(ExceptionTypes.BASE_EXCEPTION)) {
             // CPython's exception subclasses inherit `BaseException`'s creator rather than `object`'s,

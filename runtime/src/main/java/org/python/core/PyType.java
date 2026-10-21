@@ -6,9 +6,10 @@ package org.python.core;
  * A type is an instance of a metatype, carries a name, is callable as a constructor, and answers for
  * the members its values inherit: {@link #mro()} is the order both a member lookup and {@code
  * isinstance} walk, and a class built by the class system ({@link PyClass}) computes it with CPython's
- * C3 merge instead of using the single-parent chain a built-in type declares. Every class the class
- * system builds is an instance of {@code type} unless a metaclass was named for it, in which case
- * {@link #classMember} reads its members through that metatype first — the protocol {@link TypeDict}
+ * C3 merge instead of using the single-parent chain a built-in type declares — except for {@code
+ * ExceptionGroup}, the one built-in over two bases, whose order comes from that same merge. Every class
+ * the class system builds is an instance of {@code type} unless a metaclass was named for it, in which
+ * case {@link #classMember} reads its members through that metatype first — the protocol {@link TypeDict}
  * exists to answer.
  *
  * The built-in types are {@code static final} fields rather than a registry, so that a slot
@@ -101,6 +102,17 @@ public class PyType extends PyObject {
     private String name;
 
     /**
+     * The sentence this type answers {@code __doc__} with, or null where it declares none.
+     *
+     * <p>CPython keeps this text in the type's own dictionary as the {@code __doc__} entry of a static
+     * type, which is what makes {@code BaseExceptionGroup.__doc__} a sentence while {@code
+     * ExceptionGroup.__doc__} is {@code None} — the second type declares no doc of its own, and
+     * {@code type_getdoc} answers {@code None} rather than walking up to the first one it can find. A
+     * class Python wrote keeps the name in its namespace and is answered there, before this field.
+     */
+    private String doc;
+
+    /**
      * The one base this type has.
      *
      * A built-in type's base is {@code object} and an exception class's is the exception it derives
@@ -118,6 +130,12 @@ public class PyType extends PyObject {
      * arrays for the same class.
      */
     PyType[] order;
+
+    /**
+     * The bases as more than a parent, which only {@code ExceptionGroup} among the built-ins has; null for
+     * every type whose inheritance a single {@link #parent} pointer describes.
+     */
+    private PyType[] declaredBases;
 
     /**
      * Protected because a type declared outside this package has to be able to name its parent:
@@ -154,6 +172,35 @@ public class PyType extends PyObject {
         return subclass(name, parent);
     }
 
+    /**
+     * The type's own doc, declared where the type is.
+     *
+     * <p>Only the sentences a built-in type is written down with arrive here: everything a Python class
+     * says about itself is in the namespace the class statement collected.
+     */
+    PyType documented(String text) {
+        doc = text;
+        return this;
+    }
+
+    /**
+     * A built-in type declared over more bases than one parent pointer can carry, which is exactly
+     * {@code ExceptionGroup}: CPython makes it with {@code PyErr_NewException} over {@code
+     * (BaseExceptionGroup, Exception)}, so its {@code __base__} is the first of those while its order is
+     * the C3 merge of both. The merge is {@link Classes#linearize}, the same one a class statement runs —
+     * a static type is not exempt from it, and hand-writing the order here would be a second answer to the
+     * same question.
+     */
+    static PyType declare(String name, PyType... bases) {
+        PyType type = new PyType(name, bases[0]);
+        type.type = TYPE;
+        if (bases.length > 1) {
+            type.declaredBases = bases;
+            type.order = Classes.linearize(type, PyTuple.of(bases));
+        }
+        return type;
+    }
+
     public final String name() {
         return name;
     }
@@ -187,10 +234,11 @@ public class PyType extends PyObject {
      * The order this type's members are looked up in: itself, then its bases, then {@code object}.
      *
      * A built-in type has only the chain its parents declare, and that is already C3's answer for a
-     * single base — {@code bool}, {@code int}, {@code object}. A class built by the class system arrives
-     * with its linearization in {@link #order}, computed once because multiple inheritance cannot be
-     * walked as a parent pointer and because {@code X.__mro__ is X.__mro__} has to keep being the same
-     * order.
+     * single base — {@code bool}, {@code int}, {@code object}. The one built-in with two bases is
+     * {@code ExceptionGroup}, whose order {@link #declare(String, PyType...)} linearizes here rather than
+     * walking a parent pointer. A class built by the class system arrives with its linearization in {@link
+     * #order}, computed once because multiple inheritance cannot be walked as a parent pointer and because
+     * {@code X.__mro__ is X.__mro__} has to keep being the same order.
      *
      * <p>The array is the type's own and is shared with every caller: read it, do not change it.
      */
@@ -225,12 +273,25 @@ public class PyType extends PyObject {
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "__name__", "__qualname__" -> PyStr.of(name);
+            case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
             case "__base__" -> parent == null ? PyNone.INSTANCE : parent;
-            case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(parent);
+            case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(bases());
             case "__mro__" -> PyTuple.of(mro());
             case "__class__" -> type;
             default -> classMember(attribute);
         };
+    }
+
+    /**
+     * The bases this type is declared over. One for every built-in but {@code ExceptionGroup}, which
+     * CPython creates over {@code (BaseExceptionGroup, Exception)} and which therefore cannot be a parent
+     * pointer twice.
+     */
+    private PyType[] bases() {
+        if (declaredBases != null) {
+            return declaredBases;
+        }
+        return parent == null ? new PyType[0] : new PyType[] {parent};
     }
 
     /**

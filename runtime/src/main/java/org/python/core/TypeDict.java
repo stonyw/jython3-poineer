@@ -5,8 +5,9 @@ import java.util.Arrays;
 /**
  * The members the built-ins the class system is built on keep in their own dictionaries: {@code type}'s
  * {@code __new__}, {@code __init__}, {@code __call__}, {@code mro}, {@code __prepare__} and the two
- * instance tests, {@code object}'s {@code __init_subclass__}, and {@code BaseException}'s two halves of
- * making a value plus {@code with_traceback}.
+ * instance tests, {@code object}'s {@code __init_subclass__}, {@code BaseException}'s two halves of
+ * making a value plus {@code with_traceback}, and {@code BaseExceptionGroup}'s two halves plus the three
+ * methods that work over the children it carries.
  *
  * <p>These are the names a metaclass either calls through {@code super()} or has inherited without
  * writing, so they have to be findable the way a class dictionary is findable — by {@link
@@ -21,6 +22,11 @@ import java.util.Arrays;
  * inherits {@code __new__} and {@code __init__} the way CPython passes them down, so
  * {@code super().__init__("boom")} inside an {@code E.__init__} reaches one that exists and takes over
  * the arguments the creator already stored.
+ *
+ * <p>The group family's five are the same inheritance one level down, and they are what {@code except*}
+ * works over: {@code split} is the method the driver calls when a clause matches part of a group, and
+ * {@code derive} is the one every part of a split is built with — which is why a subset of children comes
+ * back as an {@code ExceptionGroup} however the group it came from was classed.
  *
  * <p>CPython spells these names four different ways, and the difference is visible from Python. A
  * {@code wrapper_descriptor} ({@code __init__}, {@code __call__}) and a {@code method_descriptor}
@@ -42,19 +48,49 @@ import java.util.Arrays;
  */
 final class TypeDict {
 
+    /**
+     * The two sentences CPython writes once and lets every class inherit.
+     *
+     * <p>{@code object.__new__} and {@code object.__init__} are the {@code ml_doc} of the builtins that
+     * {@code BaseException}, {@code BaseExceptionGroup} and {@code type} all hand down, so
+     * {@code BaseExceptionGroup.__new__.__doc__} is the first of these two and
+     * {@code BaseExceptionGroup.__init__.__doc__} the second — the class the read came from never
+     * changes the text, only which class {@code __qualname__} names.
+     */
+    private static final String NEW_DOC =
+            "Create and return a new object.  See help(type) for accurate signature.";
+
+    private static final String INIT_DOC =
+            "Initialize self.  See help(type(self)) for accurate signature.";
+
     /** {@code type.__new__(mcs, name, bases, dict)}: the metaclass idiom, and no descriptor at all. */
-    static final PyObject NEW = new Member(PyType.TYPE, "__new__", Shape.RAW, TypeDict::newMember);
+    static final PyObject NEW =
+            new Member(PyType.TYPE, "__new__", Shape.RAW, null, NEW_DOC, TypeDict::newMember);
 
     /** {@code type.__init__(cls, name, bases, dict)}: the checks {@code type_init} makes and nothing else. */
     static final PyObject INIT =
-            new Member(PyType.TYPE, "__init__", Shape.WRAPPER, TypeDict::initMember);
+            new Member(
+                    PyType.TYPE, "__init__", Shape.WRAPPER, null, INIT_DOC, TypeDict::initMember);
 
     /** {@code type.__call__(cls, *args)}: {@code type_call} for the class given as the receiver. */
     static final PyObject CALL =
-            new Member(PyType.TYPE, "__call__", Shape.WRAPPER, TypeDict::callMember);
+            new Member(
+                    PyType.TYPE,
+                    "__call__",
+                    Shape.WRAPPER,
+                    null,
+                    "Call self as a function.",
+                    TypeDict::callMember);
 
     /** {@code cls.mro()}: the lookup order as a list. */
-    static final PyObject MRO = new Member(PyType.TYPE, "mro", Shape.METHOD, TypeDict::mroMember);
+    static final PyObject MRO =
+            new Member(
+                    PyType.TYPE,
+                    "mro",
+                    Shape.METHOD,
+                    null,
+                    "Return a type's method resolution order.",
+                    TypeDict::mroMember);
 
     /** {@code type.__prepare__(mcs, name, bases, **kwds)}: always a plain dict, whatever it is asked. */
     static final PyObject PREPARE =
@@ -62,20 +98,40 @@ final class TypeDict {
                     PyType.TYPE,
                     "__prepare__",
                     Shape.CLASSMETHOD,
+                    null,
+                    "Create the namespace for the class statement",
                     (args, kwNames, qualified) -> PyDict.empty());
 
     /** {@code type.__instancecheck__(cls, inst)}: the test {@code isinstance} makes without a hook. */
     static final PyObject INSTANCE_CHECK =
-            new Member(PyType.TYPE, "__instancecheck__", Shape.METHOD, TypeDict::instanceCheck);
+            new Member(
+                    PyType.TYPE,
+                    "__instancecheck__",
+                    Shape.METHOD,
+                    null,
+                    "Check if an object is an instance.",
+                    TypeDict::instanceCheck);
 
     /** {@code type.__subclasscheck__(cls, sub)}: the test {@code issubclass} makes without a hook. */
     static final PyObject SUBCLASS_CHECK =
-            new Member(PyType.TYPE, "__subclasscheck__", Shape.METHOD, TypeDict::subclassCheck);
+            new Member(
+                    PyType.TYPE,
+                    "__subclasscheck__",
+                    Shape.METHOD,
+                    null,
+                    "Check if a class is a subclass.",
+                    TypeDict::subclassCheck);
 
     /** {@code object.__init_subclass__(cls, **kwds)}: the hook that refuses what it was not asked for. */
     static final PyObject INIT_SUBCLASS =
             new Member(
-                    PyType.OBJECT, "__init_subclass__", Shape.CLASSMETHOD, TypeDict::initSubclass);
+                    PyType.OBJECT,
+                    "__init_subclass__",
+                    Shape.CLASSMETHOD,
+                    null,
+                    "This method is called when a class is subclassed.\n\nThe default implementation does"
+                            + " nothing. It may be\noverridden to extend subclasses.\n",
+                    TypeDict::initSubclass);
 
     /**
      * {@code BaseException.__new__(cls, *args)}: the creator every exception class inherits, which keeps
@@ -91,6 +147,7 @@ final class TypeDict {
                     "__new__",
                     Shape.RAW,
                     "Exception.__new__",
+                    NEW_DOC,
                     TypeDict::exceptionNew);
 
     /** {@code BaseException.__init__(self, *args)}: the arguments of the call, taken over. */
@@ -99,6 +156,8 @@ final class TypeDict {
                     ExceptionTypes.BASE_EXCEPTION,
                     "__init__",
                     Shape.WRAPPER,
+                    null,
+                    INIT_DOC,
                     TypeDict::exceptionInit);
 
     /** {@code e.with_traceback(traceback)}: the one method an exception value answers with. */
@@ -107,7 +166,62 @@ final class TypeDict {
                     ExceptionTypes.BASE_EXCEPTION,
                     "with_traceback",
                     Shape.METHOD,
+                    null,
+                    "Set self.__traceback__ to tb and return self.",
                     TypeDict::withTraceback);
+
+    /**
+     * {@code BaseExceptionGroup.__new__(cls, message, exceptions)}: the creator both group classes and
+     * any subclass of them inherit.
+     *
+     * <p>Unlike {@code BaseException}'s, this one reports itself under the class that holds it —
+     * {@code ExceptionGroup.__new__.__qualname__} is {@code BaseExceptionGroup.__new__} — and keywords
+     * are read and thrown away rather than refused, because the two arguments are parsed out of the
+     * positional tuple only. The refusal for a named argument belongs to {@code __init__}, which runs
+     * after the class has already been chosen.
+     */
+    static final PyObject GROUP_NEW =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION_GROUP,
+                    "__new__",
+                    Shape.RAW,
+                    null,
+                    NEW_DOC,
+                    TypeDict::groupNew);
+
+    /** {@code BaseExceptionGroup.__init__(self, *args)}: the arguments taken over, keywords refused. */
+    static final PyObject GROUP_INIT =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION_GROUP,
+                    "__init__",
+                    Shape.WRAPPER,
+                    null,
+                    INIT_DOC,
+                    TypeDict::groupInit);
+
+    /** {@code g.derive(exceptions)}: a group of the same shape holding the children given. */
+    static final PyObject GROUP_DERIVE =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION_GROUP,
+                    "derive",
+                    Shape.METHOD,
+                    TypeDict::groupDerive);
+
+    /** {@code g.split(matcher)}: the matching part and the rest, as a two-tuple. */
+    static final PyObject GROUP_SPLIT =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION_GROUP,
+                    "split",
+                    Shape.METHOD,
+                    TypeDict::groupSplit);
+
+    /** {@code g.subgroup(matcher)}: the matching part alone, or {@code None}. */
+    static final PyObject GROUP_SUBGROUP =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION_GROUP,
+                    "subgroup",
+                    Shape.METHOD,
+                    TypeDict::groupSubgroup);
 
     private TypeDict() {
     }
@@ -115,7 +229,7 @@ final class TypeDict {
     /**
      * The raw member {@code owner}'s own dictionary holds under {@code name}.
      *
-     * @return the member, or null when this type keeps nothing there — which is every type but the three
+     * @return the member, or null when this type keeps nothing there — which is every type but the four
      *     the class system is built on
      */
     static PyObject member(PyType owner, String name) {
@@ -139,6 +253,18 @@ final class TypeDict {
                 case "__new__" -> EXCEPTION_NEW;
                 case "__init__" -> EXCEPTION_INIT;
                 case "with_traceback" -> WITH_TRACEBACK;
+                default -> null;
+            };
+        }
+        // ExceptionGroup's own dictionary holds nothing that is read here, so every one of these names
+        // reaches a group through BaseExceptionGroup in its order.
+        if (owner == ExceptionTypes.BASE_EXCEPTION_GROUP) {
+            return switch (name) {
+                case "__new__" -> GROUP_NEW;
+                case "__init__" -> GROUP_INIT;
+                case "derive" -> GROUP_DERIVE;
+                case "split" -> GROUP_SPLIT;
+                case "subgroup" -> GROUP_SUBGROUP;
                 default -> null;
             };
         }
@@ -251,8 +377,10 @@ final class TypeDict {
      * therefore {@code str(e)} reading what that call said rather than what the class was called with.
      */
     private static PyObject exceptionInit(PyObject[] args, String[] kwNames, String qualified) {
-        PyBaseException self = (PyBaseException) exceptionReceiver("__init__", args, kwNames);
-        if (kwNames != null && kwNames.length > 0) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver("__init__", ExceptionTypes.BASE_EXCEPTION, args, kwNames);
+        if (hasKeywords(kwNames)) {
             throw Slots.typeError("%s() takes no keyword arguments", self.getType().name());
         }
         self.setArguments(tail(args, kwNames));
@@ -281,21 +409,107 @@ final class TypeDict {
     }
 
     /**
-     * The exception a {@code wrapper_descriptor} of {@code BaseException} was called on.
+     * {@code BaseExceptionGroup_new}: the two arguments, and then the class the value is made as.
+     *
+     * <p>The class argument is stripped and the keywords thrown away, exactly as {@code tp_new_wrapper}
+     * and a {@code PyArg_ParseTuple} that names no keyword table do, so the call that reaches here by
+     * hand is checked by {@link PyBaseExceptionGroup#create} and nothing else.
+     */
+    private static PyObject groupNew(PyObject[] args, String[] kwNames, String qualified) {
+        int given = Arguments.positional(args, kwNames);
+        if (given < 1) {
+            throw Slots.typeError("BaseExceptionGroup.__new__(): not enough arguments");
+        }
+        PyObject first = args[0];
+        if (!(first instanceof PyType kind)) {
+            throw Slots.typeError(
+                    "BaseExceptionGroup.__new__(X): X is not a type object (%s)",
+                    first.getType().name());
+        }
+        if (!kind.matches(ExceptionTypes.BASE_EXCEPTION_GROUP)) {
+            throw Slots.typeError(
+                    "BaseExceptionGroup.__new__(%s): %s is not a subtype of BaseExceptionGroup",
+                    kind.name(), kind.name());
+        }
+        return PyBaseExceptionGroup.create(
+                kind, Arrays.copyOfRange(args, 1, given), false);
+    }
+
+    /**
+     * {@code BaseExceptionGroup_init}: the keyword refusal {@code BaseException_init} does not make,
+     * worded under the class the value is.
+     *
+     * <p>A promoted group is therefore refused as {@code ExceptionGroup() takes no keyword arguments} —
+     * {@code _PyArg_NoKeywords} reads {@code Py_TYPE(self)} after {@code __new__} has already decided
+     * which of the two classes the value belongs to.
+     */
+    private static PyObject groupInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver(
+                                "__init__", ExceptionTypes.BASE_EXCEPTION_GROUP, args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("%s() takes no keyword arguments", self.getType().name());
+        }
+        self.setArguments(tail(args, kwNames));
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code BaseExceptionGroup_derive}: a group of this one's shape, holding the children given.
+     *
+     * <p>The arity complaints name {@code BaseExceptionGroup} however the value is classed, because they
+     * are made from the method's own name rather than from the receiver the way a {@code __qualname__}
+     * read is.
+     */
+    private static PyObject groupDerive(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject self =
+                methodReceiver("derive", ExceptionTypes.BASE_EXCEPTION_GROUP, args, kwNames);
+        PyObject[] rest = tail(args, kwNames);
+        Arguments.exactlyOne("BaseExceptionGroup.derive()", rest, kwNames);
+        return PyBaseExceptionGroup.derive(self, rest[0]);
+    }
+
+    /** {@code BaseExceptionGroup_split}: the two halves a clause is built out of. */
+    private static PyObject groupSplit(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject self = methodReceiver("split", ExceptionTypes.BASE_EXCEPTION_GROUP, args, kwNames);
+        PyObject[] rest = tail(args, kwNames);
+        Arguments.exactlyOne("BaseExceptionGroup.split()", rest, kwNames);
+        return PyBaseExceptionGroup.split(self, rest[0]);
+    }
+
+    /** {@code BaseExceptionGroup_subgroup}: the matching half alone, or {@code None}. */
+    private static PyObject groupSubgroup(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject self =
+                methodReceiver("subgroup", ExceptionTypes.BASE_EXCEPTION_GROUP, args, kwNames);
+        PyObject[] rest = tail(args, kwNames);
+        Arguments.exactlyOne("BaseExceptionGroup.subgroup()", rest, kwNames);
+        return PyBaseExceptionGroup.subgroup(self, rest[0]);
+    }
+
+    /** Whether the call named anything, which a zero-length keyword list does not. */
+    private static boolean hasKeywords(String[] kwNames) {
+        return kwNames != null && kwNames.length > 0;
+    }
+
+    /**
+     * The exception a {@code wrapper_descriptor} of an exception family was called on.
      *
      * <p>Same two refusals as {@link #wrapperReceiver}, in the declaring type's own words: an empty
-     * argument list reaches the first, and anything that is not an exception the second.
+     * argument list reaches the first, and anything that is not an exception the second. The type is the
+     * one holding the method, so a group's {@code __init__} complains about {@code BaseExceptionGroup}
+     * even when the value it was read from is an {@code ExceptionGroup}.
      */
-    private static PyObject exceptionReceiver(String name, PyObject[] args, String[] kwNames) {
+    private static PyObject exceptionReceiver(
+            String name, PyType declaring, PyObject[] args, String[] kwNames) {
         if (Arguments.positional(args, kwNames) < 1) {
             throw Slots.typeError(
-                    "descriptor '%s' of '%s' object needs an argument",
-                    name, ExceptionTypes.BASE_EXCEPTION.name());
+                    "descriptor '%s' of '%s' object needs an argument", name, declaring.name());
         }
-        if (!(args[0] instanceof PyBaseException)) {
+        if (!declaring.instanceOf(args[0])) {
             throw Slots.typeError(
                     "descriptor '%s' requires a '%s' object but received a '%s'",
-                    name, ExceptionTypes.BASE_EXCEPTION.name(), args[0].getType().name());
+                    name, declaring.name(), args[0].getType().name());
         }
         return args[0];
     }
@@ -405,10 +619,11 @@ final class TypeDict {
         private final String name;
         private final Shape shape;
         private final String qualified;
+        private final String doc;
         private final Method body;
 
         Member(PyType declaring, String name, Shape shape, Method body) {
-            this(declaring, name, shape, declaring.name() + "." + name, body);
+            this(declaring, name, shape, null, null, body);
         }
 
         /**
@@ -417,11 +632,20 @@ final class TypeDict {
          * table says {@code Exception.__new__}.
          */
         Member(PyType declaring, String name, Shape shape, String qualified, Method body) {
+            this(declaring, name, shape, qualified, null, body);
+        }
+
+        /**
+         * The full form, which also says what CPython's {@code ml_doc} for this member holds and, when
+         * the name it reports is not the declaring class's, what {@code __qualname__} is.
+         */
+        Member(PyType declaring, String name, Shape shape, String qualified, String doc, Method body) {
             super(shape.describing());
             this.declaring = declaring;
             this.name = name;
             this.shape = shape;
-            this.qualified = qualified;
+            this.qualified = qualified == null ? declaring.name() + "." + name : qualified;
+            this.doc = doc;
             this.body = body;
         }
 
@@ -438,7 +662,7 @@ final class TypeDict {
                         case RAW -> null;
                         case WRAPPER, METHOD -> obj;
                     };
-            return receiver == null ? this : new Bound(declaring, name, shape, body, receiver);
+            return receiver == null ? this : new Bound(declaring, name, shape, body, receiver, doc);
         }
 
         @Override
@@ -446,6 +670,7 @@ final class TypeDict {
             return switch (attribute) {
                 case "__name__" -> PyStr.of(name);
                 case "__qualname__" -> PyStr.of(qualified);
+                case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
                 case "__self__" -> shape == Shape.RAW ? declaring : PyNotImplemented.INSTANCE;
                 case "__objclass__" -> shape == Shape.RAW ? PyNotImplemented.INSTANCE : declaring;
                 case "__get__" ->
@@ -494,14 +719,22 @@ final class TypeDict {
         private final Shape shape;
         private final Method body;
         private final PyObject receiver;
+        private final String doc;
 
-        Bound(PyType declaring, String name, Shape shape, Method body, PyObject receiver) {
+        Bound(
+                PyType declaring,
+                String name,
+                Shape shape,
+                Method body,
+                PyObject receiver,
+                String doc) {
             super(shape.bound());
             this.declaring = declaring;
             this.name = name;
             this.shape = shape;
             this.body = body;
             this.receiver = receiver;
+            this.doc = doc;
         }
 
         @Override
@@ -516,15 +749,20 @@ final class TypeDict {
         /**
          * The name the arity complaint and {@code __qualname__} both use.
          *
-         * <p>A bound wrapper keeps the name of the type that declares the slot even though the value it
-         * bound to is a class — {@code Plain.__call__.__qualname__} is {@code type.__call__} — while the
-         * method and classmethod families name what they were read from.
+         * <p>CPython's {@code meth_get__qualname__} reads the class of whatever the method bound to: a
+         * value's own class, so {@code E("x").with_traceback} says {@code E.with_traceback} even though
+         * {@code BaseException} is what declares the method, or the class itself when the receiver is one.
+         * A bound wrapper is the exception — it keeps the name of the type that declares the slot, which
+         * is why {@code Plain.__call__.__qualname__} is {@code type.__call__} while {@code C.mro} of a
+         * class {@code C} is {@code C.mro}.
          */
         private String qualifiedName() {
             String owner =
-                    shape == Shape.WRAPPER || !(receiver instanceof PyType kind)
+                    shape == Shape.WRAPPER
                             ? declaring.name()
-                            : kind.name();
+                            : receiver instanceof PyType kind
+                                    ? kind.name()
+                                    : receiver.getType().name();
             return owner + "." + name;
         }
 
@@ -534,18 +772,26 @@ final class TypeDict {
                 case "__name__" -> PyStr.of(name);
                 case "__qualname__" -> PyStr.of(qualifiedName());
                 case "__self__" -> receiver;
+                case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
                 default -> PyNotImplemented.INSTANCE;
             };
         }
 
         @Override
         public boolean eq(PyObject other) {
-            return other == this;
+            // CPython's method_compare: the method it wraps and the object it wrapped, both by identity.
+            // So two reads of the same member off the same value answer equal without being one object —
+            // `named.split == named.split` is true and `named.split is named.split` is false, because
+            // each read makes a fresh bound copy the way PyCFunction_NewEx does.
+            return other instanceof Bound bound
+                    && bound.declaring == declaring
+                    && bound.name.equals(name)
+                    && bound.receiver == receiver;
         }
 
         @Override
         public long hash() {
-            return System.identityHashCode(this);
+            return name.hashCode() * 31 + receiver.hash();
         }
 
         @Override

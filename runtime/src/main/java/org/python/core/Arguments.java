@@ -1,5 +1,7 @@
 package org.python.core;
 
+import java.util.Arrays;
+
 /**
  * Argument-count checking for native methods, in CPython's words.
  *
@@ -197,5 +199,16 @@ final class Arguments {
     /** How many of them arrived positionally, which is the prefix {@link #fill} reads first. */
     static int positional(PyObject[] args, String[] kwNames) {
         return args.length - (kwNames == null ? 0 : kwNames.length);
+    }
+
+    /**
+     * The arguments a call gave positionally, as a list rather than a count.
+     *
+     * <p>A legacy method declared with {@code PyArg_ParseTuple} parses this prefix and never sees the
+     * keyword values that trail it, which is why such a method counts an argument twice over: the arity
+     * complaint reads {@code (3 given)} for a call that gave three positionals and a name.
+     */
+    static PyObject[] positionals(PyObject[] args, String[] kwNames) {
+        return Arrays.copyOf(args, positional(args, kwNames));
     }
 }

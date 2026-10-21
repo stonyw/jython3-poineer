@@ -76,7 +76,9 @@ final class Builtins {
 
     private static void addExceptions(PyDict out) {
         put(out, "BaseException", ExceptionTypes.BASE_EXCEPTION);
+        put(out, "BaseExceptionGroup", ExceptionTypes.BASE_EXCEPTION_GROUP);
         put(out, "Exception", ExceptionTypes.EXCEPTION);
+        put(out, "ExceptionGroup", ExceptionTypes.EXCEPTION_GROUP);
         put(out, "ArithmeticError", ExceptionTypes.ARITHMETIC_ERROR);
         put(out, "AssertionError", ExceptionTypes.ASSERTION_ERROR);
         put(out, "AttributeError", ExceptionTypes.ATTRIBUTE_ERROR);

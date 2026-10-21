@@ -25,21 +25,28 @@ import java.util.function.Supplier;
  * failing expression, the {@code ^} and {@code ~} line PEP 657 calls an anchor. Since 3.13 the default
  * report goes through the Python one — {@code _PyErr_Display} imports {@code traceback} and calls its
  * {@code _print_exception_bltin}, and only falls back to the C printer when that fails. This class
- * transcribes the C printer's text, which is byte for byte what the Python printer writes when the code
- * objects carry no column information, as they do under {@code -X no_debug_ranges}.
+ * transcribes the Python text, which for a code object that carries no column information — as every one
+ * of them does under {@code -X no_debug_ranges} — is byte for byte what the C printer writes. The one
+ * thing that exists only in the Python printer is the exception group, and its blocks are here for that
+ * reason: the C fallback a person reaches by making {@code traceback} unimportable prints a group as a
+ * plain complaint line and nothing else.
  *
  * <p>The anchors are therefore the one named omission, and it is not a matter of reading wider ranges
  * out of the line table: {@code _extract_caret_anchors_from_line_segment} decides which characters get a
  * {@code ~} by parsing the source segment with {@code ast} and {@code tokenize}, and this runtime has
  * neither module — it reads a code object, not a syntax tree. Everything else the report says is here:
  * the chain of causes and contexts, the collapse of a repeated line, {@code sys.tracebacklimit}, the
- * notes, and the type name the complaint is filed under.
+ * notes, the type name the complaint is filed under, and the tree of a group down to the margin CPython
+ * puts in front of every line inside one.
  *
- * <p>Two readings follow CPython's code rather than a plausible shortcut. The limit keeps the
+ * <p>Three readings follow CPython's code rather than a plausible shortcut. The limit keeps the
  * <em>last</em> N entries, because {@code BUILTIN_EXCEPTION_LIMIT} slices the walked traceback from the
- * end; and a {@code sys.tracebacklimit} that is not a number is ignored, where CPython's comparison
+ * end; a {@code sys.tracebacklimit} that is not a number is ignored, where CPython's comparison
  * raises inside the display and drops it to the C printer — which, unlike the Python one, cannot quote a
- * {@code -c} command at all.
+ * {@code -c} command at all; and the whole tree of a report is captured before a line of it is written,
+ * because {@code _seen} marks an exception as shown when its node is <em>made</em> — so the second child
+ * of a group whose cause is the first of them has no cause to report, which printing the walk as it goes
+ * would have printed.
  */
 public final class TracebackReport {
 
@@ -56,6 +63,21 @@ public final class TracebackReport {
 
     /** {@code _TRACEBACK_SOURCE_LINE_INDENT}, which is also what {@code textwrap.indent} is given. */
     private static final String SOURCE_INDENT = "    ";
+
+    /** {@code max_group_width}: how many children of a group get a frame of their own before a count. */
+    private static final int MAX_GROUP_WIDTH = 15;
+
+    /** {@code max_group_depth}: how deep into a tree of groups the report goes before it gives up. */
+    private static final int MAX_GROUP_DEPTH = 10;
+
+    private static final String GROUP_HEADER = "Exception Group Traceback (most recent call last):\n";
+
+    /** {@code '+-------'} and {@code '-------'}: the frame around a numbered child, and the one that ends all. */
+    private static final String CHILD_FRAME = "+---------------- ";
+
+    private static final String CHILD_END = " ----------------\n";
+
+    private static final String CLOSER = "+------------------------------------\n";
 
     /**
      * Source compiled from a string rather than from a file, keyed as {@code linecache._register_code}
@@ -116,46 +138,106 @@ public final class TracebackReport {
 
     // --- the chain -----------------------------------------------------------------------
 
-    /**
-     * Every exception the report has to show, oldest first, each with the sentence that introduces it.
-     *
-     * <p>{@code TracebackException.format} walks {@code __cause__} and then {@code __context__} from the
-     * raised value outwards, collects the chain, and prints it in reverse — which is why a cause appears
-     * above the exception it caused. The walk stops at the first exception it has already shown, as the
-     * {@code _seen} set of ids stops CPython's, so {@code a.__cause__ = b; b.__cause__ = a} reports two
-     * blocks rather than never finishing.
-     *
-     * <p>An introduction belongs to a link the walk actually takes. Where {@code StackSummary.__init__}
-     * refuses to build a chained object for an id already in {@code _seen}, the report has no sentence to
-     * print either — a cycle closes on the oldest block it reached, not on a claim that something was
-     * handled before it.
-     */
-    private void chain(PyBaseException error) {
-        List<PyBaseException> values = new ArrayList<>();
-        List<String> introductions = new ArrayList<>();
-        Set<PyBaseException> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    /** {@code _ExceptionPrintContext}: how far into a tree of groups the report currently stands. */
+    private static final class Context {
 
-        PyBaseException at = error;
-        while (at != null && seen.add(at)) {
-            PyBaseException cause = chained(at, "__cause__");
+        /** {@code exception_group_depth}: one for each group the report is inside, zero above them all. */
+        private int depth;
+
+        /** Whether the block that is about to end still owes the reader its closing frame. */
+        private boolean needClose;
+
+        /** {@code indent()}: two spaces per group, which is nothing at all outside one. */
+        private String indent() {
+            return " ".repeat(2 * depth);
+        }
+    }
+
+    /**
+     * One exception the report shows, with the links the capture gave it.
+     *
+     * <p>The three fields are what {@code TracebackException} is asked for as it is printed, and they are
+     * decided by the capture below rather than by the print, because {@code _seen} marks an id as shown
+     * when its node is <em>made</em>: a group's children are all made before any of them is looked at, so
+     * one whose cause is a sibling of it has no cause to report.
+     */
+    private static final class Node {
+
+        private final PyBaseException value;
+        private Node cause;
+        private Node context;
+
+        /** The children of a group, or null for anything else — the first question {@code format} asks. */
+        private List<Node> children;
+
+        Node(PyBaseException value) {
+            this.value = value;
+        }
+    }
+
+    /** A captured node and the exception it was made from, which is the pair the capture queue carries. */
+    private record Link(Node node, PyBaseException value) {}
+
+    /** The whole report of {@code error}: its tree captured once, then written oldest block first. */
+    private void chain(PyBaseException error) {
+        format(capture(error), new Context());
+    }
+
+    /**
+     * {@code TracebackException.__init__}'s capture queue, which is a stack: {@code queue.pop()} takes the
+     * last entry, so a group's children are looked at in reverse and every node settles its own links
+     * before any of them is opened.
+     *
+     * <p>Causes and contexts are only captured when the exception has not been seen, which is what stops
+     * {@code a.__cause__ = b; b.__cause__ = a} from never finishing. Children are captured unconditionally:
+     * the same exception twice in one group is shown twice, because {@code BaseExceptionGroup} puts it in
+     * {@code exceptions} and the capture does not ask whether the reader has met it.
+     */
+    private Node capture(PyBaseException raised) {
+        Set<PyBaseException> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Node top = taken(raised, seen);
+        List<Link> queue = new ArrayList<>();
+        queue.add(new Link(top, raised));
+        while (!queue.isEmpty()) {
+            Link item = queue.remove(queue.size() - 1);
+            Node node = item.node();
+            PyBaseException value = item.value();
+            PyBaseException cause = chained(value, "__cause__");
+            node.cause = cause != null && !seen.contains(cause) ? taken(cause, seen) : null;
             // compact=True: a context is only followed when there was no cause to print.
             PyBaseException context =
-                    cause == null && !Slots.truth(at.getAttr("__suppress_context__"))
-                            ? chained(at, "__context__")
+                    node.cause == null && !Slots.truth(value.getAttr("__suppress_context__"))
+                            ? chained(value, "__context__")
                             : null;
-            PyBaseException next = cause != null ? cause : context;
-            boolean follows = next != null && !seen.contains(next);
-            introductions.add(follows ? cause != null ? CAUSE_MESSAGE : CONTEXT_MESSAGE : null);
-            values.add(at);
-            at = follows ? next : null;
-        }
-
-        for (int i = values.size() - 1; i >= 0; i--) {
-            if (introductions.get(i) != null) {
-                out.append(introductions.get(i));
+            node.context =
+                    context != null && !seen.contains(context) ? taken(context, seen) : null;
+            if (value instanceof PyBaseExceptionGroup group) {
+                PyObject[] children = group.children().getArray();
+                node.children = new ArrayList<>(children.length);
+                for (PyObject child : children) {
+                    node.children.add(taken((PyBaseException) child, seen));
+                }
             }
-            block(values.get(i));
+            if (node.cause != null) {
+                queue.add(new Link(node.cause, cause));
+            }
+            if (node.context != null) {
+                queue.add(new Link(node.context, context));
+            }
+            if (node.children != null) {
+                PyObject[] children = ((PyBaseExceptionGroup) value).children().getArray();
+                for (int i = 0; i < node.children.size(); i++) {
+                    queue.add(new Link(node.children.get(i), (PyBaseException) children[i]));
+                }
+            }
         }
+        return top;
+    }
+
+    /** A node for {@code value}, marking it seen as {@code _seen.add(id(exc_value))} marks the one it makes. */
+    private static Node taken(PyBaseException value, Set<PyBaseException> seen) {
+        seen.add(value);
+        return new Node(value);
     }
 
     /** {@code e.__cause__} or {@code e.__context__} as an exception, or null where CPython has {@code None}. */
@@ -163,15 +245,101 @@ public final class TracebackReport {
         return value.getAttr(name) instanceof PyBaseException other ? other : null;
     }
 
-    /** One exception's own report: its frames, then its complaint, then its notes. */
-    private void block(PyBaseException value) {
-        List<Entry> entries = entriesOf(value);
-        if (!entries.isEmpty()) {
-            out.append(HEADER);
-            frames(entries);
+    /**
+     * {@code TracebackException.format}: the chain of one node, oldest block first, each with the sentence
+     * that introduces it.
+     *
+     * <p>The sentence belongs to the block it comes before, not to the link it describes: {@code output}
+     * collects {@code (message, exc)} pairs walking outward and prints them reversed, so what the reader
+     * sees is the cause, then "during handling of the above exception", then the error it was handling.
+     */
+    private void format(Node node, Context ctx) {
+        List<Node> values = new ArrayList<>();
+        List<String> introductions = new ArrayList<>();
+        Node at = node;
+        while (at != null) {
+            boolean follows = at.cause != null || at.context != null;
+            introductions.add(follows ? at.cause != null ? CAUSE_MESSAGE : CONTEXT_MESSAGE : null);
+            values.add(at);
+            at = follows ? (at.cause != null ? at.cause : at.context) : null;
         }
-        out.append(complaint(value));
-        notes(value);
+        for (int i = values.size() - 1; i >= 0; i--) {
+            if (introductions.get(i) != null) {
+                emit(introductions.get(i), ctx);
+            }
+            render(values.get(i), ctx);
+        }
+    }
+
+    /**
+     * One node's own block: its frames, its complaint, and then, for a group, one frame per child.
+     *
+     * <p>A group is what the depth limit is counted in, and the count is of the groups <em>above</em> this
+     * one — {@code _ctx.exception_group_depth > max_group_depth} — so the eleventh is the one that reads
+     * {@code ... (max_group_depth is 10)} instead of its own contents.
+     *
+     * <p>The only difference between a group's header and any other's is the character in the margin: the
+     * outermost gets {@code +} and everything inside it, including a nested group's own header, gets {@code
+     * |}. The {@code needClose} flag is why a group whose last child is itself a group is not given a
+     * closing frame — the child took it, and the parent has none left to take.
+     */
+    private void render(Node node, Context ctx) {
+        PyBaseException value = node.value;
+        List<Entry> entries = entriesOf(value);
+        if (node.children == null) {
+            if (!entries.isEmpty()) {
+                emit(HEADER, ctx);
+                emit(frames(entries), ctx);
+            }
+            emit(only(value), ctx);
+            return;
+        }
+        if (ctx.depth > MAX_GROUP_DEPTH) {
+            emit("... (max_group_depth is " + MAX_GROUP_DEPTH + ")\n", ctx);
+            return;
+        }
+        boolean toplevel = ctx.depth == 0;
+        if (toplevel) {
+            ctx.depth = 1;
+        }
+        if (!entries.isEmpty()) {
+            emit(GROUP_HEADER, ctx, toplevel ? '+' : '|');
+            emit(frames(entries), ctx);
+        }
+        emit(only(value), ctx);
+
+        int total = node.children.size();
+        int shown = total <= MAX_GROUP_WIDTH ? total : MAX_GROUP_WIDTH + 1;
+        ctx.needClose = false;
+        for (int i = 0; i < shown; i++) {
+            boolean last = i == shown - 1;
+            if (last) {
+                ctx.needClose = true;
+            }
+            boolean truncated = i >= MAX_GROUP_WIDTH;
+            out.append(ctx.indent())
+                    .append(i == 0 ? "+-" : "  ")
+                    .append(CHILD_FRAME)
+                    .append(truncated ? "..." : Integer.toString(i + 1))
+                    .append(CHILD_END);
+            ctx.depth++;
+            if (truncated) {
+                int remaining = total - MAX_GROUP_WIDTH;
+                emit(
+                        "and " + remaining + " more exception" + (remaining > 1 ? "s" : "") + "\n",
+                        ctx);
+            } else {
+                format(node.children.get(i), ctx);
+            }
+            if (last && ctx.needClose) {
+                out.append(ctx.indent()).append(CLOSER);
+                ctx.needClose = false;
+            }
+            ctx.depth--;
+        }
+        if (toplevel) {
+            ctx.depth = 0;
+        }
     }
 
     // --- the entries ---------------------------------------------------------------------
@@ -206,8 +374,11 @@ public final class TracebackReport {
      *
      * <p>Two entries are the same run when file, line and function agree — which is what a recursion
      * produces, and why a thousand frames of it print as four lines.
+     *
+     * @return {@code StackSummary.format}'s output as one text, every line of it ending in a newline
      */
-    private void frames(List<Entry> entries) {
+    private String frames(List<Entry> entries) {
+        StringBuilder block = new StringBuilder();
         Entry previous = null;
         int count = 0;
         for (Entry entry : entries) {
@@ -218,19 +389,20 @@ public final class TracebackReport {
                             && previous.name().equals(entry.name());
             if (!sameRun) {
                 if (count > RECURSIVE_CUTOFF) {
-                    out.append(repeated(count));
+                    block.append(repeated(count));
                 }
                 previous = entry;
                 count = 0;
             }
             count++;
             if (count <= RECURSIVE_CUTOFF) {
-                out.append(entry(entry));
+                block.append(entry(entry));
             }
         }
         if (count > RECURSIVE_CUTOFF) {
-            out.append(repeated(count));
+            block.append(repeated(count));
         }
+        return block.toString();
     }
 
     private static String repeated(int count) {
@@ -318,42 +490,108 @@ public final class TracebackReport {
     }
 
     /**
-     * The notes, one block of lines each, after the complaint.
+     * {@code format_exception_only}: the complaint and then the notes, as one text of lines.
+     *
+     * <p>CPython yields the two as separate strings and indents each of them on the way out, which is the
+     * same text as indenting the pair once they are joined — so the block is built here and {@link #emit}
+     * puts the margin on every line of it.
      *
      * <p>{@code __notes__} is read as the report reads it rather than as a promise: a list or tuple is
      * walked and each note printed as its own lines, a bare string or anything else is printed as its
      * {@code repr}, which is the difference CPython draws with {@code isinstance(x, Sequence)}.
      */
-    private void notes(PyBaseException value) {
+    private static String only(PyBaseException value) {
+        StringBuilder text = new StringBuilder(complaint(value));
         PyObject notes = value.getAttr("__notes__");
         if (notes == null || notes instanceof PyNone || notes instanceof PyNotImplemented) {
-            return;
+            return text.toString();
         }
-        if (notes instanceof PyList || notes instanceof PyTuple) {
-            boolean list = notes instanceof PyList;
-            int size = list ? ((PyList) notes).size() : ((PyTuple) notes).size();
-            for (int i = 0; i < size; i++) {
-                PyObject note = list ? ((PyList) notes).at(i) : ((PyTuple) notes).at(i);
-                emitLines(safe("note", "str", note::str));
+        if (notes instanceof PyList list) {
+            for (int i = 0; i < list.size(); i++) {
+                appendNote(text, safe("note", "str", list.at(i)::str));
             }
-            return;
+            return text.toString();
         }
-        emitLine(safe("__notes__", "repr", notes::repr));
+        if (notes instanceof PyTuple tuple) {
+            for (int i = 0; i < tuple.size(); i++) {
+                appendNote(text, safe("note", "str", tuple.at(i)::str));
+            }
+            return text.toString();
+        }
+        return text.append(safe("__notes__", "repr", notes::repr)).append('\n').toString();
     }
 
-    /** A note's text, with its own newlines kept as separate lines of the report — CPython's {@code split}. */
-    private void emitLines(String text) {
-        List<String> lines = new ArrayList<>(Arrays.asList(text.split("\n", -1)));
-        if (!lines.isEmpty() && lines.get(lines.size() - 1).isEmpty()) {
-            lines.remove(lines.size() - 1);
-        }
-        for (String line : lines) {
-            emitLine(line);
+    /**
+     * One note's text, split on the newline and nothing else, each piece given a line of its own.
+     *
+     * <p>The trailing empty piece of {@code "text\n".split('\n')} is kept, which is why a note that ends in
+     * a newline is reported with a blank line after it — CPython's list comprehension makes one, and the
+     * margin then makes that blank line visible inside a group.
+     */
+    private static void appendNote(StringBuilder text, String note) {
+        for (String line : note.split("\n", -1)) {
+            text.append(line).append('\n');
         }
     }
 
-    private void emitLine(String text) {
-        out.append(text).append('\n');
+    /** {@code _ExceptionPrintContext.emit}: the margin a whole block of the report gets, with {@code |}. */
+    private void emit(String text, Context ctx) {
+        emit(text, ctx, '|');
+    }
+
+    /**
+     * Every line of {@code text} with the group margin in front of it, which is {@code textwrap.indent}
+     * handed a predicate that accepts blank lines.
+     *
+     * <p>Two details make this more than a prefix. An empty line inside a group is not left empty — it gets
+     * the margin and its trailing space, which is what makes the blank around a chain introduction read as
+     * part of the block it introduces. And the margin is only put on at all once the report is inside a
+     * group: at the top of one the depth is still zero, and CPython's {@code if
+     * self.exception_group_depth:} is what keeps the plain report free of a leading space.
+     */
+    private void emit(String text, Context ctx, char margin) {
+        String prefix = ctx.depth == 0 ? "" : ctx.indent() + margin + " ";
+        for (String line : splitLines(text)) {
+            out.append(prefix).append(line);
+        }
+    }
+
+    /** {@code text.splitlines(True)}: every line with the terminator that ended it, and the last one bare. */
+    private static List<String> splitLines(String text) {
+        List<String> lines = new ArrayList<>();
+        int from = 0;
+        while (from < text.length()) {
+            int end = lineEnd(text, from);
+            if (end < 0) {
+                lines.add(text.substring(from));
+                return lines;
+            }
+            lines.add(text.substring(from, end));
+            from = end;
+        }
+        return lines;
+    }
+
+    /**
+     * Where the line starting at {@code from} ends, past its terminator, or -1 where no line does.
+     *
+     * <p>{@code str.splitlines} breaks on more than a newline — a vertical tab, a form feed, the four
+     * file separators, the Unicode line and paragraph separators, and a lone carriage return — and the
+     * report inherits that list whether it wanted it or not, because {@code textwrap.indent} is what does
+     * the splitting.
+     */
+    private static int lineEnd(String text, int from) {
+        for (int i = from; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\r') {
+                return i + 1 < text.length() && text.charAt(i + 1) == '\n' ? i + 2 : i + 1;
+            }
+            if (c == '\n' || c == '\u000B' || c == '\f' || c == 0x85 || c == 0x2028 || c == 0x2029
+                    || (c >= 0x1c && c <= 0x1e)) {
+                return i + 1;
+            }
+        }
+        return -1;
     }
 
     /** {@code _safe_string}: the text of a value, or the complaint about the call that could not make it. */

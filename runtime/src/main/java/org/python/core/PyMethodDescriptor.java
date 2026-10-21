@@ -67,6 +67,9 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
         return switch (attribute) {
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> PyStr.of(owner.name() + "." + name);
+            // A method table registers a body and no sentence, so the name the descriptor answers with is
+            // the one CPython leaves NULL: no table entry carries the docstring written beside the method.
+            case "__doc__" -> PyNone.INSTANCE;
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> PyNotImplemented.INSTANCE;

@@ -48,9 +48,22 @@ public final class ExceptionTypes {
      * call swallows, or whatever the body raised while handling it, which escapes.
      */
     public static final PyType GENERATOR_EXIT = child("GeneratorExit", BASE_EXCEPTION);
+    /**
+     * The two classes {@code except*} works over. {@code BaseExceptionGroup} takes one base as any other
+     * exception does; {@code ExceptionGroup} is the one class in this table with two, because CPython
+     * creates it over {@code (BaseExceptionGroup, Exception)} — which is why {@code isinstance(eg,
+     * Exception)} is true while {@code isinstance(eg, Exception)} for a group of {@code
+     * KeyboardInterrupt} alone is false: the second class only ever holds what {@code Exception} allows.
+     */
+    public static final PyType BASE_EXCEPTION_GROUP =
+            child("BaseExceptionGroup", BASE_EXCEPTION)
+                    .documented("A combination of multiple unrelated exceptions.");
 
-    private static PyType child(String name, PyType parent) {
-        return PyType.declare(name, parent);
+    public static final PyType EXCEPTION_GROUP =
+            child("ExceptionGroup", BASE_EXCEPTION_GROUP, EXCEPTION);
+
+    private static PyType child(String name, PyType... bases) {
+        return PyType.declare(name, bases);
     }
 
     private ExceptionTypes() {

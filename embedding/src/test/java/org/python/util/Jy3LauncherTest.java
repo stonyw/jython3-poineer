@@ -194,7 +194,11 @@ class Jy3LauncherTest {
                 "17_generators.py",
                 "18_generator_send.py",
                 "19_generator_throw_close.py",
-                "20_generator_exc_state.py");
+                "20_generator_exc_state.py",
+                "21_except_star.py",
+                "22_group_construction.py",
+                "23_group_methods.py",
+                "24_group_names.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
@@ -262,7 +266,20 @@ class Jy3LauncherTest {
                 "25_generator_pep479.py",
                 "26_generator_throw_escape.py",
                 "27_generator_nested.py",
-                "28_generator_throw_from_handler.py");
+                "28_generator_throw_from_handler.py",
+                "29_group_plain.py",
+                "30_group_nested.py",
+                "31_group_chain.py",
+                "32_group_width.py",
+                "33_group_depth.py",
+                "34_group_notes_lines.py",
+                "35_except_star_escape.py",
+                "36_group_single_child.py",
+                "37_base_exception_group.py",
+                "38_group_traceback_limit.py",
+                "39_group_context_escape.py",
+                "40_group_repeated_child.py",
+                "41_group_escape_from_clause.py");
     }
 
     @Test

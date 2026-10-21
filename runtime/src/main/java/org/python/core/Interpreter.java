@@ -480,6 +480,9 @@ public final class Interpreter {
                     case Opcodes.CALL_INTRINSIC_1:
                         frame.push(intrinsic(frame, arg));
                         break;
+                    case Opcodes.CALL_INTRINSIC_2:
+                        frame.push(intrinsic2(frame, arg));
+                        break;
 
                     // --- jumps ---------------------------------------------------------------
                     case Opcodes.JUMP_FORWARD:
@@ -703,6 +706,28 @@ public final class Interpreter {
                         // leftovers regardless.
                         PyObject clause = frame.peek(0);
                         frame.replace(0, PyBool.of(catches((PyBaseException) frame.peek(1), clause)));
+                        break;
+                    }
+                    case Opcodes.CHECK_EG_MATCH: {
+                        // The two refusals an `except*` makes of its clause, before the value is asked
+                        // anything and in this order: every name has to be an exception class, and then
+                        // none of them may be a group. A group clause can never select anything, so it is
+                        // refused rather than left to catch nothing.
+                        PyObject clause = frame.peek(0);
+                        PyBaseExceptionGroup.checkClause(clause);
+                        PyObject[] halves =
+                                PyBaseExceptionGroup.clause(
+                                        (PyBaseException) frame.peek(1), clause, frame);
+                        if (halves[1] != PyNone.INSTANCE) {
+                            // `PyErr_SetHandledException`: the part that matched is what the body runs for,
+                            // so `sys.exc_info()` and a bare `raise` inside an `except*` clause read the
+                            // group this clause selected rather than the whole one that was raised.
+                            PyRuntime.setHandledException(halves[1]);
+                        }
+                        // The two slots the value and the clause stood in, in the order the compiler laid
+                        // the handler out for: what is left over below, and what this clause got.
+                        frame.replace(1, halves[0]);
+                        frame.replace(0, halves[1]);
                         break;
                     }
                     case Opcodes.POP_EXCEPT:
@@ -1174,6 +1199,30 @@ public final class Interpreter {
             default:
                 throw Slots.notImplemented("intrinsic " + id);
         }
+    }
+
+    /**
+     * {@code CALL_INTRINSIC_2}, which this stage compiles a frame for in exactly one place: the tail of
+     * an {@code except*} chain, where the exceptions its clauses left behind become the one thing that
+     * leaves the statement.
+     *
+     * <p>The list is on top and the exception the {@code try} was raised for under it, in the order the
+     * compiler lays them out — and the answer goes in their place, to be raised by the {@code RERAISE}
+     * that follows. {@code None} is the answer for a chain that raised nothing, and the driver's
+     * {@code POP_TOP} discards it, which is how an {@code except*} that handled everything just ends.
+     */
+    private static PyObject intrinsic2(Frame frame, int id) {
+        PyObject left = frame.pop();
+        PyObject original = frame.pop();
+        if (id != 1) {
+            throw Slots.notImplemented("intrinsic 2 " + id);
+        }
+        if (!(left instanceof PyList clauses)) {
+            // Unreachable from compiled code, which only ever builds the list with BUILD_LIST; the refusal
+            // is CPython's own for the one entry point that checks rather than asserts.
+            throw Slots.typeError("excs must be a list of exception instances");
+        }
+        return PyBaseExceptionGroup.prepareReraise(original, clauses);
     }
 
     private static java.util.List<PyObject> drain(PyIterator iterator) {

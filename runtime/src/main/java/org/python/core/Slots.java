@@ -352,7 +352,9 @@ public final class Slots {
      * too: an instance of a class that defines no {@code __call__} has no call slot, and
      * {@code callable(Marker())} is false. Of the three descriptor builtins only a {@code staticmethod}
      * object is on the list, because CPython made it callable in 3.11 and left {@code classmethod} and
-     * {@code property} out: {@code callable(C.__dict__["m"])} is false.
+     * {@code property} out: {@code callable(C.__dict__["m"])} is false. An exception <em>instance</em> is
+     * not on it either, which is what makes {@code callable(ValueError("x"))} false and lets
+     * {@code split(ValueError("x"))} refuse the matcher before trying to call it.
      */
     public static boolean isCallable(PyObject value) {
         return value instanceof PyType
@@ -361,7 +363,6 @@ public final class Slots {
                 || value instanceof PyStaticMethod
                 || value instanceof PyNativeFunction
                 || value instanceof PyBoundMethod
-                || value instanceof PyBaseException
                 || (value instanceof PyInstance instance
                         && Specials.defines(instance.getType(), "__call__"));
     }

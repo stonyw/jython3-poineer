@@ -9,6 +9,9 @@
 **/.gradle/
 *.class
 
+# Python bytecode from the reference-side helper tools under front-cpython314/tools/.
+**/__pycache__/
+
 # Machine-local settings.
 local.properties
 .idea/

@@ -16,6 +16,30 @@ final class Sequences {
     }
 
     /**
+     * {@code PySequence_Check}: whether {@code value} carries the indexed protocol at all.
+     *
+     * <p>The test is CPython's slot, not a try at the call: a mapping is subscriptable but is not a
+     * sequence, because {@code dict}, {@code module} and {@code type} fill {@code mp_subscript} where the
+     * sequence protocols fill {@code sq_item}. A class a person writes passes when it declares
+     * {@code __getitem__}, which is the same reason it can be walked by index at all, and one that only
+     * declares {@code __iter__} fails — the distinction {@code BaseExceptionGroup}'s second argument is
+     * refused on.
+     */
+    static boolean isSequence(PyObject value) {
+        if (value instanceof PyDict || value instanceof PyModule || value instanceof PyType) {
+            return false;
+        }
+        if (value instanceof PyStr
+                || value instanceof PyBytes
+                || value instanceof PyTuple
+                || value instanceof PyList
+                || value instanceof PyRange) {
+            return true;
+        }
+        return Specials.member(value.getType(), "__getitem__") != null;
+    }
+
+    /**
      * {@code left cmp right} for two sequences of already-extracted elements.
      *
      * Elements are compared with {@link Slots}, so a mixed pair inside a sequence raises in the

@@ -212,13 +212,13 @@ public class PyBaseException extends PyObject {
     }
 
     /** What the class's own method named {@code name} answers, or null when it declares none. */
-    private PyObject displayed(String name) {
+    PyObject displayed(String name) {
         PyFunction method = Specials.function(exceptionType, name);
         return method == null ? null : method.call(new PyObject[] {this}, null);
     }
 
     /** The check {@code PyObject_Str} and {@code PyObject_Repr} make of what a display method returned. */
-    private static String display(PyObject answer, String name) {
+    static String display(PyObject answer, String name) {
         if (!(answer instanceof PyStr text)) {
             throw Slots.typeError("%s returned non-string (type %s)", name, answer.getType().name());
         }
@@ -226,17 +226,24 @@ public class PyBaseException extends PyObject {
     }
 
     /**
-     * {@code raise X from Y}: the cause, and with it the decision not to report a context.
+     * {@code PyException_SetCause}: the cause, and with it the decision not to report a context.
      *
-     * <p>CPython's {@code PyException_SetCause} sets both at once, so an explicit {@code from} always
-     * suppresses the implicit chain — even when the two name the same exception, which is what
-     * {@code except E as inner: raise F from inner} does.
+     * <p>CPython sets both in the one function, which {@code __cause__}'s setter and {@code
+     * exceptiongroup_subset} both call. So an explicit {@code from} always suppresses the implicit chain —
+     * even when the two name the same exception, which is what {@code except E as inner: raise F from
+     * inner} does, and even when the cause named is {@code None}, which is what {@code raise F from None}
+     * and a split of a group with no cause both do.
      *
      * @param other the cause, or null for {@code from None}, which reports no cause at all
      */
-    void setCause(PyBaseException other) {
+    void setCause(PyObject other) {
         cause = other == null ? PyNone.INSTANCE : other;
         suppressContext = PyBool.TRUE;
+    }
+
+    /** The cause as the report reads it: {@code BaseException.__cause__}, field and all. */
+    PyObject cause() {
+        return cause;
     }
 
     /** The exception this one replaced, or {@code None} when nothing did. */
@@ -244,9 +251,27 @@ public class PyBaseException extends PyObject {
         return context;
     }
 
-    /** The implicit chain, built from the exception the enclosing handler was running for. */
-    void setContext(PyBaseException other) {
+    /**
+     * The implicit chain, built from the exception the enclosing handler was running for.
+     *
+     * <p>{@code PyException_SetContext} writes the field and leaves {@link #suppressContext} to the cause
+     * that decides it, which is why a chain CPython builds for itself still reports a context.
+     */
+    void setContext(PyObject other) {
         context = other == null ? PyNone.INSTANCE : other;
+    }
+
+    /**
+     * {@code self->notes}: the {@code __notes__} entry, read as the field CPython keeps notes in.
+     *
+     * <p>An exception with no notes answers with {@code PyNotImplemented} instead of raising, which is what
+     * lets a comparison of two of them say "neither has any" without a third case. This runtime files them
+     * in the dictionary because {@code add_note}, the only other way CPython writes the field, is not
+     * implemented here — so the two are the same list a person can read and replace.
+     */
+    PyObject notes() {
+        PyObject kept = dictionary == null ? null : dictionary.get(PyStr.interned("__notes__"));
+        return kept == null ? PyNotImplemented.INSTANCE : kept;
     }
 
     /**
@@ -321,7 +346,10 @@ public class PyBaseException extends PyObject {
      *
      * <p>The three chain fields are checked the way {@code PyException_SetCause} and its siblings check:
      * only an exception or {@code None} reaches {@code __cause__} and {@code __context__}, and the
-     * complaint names what was tried. {@code args} takes any iterable and stores it as a tuple.
+     * complaint names what was tried. Writing the cause goes through {@link #setCause}, so {@code e.__cause__
+     * = None} hides the context exactly as {@code raise X from None} does — the assignment is the same
+     * function CPython calls, not a field write of its own. {@code args} takes any iterable and stores it
+     * as a tuple.
      */
     @Override
     public PyObject setAttr(String name, PyObject value) {
@@ -341,11 +369,11 @@ public class PyBaseException extends PyObject {
                 }
             }
             case "__cause__" -> {
-                cause = chain("exception cause", value);
+                setCause(chain("exception cause", value));
                 return PyNone.INSTANCE;
             }
             case "__context__" -> {
-                context = chain("exception context", value);
+                setContext(chain("exception context", value));
                 return PyNone.INSTANCE;
             }
             case "__suppress_context__" -> {

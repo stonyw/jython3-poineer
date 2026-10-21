@@ -165,8 +165,20 @@ final class Constructors {
      *
      * An exception keeps its arguments as given because {@code str(e)} and {@code e.args} are both
      * derived from them, and neither is cooked here.
+     *
+     * <p>A group is the one exception family whose creator reads only two of the arguments and then
+     * refuses the rest itself, so the call is handed to {@link PyBaseExceptionGroup} whole: the
+     * positional prefix because that is what its {@code PyArg_ParseTuple} table sees, and the fact that
+     * anything was named separately because the refusal for that is made afterwards, by {@code __init__},
+     * under the class the value was made as.
      */
     private static PyObject exception(PyType type, PyObject[] args, String[] kwNames) {
+        if (type.matches(ExceptionTypes.BASE_EXCEPTION_GROUP)) {
+            return PyBaseExceptionGroup.create(
+                    type,
+                    Arguments.positionals(args, kwNames),
+                    kwNames != null && kwNames.length > 0);
+        }
         if (kwNames != null) {
             throw Slots.typeError("%s() takes no keyword arguments", type.name());
         }
