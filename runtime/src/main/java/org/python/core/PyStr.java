@@ -40,8 +40,18 @@ public final class PyStr extends PyObject {
     }
 
     public static PyStr of(String value) {
-        return new PyStr(value, false);
+        return value.isEmpty() ? EMPTY : new PyStr(value, false);
     }
+
+    /**
+     * The one empty string this interpreter has, the way CPython has one empty {@code str} and one
+     * empty {@code bytes}.
+     *
+     * <p>It is observable: {@code ''.lower()} and {@code ''.join(())} both answer with nothing to copy,
+     * so they answer with this object, and {@code '' is ''.lower()} is true. A str of one character has
+     * no such shared instance, so the same question about {@code 'a'} is false.
+     */
+    private static final PyStr EMPTY = new PyStr("", false);
 
     /**
      * Interning is what lets the interpreter compare method and variable names by pointer. Java's
@@ -49,7 +59,7 @@ public final class PyStr extends PyObject {
      * {@code String}.
      */
     public static PyStr interned(String value) {
-        return new PyStr(value.intern(), true);
+        return value.isEmpty() ? EMPTY : new PyStr(value.intern(), true);
     }
 
     public String getValue() {
@@ -341,10 +351,14 @@ public final class PyStr extends PyObject {
                         named(parameters[1], "encode", "errors"));
             })
             .add("endswith", (self, args, kwNames) -> edges(self, args, kwNames, "endswith", false))
-            .add("expandtabs", (self, args, kwNames) -> PyStr.of(expandTabs(
-                    text(self),
-                    integer(Arguments.parameters(
-                            "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]))))
+            .add("expandtabs", (self, args, kwNames) -> {
+                String text = text(self);
+                int tabsize = Numbers.cInteger(Arguments.parameters(
+                        "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]);
+                // CPython's first pass notes whether there is a tab at all and hands the same string
+                // back when there is none. A bytes has no such shortcut: its copy is always new.
+                return text.indexOf('\t') < 0 ? self : PyStr.of(expandTabs(text, tabsize));
+            })
             .add("find", (self, args, kwNames) -> search(self, args, kwNames, "find", false, false))
             .add("format", (self, args, kwNames) ->
                     PyStr.of(new Format(text(self), args, kwNames).render()))
@@ -370,15 +384,15 @@ public final class PyStr extends PyObject {
             .addNoArgument("lower", self -> PyStr.of(text(self).toLowerCase(Locale.ROOT)))
             .add("lstrip", (self, args, kwNames) -> trim(self, args, kwNames, "lstrip", true, false))
             .addOne("partition", (self, separator) ->
-                    triples(((PyStr) self).divide(pattern(separator, "partition"), true)))
+                    triples(((PyStr) self).divide(divided(separator), true)))
             .addOne("removeprefix", (self, prefix) -> {
                 String text = text(self);
-                String cut = pattern(prefix, "removeprefix");
+                String cut = edge(prefix, "removeprefix");
                 return PyStr.of(text.startsWith(cut) ? text.substring(cut.length()) : text);
             })
             .addOne("removesuffix", (self, suffix) -> {
                 String text = text(self);
-                String cut = pattern(suffix, "removesuffix");
+                String cut = edge(suffix, "removesuffix");
                 return PyStr.of(
                         !cut.isEmpty() && text.endsWith(cut)
                                 ? text.substring(0, text.length() - cut.length())
@@ -397,7 +411,7 @@ public final class PyStr extends PyObject {
             .add("rindex", (self, args, kwNames) -> search(self, args, kwNames, "rindex", true, true))
             .add("rjust", (self, args, kwNames) -> align(self, args, kwNames, "rjust", Side.RIGHT))
             .addOne("rpartition", (self, separator) ->
-                    triples(((PyStr) self).divide(pattern(separator, "rpartition"), false)))
+                    triples(((PyStr) self).divide(divided(separator), false)))
             .add("rsplit", (self, args, kwNames) -> split(self, args, kwNames, "rsplit", true))
             .add("rstrip", (self, args, kwNames) -> trim(self, args, kwNames, "rstrip", false, true))
             .add("split", (self, args, kwNames) -> split(self, args, kwNames, "split", false))
@@ -414,7 +428,7 @@ public final class PyStr extends PyObject {
             })
             .addNoArgument("title", self -> PyStr.of(capitalize(text(self), true)))
             .addNoArgument("upper", self -> PyStr.of(text(self).toUpperCase(Locale.ROOT)))
-            .addOne("zfill", (self, width) -> PyStr.of(zfill(text(self), integer(width))));
+            .addOne("zfill", (self, width) -> zeroFilled(self, text(self), Numbers.size(width)));
 
     private static String text(PyObject self) {
         return ((PyStr) self).value;
@@ -436,7 +450,12 @@ public final class PyStr extends PyObject {
         Arguments.between(name, args, kwNames, atLeast, atMost);
     }
 
-    /** A string argument, with the message that names the method it was passed to. */
+    /**
+     * A string argument, with the message that names the method it was passed to.
+     *
+     * <p>CPython's {@code U} converter refuses through {@code _PyArg_BadArgument}, which leaves the type
+     * unquoted and calls {@code None} by what it is rather than by its type's name.
+     */
     private static String pattern(PyObject value, String name) {
         return pattern(value, name, 1);
     }
@@ -446,7 +465,40 @@ public final class PyStr extends PyObject {
         String text = Numbers.asText(value);
         if (text == null) {
             throw Slots.typeError(
-                    "%s() argument %d must be str, not %s", name, position, value.getType().name());
+                    "%s() argument %d must be str, not %s",
+                    name, position, Slots.argumentName(value));
+        }
+        return text;
+    }
+
+    /**
+     * {@code partition}'s separator, refused by a converter that names no method at all.
+     *
+     * <p>{@code ensure_unicode} is the {@code O&} converter behind {@code str.partition}, and it writes
+     * its own bare sentence: {@code must be str, not NoneType}. Unlike {@link #pattern} it calls
+     * {@code None} by its type's name, and it is the reason a {@code partition} refusal looks nothing
+     * like the {@code find} refusal beside it.
+     */
+    private static String divided(PyObject value) {
+        String text = Numbers.asText(value);
+        if (text == null) {
+            throw Slots.typeError("must be str, not %s", value.getType().filedName());
+        }
+        return text;
+    }
+
+    /**
+     * {@code removeprefix}'s prefix, which a {@code METH_O} wrapper refuses without a position.
+     *
+     * <p>{@code _PyArg_BadArgument} is handed the word {@code argument} rather than {@code argument 1},
+     * because a one-argument wrapper has no count to be precise about: {@code 'ab'.removeprefix(None)}
+     * says {@code removeprefix() argument must be str, not None}.
+     */
+    private static String edge(PyObject value, String name) {
+        String text = Numbers.asText(value);
+        if (text == null) {
+            throw Slots.typeError(
+                    "%s() argument must be str, not %s", name, Slots.argumentName(value));
         }
         return text;
     }
@@ -462,19 +514,6 @@ public final class PyStr extends PyObject {
         return text;
     }
 
-    /** A width or a count: an integer, or the refusal CPython words in its own voice. */
-    private static int integer(PyObject value) {
-        BigInteger number = Numbers.asInteger(value);
-        if (number == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", value.getType().name());
-        }
-        if (!Numbers.fitsInt(number)) {
-            throw Slots.overflowError("cannot fit 'int' into an index-sized integer");
-        }
-        return number.intValue();
-    }
-
     /** The fill character of {@code center}, {@code ljust} and {@code rjust}. */
     private static String fill(PyObject value) {
         String text = Numbers.asText(value);
@@ -482,7 +521,7 @@ public final class PyStr extends PyObject {
             throw Slots.typeError(
                     "The fill character must be a unicode character, not %s", value.getType().name());
         }
-        if (text.codePointCount(0, text.length()) > 1) {
+        if (text.codePointCount(0, text.length()) != 1) {
             throw Slots.typeError("The fill character must be exactly one character long");
         }
         return text;
@@ -495,24 +534,25 @@ public final class PyStr extends PyObject {
             PyObject self, PyObject[] args, String[] kwNames, String name, Side side) {
         positional(name, args, kwNames, 1, 2);
         PyStr text = (PyStr) self;
-        int width = integer(args[0]);
+        long width = Numbers.size(args[0]);
         String fill = args.length > 1 ? fill(args[1]) : " ";
-        int missing = width - text.codePoints;
-        if (missing <= 0) {
+        long margin = width - text.codePoints;
+        if (margin <= 0) {
             return self;
         }
-        StringBuilder out = new StringBuilder(Math.max(width, text.value.length()));
-        switch (side) {
-            case CENTER -> {
-                int left = missing / 2;
-                out.append(fill.repeat(left))
-                        .append(text.value)
-                        .append(fill.repeat(missing - left));
-            }
-            case LEFT -> out.append(text.value).append(fill.repeat(missing));
-            case RIGHT -> out.append(fill.repeat(missing)).append(text.value);
-        }
-        return PyStr.of(out.toString());
+        // An odd margin is not split by rounding: the extra character goes left only when the width is
+        // odd as well, which is CPython's `marg / 2 + (marg & width & 1)` and reads as
+        // `'ab'.center(4)` being `' ab '` while `center(5)` is `'  ab '`.
+        long before = switch (side) {
+            case CENTER -> margin / 2 + (margin & width & 1);
+            case LEFT -> 0;
+            case RIGHT -> margin;
+        };
+        // A margin too wide to number is refused before it is asked for, the way CPython's allocator
+        // refuses it: the answer is an empty MemoryError, not a Java failure.
+        Numbers.total(text.value.length() + margin);
+        return PyStr.of(
+                fill.repeat((int) before) + text.value + fill.repeat((int) (margin - before)));
     }
 
     private static PyObject search(
@@ -645,16 +685,25 @@ public final class PyStr extends PyObject {
         return out.toString();
     }
 
-    private static String zfill(String text, int width) {
-        int missing = width - text.codePointCount(0, text.length());
-        if (missing <= 0) {
-            return text;
+    /**
+     * {@code zfill}: zeros in front of a number, and a sign stays in front of the zeros.
+     *
+     * <p>Only the first character can be a sign, and it moves rather than being re-read, so
+     * {@code '--1'.zfill(6)} is {@code '-000-1'}. A value already as wide as it was asked to be is the
+     * value itself, which is the same answer a bytes gives.
+     */
+    private static PyObject zeroFilled(PyObject self, String text, long width) {
+        int codePoints = text.codePointCount(0, text.length());
+        if (codePoints >= width) {
+            return self;
         }
-        // The zeros go after a sign, which is the whole point of zfill.
+        long margin = width - codePoints;
+        Numbers.total(text.length() + margin);
+        String zeros = "0".repeat((int) margin);
         if (!text.isEmpty() && "+-".indexOf(text.charAt(0)) >= 0) {
-            return text.charAt(0) + "0".repeat(missing) + text.substring(1);
+            return PyStr.of(text.charAt(0) + zeros + text.substring(1));
         }
-        return "0".repeat(missing) + text;
+        return PyStr.of(zeros + text);
     }
 
     /**
@@ -700,6 +749,11 @@ public final class PyStr extends PyObject {
 
     /** The title form of one code point: a full mapping, then its own tail lower-cased. */
     private static String titleHead(int code) {
+        // A letter already in its title form keeps it: Java answers toTitleCase with the same code
+        // point, and the fallback below would then read its uppercase form (ǅ -> Ǆ).
+        if (Character.isTitleCase(code)) {
+            return String.valueOf(Character.toChars(code));
+        }
         int title = Character.toTitleCase(code);
         String one = String.valueOf(Character.toChars(code));
         String mapped = title != code
@@ -717,7 +771,10 @@ public final class PyStr extends PyObject {
             int code = text.codePointAt(at);
             at += Character.charCount(code);
             String one = String.valueOf(Character.toChars(code));
-            out.append(Character.toLowerCase(code) != code
+            // A titlecase letter is neither of the two cases CPython switches between, even though
+            // Java's one-way mappings do move it; the two property tables are what it tests.
+            out.append(Character.isTitleCase(code) ? one
+                    : Character.toLowerCase(code) != code
                     ? one.toLowerCase(Locale.ROOT)
                     : one.toUpperCase(Locale.ROOT));
         }
@@ -725,17 +782,36 @@ public final class PyStr extends PyObject {
     }
 
     private static String expandTabs(String text, int tabsize) {
+        // CPython counts the columns in a first pass and only then makes the string, so a tabsize wide
+        // enough to need more characters than a Java string can hold is refused where the paddings refuse
+        // theirs. {@code new string is too long} — the overflow of that same count — would need a string
+        // of four billion tabs to reach, which is longer than this runtime can build anything anyway.
+        long total = 0;
+        long column = 0;
+        for (int at = 0; at < text.length(); ) {
+            int code = text.codePointAt(at);
+            at += Character.charCount(code);
+            if (code == '\t') {
+                long spaces = tabsize > 0 ? tabsize - column % tabsize : 0;
+                total += spaces;
+                column += spaces;
+            } else {
+                total++;
+                column = code == '\n' || code == '\r' ? 0 : column + 1;
+            }
+        }
+        Numbers.total(total);
         StringBuilder out = new StringBuilder(text.length());
-        int column = 0;
+        column = 0;
         for (int at = 0; at < text.length(); ) {
             int code = text.codePointAt(at);
             at += Character.charCount(code);
             if (code == '\t') {
                 // A tabsize of zero or less deletes the tab instead of expanding it.
                 if (tabsize > 0) {
-                    int stop = column + tabsize - column % tabsize;
-                    out.append(" ".repeat(stop - column));
-                    column = stop;
+                    int spaces = (int) (tabsize - column % tabsize);
+                    out.append(" ".repeat(spaces));
+                    column += spaces;
                 }
             } else {
                 out.appendCodePoint(code);
@@ -748,7 +824,11 @@ public final class PyStr extends PyObject {
     /** One of the category predicates, all of which are false for an empty string. */
     private static boolean test(String text, Category kind) {
         if (text.isEmpty()) {
-            return false;
+            // A test that only asks what the code points of the string are is vacuously true of a
+            // string that has none, and `isascii` is the only one of the eight that asks no more than
+            // that: `"".isascii()` is true while `"".isalpha()` and its neighbours are false, because
+            // those want to have found something to classify.
+            return kind == Category.ASCII;
         }
         for (int at = 0; at < text.length(); ) {
             int code = text.codePointAt(at);
@@ -842,19 +922,27 @@ public final class PyStr extends PyObject {
         };
     }
 
-    /** {@code isupper} and {@code islower}: at least one cased character, and none of the other kind. */
+    /**
+     * {@code isupper} and {@code islower}: at least one cased character, and none of the other kind.
+     *
+     * <p>A character counts as cased when Unicode gives it a case of its own, which is not the same
+     * question as whether Java's one-to-one case mapping moves it: {@code 'ß'} has no single-character
+     * uppercase in Java, so comparing it with {@code toUpperCase} leaves it looking uncased, while
+     * {@code 'ß'.islower()} is true because its general category is a lowercase letter.
+     */
     private static boolean caseTest(String text, boolean lower) {
         boolean seen = false;
         for (int at = 0; at < text.length(); ) {
             int code = text.codePointAt(at);
             at += Character.charCount(code);
-            int up = Character.toUpperCase(code);
-            int down = Character.toLowerCase(code);
-            if (up == code && down == code) {
+            boolean cased = Character.isLowerCase(code)
+                    || Character.isUpperCase(code)
+                    || Character.isTitleCase(code);
+            if (!cased) {
                 continue;
             }
             seen = true;
-            if (lower ? down != code : up != code) {
+            if (lower ? !Character.isLowerCase(code) : !Character.isUpperCase(code)) {
                 return false;
             }
         }
@@ -901,23 +989,32 @@ public final class PyStr extends PyObject {
         return out == null ? lowered : out.toString();
     }
 
+    /**
+     * {@code istitle}: an upper or a title may only follow an uncased character, a lower only a cased
+     * one — CPython's {@code unicode_istitle_impl} with its two flags, and not a reading of what
+     * {@code title()} would have made of the same run.
+     */
     private static boolean isTitle(String text) {
         boolean seen = false;
-        boolean previousAlphabetic = false;
+        boolean previousCased = false;
         for (int at = 0; at < text.length(); ) {
             int code = text.codePointAt(at);
             at += Character.charCount(code);
-            boolean cased = Character.toUpperCase(code) != code || Character.toLowerCase(code) != code;
-            if (cased) {
-                seen = true;
-                boolean expected = previousAlphabetic
-                        ? Character.toLowerCase(code) == code && Character.toUpperCase(code) != code
-                        : Character.toTitleCase(code) == code && Character.toLowerCase(code) != code;
-                if (!expected) {
+            if (Character.isUpperCase(code) || Character.isTitleCase(code)) {
+                if (previousCased) {
                     return false;
                 }
+                previousCased = true;
+                seen = true;
+            } else if (Character.isLowerCase(code)) {
+                if (!previousCased) {
+                    return false;
+                }
+                previousCased = true;
+                seen = true;
+            } else {
+                previousCased = false;
             }
-            previousAlphabetic = Character.isAlphabetic(code);
         }
         return seen;
     }

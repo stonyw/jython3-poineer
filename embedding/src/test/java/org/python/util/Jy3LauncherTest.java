@@ -219,7 +219,9 @@ class Jy3LauncherTest {
                 "43_structseq_members.py",
                 "44_bytes_search.py",
                 "45_bytes_cut.py",
-                "46_range_and_size.py");
+                "46_range_and_size.py",
+                "47_bytes_padding.py",
+                "48_bytes_case.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

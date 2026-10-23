@@ -449,6 +449,19 @@ public final class Slots {
         return value.repr();
     }
 
+    /**
+     * How a refusal of an argument names the value it refused: the type's name, except for {@code None}.
+     *
+     * <p>{@code _PyArg_BadArgument} and {@code converterr} both write {@code None} where the rest of the
+     * interpreter writes {@code NoneType}, because those two sentences are about the argument rather than
+     * about a type: {@code b''.center(5, None)} says {@code must be a byte string of length 1, not None}
+     * while {@code None in b''} says {@code argument should be integer or bytes-like object, not 'NoneType'}.
+     * The name printed is the type's {@code tp_name}, so a named sequence is called by its dotted name.
+     */
+    static String argumentName(PyObject value) {
+        return value == PyNone.INSTANCE ? "None" : value.getType().filedName();
+    }
+
     // --- raising, with CPython's wording -------------------------------------------------
 
     public static PyRaise typeError(String format, Object... args) {

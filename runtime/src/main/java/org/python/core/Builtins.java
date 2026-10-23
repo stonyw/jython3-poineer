@@ -230,18 +230,7 @@ final class Builtins {
             return s.getValue();
         }
         throw Slots.typeError(
-                "format() argument 2 must be str, not %s", namedType(value));
-    }
-
-    /**
-     * How a type's name is printed in a message that names the type rather than quoting it.
-     *
-     * {@code None} is the one value whose type is not called by its type's name: CPython says
-     * {@code 'NoneType' found} in {@code int()}'s message and {@code must be str, not None} in
-     * {@code format()}'s, because the second is written against the argument, not the type.
-     */
-    private static String namedType(PyObject value) {
-        return value == PyNone.INSTANCE ? "None" : value.getType().name();
+                "format() argument 2 must be str, not %s", Slots.argumentName(value));
     }
 
     // --- print -----------------------------------------------------------------------------

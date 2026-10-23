@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.IntPredicate;
 
 /**
  * Python's {@code bytes}: an immutable array of octets.
@@ -289,9 +290,18 @@ public final class PyBytes extends PyObject {
     private static final String[] KEEP_ENDS = {"keepends"};
     private static final PyObject[] KEEP_ENDS_DEFAULTS = {PyBool.FALSE};
 
+    /** {@code expandtabs}'s one parameter, which a caller may name but the paddings' fill byte may not. */
+    private static final String[] TAB_SIZE = {"tabsize"};
+    private static final PyObject[] TAB_DEFAULTS = {PyInt.of(8)};
+
+    /** What the three paddings fill with when the call does not say. */
+    private static final byte SPACE = 0x20;
+
     private static final BigInteger OCTET_MAX = BigInteger.valueOf(255);
 
     private static final Members METHODS = Members.of(PyType.BYTES)
+            .addNoArgument("capitalize", self -> PyBytes.wrap(capitalized(octets(self))))
+            .add("center", (self, args, kwNames) -> padded(self, args, kwNames, "center", true, true))
             .add("count", (self, args, kwNames) -> {
                 legacy("count", args, kwNames, 1, 3);
                 byte[] text = octets(self);
@@ -307,12 +317,26 @@ public final class PyBytes extends PyObject {
                         Slots.str(parameters[0]), Slots.str(parameters[1])));
             })
             .add("endswith", (self, args, kwNames) -> edge(self, args, kwNames, "endswith", false))
+            .add("expandtabs", (self, args, kwNames) -> PyBytes.wrap(expanded(
+                    octets(self),
+                    Numbers.cInteger(Arguments.parameters(
+                            "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]))))
             .add("find", (self, args, kwNames) -> search(self, args, kwNames, "find", false, false))
             .addNoArgument("hex", self -> PyStr.of(hexadecimal(octets(self))))
             .add("index", (self, args, kwNames) -> search(self, args, kwNames, "index", false, true))
+            .addNoArgument("isalnum", self -> PyBool.of(allOf(octets(self), PyBytes::isAlnum)))
+            .addNoArgument("isalpha", self -> PyBool.of(allOf(octets(self), PyBytes::isAlpha)))
+            .addNoArgument("isascii", self -> PyBool.of(isAscii(octets(self))))
+            .addNoArgument("isdigit", self -> PyBool.of(allOf(octets(self), PyBytes::isDigit)))
+            .addNoArgument("islower", self -> PyBool.of(caseTest(octets(self), true)))
+            .addNoArgument("isspace", self -> PyBool.of(allOf(octets(self), PyBytes::isSpace)))
+            .addNoArgument("istitle", self -> PyBool.of(isTitled(octets(self))))
+            .addNoArgument("isupper", self -> PyBool.of(caseTest(octets(self), false)))
             .addOne("join", (self, parts) -> joined(octets(self), parts))
-            .add("lstrip", (self, args, kwNames) -> trim(self, args, kwNames, "lstrip", true, false))
+            .add("ljust", (self, args, kwNames) ->
+                    padded(self, args, kwNames, "ljust", false, true))
             .addNoArgument("lower", self -> PyBytes.wrap(cased(octets(self), false)))
+            .add("lstrip", (self, args, kwNames) -> trim(self, args, kwNames, "lstrip", true, false))
             .addOne("partition", (self, argument) -> divided(self, octets(self), argument, true))
             .addOne("removeprefix", (self, argument) -> shortened(self, argument, true))
             .addOne("removesuffix", (self, argument) -> shortened(self, argument, false))
@@ -328,6 +352,8 @@ public final class PyBytes extends PyObject {
             })
             .add("rfind", (self, args, kwNames) -> search(self, args, kwNames, "rfind", true, false))
             .add("rindex", (self, args, kwNames) -> search(self, args, kwNames, "rindex", true, true))
+            .add("rjust", (self, args, kwNames) ->
+                    padded(self, args, kwNames, "rjust", true, false))
             .addOne("rpartition", (self, argument) -> divided(self, octets(self), argument, false))
             .add("rsplit", (self, args, kwNames) -> split(self, args, kwNames, "rsplit", true))
             .add("rstrip", (self, args, kwNames) -> trim(self, args, kwNames, "rstrip", false, true))
@@ -338,7 +364,10 @@ public final class PyBytes extends PyObject {
                             "splitlines", args, kwNames, KEEP_ENDS, KEEP_ENDS_DEFAULTS, 0)[0])))
             .add("startswith", (self, args, kwNames) -> edge(self, args, kwNames, "startswith", true))
             .add("strip", (self, args, kwNames) -> trim(self, args, kwNames, "strip", true, true))
-            .addNoArgument("upper", self -> PyBytes.wrap(cased(octets(self), true)));
+            .addNoArgument("swapcase", self -> PyBytes.wrap(swapped(octets(self))))
+            .addNoArgument("title", self -> PyBytes.wrap(titleCased(octets(self))))
+            .addNoArgument("upper", self -> PyBytes.wrap(cased(octets(self), true)))
+            .addOne("zfill", (self, width) -> zeroFilled(self, octets(self), Numbers.size(width)));
 
     // --- argument helpers ------------------------------------------------------------------
 
@@ -553,6 +582,140 @@ public final class PyBytes extends PyObject {
                 prefix
                         ? Arrays.copyOfRange(text, edge.length, text.length)
                         : Arrays.copyOfRange(text, 0, text.length - edge.length));
+    }
+
+    /**
+     * {@code center}, {@code ljust} and {@code rjust}: the same margin, put on one side or on both.
+     *
+     * <p>The width is read before the fill byte, and both are read even when the value is already as
+     * wide as it asked, so {@code b'ab'.center(1, 'x')} is refused as a fill byte rather than answered
+     * as {@code b'ab'}. An odd margin is not split by rounding: the extra octet goes left only when the
+     * width is odd too, which is CPython's {@code marg / 2 + (marg & width & 1)} and is visible as
+     * {@code b'ab'.center(4)} being {@code b' ab '} while {@code center(5)} is {@code b'  ab '}.
+     */
+    private static PyObject padded(PyObject self, PyObject[] args, String[] kwNames, String name,
+            boolean left, boolean right) {
+        legacy(name, args, kwNames, 1, 2);
+        byte[] text = octets(self);
+        long width = Numbers.size(args[0]);
+        byte fill = args.length > 1 ? fillByte(args[1], name) : SPACE;
+        if (text.length >= width) {
+            return self;
+        }
+        long margin = width - text.length;
+        long before = !left ? 0 : right ? margin / 2 + (margin & width & 1) : margin;
+        return PyBytes.wrap(pad(text, before, margin - before, fill));
+    }
+
+    /**
+     * The one octet a padding fills with.
+     *
+     * <p>An integer is refused, however small, where {@code index} and {@code count} read one as an
+     * octet: this argument is converted by the {@code char} converter, whose two refusals differ by a
+     * colon. A type that is not a run of octets is refused by {@code _PyArg_BadArgument}, which names
+     * the method without one and says {@code None} for {@code None}; a run of the wrong length is
+     * refused by the converter's own {@code PyErr_Format}, which adds the colon and counts the octets.
+     */
+    private static byte fillByte(PyObject value, String name) {
+        if (value instanceof PyBytes one) {
+            if (one.size() != 1) {
+                throw Slots.typeError(
+                        "%s(): argument 2 must be a byte string of length 1, "
+                                + "not a bytes object of length %d",
+                        name, one.size());
+            }
+            return one.value[0];
+        }
+        throw Slots.typeError(
+                "%s() argument 2 must be a byte string of length 1, not %s",
+                name, Slots.argumentName(value));
+    }
+
+    /**
+     * {@code transmogrify.h}'s {@code pad()}: the value, with the fill byte counted out on each side.
+     *
+     * <p>The margins sum to the width the caller asked for, so they cannot overflow a word, and the
+     * refusal of a width too wide to allocate comes from the same place CPython's comes from: the size
+     * is checked against what a bytes object can carry before anything is asked of memory.
+     */
+    private static byte[] pad(byte[] text, long before, long after, byte fill) {
+        long total = before + text.length + after;
+        Numbers.byteSize(total);
+        int size = Numbers.total(total);
+        byte[] out = new byte[size];
+        Arrays.fill(out, 0, (int) before, fill);
+        System.arraycopy(text, 0, out, (int) before, text.length);
+        Arrays.fill(out, (int) before + text.length, size, fill);
+        return out;
+    }
+
+    /**
+     * {@code zfill}: zeros in front of a number, and a sign stays in front of the zeros.
+     *
+     * <p>Only the first octet of the value can be a sign, and it moves rather than being re-read, so
+     * {@code b'--1'.zfill(6)} is {@code b'-000-1'} — the second minus is part of what got padded.
+     */
+    private static PyObject zeroFilled(PyObject self, byte[] text, long width) {
+        if (text.length >= width) {
+            return self;
+        }
+        long margin = width - text.length;
+        byte[] out = pad(text, margin, 0, (byte) '0');
+        // The octet CPython looks at is the first of the value, which sits just after the zeros it
+        // padded in front of it — and for an empty value it is the terminator, so nothing moves.
+        if (text.length > 0 && (text[0] == '+' || text[0] == '-')) {
+            out[0] = text[0];
+            out[(int) margin] = '0';
+        }
+        return PyBytes.wrap(out);
+    }
+
+    /**
+     * {@code expandtabs}: every tab reaches the next multiple of the tab size, counted in octets.
+     *
+     * <p>The tab size is a C int, so {@code 2 ** 31} overflows here while the widths of the paddings
+     * take it; zero or less deletes a tab instead of expanding it. Only {@code \n} and {@code \r} start
+     * a new line, which is fewer than the breaks {@code splitlines()} reads and fewer than the spaces
+     * {@code strip()} removes: {@code b'a\x0bb\x9ct'.expandtabs()} keeps counting columns through the
+     * vertical tab. Unlike the paddings, a value with nothing to expand is still copied.
+     */
+    private static byte[] expanded(byte[] text, int tabsize) {
+        // CPython's first pass, which counts the octets before any of them are written: the answer is
+        // one number, so the width is refused where the paddings refuse theirs instead of being asked
+        // of memory a tab at a time. {@code result too long} — the overflow the same pass jumps to when
+        // the count would leave a machine word — would take four billion tabs to reach, which is more
+        // octets than a bytes can hold on this runtime anyway, so only memory is ever refused here.
+        long total = 0;
+        long column = 0;
+        for (byte octet : text) {
+            int value = octet & 0xff;
+            if (value == '\t') {
+                long spaces = tabsize > 0 ? tabsize - column % tabsize : 0;
+                total += spaces;
+                column += spaces;
+            } else {
+                total++;
+                column = value == '\n' || value == '\r' ? 0 : column + 1;
+            }
+        }
+        byte[] out = new byte[Numbers.total(total)];
+        int at = 0;
+        column = 0;
+        for (byte octet : text) {
+            int value = octet & 0xff;
+            if (value == '\t') {
+                if (tabsize > 0) {
+                    int spaces = (int) (tabsize - column % tabsize);
+                    Arrays.fill(out, at, at + spaces, SPACE);
+                    at += spaces;
+                    column += spaces;
+                }
+            } else {
+                out[at++] = octet;
+                column = value == '\n' || value == '\r' ? 0 : column + 1;
+            }
+        }
+        return out;
     }
 
     /** The two edges of the run left once {@code strip}'s alphabet has been taken off them. */
@@ -803,14 +966,153 @@ public final class PyBytes extends PyObject {
         byte[] out = new byte[text.length];
         for (int i = 0; i < out.length; i++) {
             int octet = text[i] & 0xff;
-            if (upper && octet >= 'a' && octet <= 'z') {
-                octet -= 'a' - 'A';
-            } else if (!upper && octet >= 'A' && octet <= 'Z') {
-                octet += 'a' - 'A';
-            }
-            out[i] = (byte) octet;
+            out[i] = (byte) (upper ? upper(octet) : lower(octet));
         }
         return out;
+    }
+
+    private static int upper(int octet) {
+        return isLower(octet) ? octet - ('a' - 'A') : octet;
+    }
+
+    private static int lower(int octet) {
+        return isUpper(octet) ? octet + ('a' - 'A') : octet;
+    }
+
+    private static boolean isUpper(int octet) {
+        return octet >= 'A' && octet <= 'Z';
+    }
+
+    private static boolean isLower(int octet) {
+        return octet >= 'a' && octet <= 'z';
+    }
+
+    private static boolean isAlpha(int octet) {
+        return isUpper(octet) || isLower(octet);
+    }
+
+    private static boolean isAlnum(int octet) {
+        return isAlpha(octet) || isDigit(octet);
+    }
+
+    private static boolean isDigit(int octet) {
+        return octet >= '0' && octet <= '9';
+    }
+
+    /**
+     * {@code capitalize}: the first octet upper, the rest lower.
+     *
+     * <p>The head is uppercased on its own rather than by folding the whole value first, which is what
+     * makes {@code b'a\xff'.capitalize()} keep the {@code \xff} and {@code b'AB'.capitalize()} be
+     * {@code b'Ab'}.
+     */
+    private static byte[] capitalized(byte[] text) {
+        byte[] out = cased(text, false);
+        if (out.length > 0) {
+            out[0] = (byte) upper(text[0] & 0xff);
+        }
+        return out;
+    }
+
+    /** {@code title}: an octet goes upper where the one before it was not cased at all. */
+    private static byte[] titleCased(byte[] text) {
+        byte[] out = new byte[text.length];
+        boolean previous = false;
+        for (int i = 0; i < text.length; i++) {
+            int octet = text[i] & 0xff;
+            if (isLower(octet)) {
+                out[i] = (byte) (previous ? octet : upper(octet));
+                previous = true;
+            } else if (isUpper(octet)) {
+                out[i] = (byte) (previous ? lower(octet) : octet);
+                previous = true;
+            } else {
+                out[i] = (byte) octet;
+                previous = false;
+            }
+        }
+        return out;
+    }
+
+    /** {@code swapcase}: the one fold that leaves an octet which is cased in neither direction alone. */
+    private static byte[] swapped(byte[] text) {
+        byte[] out = new byte[text.length];
+        for (int i = 0; i < text.length; i++) {
+            int octet = text[i] & 0xff;
+            out[i] = (byte) (isLower(octet) ? upper(octet) : lower(octet));
+        }
+        return out;
+    }
+
+    /**
+     * {@code islower} and {@code isupper}: one direction of case, and at least one octet that has any.
+     *
+     * <p>Uncased octets are neither a help nor a hindrance, so {@code b'1a'.islower()} is true while
+     * {@code b'1'.islower()} is false, and an octet above {@code 0x7f} is one of the uncased ones.
+     */
+    private static boolean caseTest(byte[] text, boolean lower) {
+        boolean cased = false;
+        for (byte octet : text) {
+            int value = octet & 0xff;
+            if (lower ? isUpper(value) : isLower(value)) {
+                return false;
+            }
+            cased = cased || (lower ? isLower(value) : isUpper(value));
+        }
+        return cased;
+    }
+
+    /**
+     * {@code istitle}: an upper may only follow an uncased octet, and a lower only a cased one.
+     *
+     * <p>Both halves are needed, so {@code b'A a'.istitle()} is false while {@code b'A1'} is true — a
+     * digit uncases the run without lowering it. An empty bytes answers false, unlike {@code isascii}.
+     */
+    private static boolean isTitled(byte[] text) {
+        boolean cased = false;
+        boolean previous = false;
+        for (byte octet : text) {
+            int value = octet & 0xff;
+            if (isUpper(value)) {
+                if (previous) {
+                    return false;
+                }
+                cased = true;
+            } else if (isLower(value)) {
+                if (!previous) {
+                    return false;
+                }
+                cased = true;
+            } else {
+                previous = false;
+                continue;
+            }
+            previous = true;
+        }
+        return cased;
+    }
+
+    /** The predicates that ask one category of every octet, and answer false of an empty bytes. */
+    private static boolean allOf(byte[] text, IntPredicate category) {
+        if (text.length == 0) {
+            return false;
+        }
+        for (byte octet : text) {
+            if (!category.test(octet & 0xff)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code isascii}: every octet below {@code 0x80}, which an empty bytes has never broken. */
+    private static boolean isAscii(byte[] text) {
+        for (byte octet : text) {
+            if ((octet & 0xff) > 0x7f) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String hexadecimal(byte[] text) {
