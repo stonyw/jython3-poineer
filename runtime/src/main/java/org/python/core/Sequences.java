@@ -146,6 +146,28 @@ final class Sequences {
                 : clamp(Numbers.sliceIndex(bound), 0, length);
     }
 
+    /**
+     * The {@code start} of a {@code find}, {@code count} or bytes edge test, which differs from
+     * {@link #searchStart} in the one case an empty needle can see: a start past the end is left there
+     * rather than pulled back, because {@code "abc".find("", 4)} is {@code -1} and not {@code 3}, and
+     * {@code b"abc".startswith(b"", 5)} is {@code False} and not {@code True}.
+     *
+     * <p>A start further past the end than an {@code int} holds answers the same as one just past it,
+     * so it is left at the first position no caller's test can read as inside the sequence.
+     */
+    static int searchFrom(PyObject bound, int length) {
+        if (bound == null || bound == PyNone.INSTANCE) {
+            return 0;
+        }
+        BigInteger value = Numbers.sliceIndex(bound);
+        if (value.signum() < 0) {
+            return value.compareTo(BigInteger.valueOf(-(long) length)) < 0
+                    ? 0
+                    : length + value.intValue();
+        }
+        return value.compareTo(BigInteger.valueOf(length)) > 0 ? length + 1 : value.intValue();
+    }
+
     static int searchStop(PyObject bound, int length) {
         return bound == null || bound == PyNone.INSTANCE
                 ? length

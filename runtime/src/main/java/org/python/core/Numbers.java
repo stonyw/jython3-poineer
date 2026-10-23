@@ -70,6 +70,28 @@ final class Numbers {
     }
 
     /**
+     * A count of work rather than a position: {@code maxsplit}, {@code replace}'s {@code count}.
+     *
+     * <p>CPython reads these into a {@code Py_ssize_t}, which is wider than the {@code int} an index
+     * has to be and refuses an overflow in its own words: {@code split(b'a', 2**40)} is a list of the
+     * whole bytes, while {@code split(b'a', 10**30)} is an {@code OverflowError}. Neither of those
+     * numbers is ever an index, so neither gets {@link #fitsInt}'s message.
+     */
+    static long size(PyObject value) {
+        BigInteger number = asInteger(value);
+        if (number == null) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer", value.getType().name());
+        }
+        // bitLength() counts the magnitude's bits, and a ssize_t is one signed 64-bit word:
+        // 2**63 - 1 and -(2**63) both need 63 of them, and either number one wider does not fit.
+        if (number.bitLength() > 63) {
+            throw Slots.overflowError("Python int too large to convert to C ssize_t");
+        }
+        return number.longValue();
+    }
+
+    /**
      * Whether an integer of any size is one Java can hold in an {@code int}, which is what a Python
      * index has to be before it can address anything.
      */

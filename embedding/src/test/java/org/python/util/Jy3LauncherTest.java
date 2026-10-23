@@ -216,7 +216,10 @@ class Jy3LauncherTest {
                 "40_default_hook_answers.py",
                 "41_hook_replaced_and_removed.py",
                 "42_version_info_named.py",
-                "43_structseq_members.py");
+                "43_structseq_members.py",
+                "44_bytes_search.py",
+                "45_bytes_cut.py",
+                "46_range_and_size.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

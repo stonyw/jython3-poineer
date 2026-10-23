@@ -156,6 +156,63 @@ final class Arguments {
         return values;
     }
 
+    /**
+     * The keyword-taking methods laid out in parameter order, with CPython's four refusals in its
+     * order: too few positional, too many of anything, a name used twice, and a name it does not
+     * have. {@code args} carries the keyword values after the positional ones, which is why the
+     * positional count is the total less the number of names.
+     *
+     * <p>{@link #fill} cannot be used for this: its keyword values sit at the end of the same array
+     * it indexes from the front, and it says {@code got multiple values} where 3.14 says
+     * {@code given by name ('sep') and position (1)} — the wording both {@code str.split} and
+     * {@code bytes.split} were measured with.
+     */
+    static PyObject[] parameters(
+            String name,
+            PyObject[] args,
+            String[] kwNames,
+            String[] names,
+            PyObject[] defaults,
+            int required) {
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = positional(args, kwNames);
+        if (positional < required) {
+            throw Slots.typeError(
+                    "%s() takes at least %d positional arguments (%d given)",
+                    name, required, positional);
+        }
+        if (args.length > names.length) {
+            throw Slots.typeError(
+                    "%s() takes at most %d %sargument%s (%d given)",
+                    name,
+                    names.length,
+                    keywords > 0 && positional == 0 ? "keyword " : "",
+                    names.length == 1 ? "" : "s",
+                    args.length);
+        }
+        PyObject[] values = new PyObject[names.length];
+        for (int i = 0; i < values.length; i++) {
+            int fromEnd = values.length - 1 - i;
+            values[i] = fromEnd < defaults.length ? defaults[defaults.length - 1 - fromEnd] : null;
+        }
+        System.arraycopy(args, 0, values, 0, positional);
+        for (int i = 0; i < keywords; i++) {
+            int at = position(names, kwNames[i]);
+            if (at < 0) {
+                throw Slots.typeError(
+                        "%s() got an unexpected keyword argument '%s'", name, kwNames[i]);
+            }
+            if (at < positional) {
+                // CPython counts the receiver as position zero, so `split(" ", sep=...)` is position 1.
+                throw Slots.typeError(
+                        "argument for %s() given by name ('%s') and position (%d)",
+                        name, kwNames[i], at + 1);
+            }
+            values[at] = args[positional + i];
+        }
+        return values;
+    }
+
     /** A positional-only signature: {@code getattr() takes no keyword arguments}. */
     static void noKeywords(String qualified, String[] kwNames) {
         if (kwNames != null) {

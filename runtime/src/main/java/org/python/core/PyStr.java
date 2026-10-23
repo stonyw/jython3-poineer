@@ -326,14 +326,15 @@ public final class PyStr extends PyObject {
                 PyStr text = (PyStr) self;
                 return PyInt.of(text.occurrences(
                         pattern(args[0], "count"),
-                        args.length > 1 ? searchFrom(args[1], text.codePoints) : 0,
+                        args.length > 1 ? Sequences.searchFrom(args[1], text.codePoints) : 0,
                         args.length > 2
                                 ? Sequences.searchStop(args[2], text.codePoints)
                                 : text.codePoints));
             })
             .add("encode", (self, args, kwNames) -> {
                 PyObject[] parameters =
-                        parameters("encode", args, kwNames, ENCODE_NAMES, ENCODE_DEFAULTS, 0);
+                        Arguments.parameters(
+                                "encode", args, kwNames, ENCODE_NAMES, ENCODE_DEFAULTS, 0);
                 return PyBytes.encodeText(
                         text(self),
                         named(parameters[0], "encode", "encoding"),
@@ -342,7 +343,7 @@ public final class PyStr extends PyObject {
             .add("endswith", (self, args, kwNames) -> edges(self, args, kwNames, "endswith", false))
             .add("expandtabs", (self, args, kwNames) -> PyStr.of(expandTabs(
                     text(self),
-                    integer(parameters(
+                    integer(Arguments.parameters(
                             "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]))))
             .add("find", (self, args, kwNames) -> search(self, args, kwNames, "find", false, false))
             .add("format", (self, args, kwNames) ->
@@ -385,11 +386,12 @@ public final class PyStr extends PyObject {
             })
             .add("replace", (self, args, kwNames) -> {
                 PyObject[] parameters =
-                        parameters("replace", args, kwNames, OLD_NEW_COUNT, COUNT_DEFAULTS, 2);
+                        Arguments.parameters(
+                                "replace", args, kwNames, OLD_NEW_COUNT, COUNT_DEFAULTS, 2);
                 return PyStr.of(((PyStr) self).replaced(
                         pattern(parameters[0], "replace"),
                         pattern(parameters[1], "replace", 2),
-                        integer(parameters[2])));
+                        Numbers.size(parameters[2])));
             })
             .add("rfind", (self, args, kwNames) -> search(self, args, kwNames, "rfind", true, false))
             .add("rindex", (self, args, kwNames) -> search(self, args, kwNames, "rindex", true, true))
@@ -400,7 +402,7 @@ public final class PyStr extends PyObject {
             .add("rstrip", (self, args, kwNames) -> trim(self, args, kwNames, "rstrip", false, true))
             .add("split", (self, args, kwNames) -> split(self, args, kwNames, "split", false))
             .add("splitlines", (self, args, kwNames) -> strings(((PyStr) self).lines(
-                    Slots.truth(parameters(
+                    Slots.truth(Arguments.parameters(
                             "splitlines", args, kwNames, KEEP_ENDS, KEEP_ENDS_DEFAULTS, 0)[0]))))
             .add("startswith", (self, args, kwNames) ->
                     edges(self, args, kwNames, "startswith", true))
@@ -432,71 +434,6 @@ public final class PyStr extends PyObject {
             throw Slots.typeError("str.%s() takes no keyword arguments", name);
         }
         Arguments.between(name, args, kwNames, atLeast, atMost);
-    }
-
-    /**
-     * The keyword-taking methods laid out in parameter order, with CPython's four refusals in its
-     * order: too few positional, too many of anything, a name used twice, and a name it does not
-     * have. {@code args} carries the keyword values after the positional ones, which is why the
-     * positional count is the total less the number of names.
-     *
-     * {@link Arguments#fill} cannot be used for this: its keyword values sit at the end of the same
-     * array it indexes from the front, and it says {@code got multiple values} where 3.14 says
-     * {@code given by name ('sep') and position (1)}.
-     */
-    private static PyObject[] parameters(
-            String name,
-            PyObject[] args,
-            String[] kwNames,
-            String[] names,
-            PyObject[] defaults,
-            int required) {
-        int keywords = kwNames == null ? 0 : kwNames.length;
-        int positional = args.length - keywords;
-        if (positional < required) {
-            throw Slots.typeError(
-                    "%s() takes at least %d positional arguments (%d given)",
-                    name, required, positional);
-        }
-        if (args.length > names.length) {
-            throw Slots.typeError(
-                    "%s() takes at most %d %sargument%s (%d given)",
-                    name,
-                    names.length,
-                    keywords > 0 && positional == 0 ? "keyword " : "",
-                    names.length == 1 ? "" : "s",
-                    args.length);
-        }
-        PyObject[] values = new PyObject[names.length];
-        for (int i = 0; i < values.length; i++) {
-            int fromEnd = values.length - 1 - i;
-            values[i] = fromEnd < defaults.length ? defaults[defaults.length - 1 - fromEnd] : null;
-        }
-        System.arraycopy(args, 0, values, 0, positional);
-        for (int i = 0; i < keywords; i++) {
-            int at = position(names, kwNames[i]);
-            if (at < 0) {
-                throw Slots.typeError(
-                        "%s() got an unexpected keyword argument '%s'", name, kwNames[i]);
-            }
-            if (at < positional) {
-                // CPython counts the receiver as position zero, so `split(" ", sep=...)` is position 1.
-                throw Slots.typeError(
-                        "argument for %s() given by name ('%s') and position (%d)",
-                        name, kwNames[i], at + 1);
-            }
-            values[at] = args[positional + i];
-        }
-        return values;
-    }
-
-    private static int position(String[] names, String keyword) {
-        for (int i = 0; i < names.length; i++) {
-            if (names[i].equals(keyword)) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     /** A string argument, with the message that names the method it was passed to. */
@@ -551,22 +488,6 @@ public final class PyStr extends PyObject {
         return text;
     }
 
-    /**
-     * The {@code start} of a search, which differs from {@link Sequences#searchStart} in the one case
-     * an empty substring can see: a start past the end is left there rather than pulled back, because
-     * {@code "abc".find("", 4)} is {@code -1} and not {@code 3}.
-     */
-    private static int searchFrom(PyObject bound, int length) {
-        if (bound == null || bound == PyNone.INSTANCE) {
-            return 0;
-        }
-        BigInteger value = Numbers.sliceIndex(bound);
-        if (value.signum() < 0) {
-            return value.compareTo(BigInteger.valueOf(-length)) < 0 ? 0 : length + value.intValue();
-        }
-        return value.intValue();
-    }
-
     // --- method bodies ---------------------------------------------------------------------
 
     /** {@code a.center(b)} and friends, whose only difference is which side gets the padding. */
@@ -600,7 +521,7 @@ public final class PyStr extends PyObject {
         PyStr text = (PyStr) self;
         int found = text.first(
                 pattern(args[0], name),
-                args.length > 1 ? searchFrom(args[1], text.codePoints) : 0,
+                args.length > 1 ? Sequences.searchFrom(args[1], text.codePoints) : 0,
                 args.length > 2 ? Sequences.searchStop(args[2], text.codePoints) : text.codePoints,
                 right);
         if (found < 0 && raises) {
@@ -613,10 +534,12 @@ public final class PyStr extends PyObject {
             PyObject self, PyObject[] args, String[] kwNames, String name, boolean prefix) {
         positional(name, args, kwNames, 1, 3);
         PyStr text = (PyStr) self;
-        int from = args.length > 1 ? Sequences.searchStart(args[1], text.codePoints) : 0;
+        int from = args.length > 1 ? Sequences.searchFrom(args[1], text.codePoints) : 0;
         int to = args.length > 2 ? Sequences.searchStop(args[2], text.codePoints) : text.codePoints;
         if (from > to) {
-            // Not even the empty prefix matches a range that is not one.
+            // Not even the empty prefix matches a range that is not one — and a start past the end
+            // makes the range not one rather than pulling it back to an edge, which is what
+            // distinguishes this from {@code list.index}'s reading of the same bound.
             return PyBool.FALSE;
         }
         String window = text.between(from, to);
@@ -648,9 +571,10 @@ public final class PyStr extends PyObject {
     private static PyObject split(
             PyObject self, PyObject[] args, String[] kwNames, String name, boolean right) {
         PyObject[] parameters =
-                parameters(name, args, kwNames, SEPARATOR, SEPARATOR_DEFAULTS, 0);
+                Arguments.parameters(
+                        name, args, kwNames, SEPARATOR, SEPARATOR_DEFAULTS, 0);
         return strings(((PyStr) self).pieces(
-                separator(parameters[0], name), integer(parameters[1]), right));
+                separator(parameters[0], name), Numbers.size(parameters[1]), right));
     }
 
     /** {@code split}'s separator, which may be {@code None} and says so when it is neither. */
@@ -1108,7 +1032,7 @@ public final class PyStr extends PyObject {
                 : to - 1;
     }
 
-    private String replaced(String old, String replacement, int count) {
+    private String replaced(String old, String replacement, long count) {
         if (count == 0) {
             return value;
         }
@@ -1116,7 +1040,7 @@ public final class PyStr extends PyObject {
         if (old.isEmpty()) {
             // The empty pattern matches at every boundary, the last one included, and the first
             // replacement is not one the loop could have made.
-            int remaining = count < 0 ? Integer.MAX_VALUE : count;
+            long remaining = count < 0 ? Long.MAX_VALUE : count;
             out.append(replacement);
             int at = 0;
             while (at < value.length() && --remaining > 0) {
@@ -1127,7 +1051,7 @@ public final class PyStr extends PyObject {
             }
             return out.append(value.substring(at)).toString();
         }
-        int remaining = count < 0 ? Integer.MAX_VALUE : count;
+        long remaining = count < 0 ? Long.MAX_VALUE : count;
         int at = 0;
         while (remaining > 0) {
             int found = value.indexOf(old, at);
@@ -1165,14 +1089,14 @@ public final class PyStr extends PyObject {
         return out;
     }
 
-    private List<String> pieces(String separator, int maxsplit, boolean right) {
+    private List<String> pieces(String separator, long maxsplit, boolean right) {
         if (separator != null && separator.isEmpty()) {
             throw Slots.valueError("empty separator");
         }
         if (separator == null) {
             return whitespacePieces(maxsplit, right);
         }
-        int cuts = maxsplit < 0 ? Integer.MAX_VALUE : maxsplit;
+        long cuts = maxsplit < 0 ? Long.MAX_VALUE : maxsplit;
         List<String> out = new ArrayList<>();
         if (right) {
             int end = value.length();
@@ -1207,8 +1131,8 @@ public final class PyStr extends PyObject {
      * piece of a truncated split keeps the whitespace it was reached through, which is the one thing
      * that makes {@code "  1  2  ".split(None, 1)} a two-element list.
      */
-    private List<String> whitespacePieces(int maxsplit, boolean right) {
-        int cuts = maxsplit < 0 ? Integer.MAX_VALUE : maxsplit;
+    private List<String> whitespacePieces(long maxsplit, boolean right) {
+        long cuts = maxsplit < 0 ? Long.MAX_VALUE : maxsplit;
         List<String> out = new ArrayList<>();
         if (right) {
             int end = previousNonWhitespace(value.length());
