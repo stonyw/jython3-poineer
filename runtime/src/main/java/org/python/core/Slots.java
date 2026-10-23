@@ -13,6 +13,11 @@ package org.python.core;
  * and the right operand's reflected slot only after a refusal — with the exception of a proper
  * subclass on the right, which CPython asks first and {@link #compare} does too. And a refusal is
  * {@link PyNotImplemented}, never an error: only the protocol knows whether both sides declined.
+ *
+ * <p>A third rule is visible in every message here: a type is named by {@link PyType#filedName()}, the
+ * name it is written down as, and not by the bare half Python reads as {@code __name__}. For all but a
+ * named sequence the two are one string, and for that one the difference is the whole of the report —
+ * {@code 'sys.version_info' object has no attribute 'nope'}.
  */
 public final class Slots {
 
@@ -31,7 +36,7 @@ public final class Slots {
         }
         throw typeError(
                 "unsupported operand type(s) for %s: '%s' and '%s'",
-                op.symbol(), left.getType().name(), right.getType().name());
+                op.symbol(), left.getType().filedName(), right.getType().filedName());
     }
 
     /**
@@ -55,7 +60,7 @@ public final class Slots {
             return result;
         }
         throw typeError(
-                "bad operand type for unary %s: '%s'", op.symbol(), value.getType().name());
+                "bad operand type for unary %s: '%s'", op.symbol(), value.getType().filedName());
     }
 
     /**
@@ -70,7 +75,7 @@ public final class Slots {
         if (result != PyNotImplemented.INSTANCE) {
             return result;
         }
-        throw typeError("bad operand type for abs(): '%s'", value.getType().name());
+        throw typeError("bad operand type for abs(): '%s'", value.getType().filedName());
     }
 
     /**
@@ -116,7 +121,7 @@ public final class Slots {
         }
         throw typeError(
                 "'%s' not supported between instances of '%s' and '%s'",
-                cmp.symbol(), left.getType().name(), right.getType().name());
+                cmp.symbol(), left.getType().filedName(), right.getType().filedName());
     }
 
     /** {@code left cmp right} already reduced to a Java boolean, as an {@code if} needs. */
@@ -138,7 +143,7 @@ public final class Slots {
         if (answer instanceof PyBool bool) {
             return bool.getValue();
         }
-        throw typeError("__bool__ should return bool, returned %s", answer.getType().name());
+        throw typeError("__bool__ should return bool, returned %s", answer.getType().filedName());
     }
 
     private static boolean isEmpty(PyObject value) {
@@ -153,7 +158,7 @@ public final class Slots {
     public static PyObject length(PyObject value) {
         PyObject answer = value.length();
         if (answer == PyNotImplemented.INSTANCE) {
-            throw typeError("object of type '%s' has no len()", value.getType().name());
+            throw typeError("object of type '%s' has no len()", value.getType().filedName());
         }
         return PyInt.of(counted(answer));
     }
@@ -171,7 +176,7 @@ public final class Slots {
         java.math.BigInteger value = Numbers.asInteger(answer);
         if (value == null) {
             throw typeError(
-                    "'%s' object cannot be interpreted as an integer", answer.getType().name());
+                    "'%s' object cannot be interpreted as an integer", answer.getType().filedName());
         }
         if (value.bitLength() >= 64) {
             throw overflowError("cannot fit 'int' into an index-sized integer");
@@ -196,10 +201,10 @@ public final class Slots {
             return answer;
         }
         if (container instanceof PyType kind) {
-            throw typeError("type '%s' is not subscriptable", kind.name());
+            throw typeError("type '%s' is not subscriptable", kind.filedName());
         }
         throw typeError(
-                "'%s' object is not subscriptable", container.getType().name());
+                "'%s' object is not subscriptable", container.getType().filedName());
     }
 
     public static void setItem(PyObject container, PyObject key, PyObject value) {
@@ -208,7 +213,7 @@ public final class Slots {
             return;
         }
         throw typeError(
-                "'%s' object does not support item assignment", container.getType().name());
+                "'%s' object does not support item assignment", container.getType().filedName());
     }
 
     public static void delItem(PyObject container, PyObject key) {
@@ -217,7 +222,7 @@ public final class Slots {
             return;
         }
         throw typeError(
-                "'%s' object does not support item deletion", container.getType().name());
+                "'%s' object does not support item deletion", container.getType().filedName());
     }
 
     /**
@@ -239,7 +244,7 @@ public final class Slots {
             // asks for a container, and gets an answer neither way.
             throw typeError(
                     "argument of type '%s' is not a container or iterable",
-                    container.getType().name());
+                    container.getType().filedName());
         }
         PyIterator iterator = iterator(container);
         while (true) {
@@ -257,7 +262,7 @@ public final class Slots {
     public static PyIterator iterator(PyObject iterable) {
         PyObject answer = iterable.iterator();
         if (answer == PyNotImplemented.INSTANCE) {
-            throw typeError("'%s' object is not iterable", iterable.getType().name());
+            throw typeError("'%s' object is not iterable", iterable.getType().filedName());
         }
         if (answer instanceof PyIterator iterator) {
             return iterator;
@@ -269,7 +274,7 @@ public final class Slots {
         if (iterator != null) {
             return iterator;
         }
-        throw typeError("iter() returned non-iterator of type '%s'", answer.getType().name());
+        throw typeError("iter() returned non-iterator of type '%s'", answer.getType().filedName());
     }
 
     /**
@@ -291,38 +296,94 @@ public final class Slots {
         return null;
     }
 
+    /**
+     * {@code GET_YIELD_FROM_ITER}: the iterator a delegation stands on, kept as the value it is.
+     *
+     * <p>Not {@link #iterator}: {@code yield from} puts the answer of {@code __iter__} straight on the
+     * frame's value stack and asks <em>that</em> object for every step, because {@code gi_yieldfrom} names
+     * it and because {@code send}, {@code throw} and {@code close} are called on it. Wrapping a class
+     * written in Python in the runtime's own driver would lose both. The two refusals are {@code iter()}'s,
+     * since this is {@code PyObject_GetIter} with the result kept rather than converted.
+     */
+    public static PyObject getIter(PyObject iterable) {
+        PyObject answer = iterable.iterator();
+        if (answer == PyNotImplemented.INSTANCE) {
+            throw typeError("'%s' object is not iterable", iterable.getType().filedName());
+        }
+        if (asIterator(answer) != null) {
+            return answer;
+        }
+        throw typeError("iter() returned non-iterator of type '%s'", answer.getType().filedName());
+    }
+
     /** {@code getattr(x, name)} for the builtin types. */
     public static PyObject getAttr(PyObject target, String name) {
         PyObject answer = target.getAttr(name);
         if (answer != PyNotImplemented.INSTANCE) {
             return answer;
         }
+        if (name.equals(ClassAttribute.NAME)) {
+            return ClassAttribute.read(target);
+        }
         // CPython names a class by what it is, because the reader of `str.nonsense` has to be told the
         // attribute was looked up on the type rather than on one of its values.
         if (target instanceof PyType kind) {
-            throw attributeError("type object '%s' has no attribute '%s'", kind.name(), name);
+            throw failedRead(
+                    target, name, "type object '%s' has no attribute '%s'", kind.filedName(), name);
         }
-        throw attributeError(
-                "'%s' object has no attribute '%s'", target.getType().name(), name);
+        // A module names itself, for the same reason again: `sys.excepthook` after the name has been
+        // deleted is a question about which namespace was asked, and module_getattro answers it with the
+        // module's own __name__ rather than with the type every module shares.
+        if (target instanceof PyModule module) {
+            throw failedRead(
+                    target, name, "module '%s' has no attribute '%s'", module.name(), name);
+        }
+        throw failedRead(
+                target, name, "'%s' object has no attribute '%s'", target.getType().filedName(), name);
+    }
+
+    /**
+     * CPython's {@code PyObject_GetOptionalAttr}: the member under {@code name}, or null where there is
+     * none — and no complaint, which is the whole difference from {@link #getAttr}.
+     *
+     * <p>A protocol that is offered rather than required is read this way. A delegation asks its delegate
+     * for {@code throw} and for {@code close} and takes the absence of either as the answer: an iterator
+     * that cannot be thrown into is one the exception goes back to the delegating frame for, and one with
+     * no close needs no closing.
+     */
+    public static PyObject findAttr(PyObject target, String name) {
+        PyObject answer = target.getAttr(name);
+        if (answer != PyNotImplemented.INSTANCE) {
+            return answer;
+        }
+        return name.equals(ClassAttribute.NAME) ? ClassAttribute.read(target) : null;
     }
 
     public static void setAttr(PyObject target, String name, PyObject value) {
+        if (name.equals(ClassAttribute.NAME) && !target.filedByItsClass(name)) {
+            ClassAttribute.write(target, value);
+            return;
+        }
         PyObject answer = target.setAttr(name, value);
         if (answer != PyNotImplemented.INSTANCE) {
             return;
         }
         throw attributeError(
-                "'%s' object has no attribute '%s'", target.getType().name(), name);
+                "'%s' object has no attribute '%s'", target.getType().filedName(), name);
     }
 
     /** {@code del target.name}, which a type may refuse even when it accepts an assignment. */
     public static void delAttr(PyObject target, String name) {
+        if (name.equals(ClassAttribute.NAME) && !target.filedByItsClass(name)) {
+            ClassAttribute.delete();
+            return;
+        }
         PyObject answer = target.delAttr(name);
         if (answer != PyNotImplemented.INSTANCE) {
             return;
         }
         throw attributeError(
-                "'%.200s' object has no attribute '%s'", target.getType().name(), name);
+                "'%.200s' object has no attribute '%s'", target.getType().filedName(), name);
     }
 
     /** Whether {@code value} can be iterated, which is what {@code *} and {@code in} ask before failing. */
@@ -334,9 +395,10 @@ public final class Slots {
      * Whether {@code value} may be merged as a mapping.
      *
      * CPython answers this with a type flag, {@code Py_TPFLAGS_MAPPING}, which is set when a class
-     * declares {@code keys} or inherits it from {@code dict}. Flags belong to the class system at M3,
-     * so until then the only mapping this runtime recognises is a dict — which is what {@code **} in a
-     * call and {@code {**a}} actually receive from code CPython compiled.
+     * declares {@code keys} or inherits it from {@code dict}. A pattern match asks that flag directly and
+     * gets CPython's answer — see {@link PyType#MAPPING}; this question is still a dict, because a merge
+     * reaches it only through code that hands {@code **} a dict, and CPython's own refusal of the frame
+     * that also carries the flag says the same words this one does.
      */
     public static boolean isMapping(PyObject value) {
         return value instanceof PyDict;
@@ -376,7 +438,7 @@ public final class Slots {
         if (answer != PyNotImplemented.INSTANCE) {
             return answer;
         }
-        throw typeError("'%s' object is not callable", callable.getType().name());
+        throw typeError("'%s' object is not callable", callable.getType().filedName());
     }
 
     public static String str(PyObject value) {
@@ -409,9 +471,30 @@ public final class Slots {
         return PyRaise.raise(ExceptionTypes.ATTRIBUTE_ERROR, text(format, args));
     }
 
+    /**
+     * {@code AttributeError} for a read that could not find the name, with the two members CPython hangs on
+     * it before the report is written.
+     *
+     * <p>{@code _PyObject_SetAttributeErrorContext} is called by every route that fails a member read —
+     * {@code PyObject_GetAttr}, {@code _PyObject_GetMethod}, the generic read, and the refusal of a write
+     * to an object with no dictionary — and never by the routes that complain about a member that exists
+     * and will not be written. Which of those a failure is decides which of jy3's raises arrive named.
+     */
+    public static PyRaise failedRead(PyObject target, String name, String format, Object... args) {
+        PyRaise failure = attributeError(format, args);
+        failure.value().asFailedRead(target, name);
+        return failure;
+    }
+
+    /**
+     * {@code NameError} for a name that was not there, carrying the name it missed the way {@code
+     * _PyEval_FormatExcCheckArg} does.
+     */
     public static PyRaise nameError(String name) {
-        return PyRaise.raise(
-                ExceptionTypes.NAME_ERROR, "name '" + name + "' is not defined");
+        PyRaise failure =
+                PyRaise.raise(ExceptionTypes.NAME_ERROR, "name '" + name + "' is not defined");
+        failure.value().asMissingName(name);
+        return failure;
     }
 
     public static PyRaise importError(String format, Object... args) {

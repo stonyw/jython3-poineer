@@ -170,11 +170,40 @@ final class MarshalRenderer {
             // The same `-` the expectation file uses for a unit that carries no location.
             lines.append(line < 0 ? "-" : line);
         }
+        StringBuilder runs = new StringBuilder();
+        PyTuple ranges = co.lineRanges();
+        for (int i = 0; i < ranges.size(); i++) {
+            PyTuple range = (PyTuple) ranges.at(i);
+            if (!runs.isEmpty()) {
+                runs.append(' ');
+            }
+            runs.append(number(range.at(0)))
+                    .append(':')
+                    .append(number(range.at(1)))
+                    .append(':')
+                    .append(number(range.at(2)));
+        }
+        StringBuilder places = new StringBuilder();
+        PyTuple positions = co.positions();
+        for (int i = 0; i < positions.size(); i++) {
+            PyTuple position = (PyTuple) positions.at(i);
+            if (!places.isEmpty()) {
+                places.append(' ');
+            }
+            for (int field = 0; field < position.size(); field++) {
+                if (field > 0) {
+                    places.append(':');
+                }
+                places.append(number(position.at(field)));
+            }
+        }
         return ("code(argcount=%d,posonly=%d,kwonly=%d,stack=%d,flags=%d,first=%d)\n"
                 + "  file=%s name=%s qualname=%s\n"
                 + "  wordcode=%s\n"
                 + "  linetable=%s\n"
                 + "  unitlines=%s\n"
+                + "  lines=%s\n"
+                + "  positions=%s\n"
                 + "  exceptiontable=%s\n"
                 + "  exchandles=%s\n"
                 + "  varnames=%s cellvars=%s freevars=%s nlocals=%d\n"
@@ -184,7 +213,8 @@ final class MarshalRenderer {
                 co.argCount(), co.posOnlyArgCount(), co.kwOnlyArgCount(), co.stackSize(),
                 co.flags(), co.firstLine(),
                 text(co.fileName()), text(co.name()), text(co.qualName()),
-                hex(co.codeArray()), hex(co.lineTable()), lines, hex(co.exceptionTable()), handles,
+                hex(co.codeArray()), hex(co.lineTable()), lines, runs, places,
+                hex(co.exceptionTable()), handles,
                 value(co.varNames()), value(co.cellVars()), value(co.freeVars()), co.nLocals(),
                 value(co.constants()), value(co.names()), decoded);
     }
@@ -227,5 +257,13 @@ final class MarshalRenderer {
             out.append(Character.forDigit((b >> 4) & 0xf, 16)).append(Character.forDigit(b & 0xf, 16));
         }
         return out.toString();
+    }
+
+    /**
+     * One location field, as the two position reads answer it: the number, or the same {@code -} the
+     * expectation file uses for a range the table does not name.
+     */
+    private static String number(PyObject value) {
+        return value instanceof PyInt whole ? whole.getValue().toString() : "-";
     }
 }

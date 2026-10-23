@@ -93,6 +93,35 @@ public interface PyCode {
     CodeInstructions instructions();
 
     /**
+     * {@code co_lines()}: the source line of every run of instructions.
+     *
+     * <p>Each item is CPython's triple — the instruction offset the run starts at, the one it ends at,
+     * and the line the run belongs to or {@code None} where it carries none. Offsets are the same ones a
+     * traceback records, so an entry here is a range a {@code tb_lasti} falls inside.
+     *
+     * <p>Runs of one line are one item even when the front-end's own table writes them as several, which
+     * is what makes this a different question from {@link CodeInstructions#lineAtLasti}: that names the
+     * line an offset falls on, this names the runs.
+     */
+    PyTuple lineRanges();
+
+    /**
+     * {@code co_positions()}: the whole source range of every instruction, columns and all.
+     *
+     * <p>Each item is CPython's quadruple of start line, end line, start column and end column, with
+     * {@code None} wherever the table names nothing — the unit of an inline cache, or one the compiler left
+     * without a source range. The answer is one item per unit the table reaches rather than one per line, so
+     * the caches behind an opcode repeat the range of the instruction they belong to, and a unit past the
+     * last entry is not in it at all: CPython's iterator counts the units its table writes, never the length
+     * of {@code co_code}.
+     *
+     * <p>These are the numbers a PEP 657 caret is drawn from. The report this runtime prints names only a
+     * line, because a caret needs the source text beside the column, and that is Stage B's half of the
+     * display.
+     */
+    PyTuple positions();
+
+    /**
      * The handler that covers the instruction at {@code index}, or null where nothing guards it.
      *
      * <p>An exception is answered here by a table rather than by a block stack: when a frame has one to

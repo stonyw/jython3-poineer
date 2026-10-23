@@ -6,6 +6,7 @@ import org.python.core.CodeInstructions;
 import org.python.core.CodeMembers;
 import org.python.core.PyBytes;
 import org.python.core.PyCode;
+import org.python.core.PyInt;
 import org.python.core.PyNone;
 import org.python.core.PyObject;
 import org.python.core.PyTuple;
@@ -233,6 +234,76 @@ public final class Cpython314Code extends PyObject implements PyCode {
             }
         }
         return PyTuple.of(selected.toArray(new PyObject[0]));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>CPython walks its table entry by entry and keeps the ones that name the same line together, so the
+     * answer is the runs a reader sees rather than the widths the table happens to be written in. A line of
+     * -1 is the marker both use for "no line here" and merges with itself, which is why a run of caches with
+     * no location is one {@code None} rather than one per cache. The walk ends where the table ends and not
+     * where the code does ({@code at_end} compares {@code lo_next} to {@code limit}, both of them table
+     * bytes), so nothing here measures the runs against {@code co_code}.
+     */
+    @Override
+    public PyTuple lineRanges() {
+        List<PyObject> runs = new ArrayList<>();
+        int start = -1;
+        int end = 0;
+        int line = 0;
+        for (LineTable.Entry entry : instructions.entries()) {
+            if (start >= 0 && entry.line() == line) {
+                end = entry.startUnit() + entry.units();
+                continue;
+            }
+            if (start >= 0) {
+                runs.add(range(start, end, line));
+            }
+            start = entry.startUnit();
+            line = entry.line();
+            end = entry.startUnit() + entry.units();
+        }
+        if (start >= 0) {
+            runs.add(range(start, end, line));
+        }
+        return PyTuple.of(runs.toArray(new PyObject[0]));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>CPython's iterator holds the entry it is reading and steps two bytes at a time until the entry's
+     * own end, so the answer is one tuple per unit {@em of the table} — a unit no entry reaches is not in it
+     * at all, which is why this too walks entries rather than the code array.
+     */
+    @Override
+    public PyTuple positions() {
+        List<PyObject> items = new ArrayList<>();
+        for (LineTable.Entry entry : instructions.entries()) {
+            for (int unit = 0; unit < entry.units(); unit++) {
+                // CPython's reader builds a tuple per unit rather than reusing one, and two units of
+                // one entry are therefore two objects that happen to compare equal.
+                items.add(
+                        PyTuple.of(
+                                offset(entry.line()),
+                                offset(entry.endLine()),
+                                offset(entry.column()),
+                                offset(entry.endColumn())));
+            }
+        }
+        return PyTuple.of(items.toArray(new PyObject[0]));
+    }
+
+    /** One {@code co_lines()} item: the two instruction offsets CPython counts in bytes, and the line. */
+    private static PyTuple range(int startUnit, int endUnit, int line) {
+        return PyTuple.of(
+                PyInt.of(2 * startUnit), PyInt.of(2 * endUnit), offset(line));
+    }
+
+    /** CPython's {@code _source_offset_converter}: the marker for a range that names nothing is {@code None}. */
+    private static PyObject offset(int value) {
+        return value < 0 ? PyNone.INSTANCE : PyInt.of(value);
     }
 
     /**

@@ -19,6 +19,24 @@ package org.python.core;
 public class PyType extends PyObject {
 
     /**
+     * The three {@code tp_flags} bits a pattern match reads.
+     *
+     * <p>The numbers are this runtime's own; what is CPython's is which type declares which bit.
+     * {@link #SEQUENCE} belongs to {@code list}, {@code tuple} and {@code range} — and to none of
+     * {@code str}, {@code bytes}, {@code set} or a class Python wrote, however well one of those answers
+     * {@code __getitem__} and {@code __len__}. {@link #MAPPING} belongs to {@code dict} and to
+     * {@code frame}. {@link #MATCH_SELF} belongs to the built-ins that have no {@code __match_args__} of
+     * their own and answer a class pattern's single positional by handing back the subject: {@code list},
+     * {@code tuple}, {@code str}, {@code bytes}, {@code set}, {@code frozenset}, {@code dict}, {@code
+     * int} and {@code float}. A written class declares none of the three, which is why a mapping pattern
+     * refuses a class that writes {@code get} and {@code case Plain(x)} refuses a class that writes no
+     * {@code __match_args__}.
+     */
+    static final int SEQUENCE = 1 << 0;
+    static final int MAPPING = 1 << 1;
+    static final int MATCH_SELF = 1 << 2;
+
+    /**
      * The root of every class's inheritance chain, and the only type with no parent.
      *
      * It is declared before {@link #TYPE} because the two complete each other: {@code object} is an
@@ -38,22 +56,22 @@ public class PyType extends PyObject {
     public static final PyType NONE = builtin("NoneType");
     public static final PyType NOTIMP = builtin("NotImplementedType");
     public static final PyType ELLIPSIS = builtin("ellipsis");
-    public static final PyType INT = builtin("int");
+    public static final PyType INT = builtin("int").flagged(MATCH_SELF);
     /**
      * {@code bool} is a subtype of {@code int}, not merely compatible with it:
      * {@code isinstance(True, int)} is true, and that is what lets {@code sum([True, 1])} and
      * {@code {True: 1, 1: 2}} behave as ints that print as {@code True}.
      */
     public static final PyType BOOL = subclass("bool", INT);
-    public static final PyType FLOAT = builtin("float");
+    public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF);
     public static final PyType COMPLEX = builtin("complex");
-    public static final PyType STR = builtin("str");
-    public static final PyType BYTES = builtin("bytes");
-    public static final PyType TUPLE = builtin("tuple");
-    public static final PyType LIST = builtin("list");
-    public static final PyType DICT = builtin("dict");
-    public static final PyType SET = builtin("set");
-    public static final PyType FROZENSET = builtin("frozenset");
+    public static final PyType STR = builtin("str").flagged(MATCH_SELF);
+    public static final PyType BYTES = builtin("bytes").flagged(MATCH_SELF);
+    public static final PyType TUPLE = builtin("tuple").flagged(SEQUENCE | MATCH_SELF);
+    public static final PyType LIST = builtin("list").flagged(SEQUENCE | MATCH_SELF);
+    public static final PyType DICT = builtin("dict").flagged(MAPPING | MATCH_SELF);
+    public static final PyType SET = builtin("set").flagged(MATCH_SELF);
+    public static final PyType FROZENSET = builtin("frozenset").flagged(MATCH_SELF);
     public static final PyType SLICE = builtin("slice");
     public static final PyType CODE = builtin("code");
     /**
@@ -65,12 +83,14 @@ public class PyType extends PyObject {
      */
     public static final PyType TRACEBACK = builtin("traceback");
     /** One activation of one code object, as Python sees it through {@code tb_frame} and {@code f_back}. */
-    public static final PyType FRAME = builtin("frame");
+    public static final PyType FRAME = builtin("frame").flagged(MAPPING);
     public static final PyType FUNCTION = builtin("function");
     public static final PyType BUILTIN_FUNCTION = builtin("builtin_function_or_method");
     public static final PyType METHOD = builtin("method");
     /** What {@code str.upper} is: a method reached through its type rather than through a value. */
     public static final PyType METHOD_DESCRIPTOR = builtin("method_descriptor");
+    /** What {@code sys.version_info.major} is: a field of a value, reached the same way. */
+    public static final PyType MEMBER_DESCRIPTOR = builtin("member_descriptor");
     /** What {@code type.__call__} is: a slot of a built-in type, reached the same way. */
     static final PyType WRAPPER_DESCRIPTOR = builtin("wrapper_descriptor");
     /** What {@code type.__prepare__} is before a class reads it: a class method of a built-in type. */
@@ -85,12 +105,23 @@ public class PyType extends PyObject {
     public static final PyType CELL = builtin("cell");
     public static final PyType ITERATOR = builtin("iterator");
     /**
+     * {@code type(co.co_lines())} and {@code type(co.co_positions())}.
+     *
+     * <p>Neither name is reachable from Python, and neither type has a method of its own: each is a
+     * cursor into one code object's locations, which is why CPython gives it an {@code iternext} and no
+     * sequence protocol. What a program can see of the difference between the two is the type's name.
+     */
+    public static final PyType LINE_ITERATOR = builtin("line_iterator");
+
+    /** The positions sibling of {@link #LINE_ITERATOR}, one item per instruction rather than per run. */
+    public static final PyType POSITIONS_ITERATOR = builtin("positions_iterator");
+    /**
      * What calling a generator function answers: {@code type(gen)} is {@code generator}, and the name is
      * not in {@code builtins}, so {@code generator} is unreachable from Python — same as CPython, where
      * {@code TypesGenerator} is added to the structmember table but not to the builtins dict.
      */
     public static final PyType GENERATOR = builtin("generator");
-    public static final PyType RANGE = builtin("range");
+    public static final PyType RANGE = builtin("range").flagged(SEQUENCE);
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was
@@ -99,7 +130,37 @@ public class PyType extends PyObject {
      */
     public static final PyType SUPER = builtin("super");
 
+    /**
+     * {@code sys.version_info}'s own class: the one named sequence this runtime builds.
+     *
+     * <p>It is declared over {@code tuple}, which is what makes a version tuple index, hash, compare and
+     * iterate exactly as the tuple it prints differently from. CPython builds it with
+     * {@code Py_TPFLAGS_DISALLOW_INSTANTIATION}, so the only route to a second value of it is
+     * {@code __replace__} on the one the interpreter makes at startup.
+     */
+    public static final PyType VERSION_INFO =
+            namedSequence("sys.version_info")
+                    .documented("sys.version_info\n\nVersion information as a named tuple.");
+
     private String name;
+
+    /**
+     * The name this type is written down with, which is CPython's {@code tp_name}.
+     *
+     * <p>It is the same as {@link #name} for every type except a named sequence, whose declared name carries
+     * the module in front of it: {@code sys.version_info} is what {@code repr(type(x))}, what
+     * {@code descriptor 'major' for 'sys.version_info' objects doesn't apply to a 'int' object} and what
+     * {@code cannot create 'sys.version_info' instances} all print, while {@code __name__} is the half after
+     * the dot. A Java type's declared name is its class name and has dots in it already, which is why this
+     * field copies {@link #name} rather than splitting it.
+     */
+    private String filedName;
+
+    /** Whether calling this type is refused the way an empty {@code tp_new} is. */
+    private final boolean withoutInstances;
+
+    /** The bits above that this type declares for itself; see {@link #hasFeature}. */
+    private int features;
 
     /**
      * The sentence this type answers {@code __doc__} with, or null where it declares none.
@@ -143,8 +204,14 @@ public class PyType extends PyObject {
      * lets it exist is this constructor rather than a copy of the dispatch above it.
      */
     protected PyType(String name, PyType parent) {
+        this(name, parent, false);
+    }
+
+    private PyType(String name, PyType parent, boolean withoutInstances) {
         this.name = name;
+        this.filedName = name;
         this.parent = parent;
+        this.withoutInstances = withoutInstances;
     }
 
     /**
@@ -167,6 +234,27 @@ public class PyType extends PyObject {
         return type;
     }
 
+    /**
+     * A named sequence, declared by the dotted name CPython writes it down with.
+     *
+     * <p>{@code sys.version_info} is the whole of the point: the type is a {@code tuple} that reports a
+     * name of its own, and the two halves of that name are used for different questions. Python reads the
+     * last half as {@code __name__} and {@code __qualname__}, and the first as {@code __module__}, while a
+     * message about the type quotes the name in full — including in {@code <class 'sys.version_info'>}.
+     */
+    private static PyType namedSequence(String filedName) {
+        PyType type = new PyType(tailOf(filedName), TUPLE, true);
+        type.filedName = filedName;
+        type.type = TYPE;
+        return type;
+    }
+
+    /** The half of a dotted name after the last dot, which is what Python calls the type. */
+    private static String tailOf(String filedName) {
+        int dot = filedName.lastIndexOf('.');
+        return dot < 0 ? filedName : filedName.substring(dot + 1);
+    }
+
     /** A class in the exception hierarchy, constructible by calling it. */
     static PyType declare(String name, PyType parent) {
         return subclass(name, parent);
@@ -181,6 +269,36 @@ public class PyType extends PyObject {
     PyType documented(String text) {
         doc = text;
         return this;
+    }
+
+    /**
+     * The pattern bits this type declares, named where the type is.
+     *
+     * <p>Only a built-in arrives with them: a class statement has no way to set them, which is CPython's
+     * rule too — its {@code Py_TPFLAGS_SEQUENCE} lives in the static type's own {@code tp_flags}, and the
+     * one route by which a written class can acquire it is {@code collections.abc} registration, which
+     * needs the standard library this runtime does not import yet.
+     */
+    PyType flagged(int bits) {
+        features = bits;
+        return this;
+    }
+
+    /**
+     * {@code PyType_HasFeature}: this type, or one it descends from, declares the bit.
+     *
+     * <p>The walk is the inheritance rather than a lookup of this type's own field, and it matters for
+     * {@code bool}: {@code bool} declares nothing and carries {@link #MATCH_SELF} because {@code int}
+     * does, which is what lets {@code case bool(flag)} hand back the {@code True}. A built-in's order is
+     * its parent chain, so this is the same walk {@link #mro()} makes for a member.
+     */
+    boolean hasFeature(int bit) {
+        for (PyType type : mro()) {
+            if ((type.features & bit) != 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -206,6 +324,24 @@ public class PyType extends PyObject {
     }
 
     /**
+     * The name a message about this type quotes: {@code sys.version_info}, {@code tuple}, {@code int},
+     * {@code java.util.ArrayList}.
+     *
+     * <p>CPython's {@code PyErr_Format} calls that name {@code tp_name} and reaches for it in every
+     * complaint that identifies a type from outside — a failed read, a refused write, a comparison neither
+     * side answers, a format spec no {@code __format__} takes. {@link #name()} is the answer for
+     * {@code __name__}, and for everything except a named sequence the two are the same string.
+     */
+    public final String filedName() {
+        return filedName;
+    }
+
+    /** Whether this type can be called at all, which is CPython's empty {@code tp_new}. */
+    final boolean declaresNoInstances() {
+        return withoutInstances;
+    }
+
+    /**
      * {@code Point.__name__ = 'Other'}, which a class built by Python is allowed to do to itself.
      *
      * <p>Package-private because a built-in type's name is not the runtime's to change: CPython refuses
@@ -213,6 +349,10 @@ public class PyType extends PyObject {
      */
     void setName(String name) {
         this.name = name;
+        // CPython writes the new name into `tp_name` itself, so a renamed class is named by the new
+        // string in every message as well as in `__name__`. Only a named sequence keeps the two apart,
+        // and no sequence is a class Python wrote.
+        this.filedName = name;
     }
 
     /**
@@ -273,6 +413,7 @@ public class PyType extends PyObject {
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "__name__", "__qualname__" -> PyStr.of(name);
+            case "__module__" -> PyStr.of(moduleName());
             case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
             case "__base__" -> parent == null ? PyNone.INSTANCE : parent;
             case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(bases());
@@ -280,6 +421,22 @@ public class PyType extends PyObject {
             case "__class__" -> type;
             default -> classMember(attribute);
         };
+    }
+
+    /**
+     * The module a built-in type belongs to, which {@code type} takes from the name it is written down
+     * as rather than from a dictionary.
+     *
+     * <p>A static type keeps no {@code __module__} of its own, so CPython's {@code type_module} splits
+     * {@code tp_name} on its <em>last</em> dot and answers {@code builtins} where there is no dot to
+     * split — which is what puts {@code datetime.date} in {@code datetime} and
+     * {@code sys.version_info} in {@code sys}, however many dots the name carries before its tail.
+     * A class Python wrote is not reached here: its own namespace holds the name, and
+     * {@link PyClass#getAttr} asks that first.
+     */
+    private String moduleName() {
+        int dot = filedName.lastIndexOf('.');
+        return dot < 0 ? "builtins" : filedName.substring(0, dot);
     }
 
     /**
@@ -344,13 +501,31 @@ public class PyType extends PyObject {
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
         throw Slots.typeError(
-                "cannot set '%s' attribute of immutable type '%s'", attribute, name);
+                "cannot set '%s' attribute of immutable type '%s'", attribute, filedName);
     }
 
+    /**
+     * {@code del int.x}, which CPython refuses with the <em>setting</em> sentence: a delete is a set to
+     * nothing and reaches the same gate at the top of {@code type.__setattr__}, before any name is looked
+     * up. {@code del int.__class__} is what this slice found reading the wording back wrong.
+     */
     @Override
     public PyObject delAttr(String attribute) {
         throw Slots.typeError(
-                "cannot delete '%s' attribute of immutable type '%s'", attribute, name);
+                "cannot set '%s' attribute of immutable type '%s'", attribute, filedName);
+    }
+
+    /**
+     * A built-in type takes every write itself, and {@code __class__} is no exception.
+     *
+     * <p>CPython's {@code type.__setattr__} refuses a write to a non-heap type before it looks the name up
+     * anywhere, which is why {@code del int.__class__} complains about the immutable type rather than
+     * about a name {@code object} answers for every other value. {@link PyClass} lifts this, because a
+     * class Python built passes that gate and does reach the getset.
+     */
+    @Override
+    boolean filedByItsClass(String name) {
+        return true;
     }
 
     /**
@@ -434,6 +609,9 @@ public class PyType extends PyObject {
 
     @Override
     public String repr() {
-        return "<class '" + name + "'>";
+        // CPython writes `<class 'module.name'>` for anything whose module is not `builtins`, and takes
+        // `tp_name` for a built-in — the two answers are the same string for a named sequence, whose
+        // module is the half of its written-down name before the dot.
+        return "<class '" + filedName + "'>";
     }
 }

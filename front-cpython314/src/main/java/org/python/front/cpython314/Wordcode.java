@@ -119,6 +119,11 @@ final class Wordcode implements CodeInstructions {
         return lines.lineByUnit();
     }
 
+    /** The line table's entries, in the order it writes them, for the two position reads. */
+    java.util.List<LineTable.Entry> entries() {
+        return lines.entries();
+    }
+
     /**
      * {@inheritDoc}
      *

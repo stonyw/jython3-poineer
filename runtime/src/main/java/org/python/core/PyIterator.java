@@ -61,6 +61,19 @@ public abstract class PyIterator extends PyObject {
         return new ArrayIterator(items, 0);
     }
 
+    /**
+     * A one-shot cursor over values that are already made, reported as a type of its own.
+     *
+     * <p>{@code line_iterator} and {@code positions_iterator} are CPython's two: a code object's locations
+     * are decoded once by the front-end that reads them, and what Python is handed is the cursor rather
+     * than the tuple, because {@code type(co.co_lines())} names the run and not a {@code tuple}. CPython
+     * keeps a pointer into the table and steps one entry at a time; this keeps an index into the values
+     * and cannot tell the difference from the outside, since neither iterator can be rewound.
+     */
+    public static PyIterator of(PyType type, PyObject[] items) {
+        return new FixedIterator(type, items);
+    }
+
     public static PyIterator of(List<PyObject> items) {
         return new ListIterator(items);
     }
@@ -78,6 +91,36 @@ public abstract class PyIterator extends PyObject {
         @Override
         public PyObject nextOrNull() {
             return at >= items.length ? null : items[at++];
+        }
+    }
+
+    /**
+     * A cursor over values that were decoded before it was made.
+     *
+     * <p>Its own type, and its own repr, because CPython's two uses of this are {@code line_iterator} and
+     * {@code positions_iterator} rather than {@code iterator} — a program that prints the type of what
+     * {@code co_lines()} answered is the only way to tell them apart, and both reprs carry an address no
+     * differential test compares.
+     */
+    private static final class FixedIterator extends PyIterator {
+
+        private final PyObject[] items;
+        private int at;
+
+        FixedIterator(PyType type, PyObject[] items) {
+            super(type);
+            this.items = items;
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            return at >= items.length ? null : items[at++];
+        }
+
+        @Override
+        public String repr() {
+            return "<" + getType().name() + " object at 0x"
+                    + Integer.toHexString(System.identityHashCode(this)) + ">";
         }
     }
 

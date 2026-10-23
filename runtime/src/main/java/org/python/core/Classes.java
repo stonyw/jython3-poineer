@@ -371,9 +371,9 @@ final class Classes {
      * {@code type_new_set_classcell} and {@code type_new_set_classdictcell}.
      *
      * <p>A body that mentions {@code __class__} leaves its cell behind under that name, and a body that
-     * uses {@code locals()} leaves the {@code __classdict__} cell behind. Both are filled here and both
-     * names are taken out of the dictionary, which is why neither appears in {@code X.__dict__} of a
-     * finished class.
+     * reads a name from the scope around it — or asks for its own dictionary by name — leaves the
+     * {@code __classdict__} cell behind. Both are filled here and both names are taken out of the
+     * dictionary, which is why neither appears in {@code X.__dict__} of a finished class.
      */
     private static void propagateCells(PyDict dict, PyClass kind) {
         PyStr classCellKey = PyStr.interned("__classcell__");
@@ -567,6 +567,11 @@ final class Classes {
         }
         if (kind instanceof PyClass declaring) {
             return construct(declaring, args, kwNames);
+        }
+        if (kind.declaresNoInstances()) {
+            // CPython's `type_call` looks at the slot before it looks at the arguments, so a named
+            // sequence is refused for the same reason however many items are handed to it.
+            throw Slots.typeError("cannot create '%s' instances", kind.filedName());
         }
         return Constructors.instantiate(kind, args, kwNames);
     }
@@ -802,8 +807,7 @@ final class Classes {
 
     /** {@code PyObject_GetOptionalAttr}: null for a value with nothing under the name. */
     private static PyObject optional(PyObject target, String name) {
-        PyObject found = target.getAttr(name);
-        return found == PyNotImplemented.INSTANCE ? null : found;
+        return Slots.findAttr(target, name);
     }
 
     /** The position of {@code name} in a call's keyword names, or -1 when the call did not give it. */

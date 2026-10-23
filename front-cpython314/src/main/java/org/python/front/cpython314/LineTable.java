@@ -1,7 +1,10 @@
 package org.python.front.cpython314;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * CPython 3.14's {@code co_linetable}: which source line each code unit belongs to.
+ * CPython 3.14's {@code co_linetable}: which source range each code unit belongs to.
  *
  * <p>An entry is a first byte with the top bit set, followed by however many bytes the entry's own
  * form needs, and the low three bits of that first byte say how many <em>code units</em> the entry
@@ -16,13 +19,30 @@ package org.python.front.cpython314;
  *
  * <p>Line deltas accumulate: the running line starts at {@code co_firstlineno} and only the forms
  * that name a delta move it, so a short entry repeats whatever line the previous one reached.
- * Columns are absolute and are the part a traceback display reads, so they are stepped over here;
- * the line is all {@code tb_lineno} and {@code f_lineno} ask for.
+ *
+ * <p>Two readings of the same entries are kept. {@code co_lines()} walks entries and merges the ones
+ * that name the same line, and answers a line and nothing beside it, while {@code co_positions()} walks
+ * <em>units</em> and repeats the covering entry's whole range — end line and both columns included — for
+ * each of them. So the answers kept here are the entries themselves and the line per unit, and the widths
+ * are what the two readings count on separately: a reader that merged entries here would lose the widths
+ * the following entries are measured from. A {@code -1} in any field is CPython's own marker for a
+ * location the entry does not name, which both Python methods print as {@code None}.
  */
 final class LineTable {
 
+    /**
+     * One entry: the code unit it starts at, how many it reaches over, and the source range it names.
+     *
+     * <p>Measured in code units, not bytes — the width CPython's own {@code advance_with_locations}
+     * reads from the first byte — because that is what the instructions are counted in here.
+     */
+    record Entry(int startUnit, int units, int line, int endLine, int column, int endColumn) {}
+
     /** The line of every code unit, and -1 for a unit that carries no location. */
     private final int[] lineByUnit;
+
+    /** The entries themselves, in the order the table writes them. */
+    private final List<Entry> entries = new ArrayList<>();
 
     LineTable(byte[] table, int firstLine, int totalUnits) {
         this.lineByUnit = new int[Math.max(totalUnits, 0)];
@@ -39,30 +59,53 @@ final class LineTable {
             int code = (first >> 3) & 15;
             int width = (first & 7) + 1;
             int next = at + 1;
+            int endLine;
+            int column;
+            int endColumn;
             if (code <= 9) {
                 // A short form: the columns are the only thing the following byte carries, and the
-                // line stays where it was.
-                next = readColumns(table, next, 1);
+                // line stays where it was. The code number names the top of the start column.
+                int pair = readColumn(table, next);
+                next++;
+                column = code << 3 | (pair >> 4);
+                endColumn = column + (pair & 15);
+                endLine = line;
             } else if (code <= 12) {
                 line += code - 10;
-                next = readColumns(table, next, 2);
+                column = readColumn(table, next);
+                endColumn = readColumn(table, next + 1);
+                next += 2;
+                endLine = line;
             } else if (code == 13) {
                 int[] delta = readSignedVarint(table, next);
                 line += delta[0];
                 next = delta[1];
+                endLine = line;
+                column = -1;
+                endColumn = -1;
             } else if (code == 14) {
                 int[] delta = readSignedVarint(table, next);
                 line += delta[0];
-                next = skipVarint(table, delta[1]); // the end line's delta from this one
-                next = skipVarint(table, next); // the start column, less one
-                next = skipVarint(table, next); // the end column, less one
+                next = delta[1];
+                int[] endDelta = readVarint(table, next);
+                next = endDelta[1];
+                // The two columns are written one greater than the numbers they mean.
+                int[] start = readVarint(table, next);
+                next = start[1];
+                int[] end = readVarint(table, next);
+                next = end[1];
+                endLine = line + endDelta[0];
+                column = start[0] - 1;
+                endColumn = end[0] - 1;
             } else {
-                // Code 15 keeps the running line where it is and says this unit has no location.
+                // Code 15 keeps the running line where it is and says these units have no location.
+                entries.add(new Entry(unit, width, -1, -1, -1, -1));
                 fill(unit, width, -1);
                 unit += width;
                 at = next;
                 continue;
             }
+            entries.add(new Entry(unit, width, line, endLine, column, endColumn));
             fill(unit, width, line);
             unit += width;
             at = next;
@@ -74,9 +117,19 @@ final class LineTable {
         return unit >= 0 && unit < lineByUnit.length ? lineByUnit[unit] : -1;
     }
 
-    /** One entry per code unit, for the expectation file to compare against CPython's own reading. */
+    /** One entry per code unit, for the expectation file to compare against CPython's reading. */
     int[] lineByUnit() {
         return lineByUnit;
+    }
+
+    /**
+     * The table's entries, as written.
+     *
+     * <p>Adjacent entries repeating a line are kept apart, which is what the table says; only
+     * {@code co_lines()} merges them, and {@code co_positions()} never needs to.
+     */
+    List<Entry> entries() {
+        return entries;
     }
 
     /**
@@ -91,13 +144,12 @@ final class LineTable {
         }
     }
 
-    /** Skip {@code count} single-byte columns, which are never a start-of-entry byte. */
-    private static int readColumns(byte[] table, int at, int count) {
-        int next = at + count;
-        if (next > table.length) {
+    /** Read one of the single-byte columns, which are never a start-of-entry byte. */
+    private static int readColumn(byte[] table, int at) {
+        if (at >= table.length) {
             throw MarshalFormatException.badData("line table ends inside an entry");
         }
-        return next;
+        return table[at] & 0xff;
     }
 
     /** CPython's {@code read_varint}: six bits per byte, continuation bit 0x40, least significant first. */
@@ -125,10 +177,5 @@ final class LineTable {
         return new int[] {
             (unsigned & 1) == 1 ? -(unsigned >>> 1) : unsigned >>> 1, read[1]
         };
-    }
-
-    /** Step over one varint whose value belongs to the part of the entry a traceback never reads. */
-    private static int skipVarint(byte[] table, int at) {
-        return readVarint(table, at)[1];
     }
 }

@@ -6,8 +6,8 @@ import java.util.Arrays;
  * The members the built-ins the class system is built on keep in their own dictionaries: {@code type}'s
  * {@code __new__}, {@code __init__}, {@code __call__}, {@code mro}, {@code __prepare__} and the two
  * instance tests, {@code object}'s {@code __init_subclass__}, {@code BaseException}'s two halves of
- * making a value plus {@code with_traceback}, and {@code BaseExceptionGroup}'s two halves plus the three
- * methods that work over the children it carries.
+ * making a value plus {@code with_traceback} and {@code add_note}, and {@code BaseExceptionGroup}'s two
+ * halves plus the three methods that work over the children it carries.
  *
  * <p>These are the names a metaclass either calls through {@code super()} or has inherited without
  * writing, so they have to be findable the way a class dictionary is findable — by {@link
@@ -171,6 +171,23 @@ final class TypeDict {
                     TypeDict::withTraceback);
 
     /**
+     * {@code e.add_note(note)}: a note appended to the list the value keeps under {@code __notes__}.
+     *
+     * <p>The name appears on the value only once a note has been added, and the list is written through
+     * the attribute rather than kept in a field, which is what lets a class that files one of its own
+     * under that name — or a value whose {@code __setattr__} throws the write away — be answered the way
+     * CPython answers them.
+     */
+    static final PyObject ADD_NOTE =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION,
+                    "add_note",
+                    Shape.METHOD,
+                    null,
+                    "Add a note to the exception",
+                    TypeDict::addNote);
+
+    /**
      * {@code BaseExceptionGroup.__new__(cls, message, exceptions)}: the creator both group classes and
      * any subclass of them inherit.
      *
@@ -253,6 +270,7 @@ final class TypeDict {
                 case "__new__" -> EXCEPTION_NEW;
                 case "__init__" -> EXCEPTION_INIT;
                 case "with_traceback" -> WITH_TRACEBACK;
+                case "add_note" -> ADD_NOTE;
                 default -> null;
             };
         }
@@ -391,7 +409,12 @@ final class TypeDict {
      * {@code BaseException_with_traceback}: the same value, with a traceback attached to it.
      *
      * <p>The one argument is checked as {@code __traceback__} is and the value answers with itself,
-     * which is how {@code raise e.with_traceback(tb)} keeps reporting the exception it was handed.
+     * which is how {@code raise e.with_traceback(tb)} keeps reporting the exception it was handed. The
+     * two refusals of the argument list name the method under the name the read gave it — so {@code
+     * e.with_traceback()} of a {@code ValueError} says {@code BaseException.with_traceback()}, because
+     * the method form of {@code LOAD_ATTR} calls the descriptor with the receiver rather than binding it,
+     * while {@code m = e.with_traceback; m()} says {@code ValueError.with_traceback()}, because that
+     * {@code m} is a bound copy that reads its name off the value it was made from.
      */
     private static PyObject withTraceback(PyObject[] args, String[] kwNames, String qualified) {
         PyBaseException self =
@@ -399,13 +422,47 @@ final class TypeDict {
                         methodReceiver(
                                 "with_traceback", ExceptionTypes.BASE_EXCEPTION, args, kwNames);
         PyObject[] rest = tail(args, kwNames);
-        int given = Arguments.positional(rest, kwNames);
-        if (given != 1) {
-            throw Slots.typeError(
-                    "BaseException.with_traceback() takes exactly one argument (%d given)", given);
-        }
+        Arguments.exactlyOne(qualified + "()", rest, kwNames);
         self.setTraceback(rest[0]);
         return self;
+    }
+
+    /**
+     * {@code BaseException_add_note}: the note the argument table already accepted, put on a list.
+     *
+     * <p>The table runs first, so a note that is not text is complained about before anything looks at
+     * {@code __notes__} — and in its own words, naming the method bare and the value's class, with
+     * {@code None} spelled as the value rather than as {@code NoneType}. Then the list is read as an
+     * attribute and written back as one: nothing is missing from the value until the first note, a class
+     * that files a list under the name has every one of its instances append to <em>that</em> list, and a
+     * {@code __setattr__} that swallows the write loses the note exactly as CPython's does. A
+     * {@code __notes__} that is there and is not a list is refused without appending, which is why the
+     * check is {@code PyList_Check} and not a walk of the sequence protocol.
+     */
+    private static PyObject addNote(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        methodReceiver("add_note", ExceptionTypes.BASE_EXCEPTION, args, kwNames);
+        PyObject[] rest = tail(args, kwNames);
+        Arguments.exactlyOne(qualified + "()", rest, kwNames);
+        PyObject note = rest[0];
+        if (!(note instanceof PyStr)) {
+            throw Slots.typeError(
+                    "add_note() argument must be str, not %s",
+                    note == PyNone.INSTANCE ? "None" : note.getType().name());
+        }
+        PyObject found = Slots.findAttr(self, "__notes__");
+        PyList notes;
+        if (found == null) {
+            notes = PyList.empty();
+            Slots.setAttr(self, "__notes__", notes);
+        } else if (found instanceof PyList list) {
+            notes = list;
+        } else {
+            throw Slots.typeError("Cannot add note: __notes__ is not a list");
+        }
+        notes.add(note);
+        return PyNone.INSTANCE;
     }
 
     /**
@@ -458,15 +515,17 @@ final class TypeDict {
     /**
      * {@code BaseExceptionGroup_derive}: a group of this one's shape, holding the children given.
      *
-     * <p>The arity complaints name {@code BaseExceptionGroup} however the value is classed, because they
-     * are made from the method's own name rather than from the receiver the way a {@code __qualname__}
-     * read is.
+     * <p>Like {@link #withTraceback} and {@link #addNote}, this family's three name themselves by the read
+     * that reached them: {@code g.split()} of an {@code ExceptionGroup} complains as {@code
+     * BaseExceptionGroup.split()}, which is the descriptor called with the receiver, while {@code
+     * m = g.split; m()} complains as {@code ExceptionGroup.split()}, which is the bound copy naming the
+     * class of what it was made from.
      */
     private static PyObject groupDerive(PyObject[] args, String[] kwNames, String qualified) {
         PyObject self =
                 methodReceiver("derive", ExceptionTypes.BASE_EXCEPTION_GROUP, args, kwNames);
         PyObject[] rest = tail(args, kwNames);
-        Arguments.exactlyOne("BaseExceptionGroup.derive()", rest, kwNames);
+        Arguments.exactlyOne(qualified + "()", rest, kwNames);
         return PyBaseExceptionGroup.derive(self, rest[0]);
     }
 
@@ -474,7 +533,7 @@ final class TypeDict {
     private static PyObject groupSplit(PyObject[] args, String[] kwNames, String qualified) {
         PyObject self = methodReceiver("split", ExceptionTypes.BASE_EXCEPTION_GROUP, args, kwNames);
         PyObject[] rest = tail(args, kwNames);
-        Arguments.exactlyOne("BaseExceptionGroup.split()", rest, kwNames);
+        Arguments.exactlyOne(qualified + "()", rest, kwNames);
         return PyBaseExceptionGroup.split(self, rest[0]);
     }
 
@@ -483,7 +542,7 @@ final class TypeDict {
         PyObject self =
                 methodReceiver("subgroup", ExceptionTypes.BASE_EXCEPTION_GROUP, args, kwNames);
         PyObject[] rest = tail(args, kwNames);
-        Arguments.exactlyOne("BaseExceptionGroup.subgroup()", rest, kwNames);
+        Arguments.exactlyOne(qualified + "()", rest, kwNames);
         return PyBaseExceptionGroup.subgroup(self, rest[0]);
     }
 
@@ -721,6 +780,9 @@ final class TypeDict {
         private final PyObject receiver;
         private final String doc;
 
+        /** Whether the method form of {@code LOAD_ATTR} is the one holding this copy. */
+        private final boolean leftUnbound;
+
         Bound(
                 PyType declaring,
                 String name,
@@ -728,6 +790,17 @@ final class TypeDict {
                 Method body,
                 PyObject receiver,
                 String doc) {
+            this(declaring, name, shape, body, receiver, doc, false);
+        }
+
+        Bound(
+                PyType declaring,
+                String name,
+                Shape shape,
+                Method body,
+                PyObject receiver,
+                String doc,
+                boolean leftUnbound) {
             super(shape.bound());
             this.declaring = declaring;
             this.name = name;
@@ -735,6 +808,22 @@ final class TypeDict {
             this.body = body;
             this.receiver = receiver;
             this.doc = doc;
+            this.leftUnbound = leftUnbound;
+        }
+
+        /**
+         * The copy the method form hands to {@code CALL}.
+         *
+         * <p>A {@code method_descriptor} is the one member CPython leaves unbound there — it puts the
+         * descriptor and the receiver on the stack together — so a refusal made during that call is written
+         * under the class that declares the method. Every other kind is already bound by the read, and a
+         * read of {@code int.mro} or {@code e.args} gives the same answer either way.
+         */
+        @Override
+        PyObject methodForm() {
+            return shape == Shape.METHOD && !leftUnbound
+                    ? new Bound(declaring, name, shape, body, receiver, doc, true)
+                    : this;
         }
 
         @Override
@@ -754,9 +843,13 @@ final class TypeDict {
          * {@code BaseException} is what declares the method, or the class itself when the receiver is one.
          * A bound wrapper is the exception — it keeps the name of the type that declares the slot, which
          * is why {@code Plain.__call__.__qualname__} is {@code type.__call__} while {@code C.mro} of a
-         * class {@code C} is {@code C.mro}.
+         * class {@code C} is {@code C.mro}. The copy the method form of {@code LOAD_ATTR} leaves unbound is
+         * the other exception, and only a call ever sees that name.
          */
         private String qualifiedName() {
+            if (leftUnbound) {
+                return declaring.name() + "." + name;
+            }
             String owner =
                     shape == Shape.WRAPPER
                             ? declaring.name()

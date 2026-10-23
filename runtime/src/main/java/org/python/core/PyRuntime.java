@@ -26,6 +26,16 @@ public final class PyRuntime {
     private static final int VERSION_MINOR = 14;
     private static final int VERSION_MICRO = 0;
 
+    /**
+     * How far into that release this runtime claims to be: a final one, of no serial.
+     *
+     * <p>Both halves are kept because {@code sys.version_info} reads them as a name and a count while
+     * {@code sys.hexversion} packs them into its low byte as CPython's {@code PY_RELEASE_LEVEL_FINAL}
+     * nibble over the serial.
+     */
+    private static final String RELEASE_LEVEL = "final";
+    private static final int RELEASE_SERIAL = 0;
+
     private static PyDict builtins;
     private static PyModule sysModule;
     private static PyModule main;
@@ -207,14 +217,35 @@ public final class PyRuntime {
         return main;
     }
 
-    /** Prepare a module the runtime has been handed for its top level, as {@code import} would. */
+    /**
+     * Prepare a module the runtime has been handed for its top level, as {@code import} would.
+     *
+     * <p>The names CPython's {@code _init_module_attrs} gives every module it loads are given here too,
+     * because {@code dir()} and {@code globals()} of a script are measured against the reference
+     * interpreter's and answer with the names a module holds rather than with the ones a script wrote.
+     * Three of them really are {@code None} for a script run by its path — {@code __package__},
+     * {@code __spec__} and {@code __cached__} — {@code __doc__} is the module's own docstring and only
+     * stays {@code None} when it has none, and {@code __loader__} alone is a placeholder here: the
+     * reference interpreter's is a {@code SourceFileLoader}, and the import machinery that would own one
+     * is M4's.
+     */
     public static PyModule namespace(PyModule module) {
         startup();
         if (module.get("__builtins__") == null) {
             module.set("__builtins__", builtins);
         }
+        for (String prepared : PREPARED_NAMES) {
+            if (module.get(prepared) == null) {
+                module.set(prepared, PyNone.INSTANCE);
+            }
+        }
         return module;
     }
+
+    /** The module attributes {@code import} writes before a module's code runs. */
+    private static final String[] PREPARED_NAMES = {
+        "__doc__", "__package__", "__loader__", "__spec__", "__cached__"
+    };
 
     /**
      * Run a module's top-level code object in {@code module}.
@@ -272,6 +303,18 @@ public final class PyRuntime {
         return sysModule.get(name);
     }
 
+    /**
+     * {@code sys.<name> = value}, which is how the launcher files the four {@code last_} names.
+     *
+     * <p>CPython's {@code _PyErr_PrintEx} sets them with {@code _PySys_SetAttr} before it reads the hook,
+     * and none of the four exists until an exception escapes a program: nothing here creates them at
+     * startup.
+     */
+    public static void setSysAttribute(String name, PyObject value) {
+        startup();
+        sysModule.set(name, value);
+    }
+
     /** Drain both streams, which a process about to exit must do because stdout is block-buffered. */
     public static void flushStreams() {
         if (stdout != null) {
@@ -287,6 +330,24 @@ public final class PyRuntime {
     /** The Python level this runtime aims at, as {@code sys.version_info} also reports it. */
     public static String pythonVersion() {
         return VERSION_MAJOR + "." + VERSION_MINOR + "." + VERSION_MICRO;
+    }
+
+    /**
+     * The items of {@code sys.version_info}, in the order its type files its fields.
+     *
+     * <p>Kept here rather than in {@link PyVersionInfo} because the three numbers are the ones this
+     * class already owns and {@code hexversion} is a fourth reading of the same decision. A release
+     * level and a serial go with them, and both are fixed: this runtime emulates a final release and
+     * no candidate of one.
+     */
+    static PyObject[] versionItems() {
+        return new PyObject[] {
+            PyInt.of(VERSION_MAJOR),
+            PyInt.of(VERSION_MINOR),
+            PyInt.of(VERSION_MICRO),
+            PyStr.of(RELEASE_LEVEL),
+            PyInt.of(RELEASE_SERIAL)
+        };
     }
 
     private static PyModule buildSys() {
@@ -306,7 +367,7 @@ public final class PyRuntime {
         sys.set("executable", PyStr.of(System.getProperty("jy3.executable", "jy3")));
         sys.set("prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
-        sys.set("version_info", versionInfo());
+        sys.set("version_info", PyVersionInfo.current());
         sys.set("argv", PyList.of(PyStr.of("jy3")));
         sys.set("path", PyList.empty());
         sys.set("modules", PyDict.empty());
@@ -317,7 +378,51 @@ public final class PyRuntime {
                 "getdefaultencoding", args -> PyStr.of("utf-8")));
         sys.set("exc_info", PyNativeFunction.positional("exc_info", args -> excInfo()));
         sys.set("exit", new PyNativeFunction("exit", PyRuntime::systemExit));
+        // COPY_SYS_ATTR gives the two names the one object, so `sys.excepthook is sys.__excepthook__`
+        // reads true until a script replaces the first of them — and then keeps reading true of the
+        // second, which still holds this object.
+        PyObject excepthook =
+                new PyNativeFunction("excepthook", PyRuntime::excepthook)
+                        .documented(
+                                "Handle an exception by displaying it with a traceback on sys.stderr.");
+        sys.set("excepthook", excepthook);
+        sys.set("__excepthook__", excepthook);
         return sys;
+    }
+
+    /**
+     * {@code sys.excepthook}: the printer CPython installs as the default, with its argument table in
+     * front.
+     *
+     * <p>Two of the three arguments are what the display uses and one is not. The type is ignored —
+     * {@code sys_excepthook_impl} hands the value to {@code PyErr_Display} and lets the value's own class
+     * name the complaint, which is why {@code sys.excepthook(TypeError, ValueError('a'), None)} reads
+     * {@code ValueError: a}. The traceback has one use: {@code _PyErr_Display} hangs it on the value where
+     * the value carries none, because otherwise nothing would show it (CPython's issue 18776). Where the
+     * value already travelled with its own, the argument is dropped.
+     *
+     * <p>A value that is not an exception is not refused by the table — the arguments are never type
+     * checked. The Python printer rejects it, the display falls back to the C one, and the C one writes
+     * its one line of complaint and shows nothing else; {@link TracebackReport} transcribes the Python
+     * printer, so this is where that fallback has to be written out.
+     */
+    private static PyObject excepthook(PyObject[] args, String[] kwNames) {
+        // The keyword refusal comes from the call machinery, before the body is entered, and it spells
+        // the function as module and name: cfunction_check_kwargs formats _PyObject_FunctionStr(func).
+        Arguments.noKeywords("sys.excepthook()", kwNames);
+        Arguments.exactly("excepthook", args, kwNames, 3);
+        if (!(args[1] instanceof PyBaseException value)) {
+            stderr().writeText(
+                    "TypeError: print_exception(): Exception expected for value, "
+                            + args[1].getType().name()
+                            + " found\n");
+            return PyNone.INSTANCE;
+        }
+        if (args[2] instanceof PyTraceback handed && value.traceback() == PyNone.INSTANCE) {
+            value.setTraceback(handed);
+        }
+        TracebackReport.print(value);
+        return PyNone.INSTANCE;
     }
 
     /**
@@ -335,20 +440,9 @@ public final class PyRuntime {
     }
 
     /**
-     * A tuple, not the named sequence CPython has.
-     *
-     * {@code sys.version_info.major} needs a structseq, which needs the class system at M3. The
-     * comparison and indexing every script actually uses already work from a tuple.
+     * {@code sys.hexversion}'s last byte: the release level this runtime claims, shifted up against its
+     * serial. {@code 0xF0} is final, serial zero.
      */
-    private static PyTuple versionInfo() {
-        return PyTuple.of(
-                PyInt.of(VERSION_MAJOR),
-                PyInt.of(VERSION_MINOR),
-                PyInt.of(VERSION_MICRO),
-                PyStr.of("final"),
-                PyInt.of(0));
-    }
-
     private static int hexVersion() {
         return (VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | (VERSION_MICRO << 8) | 0xF0;
     }

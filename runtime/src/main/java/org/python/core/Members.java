@@ -52,12 +52,41 @@ final class Members {
             Map.entry(PyType.DICT, PyDict.class),
             Map.entry(PyType.SET, PySet.class),
             Map.entry(PyType.FROZENSET, PySet.class),
-            Map.entry(PyType.GENERATOR, PyGenerator.class));
+            // A code object's values are made by whichever front-end reads one, so its table belongs to no
+            // value class: CodeMembers declares it, and is loaded when a code object is.
+            Map.entry(PyType.CODE, CodeMembers.class),
+            Map.entry(PyType.GENERATOR, PyGenerator.class),
+            // The one named sequence is declared by its value class too, so that asking the type for a
+            // field works before the interpreter has built the value it files.
+            Map.entry(PyType.VERSION_INFO, PyVersionInfo.class));
 
     private final PyType owner;
 
     /** Built during the value class's own initialization, then only read. */
     private final Map<String, PyBoundMethod.Body> entries = new LinkedHashMap<>();
+
+    /**
+     * The names this type files as storage rather than as behaviour: {@code sys.version_info}'s five
+     * fields, each a {@link PyMemberDescriptor} the dictionary holds once.
+     */
+    private final Map<String, PyMemberDescriptor> fields = new LinkedHashMap<>();
+
+    /**
+     * The plain values a type's dictionary holds, which are neither methods nor fields: {@code
+     * sys.version_info} files its three counts and its {@code __match_args__} that way, and a value read
+     * of one is the value itself rather than something a descriptor answers.
+     */
+    private final Map<String, PyObject> values = new LinkedHashMap<>();
+
+    /**
+     * The sentences the table's bodies were written beside.
+     *
+     * <p>CPython keeps each one in the {@code PyMethodDef} next to the function pointer, so it belongs to
+     * the type rather than to a read of it, and a bound method and its descriptor answer with the same
+     * text. Most tables here transcribe no sentence, and the names they file answer {@code __doc__} with
+     * {@code None} — a deviation the plan records for the whole family.
+     */
+    private final Map<String, String> docs = new LinkedHashMap<>();
 
     /** Made on the first lookup through the type, which is why this one is concurrent. */
     private final Map<String, PyObject> descriptors = new ConcurrentHashMap<>();
@@ -121,9 +150,97 @@ final class Members {
         return PyNotImplemented.INSTANCE;
     }
 
+    /**
+     * {@code self.name} for a name the type files that is not a method.
+     *
+     * <p>A field is answered through its descriptor, so the receiver is checked against the type that
+     * declares it exactly as a read of the descriptor from outside checks it; a plain value is the
+     * dictionary's own entry and needs no checking, because every value of the type is asked with the
+     * same object.
+     *
+     * @return the answer, or {@link PyNotImplemented} when no type in the order files the name
+     */
+    static PyObject filed(PyObject self, String name) {
+        for (PyType owner : self.getType().mro()) {
+            Members methods = tableOf(owner);
+            if (methods == null) {
+                continue;
+            }
+            PyMemberDescriptor field = methods.fields.get(name);
+            if (field != null) {
+                return Descriptors.get(field, self, self.getType());
+            }
+            PyObject value = methods.values.get(name);
+            if (value != null) {
+                return value;
+            }
+        }
+        return PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * Whether {@code self}'s type files {@code name}, and whether a filed name is a field.
+     *
+     * <p>The two answers choose between CPython's three refusals of a write: a field is refused by its
+     * descriptor with {@code readonly attribute}, a filed name that is not a descriptor is refused by the
+     * generic setter, and a name nobody files is refused because the value has no dictionary.
+     */
+    static boolean files(PyObject self, String name) {
+        for (PyType owner : self.getType().mro()) {
+            Members methods = tableOf(owner);
+            if (methods != null && methods.files(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether {@code name} is one of {@code self}'s type's fields rather than a method or a value. */
+    static boolean filesField(PyObject self, String name) {
+        for (PyType owner : self.getType().mro()) {
+            Members methods = tableOf(owner);
+            if (methods != null && methods.fields.containsKey(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The full form, for a method that checks its own arguments or accepts keywords. */
     Members add(String name, PyBoundMethod.Body body) {
         entries.put(name, body);
+        return this;
+    }
+
+    /**
+     * A method with the sentence CPython's {@code PyMethodDef} carries beside it.
+     *
+     * <p>{@code __doc__} is read from the table rather than from a call, so the descriptor and the method
+     * bound to a value answer with the same text — which is what {@code version_info.__replace__.__doc__}
+     * and {@code version_info().replace.__doc__} are in CPython.
+     */
+    Members add(String name, String doc, PyBoundMethod.Body body) {
+        add(name, body);
+        docs.put(name, doc);
+        return this;
+    }
+
+    /**
+     * A field: one of the items underneath, reached by name and never written.
+     *
+     * <p>The declaration order is the item order, which is what makes {@code major} the first item of a
+     * {@code sys.version_info} and {@code serial} the fifth. CPython builds the same table from a
+     * {@code PyMemberDef} array whose offsets are the field indices, and marks every one of them
+     * {@code Py_READONLY}; the doc is that array's, not a docstring.
+     */
+    Members addField(String name, String doc) {
+        fields.put(name, new PyMemberDescriptor(owner, name, fields.size(), doc));
+        return this;
+    }
+
+    /** A value the type's dictionary holds, of the kind {@code n_fields} and {@code __match_args__} are. */
+    Members addValue(String name, PyObject value) {
+        values.put(name, value);
         return this;
     }
 
@@ -156,25 +273,37 @@ final class Members {
         if (body == null) {
             return PyNotImplemented.INSTANCE;
         }
+        String doc = docs.get(name);
         PyObject receiver = self.adaptedFor(owner);
         if (receiver == self) {
-            return new PyBoundMethod(self, name, body);
+            return new PyBoundMethod(self, name, body, doc);
         }
         return new PyBoundMethod(self, name, (ignored, args, kwNames) ->
-                body.apply(receiver, args, kwNames));
+                body.apply(receiver, args, kwNames), doc);
     }
 
     /**
      * The method named {@code name} as the type's own, unbound.
      *
      * <p>CPython hands out the same descriptor from the type's dictionary every time it is asked, so
-     * {@code list.append is list.append} is true; the table keeps one per name for the same reason.
+     * {@code list.append is list.append} is true; the table keeps one per name for the same reason. A
+     * field is handed out the same way — its descriptor is built with the table, not per read — and a
+     * value filed in the dictionary is handed out as itself, because that is what the dictionary holds.
      */
     PyObject describe(String name) {
+        PyMemberDescriptor field = fields.get(name);
+        if (field != null) {
+            return field;
+        }
+        PyObject filed = values.get(name);
+        if (filed != null) {
+            return filed;
+        }
         if (!defines(name)) {
             return PyNotImplemented.INSTANCE;
         }
-        return descriptors.computeIfAbsent(name, key -> new PyMethodDescriptor(owner, key));
+        return descriptors.computeIfAbsent(
+                name, key -> new PyMethodDescriptor(owner, key, docs.get(key)));
     }
 
     /** Whether this type defines that method at all, which {@code hasattr} and {@code in} both ask. */
@@ -182,8 +311,16 @@ final class Members {
         return entries.containsKey(name);
     }
 
+    /** Whether this type files the name at all, as a method, a field or a value. */
+    boolean files(String name) {
+        return defines(name) || fields.containsKey(name) || values.containsKey(name);
+    }
+
     /** The names Python sees, in declaration order, for {@code dir()}. */
     String[] names() {
-        return entries.keySet().toArray(new String[0]);
+        java.util.List<String> all = new java.util.ArrayList<>(entries.keySet());
+        all.addAll(fields.keySet());
+        all.addAll(values.keySet());
+        return all.toArray(new String[0]);
     }
 }

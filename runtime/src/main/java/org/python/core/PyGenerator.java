@@ -18,9 +18,12 @@ package org.python.core;
  * generator parked inside an {@code except} keep that clause's exception across a yield without the
  * caller's handler noticing — and without the caller's handler being what a {@code throw} chains onto.
  *
- * <p>{@code yield from} is not here: the {@code SEND} and {@code END_SEND} family, the delegated iterator
- * {@code gi_yieldfrom} names, and the half of {@code close} and {@code throw} that walks into it all
- * belong to it. A body that uses it fails at {@code YIELD_VALUE} rather than answering wrongly.
+ * <p>A delegation is the same frame with one more thing on its value stack. {@code yield from} leaves the
+ * iterator it stands on under the value it hands out, so a step of this generator is a step of that
+ * iterator, {@code gi_yieldfrom} names it, and the {@code send}, {@code throw} and {@code close} below are
+ * the three that ask it before they ask the body. What ends a delegation is a {@code StopIteration}, and the
+ * value it carries is the value of the expression — which is why the driver's {@code SEND} jumps rather than
+ * stepping, and why the half of {@code close} that closes a delegate runs before the exit is thrown in.
  */
 public final class PyGenerator extends PyIterator {
 
@@ -36,6 +39,8 @@ public final class PyGenerator extends PyIterator {
     enum State {
         CREATED,
         SUSPENDED,
+        /** {@code FRAME_SUSPENDED_YIELD_FROM}: parked on a delegation rather than on a plain yield. */
+        SUSPENDED_YIELD_FROM,
         EXECUTING,
         COMPLETED
     }
@@ -178,7 +183,7 @@ public final class PyGenerator extends PyIterator {
             handled = PyRuntime.closeHandlerItem();
         }
         if (frame.isParked()) {
-            state = State.SUSPENDED;
+            state = frame.isDelegating() ? State.SUSPENDED_YIELD_FROM : State.SUSPENDED;
             return result;
         }
         state = State.COMPLETED;
@@ -262,9 +267,26 @@ public final class PyGenerator extends PyIterator {
         // implicit one: nothing can catch the exit there, so it finishes the frame instead of entering it.
         // The answer is the same either way — the exit leaves, close swallows it, the frame is over — and
         // this is the route that also works for a body parked inside a clause of its own.
+        PyRaise exit = PyRaise.raise(ExceptionTypes.GENERATOR_EXIT);
+        PyObject delegate = yieldFrom();
+        if (delegate != null) {
+            // The delegate is closed first, and the error it answers with is the exception this frame is
+            // entered with instead of an exit it never got to be: a close is not owed a GeneratorExit that
+            // was never thrown. The frame is not linked under anything for the walk — CPython asks the
+            // delegate as it stands, so a delegate that looks back at this generator finds no new entry —
+            // but it is marked as running, which is what makes a step asked of this generator during the
+            // close the usual refusal rather than a re-entry.
+            State parked = state;
+            state = State.EXECUTING;
+            PyRaise refused = closeDelegate(delegate);
+            state = parked;
+            if (refused != null) {
+                exit = refused;
+            }
+        }
         PyObject yielded;
         try {
-            yielded = step(PyNone.INSTANCE, PyRaise.raise(ExceptionTypes.GENERATOR_EXIT));
+            yielded = step(PyNone.INSTANCE, exit);
         } catch (PyRaise escaped) {
             if (escaped.value().matches(ExceptionTypes.GENERATOR_EXIT)) {
                 // The body let the exit out, which is what closing means and is not worth reporting.
@@ -294,18 +316,90 @@ public final class PyGenerator extends PyIterator {
         close();
     }
 
+    /** {@code gen_throw}: the argument count the legacy signature checks, and the three it hands over. */
+    private PyObject throwIn(PyObject[] arguments) {
+        PyObject type = arguments[0];
+        PyObject value = arguments.length >= 2 ? arguments[1] : null;
+        PyObject trace = arguments.length == 3 ? arguments[2] : null;
+        PyObject yielded = thrown(type, value, trace);
+        if (yielded != null) {
+            return yielded;
+        }
+        // The body answered a thrown exception by returning: gen_send_ex makes that a StopIteration too,
+        // and it is the caller of throw() that sees it.
+        throw returnedAsStopIteration();
+    }
+
     /**
-     * {@code gen.throw}, which is {@code PyErr_Restore} of its arguments and then a step entered with an
-     * exception already in flight.
+     * CPython's {@code _gen_throw}: the walk into the delegate that comes first, and the throw into this
+     * generator's own frame that follows it.
+     *
+     * <p>Two things about the walk are what a script sees. The arguments travel to the delegate exactly as
+     * this method received them, because only the throw into this frame normalizes them — so a plain
+     * iterator's {@code throw} is called with one argument for {@code throw(ValueError("x"))} and not with
+     * a class and an instance. And whatever the delegate answers with is what this generator answers with,
+     * unless it answers with a failure: then the error the delegate made is thrown into the frame that
+     * delegated, which is what runs a {@code finally} written around the {@code yield from} and puts both
+     * frames in the report.
+     *
+     * @return the value this generator yields, or null when it ended and the caller must make the
+     *     {@code StopIteration} that says so
+     */
+    private PyObject thrown(PyObject type, PyObject value, PyObject trace) {
+        PyObject delegate = yieldFrom();
+        if (delegate == null) {
+            return throwHere(type, value, trace);
+        }
+        if (isGeneratorExit(type)) {
+            // The exit a `close` sends and the exit a person throw by name take the same route: the
+            // delegate is closed first, and what it answers with — rather than the exit — is what comes in.
+            PyRaise refused = closeDelegate(delegate);
+            return refused != null ? step(PyNone.INSTANCE, refused) : throwHere(type, value, trace);
+        }
+        PyGenerator inner = delegate instanceof PyGenerator cast ? cast : null;
+        PyObject method = inner == null ? Slots.findAttr(delegate, "throw") : null;
+        if (inner == null && method == null) {
+            // A delegate with no throw of its own is one the exception goes back over: this frame is
+            // entered with the arguments as they were given, at the yield that parked the delegation.
+            return throwHere(type, value, trace);
+        }
+        State parked = state;
+        Frame asked = Interpreter.enterDelegation(frame);
+        PyObject answered = null;
+        PyRaise failed = null;
+        try {
+            state = State.EXECUTING;
+            if (inner != null) {
+                answered = inner.thrown(type, value, trace);
+                if (answered == null) {
+                    // The delegate returned: its StopIteration is thrown in here, and this frame's own
+                    // CLEANUP_THROW is what turns it into the value of the expression.
+                    failed = inner.returnedAsStopIteration();
+                }
+            } else {
+                answered = Slots.call(method, throwArguments(type, value, trace), null);
+            }
+        } catch (PyRaise escaping) {
+            failed = escaping;
+        } finally {
+            state = parked;
+            Interpreter.leaveDelegation(asked);
+        }
+        if (answered != null) {
+            return answered;
+        }
+        return step(PyNone.INSTANCE, failed);
+    }
+
+    /**
+     * The half of {@code _gen_throw} that reaches this frame's own body: {@code PyErr_Restore} of the
+     * arguments and a step entered with an exception already in flight.
      *
      * <p>The normalization is {@code raise}'s and arrives in the same order: a class is instantiated, an
      * instance adopts its own traceback when the call did not name one, and anything else is refused by
      * naming the type of what was given rather than what it should have been.
      */
-    private PyObject throwIn(PyObject[] arguments) {
-        PyObject type = arguments[0];
-        PyObject value = arguments.length >= 2 ? arguments[1] : null;
-        PyObject trace = arguments.length == 3 ? arguments[2] : null;
+    private PyObject throwHere(PyObject type, PyObject value, PyObject trace) {
         if (trace == PyNone.INSTANCE) {
             trace = null;
         } else if (trace != null && !(trace instanceof PyTraceback)) {
@@ -330,13 +424,69 @@ public final class PyGenerator extends PyIterator {
         if (trace != null) {
             thrown.setTraceback(trace);
         }
-        PyObject yielded = step(PyNone.INSTANCE, PyRaise.reraise(thrown));
-        if (yielded != null) {
-            return yielded;
+        return step(PyNone.INSTANCE, PyRaise.reraise(thrown));
+    }
+
+    /**
+     * CPython's {@code gen_close_iter}, for the delegate of a {@code yield from}: the close it is owed, and
+     * the error it answers with where it has one.
+     *
+     * <p>A generator is closed through its own {@code close}, and any other delegate is asked for a
+     * {@code close} attribute — one it may not have, which is not a complaint but the answer that nothing
+     * needs closing. What the call raises is kept rather than reported: it is the exception the delegating
+     * frame is entered with.
+     */
+    private static PyRaise closeDelegate(PyObject delegate) {
+        try {
+            if (delegate instanceof PyGenerator inner) {
+                inner.close();
+                return null;
+            }
+            PyObject method = Slots.findAttr(delegate, "close");
+            if (method == null) {
+                return null;
+            }
+            Slots.call(method, new PyObject[0], null);
+            return null;
+        } catch (PyRaise refused) {
+            return refused;
         }
-        // The body answered a thrown exception by returning: gen_send_ex makes that a StopIteration too,
-        // and it is the caller of throw() that sees it.
-        throw returnedAsStopIteration();
+    }
+
+    /** Whether {@code typ}, still a class or an instance, is the exit a {@code close} carries. */
+    private static boolean isGeneratorExit(PyObject type) {
+        if (type instanceof PyType kind) {
+            return kind.matches(ExceptionTypes.GENERATOR_EXIT);
+        }
+        return type instanceof PyBaseException error && error.matches(ExceptionTypes.GENERATOR_EXIT);
+    }
+
+    /**
+     * The arguments a delegate's own {@code throw} is called with, in the shape CPython's {@code
+     * PyObject_CallFunctionObjArgs} leaves them: the walk stops at the first one the caller did not give,
+     * so a one-argument {@code throw} never sees a second.
+     */
+    private static PyObject[] throwArguments(PyObject type, PyObject value, PyObject trace) {
+        if (trace != null) {
+            return new PyObject[] {type, value, trace};
+        }
+        if (value != null) {
+            return new PyObject[] {type, value};
+        }
+        return new PyObject[] {type};
+    }
+
+    /**
+     * CPython's {@code _PyGen_yf}: the delegate this generator stands on, or null where it is not standing
+     * on one.
+     *
+     * <p>The answer is the top of the parked frame's value stack, because that is where the loop the
+     * compiler wrote keeps the iterator — and it is only the answer while the frame is <em>parked</em> on
+     * it. A step of the delegate runs with this generator marked as executing, which is why a delegate that
+     * asks {@code gi_yieldfrom} of the generator that delegated to it is told about nothing.
+     */
+    private PyObject yieldFrom() {
+        return state == State.SUSPENDED_YIELD_FROM ? frame.peek(0) : null;
     }
 
     /**
@@ -364,6 +514,17 @@ public final class PyGenerator extends PyIterator {
         return exception;
     }
 
+    /** CPython's {@code FRAME_STATE_SUSPENDED}: parked, whether on a yield or on a delegation. */
+    private boolean isSuspended() {
+        return state == State.SUSPENDED || state == State.SUSPENDED_YIELD_FROM;
+    }
+
+    /** {@code gi_yieldfrom} as Python reads it: the delegate, or {@code None} where none is stood on. */
+    private PyObject delegated() {
+        PyObject delegate = yieldFrom();
+        return delegate == null ? PyNone.INSTANCE : delegate;
+    }
+
     /** The returned value, taken once: CPython's {@code result} is used by one caller and then cleared. */
     private PyObject takeReturned() {
         PyObject value = returned;
@@ -380,11 +541,11 @@ public final class PyGenerator extends PyIterator {
             case "__qualname__" -> qualName;
             // PyGen_Type declares no tp_doc, so the name inherited from object has nothing to show.
             case "__doc__" -> PyNone.INSTANCE;
-            case "__class__" -> getType();
-            // There is no `yield from`, so nothing is ever being delegated to.
-            case "gi_yieldfrom" -> PyNone.INSTANCE;
+            // Only a frame parked on a delegation is standing on one; a step of the delegate runs with this
+            // generator marked as executing, and then the answer is the same None.
+            case "gi_yieldfrom" -> delegated();
             case "gi_running" -> PyBool.of(state == State.EXECUTING);
-            case "gi_suspended" -> PyBool.of(state == State.SUSPENDED);
+            case "gi_suspended" -> PyBool.of(isSuspended());
             // A finished generator has no frame for Python to reach, however it finished — although the
             // code object stays, because it belongs to the generator and not to the frame.
             case "gi_frame" ->

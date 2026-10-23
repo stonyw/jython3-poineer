@@ -89,6 +89,13 @@ public final class Frame {
     /** Whether this frame is between two runs, which is the state a generator leaves it in. */
     private boolean parked;
 
+    /**
+     * Whether the park holding this frame was a {@code yield from}'s yield rather than a plain one: the one
+     * bit CPython keeps apart in {@code gi_frame_state}, and the reason a value under the top of the stack
+     * is an iterator rather than a leftover.
+     */
+    private boolean delegating;
+
     Frame(PyCode code, PyDict globals, PyObject[] slots) {
         this(code, globals, (code.flags() & PyCode.CO_OPTIMIZED) == 0 ? globals : null, slots);
     }
@@ -215,6 +222,11 @@ public final class Frame {
         this.ip = ip;
     }
 
+    /** Leave this frame at {@code index} on a plain yield. */
+    void park(int index) {
+        park(index, false);
+    }
+
     /**
      * Leave this frame at {@code index}, with nothing of the run that parked it left behind.
      *
@@ -227,9 +239,13 @@ public final class Frame {
      *
      * <p>Unlinking from the caller is the other half. A yield is an exit from the interpreter's stack, so
      * nothing above this frame is there any more; the generator that owns it is what keeps it alive.
+     *
+     * @param delegates whether the yield that parked this frame was a {@code yield from}'s, which is the
+     *     only thing that says an iterator is standing under the value it left
      */
-    void park(int index) {
+    void park(int index, boolean delegates) {
         parked = true;
+        delegating = delegates;
         setIp(index);
         setExecuting(index);
         back = null;
@@ -261,6 +277,12 @@ public final class Frame {
     /** Take this frame back off the park, which is the first thing an entry does. */
     void unpark() {
         parked = false;
+        delegating = false;
+    }
+
+    /** Whether this frame is parked in a delegation, with its iterator under the value it left. */
+    boolean isDelegating() {
+        return parked && delegating;
     }
 
     /** The instruction an exception is looked up by: {@link #executing}, not the reported site. */
@@ -411,15 +433,26 @@ public final class Frame {
     /**
      * The error CPython raises for a read of slot {@code index} while its cell is empty: a free
      * variable is someone else's local, so it is a {@code NameError} about an enclosing scope, and
-     * anything else is an {@code UnboundLocalError} about this one.
+     * anything else is an {@code UnboundLocalError} about this one. The two sentences are the same shape
+     * and differ in two words each, which is why a program that prints the message cannot confuse them.
+     *
+     * <p>Only the free-variable one carries the name. CPython attaches it in {@code
+     * _PyEval_FormatExcCheckArg}, and only when the class it is about to raise is {@code NameError}; the
+     * local slot's error is an {@code UnboundLocalError}, whose own sentence says the variable is not
+     * associated with a value without naming it to the exception.
      */
     PyRaise unbound(int index) {
         String name = slotName(index);
         int free = code.freeVars().size();
         if (free > 0 && index >= code.localCount() - free) {
-            return PyRaise.raise(
-                    ExceptionTypes.NAME_ERROR,
-                    "free variable '" + name + "' referenced before assignment in enclosing scope");
+            PyRaise failure =
+                    PyRaise.raise(
+                            ExceptionTypes.NAME_ERROR,
+                            "cannot access free variable '"
+                                    + name
+                                    + "' where it is not associated with a value in enclosing scope");
+            failure.value().asMissingName(name);
+            return failure;
         }
         return PyRaise.raise(
                 ExceptionTypes.UNBOUND_LOCAL_ERROR,

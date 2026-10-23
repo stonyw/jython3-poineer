@@ -23,15 +23,19 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
     private final PyType owner;
     private final String name;
 
-    PyMethodDescriptor(PyType owner, String name) {
+    /** The sentence the method table carries, or {@code null} where it carries none. */
+    private final String doc;
+
+    PyMethodDescriptor(PyType owner, String name, String doc) {
         super(PyType.METHOD_DESCRIPTOR);
         this.owner = owner;
         this.name = name;
+        this.doc = doc;
     }
 
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
-        if (args.length == 0) {
+        if (Arguments.positional(args, PyBoundMethod.keywordNames(kwNames)) == 0) {
             throw Slots.typeError("unbound method %s.%s() needs an argument", owner.name(), name);
         }
         PyObject self = checked(args[0]);
@@ -57,7 +61,7 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
         if (!owner.instanceOf(self)) {
             throw Slots.typeError(
                     "descriptor '%s' for '%s' objects doesn't apply to a '%s' object",
-                    name, owner.name(), self.getType().name());
+                    name, owner.filedName(), self.getType().filedName());
         }
         return self;
     }
@@ -67,9 +71,10 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
         return switch (attribute) {
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> PyStr.of(owner.name() + "." + name);
-            // A method table registers a body and no sentence, so the name the descriptor answers with is
-            // the one CPython leaves NULL: no table entry carries the docstring written beside the method.
-            case "__doc__" -> PyNone.INSTANCE;
+            // The sentence is the table's, so a descriptor answers with it and a method bound from the same
+            // entry answers with the same text; where the table declares none this is the None CPython
+            // leaves NULL beside the function pointer.
+            case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> PyNotImplemented.INSTANCE;
@@ -90,6 +95,6 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
 
     @Override
     public String repr() {
-        return "<method '" + name + "' of '" + owner.name() + "' objects>";
+        return "<method '" + name + "' of '" + owner.filedName() + "' objects>";
     }
 }

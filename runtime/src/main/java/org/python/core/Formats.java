@@ -42,7 +42,7 @@ final class Formats {
             return Slots.str(value);
         }
         throw Slots.typeError(
-                "unsupported format string passed to %s.__format__", value.getType().name());
+                "unsupported format string passed to %s.__format__", value.getType().filedName());
     }
 
     private static void requireTextType(String type) {

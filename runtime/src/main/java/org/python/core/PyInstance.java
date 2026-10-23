@@ -73,6 +73,21 @@ public final class PyInstance extends PyObject {
     }
 
     /**
+     * Whether this value's own class takes the write that {@code object} would otherwise answer.
+     *
+     * <p>Both ways a class can do that are Python-level ways: filing a member under the name — which is
+     * what makes {@code class Proxy: __class__ = int} keep the write in the instance dictionary, since a
+     * plain value in the dictionary is no descriptor and CPython's lookup stops at it — and declaring
+     * {@code __setattr__} or {@code __delattr__}, which owns every write before any descriptor is read.
+     */
+    @Override
+    boolean filedByItsClass(String name) {
+        return Specials.lookUp(type, name) != null
+                || Specials.lookUp(type, "__setattr__") != null
+                || Specials.lookUp(type, "__delattr__") != null;
+    }
+
+    /**
      * {@code self.name = value}, which a descriptor or a {@code __setattr__} may take over.
      *
      * <p>The method is called rather than consulted for advice, and it is the class's declaration that

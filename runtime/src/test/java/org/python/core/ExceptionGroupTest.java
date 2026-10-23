@@ -513,8 +513,10 @@ class ExceptionGroupTest {
      *
      * <p>A {@code method_descriptor} checks its receiver against the class that declares it and complains
      * in that class's words, so {@code BaseExceptionGroup.split(ValueError())} is refused for the receiver
-     * and never reaches the matcher. The arity complaint below it names the declarer too, whatever the
-     * class of the value it was read from is.
+     * and never reaches the matcher. The arity complaint below it names the read it came from: the
+     * descriptor called with the receiver in hand says {@code BaseExceptionGroup}, and the copy that
+     * reading the name off a value hands out says the class of that value, inherited or not — which is why
+     * a subclass named here is answered as {@code Named}.
      */
     @Test
     void aReceiverIsCheckedByTheClassThatDeclaresTheMethod() {
@@ -536,16 +538,19 @@ class ExceptionGroupTest {
         PyObject held = group(named, value);
         refuses(
                 "TypeError: BaseExceptionGroup.split() takes exactly one argument (0 given)",
+                () -> Slots.call(TypeDict.GROUP_SPLIT, new PyObject[] {held}, null));
+        refuses(
+                "TypeError: Named.split() takes exactly one argument (0 given)",
                 () -> Slots.call(Slots.getAttr(held, "split"), new PyObject[0], null));
         refuses(
-                "TypeError: BaseExceptionGroup.subgroup() takes no keyword arguments",
+                "TypeError: Named.subgroup() takes no keyword arguments",
                 () ->
                         Slots.call(
                                 Slots.getAttr(held, "subgroup"),
                                 new PyObject[] {ExceptionTypes.VALUE_ERROR, PyInt.ONE},
                                 flag));
         refuses(
-                "TypeError: BaseExceptionGroup.derive() takes exactly one argument (2 given)",
+                "TypeError: Named.derive() takes exactly one argument (2 given)",
                 () ->
                         Slots.call(
                                 Slots.getAttr(held, "derive"),

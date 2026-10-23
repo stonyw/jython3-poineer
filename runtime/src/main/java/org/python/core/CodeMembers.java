@@ -5,9 +5,10 @@ package org.python.core;
  *
  * <p>This is the runtime half of {@code code}'s attribute surface; the front-end keeps the other half,
  * because {@code co_code}, {@code co_linetable} and {@code co_exceptiontable} are the bytes one specific
- * format writes and only the reader of those bytes can hand them out. Everything here is a number, a name
- * or a tuple derived from the localsplus array, so it is the same for a code object read from a {@code
- * .pyc} and one a native parser builds.
+ * format writes and only the reader of those bytes can hand them out. Everything here is a number, a name,
+ * a tuple derived from the localsplus array or a run of positions the {@link PyCode} interface already
+ * merges for it, so it is the same for a code object read from a {@code .pyc} and one a native parser
+ * builds.
  *
  * <p>CPython's own split of the names is kept visible, because it is what a program feels: the fourteen
  * stored fields are {@code PyMemberDef}s marked read-only and answer a write with the generic complaint
@@ -16,12 +17,34 @@ package org.python.core;
  * that prints the exception text of each refusal sees it.
  *
  * <p>What is not here is what CPython's {@code code} also publishes and this runtime cannot answer yet:
- * {@code co_lines()}, {@code co_positions()}, {@code replace()} and {@code co_branches()}, the
- * {@code co_lnotab} compatibility table, and the two private names {@code dis} reads. They are refused as
- * missing, and slice 9 of the plan is where the position iterators are worth adding, since an
- * {@code AttributeError} traceback needs them to point at a column.
+ * {@code co_branches()}, which would have to know which jumps the instrumentation considers branches;
+ * {@code replace()}, which would have to rebuild the table from eighteen keyword-only fields; the
+ * {@code co_lnotab} compatibility table, which 3.14 still hands out behind a deprecation warning; and the
+ * two private names {@code dis} reads. They are refused as missing. The two position reads —
+ * {@code co_lines()} and {@code co_positions()} — are here, and are what a Stage-B report would draw a
+ * caret from: the report this slice leaves behind still names a line and nothing beside it.
  */
 public final class CodeMembers {
+
+    /**
+     * The two methods {@code code} declares.
+     *
+     * <p>A member table rather than two more cases in {@link #getAttr}, because the table is what decides
+     * the shape of the answer: CPython reads {@code co.co_lines} out of the type's method table and binds
+     * it, so an argument is complained about with the type's name in front — {@code code.co_lines() takes
+     * no arguments (1 given)} — while {@code code.co_lines} without a code object is the unbound
+     * descriptor that takes the receiver as its first argument and refuses one of another type. Both
+     * shapes come from {@link Members} and from nothing else here.
+     */
+    private static final Members METHODS = Members.of(PyType.CODE)
+            .addNoArgument(
+                    "co_lines",
+                    self -> PyIterator.of(PyType.LINE_ITERATOR, ((PyCode) self).lineRanges().elements()))
+            .addNoArgument(
+                    "co_positions",
+                    self ->
+                            PyIterator.of(
+                                    PyType.POSITIONS_ITERATOR, ((PyCode) self).positions().elements()));
 
     private CodeMembers() {
     }
@@ -51,7 +74,8 @@ public final class CodeMembers {
             case "co_varnames" -> code.varNames();
             case "co_cellvars" -> code.cellVars();
             case "co_freevars" -> code.freeVars();
-            default -> PyNotImplemented.INSTANCE;
+            // The methods, reached through a value and therefore bound to it.
+            default -> Members.find((PyObject) code, name);
         };
     }
 

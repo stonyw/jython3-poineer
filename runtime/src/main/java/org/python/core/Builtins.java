@@ -146,6 +146,10 @@ final class Builtins {
         put(out, "hasattr", new PyNativeFunction("hasattr", Builtins::hasAttribute));
         put(out, "setattr", new PyNativeFunction("setattr", Builtins::setAttribute));
         put(out, "delattr", new PyNativeFunction("delattr", Builtins::deleteAttribute));
+        put(out, "locals", new PyNativeFunction("locals", Builtins::localNames));
+        put(out, "globals", new PyNativeFunction("globals", Builtins::globalNames));
+        put(out, "vars", new PyNativeFunction("vars", Builtins::variables));
+        put(out, "dir", new PyNativeFunction("dir", Builtins::directory));
         put(out, "__build_class__", new PyNativeFunction("__build_class__", Classes::buildClass));
     }
 
@@ -809,9 +813,12 @@ final class Builtins {
         if (answer != PyNotImplemented.INSTANCE) {
             return PyNone.INSTANCE;
         }
-        throw Slots.attributeError(
+        throw Slots.failedRead(
+                args[0],
+                name,
                 "'%s' object has no attribute '%s' and no __dict__ for setting new attributes",
-                args[0].getType().name(), name);
+                args[0].getType().name(),
+                name);
     }
 
     private static PyObject deleteAttribute(PyObject[] args, String[] kwNames) {
@@ -822,9 +829,15 @@ final class Builtins {
         if (answer != PyNotImplemented.INSTANCE) {
             return PyNone.INSTANCE;
         }
-        throw Slots.attributeError(
+        // The refusal of a delete from an object that has no dictionary is the same refusal a write makes,
+        // and CPython names the object and the member on it too — unlike the delete of a name an instance's
+        // own dictionary does not hold, which is complained about without.
+        throw Slots.failedRead(
+                args[0],
+                name,
                 "'%s' object has no attribute '%s' and no __dict__ for setting new attributes",
-                args[0].getType().name(), name);
+                args[0].getType().name(),
+                name);
     }
 
     private static String attributeName(PyObject value) {
@@ -833,6 +846,81 @@ final class Builtins {
         }
         throw Slots.typeError(
                 "attribute name must be string, not '%s'", value.getType().name());
+    }
+
+    // --- namespaces ------------------------------------------------------------------------
+
+    /**
+     * {@code locals()}: the names of the scope Python is running, as 3.14's builtin answers them.
+     *
+     * <p>A module or a class body is answered with the very dictionary its names are written into, so
+     * {@code locals() is globals()} holds at module level and {@code vars() is locals()} holds in a class
+     * body — and a name added to either is a name the scope has. A function frame has no dictionary: 3.14
+     * walks its slots, follows each cell to what it holds, leaves a name out while the slot is empty, and
+     * hands back a plain dict made for the call, so writing into the answer writes into nothing.
+     * {@code frame.f_locals} is the other shape again, CPython's write-back proxy, which this runtime does
+     * not have.
+     */
+    private static PyObject localNames(PyObject[] args, String[] kwNames) {
+        Arguments.none("locals()", args, kwNames);
+        return currentLocals();
+    }
+
+    /** {@code globals()}: the module dictionary the running frame reads its names from, the live one. */
+    private static PyObject globalNames(PyObject[] args, String[] kwNames) {
+        Arguments.none("globals()", args, kwNames);
+        Frame frame = Interpreter.currentFrame();
+        return frame == null ? PyRuntime.mainModule().dictionary() : frame.globals();
+    }
+
+    /**
+     * {@code vars([object])}: {@code locals()} without an argument, {@code object.__dict__} with one.
+     *
+     * <p>With an argument it is the attribute read and nothing more, so a value whose {@code __dict__} is
+     * a property that answers a dictionary is given that dictionary, and only a value with no such member
+     * is refused. A class answers its own namespace rather than CPython's read-only mappingproxy view of
+     * it.
+     */
+    private static PyObject variables(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("vars()", kwNames);
+        Arguments.atMost("vars", args, kwNames, 1);
+        if (args.length == 0) {
+            return currentLocals();
+        }
+        PyObject held = Slots.findAttr(args[0], "__dict__");
+        if (held == null) {
+            throw Slots.typeError("vars() argument must have __dict__ attribute");
+        }
+        return held;
+    }
+
+    /**
+     * {@code dir([object])}: the names of the running scope, or the names one value answers with.
+     *
+     * <p>Both halves sort, and the argument half goes through {@link Dirs} for what the value's {@code
+     * __dir__} returns — items in the order they arrive, duplicates kept, a refusal allowed to escape — or
+     * for the default walk of the dictionaries when nothing declares one.
+     */
+    private static PyObject directory(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("dir()", kwNames);
+        Arguments.atMost("dir", args, kwNames, 1);
+        if (args.length == 0) {
+            return sorted(new PyObject[] {currentLocals()}, null);
+        }
+        PyObject[] items = Dirs.itemsOf(args[0]).toArray(new PyObject[0]);
+        return sorted(new PyObject[] {PyList.of(items)}, null);
+    }
+
+    /**
+     * Whose names {@code locals()} is asked for.
+     *
+     * <p>Java code that reached a builtin from outside any frame is the case the frame cannot answer, and
+     * CPython sends it to the globals of the interpreter's running {@code __main__} — which is the same
+     * dictionary this runtime hands back, and the reason {@code globals()} is never {@code None} here.
+     */
+    private static PyObject currentLocals() {
+        Frame frame = Interpreter.currentFrame();
+        return frame == null ? PyRuntime.mainModule().dictionary() : frame.localValues();
     }
 
     // --- numeric builtins ------------------------------------------------------------------

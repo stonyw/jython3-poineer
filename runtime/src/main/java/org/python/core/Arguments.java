@@ -92,6 +92,33 @@ final class Arguments {
     }
 
     /**
+     * {@code expected 1 argument, got 0}: the one unpacking with no method to name.
+     *
+     * <p>{@code member_descriptor.__delete__} counts its arguments this way because CPython hands its
+     * {@code PyArg_UnpackTuple} no name at all, while {@code __set__} beside it does name itself — the
+     * two halves of one {@code tp_descr_set} disagree about who was asked.
+     */
+    static void exactlyUnnamed(PyObject[] args, int wanted) {
+        if (args.length != wanted) {
+            throw Slots.typeError(
+                    "expected %d argument%s, got %d", wanted, plural(wanted), args.length);
+        }
+    }
+
+    /**
+     * The keyword refusal of a descriptor's own wrapper: {@code wrapper __set__() takes no keyword
+     * arguments}.
+     *
+     * <p>Worded differently from {@link #noKeywords} because the sentence is assembled by the wrapper
+     * rather than by the method, and it says {@code wrapper} where a vectorcall method says nothing.
+     */
+    static void noWrapperKeywords(String plain, String[] kwNames) {
+        if (kwNames != null) {
+            throw Slots.typeError("wrapper %s() takes no keyword arguments", plain);
+        }
+    }
+
+    /**
      * Parameters that may also be given by keyword, laid out in positional order.
      *
      * @param defaults the trailing defaults, right-aligned against {@code names} as Python's are

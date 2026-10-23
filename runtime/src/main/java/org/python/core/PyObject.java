@@ -152,7 +152,13 @@ public abstract class PyObject {
 
     // --- slots: attributes and calls ---------------------------------------------------
 
-    /** {@code self.name}, looked up on the value itself for the builtin types. */
+    /**
+     * {@code self.name}, looked up on the value itself for the builtin types.
+     *
+     * <p>A refusal here is not yet a missing attribute: {@link Slots} answers {@code object}'s own names
+     * after it, which is how every value reads {@code __class__} without declaring it. See
+     * {@link ClassAttribute}.
+     */
     public PyObject getAttr(String name) {
         return PyNotImplemented.INSTANCE;
     }
@@ -160,6 +166,42 @@ public abstract class PyObject {
     /** {@code self.name = value}. */
     public PyObject setAttr(String name, PyObject value) {
         return PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * Whether {@code name} is one this value's own class files, rather than one {@code object} answers.
+     *
+     * <p>The question is only asked about {@code __class__}, and only a class built at Python level can
+     * answer it: such a class may file a member under that name, which CPython's lookup then treats as an
+     * ordinary attribute and writes to the instance dictionary instead of swapping the type, or may own
+     * every write outright through {@code __setattr__} or {@code __delattr__}. A built-in type files
+     * nothing, so {@link Slots} runs {@link ClassAttribute}'s rule for its values.
+     */
+    boolean filedByItsClass(String name) {
+        return false;
+    }
+
+    /**
+     * This value as the method form of {@code LOAD_ATTR} hands it to {@code CALL}.
+     *
+     * <p>Only a member CPython leaves unbound in that form answers differently: the copy exists so that a
+     * refusal about its argument list is written under the class declaring the method rather than under
+     * the class the read was made from, which is the difference between {@code e.with_traceback()} and
+     * {@code m = e.with_traceback; m()}. Everything else is already bound by the read itself, or is not a
+     * method at all.
+     */
+    PyObject methodForm() {
+        return this;
+    }
+
+    /**
+     * This value's storage given the class {@code x.__class__ = Y} put on it.
+     *
+     * <p>Only an exception has anything beside the pointer to keep in step: it holds its class twice, once
+     * for {@code type(e)} and once as the class whose {@code __init__} and name the display reads.
+     */
+    void reassignedTo(PyType kind) {
+        type = kind;
     }
 
     /**

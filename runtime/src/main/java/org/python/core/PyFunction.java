@@ -170,11 +170,13 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
         }
         int varArgsAt = parameters + keywordOnly;
         if (varArgs) {
-            // The star tuple is only what the caller gave beyond the declared parameters; a short
-            // call fills the rest from defaults and keywords, so positional can be below parameters.
+            // The star tuple is only what the caller gave beyond the declared parameters, and a short call
+            // has nothing beyond them: its missing parameters are filled from defaults and keywords, and
+            // the values that arrived are all inside the declared range.
             slots[varArgsAt] =
-                    PyTuple.of(
-                            java.util.Arrays.copyOfRange(args, parameters, Math.max(parameters, positional)));
+                    positional <= parameters
+                            ? PyTuple.of()
+                            : PyTuple.of(java.util.Arrays.copyOfRange(args, parameters, positional));
         }
 
         int varKeywordsAt = varArgsAt + (varArgs ? 1 : 0);

@@ -18,6 +18,7 @@ import org.python.core.PyObject;
 import org.python.core.PyRaise;
 import org.python.core.PyRuntime;
 import org.python.core.PyStr;
+import org.python.core.Slots;
 import org.python.core.TracebackReport;
 import org.python.javaclass.JavaInterop;
 import org.python.front.cpython314.Cpython314Compiler;
@@ -59,6 +60,13 @@ public final class jy3 {
     private static final int USAGE_ERROR = 2;
 
     private static final int NOT_IMPLEMENTED = 3;
+
+    /**
+     * An uncaught {@code KeyboardInterrupt}, which leaves by {@code kill(getpid(), SIGINT)} so that the
+     * caller learns the user pressed {@code ^C}: {@code 128 + SIGINT}, as CPython's {@code exit_sigint}
+     * counts it.
+     */
+    private static final int INTERRUPTED = 130;
 
     /** Anything outside the protocol's four codes, which the harness must read as a crash. */
     private static final int INTERNAL_CRASH = 70;
@@ -257,21 +265,66 @@ public final class jy3 {
     }
 
     /**
-     * Report an exception that outlived every {@code except}.
+     * Hand an exception that outlived every {@code except} to {@code sys.excepthook}.
      *
-     * <p>{@link TracebackReport} writes what CPython's own printer writes: the header, one entry per
-     * frame the error travelled out of with the source line quoted under it, the chain of causes and
-     * contexts, and the complaint last. {@code SystemExit} is not an error at all, and its argument is
-     * the status, exactly as CPython's is — which is why the status rule is applied before any of that
-     * text is produced, and why {@code sys.exit(3)} prints nothing.
+     * <p>CPython's {@code _PyErr_PrintEx} is the order this follows, and the order is most of what the
+     * slice is about. {@code handle_system_exit} runs first, on the value while it is still the raised
+     * one, and it looks at {@code KeyboardInterrupt} before it looks at {@code SystemExit}: an exit
+     * leaves immediately, with the status the argument named and no word printed, but an interrupt is
+     * only noted and goes on to the hook like any other error. The four {@code sys.last_} names are
+     * filed before the hook is even read, so a hook that looks at them finds the exception it was called
+     * for. The read is optional, and a program that deleted the name gets {@code sys.excepthook is
+     * missing} above the report rather than a complaint about it.
+     *
+     * <p>Only an error from the hook itself is wrapped. The hook is called with the value's class, the
+     * value and the traceback it carries — the class because CPython passes {@code Py_TYPE(exc)} and
+     * ignores it, the traceback because that is what {@code sys.excepthook} documents — and what it
+     * raises is shown under {@code Error in sys.excepthook:} with the original beneath {@code Original
+     * exception was:}. A {@code SystemExit} raised from inside a hook still wins over all of that text,
+     * because the second {@code handle_system_exit} call exits the process where it stands.
+     *
+     * <p>The note an interrupt leaves behind is what the process exits with: 130, which is CPython
+     * raising {@code SIGINT} at itself so that a shell learns the user pressed {@code ^C}. It is 130
+     * whether the interrupt was the escaped exception or only what the hook raised, and a hook that
+     * swallows the error does not change it — the note was made before the hook ran.
      */
     private static int reportUncaught(PyRaise raised) {
         PyBaseException value = raised.value();
-        if (value.exceptionType().matches(ExceptionTypes.SYSTEM_EXIT)) {
+        boolean interrupted = value.exceptionType().matches(ExceptionTypes.KEYBOARD_INTERRUPT);
+        if (!interrupted && value.exceptionType().matches(ExceptionTypes.SYSTEM_EXIT)) {
             return exitStatus(value);
         }
-        TracebackReport.print(value);
-        return FAILED;
+
+        PyObject traceback = value.getAttr("__traceback__");
+        PyRuntime.setSysAttribute("last_exc", value);
+        PyRuntime.setSysAttribute("last_type", value.exceptionType());
+        PyRuntime.setSysAttribute("last_value", value);
+        PyRuntime.setSysAttribute("last_traceback", traceback);
+
+        PyObject hook = PyRuntime.sysAttribute("excepthook");
+        if (hook == null) {
+            write("sys.excepthook is missing\n");
+            TracebackReport.print(value);
+            return interrupted ? INTERRUPTED : FAILED;
+        }
+        try {
+            Slots.call(hook, new PyObject[] {value.exceptionType(), value, traceback}, null);
+        } catch (PyRaise refused) {
+            PyBaseException fromHook = refused.value();
+            if (fromHook.exceptionType().matches(ExceptionTypes.SYSTEM_EXIT)) {
+                return exitStatus(fromHook);
+            }
+            interrupted |=
+                    fromHook.exceptionType().matches(ExceptionTypes.KEYBOARD_INTERRUPT);
+            // CPython flushes C's stdout here, which is not the buffer print() writes into: what a
+            // hook printed still arrives only when the process ends. This runtime has one buffer, so
+            // the matching behaviour is to leave it alone.
+            write("Error in sys.excepthook:\n");
+            TracebackReport.print(fromHook);
+            write("\nOriginal exception was:\n");
+            TracebackReport.print(value);
+        }
+        return interrupted ? INTERRUPTED : FAILED;
     }
 
     /** {@code sys.exit(n)}: no argument is 0, an int is itself, anything else is printed and 1. */

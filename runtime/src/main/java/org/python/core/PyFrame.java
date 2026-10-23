@@ -66,7 +66,6 @@ public final class PyFrame extends PyObject {
             case "f_trace_lines" -> PyBool.of(traceLines);
             case "f_trace_opcodes" -> PyBool.of(traceOpcodes);
             case "clear" -> CLEAR.withReceiver(this);
-            case "__class__" -> getType();
             default -> PyNotImplemented.INSTANCE;
         };
     }

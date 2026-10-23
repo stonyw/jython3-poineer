@@ -24,14 +24,23 @@ public final class PyBoundMethod extends PyObject {
     private final String name;
     private final Body body;
 
+    /** The sentence the built-in method's table carries, or null where it carries none. */
+    private final String doc;
+
     /** The Python method this value wraps, or null when the body is Java's. */
     private final PyFunction function;
 
     public PyBoundMethod(PyObject target, String name, Body body) {
+        this(target, name, body, null);
+    }
+
+    /** A Java-written method with the {@code ml_doc} its own type files beside the body. */
+    PyBoundMethod(PyObject target, String name, Body body, String doc) {
         super(PyType.METHOD);
         this.target = target;
         this.name = name;
         this.body = body;
+        this.doc = doc;
         this.function = null;
     }
 
@@ -41,12 +50,21 @@ public final class PyBoundMethod extends PyObject {
         this.target = target;
         this.name = function.code().name();
         this.body = null;
+        this.doc = null;
         this.function = function;
     }
 
-    /** The keywords of a vectorcall argument list, as Java strings. */
+    /**
+     * The keywords of a vectorcall argument list, as Java strings.
+     *
+     * <p>An empty name list is no keywords at all, which is how CPython hands the case over: the
+     * unpacking of {@code **} leaves {@code kwnames} null rather than building an empty tuple, and every
+     * argument table reads the two spellings the same way. A method with no keyword table is therefore
+     * refused by count — {@code takes exactly one argument (0 given)} — when a call unpacked an empty
+     * mapping, not by the complaint about keywords.
+     */
     static String[] keywordNames(PyTuple kwNames) {
-        if (kwNames == null) {
+        if (kwNames == null || kwNames.size() == 0) {
             return null;
         }
         String[] names = new String[kwNames.size()];
@@ -89,9 +107,9 @@ public final class PyBoundMethod extends PyObject {
             case "__qualname__" -> function != null
                     ? function.getAttr("__qualname__")
                     : PyStr.of(target.getType().name() + "." + name);
-            case "__doc__" -> function == null
-                    ? PyNone.INSTANCE
-                    : function.getAttr("__doc__");
+            case "__doc__" -> function != null
+                    ? function.getAttr("__doc__")
+                    : doc == null ? PyNone.INSTANCE : PyStr.of(doc);
             default -> PyNotImplemented.INSTANCE;
         };
     }

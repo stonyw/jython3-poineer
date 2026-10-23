@@ -132,8 +132,7 @@ class Jy3LauncherTest {
      * <p>Each case is a script rather than a Java assertion so that growing M1 means adding a file,
      * not inventing an expectation. Nothing here needs a class body or a generator: {@code class} and a
      * bare {@code (x for x in y)} belong to later M3 slices, and so does {@code try}, whose catching is
-     * measured by the corpus below. {@code int.to_bytes} and {@code sys.version_info.major} are further
-     * slices still.
+     * measured by the corpus below. {@code int.to_bytes} is a further slice still.
      */
     private static final List<String> CORPUS =
             List.of(
@@ -198,7 +197,26 @@ class Jy3LauncherTest {
                 "21_except_star.py",
                 "22_group_construction.py",
                 "23_group_methods.py",
-                "24_group_names.py");
+                "24_group_names.py",
+                "25_match_mapping.py",
+                "26_match_sequence.py",
+                "27_match_class.py",
+                "28_yield_from_delegation.py",
+                "29_yield_from_values.py",
+                "30_yield_from_protocols.py",
+                "31_class_body_cells.py",
+                "32_empty_slots.py",
+                "33_error_names.py",
+                "34_namespace_builtins.py",
+                "35_dir_protocol.py",
+                "36_sort_ordering.py",
+                "37_code_positions.py",
+                "38_class_attribute.py",
+                "39_add_note.py",
+                "40_default_hook_answers.py",
+                "41_hook_replaced_and_removed.py",
+                "42_version_info_named.py",
+                "43_structseq_members.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
@@ -230,6 +248,11 @@ class Jy3LauncherTest {
      * being compared. Stdout is compared alongside it because a script catches and prints before it
      * fails, and the absolute path each frame names is the temp directory's own spelling of itself, so
      * these cases cover that too.
+     *
+     * <p>From slice 20 the folder also answers who writes that text. A program may replace
+     * {@code sys.excepthook}, make it fail, make it exit, or take the name away, and each of those is a
+     * different document with a different status beside it — including an interrupt, which leaves at 130
+     * whether the program raised it or only the hook did.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("uncaughtReports")
@@ -279,7 +302,55 @@ class Jy3LauncherTest {
                 "38_group_traceback_limit.py",
                 "39_group_context_escape.py",
                 "40_group_repeated_child.py",
-                "41_group_escape_from_clause.py");
+                "41_group_escape_from_clause.py",
+                "42_match_guard_escape.py",
+                "43_match_attribute_escape.py",
+                "44_match_positional_refusal.py",
+                "45_match_comparison_escape.py",
+                "46_match_name_that_is_not_a_class.py",
+                "47_match_duplicate_attribute.py",
+                "48_yield_from_escape.py",
+                "49_yield_from_throw_escape.py",
+                "50_yield_from_pep479.py",
+                "51_yield_from_send_refused.py",
+                "52_yield_from_close_refused.py",
+                "53_yield_from_depth.py",
+                "54_class_body_free_variable.py",
+                "55_class_body_cell_emptied.py",
+                "56_suggest_a_local_name.py",
+                "57_suggest_a_builtin_by_case.py",
+                "58_suggest_the_first_of_two.py",
+                "59_suggest_an_attribute_of_self.py",
+                "60_suggest_a_forgotten_import.py",
+                "61_suggest_an_import_and_a_name.py",
+                "62_suggest_an_attribute.py",
+                "63_suggest_a_private_attribute.py",
+                "64_suggest_an_attribute_of_a_class.py",
+                "65_suggest_an_attribute_of_an_int.py",
+                "66_suggest_nothing_for_an_unbound_local.py",
+                "67_suggest_for_an_empty_cell.py",
+                "68_suggest_under_a_limit_of_zero.py",
+                "69_suggest_nothing_when_too_far.py",
+                "70_suggest_an_underscored_member_of_self.py",
+                "71_suggest_through_a_written_dir.py",
+                "72_suggest_nothing_when_the_dir_fails.py",
+                "73_suggest_onto_a_complaint_that_said_nothing.py",
+                "74_suggest_nothing_for_another_error_class.py",
+                "75_suggest_nothing_without_a_name.py",
+                "76_suggest_nothing_once_the_name_is_deleted.py",
+                "77_suggest_nothing_for_a_name_that_is_not_text.py",
+                "78_dir_that_raises_escapes.py",
+                "79_notes_added_one_by_one.py",
+                "80_hook_reports_in_its_own_words.py",
+                "81_hook_raises_its_own_error.py",
+                "82_hook_exits_the_program.py",
+                "83_hook_name_is_missing.py",
+                "84_hook_that_is_nothing.py",
+                "85_uncaught_interrupt_status.py",
+                "86_hook_raises_an_interrupt.py",
+                "87_last_names_before_the_hook.py",
+                "88_traceback_handed_to_the_display.py",
+                "89_interrupt_and_a_hook_that_exits.py");
     }
 
     @Test

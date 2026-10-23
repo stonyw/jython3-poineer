@@ -9,10 +9,10 @@ package org.python.core;
  * that closes its loop, {@code MAKE_FUNCTION} pops only a code object, and the container-append
  * opcodes leave their container on the stack.
  *
- * What this slice does not cover is reported rather than guessed at. Coroutines, async generators and
- * pattern matching are later M3 slices, and so is the {@code yield from} family — {@code SEND}, {@code
- * END_SEND} and the {@code YIELD_VALUE} argument that means "delegate" — so a script that reaches one of
- * those fails with a sentence naming the opcode instead of with a wrong answer.
+ * What this slice does not cover is reported rather than guessed at. The async family — coroutines, async
+ * generators, {@code GET_AITER} and its relatives — is an M6 slice, and so is the PEP 669 monitoring that
+ * would make an instrumented variant of half of these instructions, so a script that reaches one of those
+ * fails with a sentence naming the opcode instead of with a wrong answer.
  */
 public final class Interpreter {
 
@@ -101,6 +101,28 @@ public final class Interpreter {
     }
 
     /**
+     * Stand a parked frame on the frame Python is in, for the length of a call its delegation makes.
+     *
+     * <p>{@code generator.throw} walks into the delegate before it touches the frame that delegated, and the
+     * error the delegate answers with has to travel back out through that frame. CPython links the two for
+     * exactly the length of that walk, which is what makes the delegate's traceback entry name the delegating
+     * frame as its {@code f_back} rather than the frame the call came from. Nothing else changes: the frame
+     * stays parked, its own run is not entered, and the interpreter's stack never sees it.
+     *
+     * @return the frame that was standing there, to give back to {@link #leaveDelegation}
+     */
+    static Frame enterDelegation(Frame delegating) {
+        Frame asked = EXECUTING.get();
+        EXECUTING.set(delegating);
+        return asked;
+    }
+
+    /** Put back the frame {@link #enterDelegation} moved aside. */
+    static void leaveDelegation(Frame asked) {
+        EXECUTING.set(asked);
+    }
+
+    /**
      * The dispatch loop: one instruction at a time, until the frame returns.
      *
      * <p>The {@code catch} is CPython's {@code error:} label. It is per instruction rather than around
@@ -166,10 +188,33 @@ public final class Interpreter {
                         break;
                     }
                     case Opcodes.LOAD_LOCALS:
-                        // A snapshot, which is what `locals()` in a class body is: the dictionary the
-                        // body keeps writing into goes on living, and this copy does not follow it.
-                        frame.push(nameSpace(frame).copy());
+                        // The frame's own dictionary, handed out as it is: the compiler stands this on the
+                        // stack twice in a class body, once to fill the hidden `__classdict__` cell and once
+                        // directly before `LOAD_FROM_DICT_OR_DEREF`. Both want the dictionary the body is
+                        // still writing into, not a copy of one moment of it — a method the body itself
+                        // calls reads back the names written before that call.
+                        frame.push(nameSpace(frame));
                         break;
+                    case Opcodes.LOAD_FROM_DICT_OR_DEREF: {
+                        // The body of a class nested in a function reads an enclosing local through the
+                        // dictionary it is writing into before it reads the cell: a name the metaclass put
+                        // in that dictionary already answers, and the cell gives its own value only to the
+                        // names nobody has written yet. A name the body assigned is not read here at all —
+                        // the compiler sends that to `LOAD_NAME` — so the dictionary is asked what came in
+                        // through `__prepare__`, which is how the same spelling can name two different
+                        // objects in one body.
+                        PyDict written = (PyDict) frame.pop();
+                        PyObject taken = written.get(PyStr.interned(frame.slotName(arg)));
+                        if (taken == null) {
+                            PyObject fromCell = frame.cell(arg).value();
+                            if (fromCell == null) {
+                                throw frame.unbound(arg);
+                            }
+                            taken = fromCell;
+                        }
+                        frame.push(taken);
+                        break;
+                    }
 
                     // --- moving values on the stack ----------------------------------------
                     //
@@ -421,6 +466,40 @@ public final class Interpreter {
                         unpack(frame, arg & 0xff, arg >> 8, true);
                         break;
 
+                    // --- pattern matching ------------------------------------------------
+                    case Opcodes.GET_LEN:
+                        // The subject stays where it was: the comparison that follows this one reads
+                        // the length off the top and still has to leave the subject for the unpacking.
+                        frame.push(Slots.length(frame.peek(0)));
+                        break;
+                    case Opcodes.MATCH_MAPPING:
+                        frame.push(
+                                PyBool.of(
+                                        frame.peek(0).getType().hasFeature(PyType.MAPPING)));
+                        break;
+                    case Opcodes.MATCH_SEQUENCE:
+                        frame.push(
+                                PyBool.of(
+                                        frame.peek(0).getType().hasFeature(PyType.SEQUENCE)));
+                        break;
+                    case Opcodes.MATCH_KEYS: {
+                        // Both the subject and the keys stay: the failure path of the pattern pops them
+                        // itself, two POP_TOPs after the None this leaves behind.
+                        PyObject keys = frame.pop();
+                        PyObject subject = frame.peek(0);
+                        frame.push(keys);
+                        frame.push(matchedKeys(subject, (PyTuple) keys));
+                        break;
+                    }
+                    case Opcodes.MATCH_CLASS: {
+                        // Three down, one up: the attrs tuple on success, None on a failed match.
+                        PyTuple names = (PyTuple) frame.pop();
+                        PyObject matcher = frame.pop();
+                        PyObject subject = frame.pop();
+                        frame.push(matchedAttributes(subject, matcher, names, arg));
+                        break;
+                    }
+
                     // --- operators ------------------------------------------------------------
                     case Opcodes.BINARY_OP: {
                         PyObject right = frame.pop();
@@ -555,7 +634,7 @@ public final class Interpreter {
                         String attributeName = frame.name(arg >> 1);
                         PyObject owner = frame.pop();
                         PyObject attribute = Slots.getAttr(owner, attributeName);
-                        frame.push(attribute);
+                        frame.push((arg & 1) != 0 ? attribute.methodForm() : attribute);
                         if ((arg & 1) != 0) {
                             // The method form hands CALL a receiver slot as well, and CPython fills it
                             // only to avoid making a bound method it would immediately take apart. The
@@ -564,7 +643,8 @@ public final class Interpreter {
                             // classmethod to its class — so what is left is to hand over nothing, and
                             // let an attribute that came back unbound be called as it came: which is
                             // why `self.weight(2)` to a `@staticmethod` and `span.fget(m)` to a
-                            // property's getter are both one-argument calls.
+                            // property's getter are both one-argument calls. What is left unbound keeps the
+                            // name of its own class for the refusal, which is `methodForm`'s business.
                             frame.push(null);
                         }
                         break;
@@ -589,7 +669,8 @@ public final class Interpreter {
                                                 loaded,
                                                 given ? new PyObject[] {klass, self} : new PyObject[0],
                                                 null);
-                        frame.push(Slots.getAttr(proxy, attributeName));
+                        PyObject reached = Slots.getAttr(proxy, attributeName);
+                        frame.push((arg & 1) != 0 ? reached.methodForm() : reached);
                         if ((arg & 1) != 0) {
                             frame.push(null);
                         }
@@ -665,12 +746,95 @@ public final class Interpreter {
                         return generator;
                     }
                     case Opcodes.YIELD_VALUE: {
-                        if (arg != 0) {
-                            throw Slots.notImplemented(
-                                    "YIELD_VALUE " + arg + ": `yield from` and the SEND family");
-                        }
-                        frame.park(index + 1);
+                        // The argument is the whole of the difference between a yield and a delegation's:
+                        // the same park, with the iterator left on the stack under the value that goes out.
+                        frame.park(index + 1, arg != 0);
                         return frame.pop();
+                    }
+
+                    // --- yield from ------------------------------------------------------------
+                    //
+                    // A delegation is a loop the compiler wrote, and these four instructions are the loop.
+                    // The frame's value stack holds the iterator it stands on under the value the last step
+                    // left, and the exception table rows around them say what an error does to that pair:
+                    // the ones from before the yield pop the frame to nothing at all — the delegation is
+                    // abandoned either way — and the one from the yield itself leaves both in place for
+                    // CLEANUP_THROW to decide in.
+                    case Opcodes.GET_YIELD_FROM_ITER:
+                        // `iter()` on the expression, kept as the object it answers with: the steps ask it,
+                        // `gi_yieldfrom` names it, and a delegate Python wrote is asked by attribute.
+                        frame.push(Slots.getIter(frame.pop()));
+                        break;
+                    case Opcodes.SEND: {
+                        // The value the caller handed in is what the delegate is stepped with, and the
+                        // answer takes its place: `receiver, value -- receiver, retval`, so the loop always
+                        // reads the iterator from the same depth.
+                        PyObject receiver = frame.peek(1);
+                        PyObject sent = frame.pop();
+                        PyIterator driver = Slots.asIterator(receiver);
+                        PyObject answer;
+                        boolean finished;
+                        if (sent == PyNone.INSTANCE && driver != null) {
+                            // `next()`, at the iteration slot itself. No answer is the end of the loop, and
+                            // the exception that ended it is where the value of the expression lives.
+                            answer = driver.nextOrNull();
+                            finished = answer == null;
+                            if (finished) {
+                                PyBaseException stopped = driver.exhaustion();
+                                answer = stopped == null ? PyNone.INSTANCE : stopped.value();
+                            }
+                        } else {
+                            // `send` is asked of the delegate as an attribute, so a delegate that never
+                            // promised one is refused by its own name — and a `StopIteration` it raises
+                            // instead of answering with is the same ending the iteration slot's null was.
+                            try {
+                                answer = Slots.call(
+                                        Slots.getAttr(receiver, "send"), new PyObject[] {sent}, null);
+                                finished = false;
+                            } catch (PyRaise ended) {
+                                if (!ended.value().matches(ExceptionTypes.STOP_ITERATION)) {
+                                    throw ended;
+                                }
+                                answer = ended.value().value();
+                                finished = true;
+                            }
+                        }
+                        frame.push(answer);
+                        if (finished) {
+                            // Past the caches, onto the END_SEND that closes the delegation. Unlike
+                            // FOR_ITER's, this jump's target is taken exactly as the argument gives it.
+                            frame.setIp(frame.jumpTarget(index));
+                        }
+                        break;
+                    }
+                    case Opcodes.END_SEND: {
+                        // The delegation is over and its iterator is not needed any more: the value it
+                        // ended with moves down into the slot the iterator stood in.
+                        PyObject value = frame.pop();
+                        frame.replace(0, value);
+                        break;
+                    }
+                    case Opcodes.CLEANUP_THROW: {
+                        // An exception thrown into a frame that is parked on a delegation, which the
+                        // delegate is not there to answer: the frame decides between ending the delegation
+                        // with this exception's value and giving the exception back.
+                        PyBaseException thrown = asException(frame.peek(0));
+                        if (!thrown.matches(ExceptionTypes.STOP_ITERATION)) {
+                            // Left exactly as the handler came in with it, and repeated the way `RERAISE`
+                            // repeats one: the error already names where it failed, and this frame is on
+                            // the report for this pass once rather than twice.
+                            logsFrame = false;
+                            throw PyRaise.reraise(thrown);
+                        }
+                        frame.pop();
+                        // The value last sent in, which nothing reads after a delegation has ended, goes
+                        // with the exception — and the iterator's slot is filled with `None` rather than
+                        // dropped, so that the depth the handler was written at still holds and the jump
+                        // back to the END_SEND works exactly as it does for a delegation that ended itself.
+                        frame.pop();
+                        frame.replace(0, PyNone.INSTANCE);
+                        frame.push(thrown.value());
+                        break;
                     }
 
                     // --- returning and raising ----------------------------------------------
@@ -1080,6 +1244,140 @@ public final class Interpreter {
         }
     }
 
+    // --- pattern matching ------------------------------------------------------------------
+
+    /**
+     * CPython's {@code dummy = object()} for {@code MATCH_KEYS}.
+     *
+     * <p>Made here rather than by calling {@code object}, which this runtime refuses as a call because a
+     * program has no use for the answer. The identity is the whole of what it is for: {@code get} hands
+     * it back untouched when the key is not there, and no value of a mapping can be it. Only a type that
+     * carries the mapping flag reaches {@link #matchedKeys}, and none of them shows the default to
+     * Python, so the difference between this and a real {@code object()} has no way to be seen.
+     */
+    private static final PyObject ABSENT = new PyObject(PyType.OBJECT) {};
+
+    /**
+     * {@code MATCH_KEYS}: the values behind the keys, in the order the pattern spells them, or {@code
+     * None} when one of them is not there.
+     *
+     * <p>The reading is the two-argument form of the subject's {@code get}, which is what CPython uses
+     * and for the two reasons it says: one call both asks for the key and takes the answer back with no
+     * exception to clear, and a mapping that would create a key on a miss never gets the chance. A
+     * pattern naming no keys asks nothing at all and does not even look the {@code get} up — although
+     * the compiler never emits {@code MATCH_KEYS} for one, since {@code case {}} asks only the flag.
+     */
+    static PyObject matchedKeys(PyObject subject, PyTuple keys) {
+        if (keys.size() == 0) {
+            return PyTuple.EMPTY;
+        }
+        PyObject get = Slots.getAttr(subject, "get");
+        PyObject[] values = new PyObject[keys.size()];
+        for (int i = 0; i < values.length; i++) {
+            PyObject value = Slots.call(get, new PyObject[] {keys.at(i), ABSENT}, null);
+            if (value == ABSENT) {
+                return PyNone.INSTANCE;
+            }
+            values[i] = value;
+        }
+        return PyTuple.of(values);
+    }
+
+    /**
+     * {@code MATCH_CLASS}: the attributes the pattern names, or {@code None} when the pattern fails.
+     *
+     * <p>Three questions, in CPython's order. The name written before the parentheses has to be a class
+     * before the subject is asked anything at all, so an ordinary object used as a matcher is an error
+     * rather than a failed match — even for a {@code case matcher()} that names nothing inside, because
+     * the check comes before the count. The subject then has to be an instance of it, which is the test
+     * {@code isinstance} makes, metaclass {@code __instancecheck__} and all, and a subject that is not
+     * simply fails. Only then are values read: the positionals named through {@code __match_args__}, the
+     * keywords by the name the pattern spells, both in that order and both through the same attribute
+     * lookup. A name the subject does not have ends the match the way a wrong value does; a name whose
+     * read raises is an error, and it leaves.
+     */
+    static PyObject matchedAttributes(
+            PyObject subject, PyObject matcher, PyTuple names, int nargs) {
+        if (!(matcher instanceof PyType kind)) {
+            throw Slots.typeError("called match pattern must be a class");
+        }
+        if (!Classes.instanceOf(subject, kind)) {
+            return PyNone.INSTANCE;
+        }
+        java.util.List<PyObject> attrs = new java.util.ArrayList<>();
+        java.util.Set<PyStr> seen = new java.util.HashSet<>();
+        if (nargs > 0) {
+            // The flag answers only where the class wrote no __match_args__ of its own: redefining the
+            // name on a built-in subclass takes the built-in's answer away, as if it were a value.
+            PyObject declared = Slots.findAttr(kind, "__match_args__");
+            boolean handsItselfBack = false;
+            PyTuple order = PyTuple.EMPTY;
+            if (declared == null) {
+                handsItselfBack = kind.hasFeature(PyType.MATCH_SELF);
+            } else if (declared instanceof PyTuple declaredOrder) {
+                order = declaredOrder;
+            } else {
+                throw Slots.typeError(
+                        "%s.__match_args__ must be a tuple (got %s)",
+                        kind.name(), declared.getType().name());
+            }
+            int allowed = handsItselfBack ? 1 : order.size();
+            if (allowed < nargs) {
+                throw Slots.typeError(
+                        "%s() accepts %d positional sub-pattern%s (%d given)",
+                        kind.name(), allowed, allowed == 1 ? "" : "s", nargs);
+            }
+            if (handsItselfBack) {
+                attrs.add(subject);
+            } else {
+                for (int i = 0; i < nargs; i++) {
+                    PyObject named = order.at(i);
+                    if (!(named instanceof PyStr text)) {
+                        throw Slots.typeError(
+                                "__match_args__ elements must be strings (got %s)",
+                                named.getType().name());
+                    }
+                    PyObject attr = matchedAttr(subject, kind, text, seen);
+                    if (attr == null) {
+                        return PyNone.INSTANCE;
+                    }
+                    attrs.add(attr);
+                }
+            }
+        }
+        for (int i = 0; i < names.size(); i++) {
+            PyObject attr = matchedAttr(subject, kind, (PyStr) names.at(i), seen);
+            if (attr == null) {
+                return PyNone.INSTANCE;
+            }
+            attrs.add(attr);
+        }
+        return PyTuple.of(attrs.toArray(new PyObject[0]));
+    }
+
+    /**
+     * {@code match_class_attr}: one name read off the subject, with the bookkeeping that refuses a name
+     * the pattern already took.
+     *
+     * <p>The refusal is CPython's and it is about the attribute rather than the name Python bound: a
+     * positional whose {@code __match_args__} entry is {@code first} and a keyword spelling {@code first}
+     * are two sub-patterns asking for one value. The name is marked before the read, so it counts even
+     * when the subject turns out not to have it and the pattern fails.
+     *
+     * <p>The read is {@code PyObject_GetOptionalAttr}, so a keyword pattern reaches the names
+     * {@code object} answers for every value too: {@code case Point(__class__=kind)} binds the class the
+     * value reports rather than failing for a name the subject does not have.
+     */
+    private static PyObject matchedAttr(
+            PyObject subject, PyType kind, PyStr name, java.util.Set<PyStr> seen) {
+        if (!seen.add(name)) {
+            throw Slots.typeError(
+                    "%s() got multiple sub-patterns for attribute %s",
+                    kind.name(), Slots.repr(name));
+        }
+        return Slots.findAttr(subject, name.getValue());
+    }
+
     // --- calls --------------------------------------------------------------------------
 
     private static PyObject[] prepend(PyObject first, PyObject[] rest) {
@@ -1121,6 +1419,9 @@ public final class Interpreter {
             names[at++] = key;
             args.add(entry.getValue());
         }
+        // An empty mapping hands over no keyword names, and an empty name list is read as none at all by
+        // every argument table — which is what lets `f(**{})` reach a method that has no keyword table and
+        // be refused by count rather than for giving a keyword.
         return Slots.call(callable, args.toArray(new PyObject[0]), PyTuple.of(names));
     }
 

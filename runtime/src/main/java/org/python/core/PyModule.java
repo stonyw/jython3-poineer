@@ -43,8 +43,8 @@ public final class PyModule extends PyObject {
     }
 
     /**
-     * Module attributes are dictionary entries, with the two exceptions CPython also has:
-     * {@code __dict__} is the dictionary itself, and {@code __name__} cannot be deleted.
+     * Module attributes are dictionary entries, with the one exception CPython also has:
+     * {@code __dict__} is the dictionary itself, and only that name is read-only.
      */
     @Override
     public PyObject getAttr(String attribute) {
@@ -59,6 +59,24 @@ public final class PyModule extends PyObject {
     public PyObject setAttr(String attribute, PyObject value) {
         dictionary.put(PyStr.interned(attribute), value);
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code del module.name}: the entry goes, and a name the dictionary never held is refused as a read
+     * of it is.
+     *
+     * <p>{@code del sys.excepthook} is how a program asks CPython to print an escaping exception itself,
+     * so the launcher's read of the name has to be able to come back missing rather than as {@code None}
+     * — which CPython would call, and answer {@code 'NoneType' object is not callable}.
+     */
+    @Override
+    public PyObject delAttr(String attribute) {
+        if ("__dict__".equals(attribute)) {
+            throw Slots.attributeError("readonly attribute");
+        }
+        return dictionary.remove(PyStr.interned(attribute)) == null
+                ? PyNotImplemented.INSTANCE
+                : PyNone.INSTANCE;
     }
 
     @Override

@@ -18,7 +18,7 @@ import java.math.BigInteger;
  */
 public class PyBaseException extends PyObject {
 
-    private final PyType exceptionType;
+    private PyType exceptionType;
 
     /** {@code e.args}, kept as the tuple {@code str} and {@code repr} read from. */
     private PyObject[] args;
@@ -59,6 +59,32 @@ public class PyBaseException extends PyObject {
     private PyObject stopIterationValue;
 
     /**
+     * {@code NameError.name} and {@code AttributeError.name}: the name the read that failed was looking for.
+     *
+     * <p>Nothing a script raises by hand carries it — {@code NameError('countr', 'counter').name} is
+     * {@code None}, however many arguments the call gave, because CPython fills this in on the two routes
+     * where a name was actually missed: {@code _PyEval_FormatExcCheckArg} for a name read and {@code
+     * _PyObject_SetAttributeErrorContext} for a member read. {@link #asMissingName} and {@link
+     * #asFailedRead} are those two routes, and the report is the only thing that reads what they leave
+     * behind — it is where the question "did you mean" is asked of it.
+     *
+     * <p>{@code UnboundLocalError} has the member because it derives from {@code NameError}, and never uses
+     * it: the sentence about a local the frame never reached names no variable to CPython, which is why
+     * that error is the one that cannot be asked about.
+     */
+    private PyObject failureName;
+
+    /**
+     * {@code AttributeError.obj}: the object the failed read looked the name up on.
+     *
+     * <p>{@code AttributeError}'s alone — {@code NameError} has no such member, and reading {@code obj} off
+     * one is an {@code AttributeError} like reading it off any other class that does not declare it. It is
+     * the object as it was given to the read, so {@code e.obj is thing} holds, and it is the object whose
+     * members the report asks about when it wonders what was meant.
+     */
+    private PyObject failureObject;
+
+    /**
      * An exception raised as {@code exceptionType} with {@code args}.
      *
      * <p>Protected rather than package-private because the class system is not the only subclass this
@@ -77,6 +103,56 @@ public class PyBaseException extends PyObject {
     /** Whether this class has the {@code value} member: {@code StopIteration} and what derives from it. */
     private boolean carriesValue() {
         return exceptionType.matches(ExceptionTypes.STOP_ITERATION);
+    }
+
+    /**
+     * Whether this class has the {@code name} member: the two classes that report a missed name and
+     * everything under them, which is where {@code UnboundLocalError} joins it through {@code NameError}.
+     */
+    private boolean carriesName() {
+        return exceptionType.matches(ExceptionTypes.NAME_ERROR)
+                || exceptionType.matches(ExceptionTypes.ATTRIBUTE_ERROR);
+    }
+
+    /** Whether this class has the {@code obj} member: {@code AttributeError} and what derives from it. */
+    private boolean carriesObject() {
+        return exceptionType.matches(ExceptionTypes.ATTRIBUTE_ERROR);
+    }
+
+    /**
+     * {@code _PyEval_FormatExcCheckArg} for a name that was not there: the read names what it missed, so
+     * that the report can ask about it.
+     */
+    void asMissingName(String name) {
+        failureName = PyStr.of(name);
+    }
+
+    /**
+     * {@code _PyObject_SetAttributeErrorContext}: the two members a failed member read leaves behind, hung
+     * on the error after its message has been chosen.
+     */
+    void asFailedRead(PyObject target, String name) {
+        failureName = PyStr.of(name);
+        failureObject = target;
+    }
+
+    /** The name this error was made about, or null where the read named none. */
+    PyObject failureName() {
+        return failureName;
+    }
+
+    /** The object a failed member read was reading off, or null where there was none. */
+    PyObject failureObject() {
+        return failureObject;
+    }
+
+    /**
+     * The value of a {@code StopIteration}, read the way the runtime reads it rather than the way Python
+     * asks: {@code _PyGen_FetchStopIterationValue} takes the member directly, and a bare one is worth
+     * {@code None}.
+     */
+    PyObject value() {
+        return stopIterationValue == null ? PyNone.INSTANCE : stopIterationValue;
     }
 
     /** {@code BaseException.__init__} and {@code __new__}: the arguments of the call, taken over. */
@@ -312,6 +388,14 @@ public class PyBaseException extends PyObject {
                     carriesValue()
                             ? (stopIterationValue == null ? PyNone.INSTANCE : stopIterationValue)
                             : owned(name);
+            case "name" ->
+                    carriesName()
+                            ? (failureName == null ? PyNone.INSTANCE : failureName)
+                            : owned(name);
+            case "obj" ->
+                    carriesObject()
+                            ? (failureObject == null ? PyNone.INSTANCE : failureObject)
+                            : owned(name);
             default -> owned(name);
         };
     }
@@ -331,6 +415,35 @@ public class PyBaseException extends PyObject {
         return name.equals("__class__")
                 ? exceptionType
                 : Specials.invoke(this, "__getattr__", PyStr.of(name));
+    }
+
+    /**
+     * {@code e.__class__ = E2}: the class the value reports, in both the places it is kept.
+     *
+     * <p>An exception holds its class twice — the pointer every value has, and the one whose name the
+     * display and whose {@code __init__} the constructor read — so a swap written through {@code object}'s
+     * getset has to move both. Only ever called by {@link ClassAttribute}, and only for a pair of classes
+     * that rest on the same built-in, which is what keeps a {@code ValueError} from becoming an {@code int}
+     * with exception storage.
+     */
+    @Override
+    void reassignedTo(PyType kind) {
+        super.reassignedTo(kind);
+        exceptionType = kind;
+    }
+
+    /**
+     * Whether this value's own class takes the write, in the same two ways a plain class does.
+     *
+     * <p>The member question is put to {@link Specials#declared} rather than to the namespace alone because
+     * an exception's class may rest on a built-in that declares something under the name; {@code __class__}
+     * is not one of those names, so a value of {@code ValueError} still lets {@code object} answer.
+     */
+    @Override
+    boolean filedByItsClass(String name) {
+        return Specials.member(exceptionType, name) != null
+                || Specials.lookUp(exceptionType, "__setattr__") != null
+                || Specials.lookUp(exceptionType, "__delattr__") != null;
     }
 
     /** {@code e.__dict__}, which a value of an exception class has had since CPython gave it one. */
@@ -365,6 +478,18 @@ public class PyBaseException extends PyObject {
             case "value" -> {
                 if (carriesValue()) {
                     stopIterationValue = value;
+                    return PyNone.INSTANCE;
+                }
+            }
+            case "name" -> {
+                if (carriesName()) {
+                    failureName = value;
+                    return PyNone.INSTANCE;
+                }
+            }
+            case "obj" -> {
+                if (carriesObject()) {
+                    failureObject = value;
                     return PyNone.INSTANCE;
                 }
             }
@@ -423,6 +548,14 @@ public class PyBaseException extends PyObject {
         }
         if (name.equals("value") && carriesValue()) {
             stopIterationValue = null;
+            return PyNone.INSTANCE;
+        }
+        if (name.equals("name") && carriesName()) {
+            failureName = null;
+            return PyNone.INSTANCE;
+        }
+        if (name.equals("obj") && carriesObject()) {
+            failureObject = null;
             return PyNone.INSTANCE;
         }
         PyStr key = PyStr.interned(name);

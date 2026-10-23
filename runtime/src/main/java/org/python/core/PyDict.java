@@ -287,7 +287,7 @@ public final class PyDict extends PyObject {
         }
     }
 
-    /** {@code dict.copy()}, and the snapshot {@code LOAD_LOCALS} pushes in a class body. */
+    /** {@code dict.copy()}. */
     PyDict copy() {
         PyDict out = new PyDict(new LinkedHashMap<>());
         out.putAll(this);

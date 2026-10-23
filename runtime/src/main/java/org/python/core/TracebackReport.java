@@ -26,10 +26,12 @@ import java.util.function.Supplier;
  * report goes through the Python one — {@code _PyErr_Display} imports {@code traceback} and calls its
  * {@code _print_exception_bltin}, and only falls back to the C printer when that fails. This class
  * transcribes the Python text, which for a code object that carries no column information — as every one
- * of them does under {@code -X no_debug_ranges} — is byte for byte what the C printer writes. The one
- * thing that exists only in the Python printer is the exception group, and its blocks are here for that
- * reason: the C fallback a person reaches by making {@code traceback} unimportable prints a group as a
- * plain complaint line and nothing else.
+ * of them does under {@code -X no_debug_ranges} — is byte for byte what the C printer writes. The two
+ * things that exist only in the Python printer are the exception group and the {@code Did you mean: 'x'?}
+ * that {@link Suggestions} hangs on the end of a complaint, and both are here — the group because the C
+ * fallback a person reaches by making {@code traceback} unimportable prints it as a plain complaint line
+ * and nothing else, the sentence because it joins {@code _str} before the type name goes in front of it and
+ * so belongs to the complaint line rather than standing under it.
  *
  * <p>The anchors are therefore the one named omission, and it is not a matter of reading wider ranges
  * out of the line table: {@code _extract_caret_anchors_from_line_segment} decides which characters get a
@@ -286,12 +288,16 @@ public final class TracebackReport {
     private void render(Node node, Context ctx) {
         PyBaseException value = node.value;
         List<Entry> entries = entriesOf(value);
+        // The suggestion is worked out from the frame the error ended in, which is the last link of the
+        // whole traceback rather than of the sliced one: sys.tracebacklimit cuts what the reader is shown,
+        // not what the chooser is given.
+        Frame innermost = innermostFrameOf(value);
         if (node.children == null) {
             if (!entries.isEmpty()) {
                 emit(HEADER, ctx);
                 emit(frames(entries), ctx);
             }
-            emit(only(value), ctx);
+            emit(only(value, innermost), ctx);
             return;
         }
         if (ctx.depth > MAX_GROUP_DEPTH) {
@@ -306,7 +312,7 @@ public final class TracebackReport {
             emit(GROUP_HEADER, ctx, toplevel ? '+' : '|');
             emit(frames(entries), ctx);
         }
-        emit(only(value), ctx);
+        emit(only(value, innermost), ctx);
 
         int total = node.children.size();
         int shown = total <= MAX_GROUP_WIDTH ? total : MAX_GROUP_WIDTH + 1;
@@ -367,6 +373,24 @@ public final class TracebackReport {
             carried = traceback.next() == null ? PyNone.INSTANCE : traceback.next();
         }
         return all.size() <= limit ? all : all.subList(all.size() - limit, all.size());
+    }
+
+    /**
+     * The frame the error ended in, or null where the exception carries no traceback at all.
+     *
+     * <p>This is the {@code tb} that {@code _compute_suggestion_error} walks to its last link, and it is
+     * walked from the whole chain rather than from {@link #entriesOf}: a report cut short by {@code
+     * sys.tracebacklimit} still names the frame that failed, because the limit is applied to what the reader
+     * is shown after the sentence has been chosen.
+     */
+    private static Frame innermostFrameOf(PyBaseException value) {
+        Frame innermost = null;
+        PyObject carried = value.getAttr("__traceback__");
+        while (carried instanceof PyTraceback traceback) {
+            innermost = traceback.frame();
+            carried = traceback.next() == null ? PyNone.INSTANCE : traceback.next();
+        }
+        return innermost;
     }
 
     /**
@@ -464,11 +488,36 @@ public final class TracebackReport {
      * <p>An exception whose {@code __str__} fails is reported as CPython reports it — {@code <exception
      * str() failed>} — because the frames above it are the news the reader came for, and a second
      * failure is not allowed to hide them.
+     *
+     * <p>The suggestion is part of the same line rather than a line of its own, and it is hung on the text
+     * of the exception rather than beside it: {@code _str} is what {@code format_exception_only} puts behind
+     * the colon, so a complaint that had nothing to say about a name that was missed reads {@code NameError:
+     * . Did you mean: 'x'?} with the period the suggestion always begins with.
      */
-    private static String complaint(PyBaseException value) {
+    private static String complaint(PyBaseException value, Frame innermost) {
         String type = typeName(value.exceptionType());
         String text = safe("exception", "str", value::str);
+        String sentence = suggestion(value, innermost);
+        if (sentence != null) {
+            text += sentence;
+        }
         return type + (text.isEmpty() ? "" : ": " + text) + "\n";
+    }
+
+    /**
+     * The sentence the chooser suggests, or none at all.
+     *
+     * <p>Anything that fails inside it is swallowed here rather than reported: CPython lets such a failure
+     * escape {@code TracebackException} and falls back to the printer written in C, and this runtime has no
+     * second printer to fall back to — one that had it could not quote the line of a {@code -c} command at
+     * all.
+     */
+    private static String suggestion(PyBaseException value, Frame innermost) {
+        try {
+            return Suggestions.sentence(value, innermost);
+        } catch (RuntimeException failed) {
+            return null;
+        }
     }
 
     /**
@@ -500,8 +549,8 @@ public final class TracebackReport {
      * walked and each note printed as its own lines, a bare string or anything else is printed as its
      * {@code repr}, which is the difference CPython draws with {@code isinstance(x, Sequence)}.
      */
-    private static String only(PyBaseException value) {
-        StringBuilder text = new StringBuilder(complaint(value));
+    private static String only(PyBaseException value, Frame innermost) {
+        StringBuilder text = new StringBuilder(complaint(value, innermost));
         PyObject notes = value.getAttr("__notes__");
         if (notes == null || notes instanceof PyNone || notes instanceof PyNotImplemented) {
             return text.toString();

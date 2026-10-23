@@ -118,10 +118,20 @@ public class PyClass extends PyType {
                     "cannot delete '%s' attribute of immutable type '%s'", attribute, name());
         }
         if (namespace.remove(PyStr.interned(attribute)) == null) {
-            throw Slots.attributeError(
-                    "type object '%s' has no attribute '%s'", name(), attribute);
+            throw Slots.failedRead(
+                    this, attribute, "type object '%s' has no attribute '%s'", name(), attribute);
         }
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * A class Python built has a dictionary to write into, so it does not take the name the way a
+     * compiled-in type does — and {@code C.__class__ = M} is therefore {@code object}'s to answer, which
+     * is what lets a written class be given a new metatype and refuses it anything else.
+     */
+    @Override
+    boolean filedByItsClass(String name) {
+        return false;
     }
 
     /**

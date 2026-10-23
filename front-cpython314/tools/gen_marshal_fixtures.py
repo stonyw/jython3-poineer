@@ -375,6 +375,19 @@ def render_code(co, shared):
             "-" if position[0] is None else str(position[0])
             for position in co.co_positions()
         ),
+        # The two position reads `code` publishes, spelled the way this file spells everything else.
+        # `co_lines()` merges a run of one line into one range of byte offsets and says nothing about
+        # columns; `co_positions()` names all four numbers of every unit, one item each, and repeats
+        # the covering entry's range for the caches behind it. A number the table does not name is
+        # ``-``, the same marker `unitlines` uses for a unit with no line.
+        "  lines=" + " ".join(
+            "%d:%d:%s" % (start, end, "-" if line is None else line)
+            for start, end, line in co.co_lines()
+        ),
+        "  positions=" + " ".join(
+            ":".join("-" if field is None else str(field) for field in position)
+            for position in co.co_positions()
+        ),
         "  exceptiontable=" + co.co_exceptiontable.hex(),
         # The same bytes, read by CPython's own table parser. dis reports byte offsets and returns
         # ``lasti`` as a bool; the reader under test keeps code units and a bit, and doubles on the

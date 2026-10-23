@@ -33,10 +33,12 @@ class LineTableTest {
     /** The ninth short form reaches the columns the first eight cannot, and still says no line delta. */
     @Test
     void readsTheWideColumnsOfTheNinthShortForm() {
-        // code 9, one unit: 128 | 9<<3 is 0xc8, and its column byte reads as 9<<3 | 9 = 81.
+        // code 9, one unit: 128 | 9<<3 is 0xc8, and its column byte reads 9<<3 | 9, which is 73, three
+        // units wide at the end.
         LineTable lines = new LineTable(table(0xc8, 0x93), 4, 1);
 
         assertThat(lines.lineAtUnit(0)).isEqualTo(4);
+        assertThat(lines.entries()).containsExactly(new LineTable.Entry(0, 1, 4, 4, 73, 76));
     }
 
     /**
@@ -56,6 +58,12 @@ class LineTableTest {
                 .isEqualTo(11);
         assertThat(lines.lineAtUnit(3)).as("ONE_LINE2").isEqualTo(13);
         assertThat(lines.lineAtUnit(4)).isEqualTo(13);
+        // Each form's two following bytes are the columns, read as they stand and not one less.
+        assertThat(lines.entries())
+                .containsExactly(
+                        new LineTable.Entry(0, 1, 10, 10, 0, 8),
+                        new LineTable.Entry(1, 2, 11, 11, 0, 4),
+                        new LineTable.Entry(3, 2, 13, 13, 0, 4));
     }
 
     /** A line may run backwards, which is what the signed varint of these two forms is for. */
@@ -66,6 +74,11 @@ class LineTableTest {
 
         assertThat(lines.lineAtUnit(0)).as("NO_COLUMNS, delta -100").isEqualTo(1);
         assertThat(lines.lineAtUnit(1)).as("LONG, delta -1").isEqualTo(0);
+        assertThat(lines.entries())
+                .as("the form with no columns names none, and the long one reads its own three varints")
+                .containsExactly(
+                        new LineTable.Entry(0, 1, 1, 1, -1, -1),
+                        new LineTable.Entry(1, 1, 0, 1, 0, 0));
     }
 
     /** {@code LONG} spells four varints after its first byte, and only the first is a line. */
@@ -79,6 +92,11 @@ class LineTableTest {
         assertThat(lines.lineAtUnit(0)).isEqualTo(4);
         assertThat(lines.lineAtUnit(1)).as("the entry after a long form starts where it said")
                 .isEqualTo(4);
+        assertThat(lines.entries())
+                .as("the end line is nine further on and both columns are written one high")
+                .containsExactly(
+                        new LineTable.Entry(0, 1, 4, 13, 39, 118),
+                        new LineTable.Entry(1, 1, 4, 4, 0, 0));
     }
 
     /** Code 15 marks a unit with no location and leaves the running line where the last entry left it. */
@@ -92,6 +110,12 @@ class LineTableTest {
         assertThat(lines.lineAtUnit(2)).as("the marker's own unit").isEqualTo(-1);
         assertThat(lines.lineAtUnit(3)).as("and the line after it is the one it left behind")
                 .isEqualTo(21);
+        // The marker's entry is the no-location marker four times over, since it names nothing at all.
+        assertThat(lines.entries())
+                .containsExactly(
+                        new LineTable.Entry(0, 2, 21, 21, 0, 2),
+                        new LineTable.Entry(2, 1, -1, -1, -1, -1),
+                        new LineTable.Entry(3, 1, 21, 21, 0, 0));
     }
 
     /** One entry can name up to eight units — a run of inline caches, or a long instruction chain. */
@@ -119,6 +143,12 @@ class LineTableTest {
         assertThat(lines.lineAtUnit(15)).as("the second repeat of the same line").isEqualTo(5);
         assertThat(lines.lineAtUnit(16)).as("the next entry starts where the last one ended")
                 .isEqualTo(6);
+        assertThat(lines.entries())
+                .as("three entries, the first two naming the same line and read as far apart as they are wide")
+                .containsExactly(
+                        new LineTable.Entry(0, 8, 5, 5, 0, 0),
+                        new LineTable.Entry(8, 8, 5, 5, 0, 0),
+                        new LineTable.Entry(16, 2, 6, 6, 0, 2));
     }
 
     /** A table is not checked against the code array, and a hand-built one can outrun it. */
@@ -129,6 +159,9 @@ class LineTableTest {
         assertThat(lines.lineAtUnit(0)).isEqualTo(4);
         assertThat(lines.lineAtUnit(2)).isEqualTo(4);
         assertThat(lines.lineAtUnit(3)).as("declared, but there is no such unit").isEqualTo(-1);
+        assertThat(lines.entries())
+                .as("the table is not measured against the code here, so the entry keeps the width it says")
+                .containsExactly(new LineTable.Entry(0, 8, 4, 4, 0, 2));
     }
 
     /** The other direction: a table that stops short leaves the rest with no location. */
@@ -138,6 +171,9 @@ class LineTableTest {
 
         assertThat(lines.lineAtUnit(0)).isEqualTo(6);
         assertThat(lines.lineAtUnit(1)).isEqualTo(-1);
+        assertThat(lines.entries())
+                .as("the units it stops before are no entry, not an entry naming no line")
+                .containsExactly(new LineTable.Entry(0, 1, 6, 6, 0, 0));
     }
 
     /** An empty table is a code object with no locations at all, which is what a bare one reads as. */
@@ -146,6 +182,23 @@ class LineTableTest {
         LineTable lines = new LineTable(new byte[0], 1, 4);
 
         assertThat(lines.lineByUnit()).containsExactly(-1, -1, -1, -1);
+        assertThat(lines.entries()).isEmpty();
+    }
+
+    /**
+     * A short form's one following byte carries both columns: the code number is the top three bits of
+     * the start column, its own high nibble the bottom four, and the low nibble how wide the range is.
+     */
+    @Test
+    void readsTheColumnPairAShortFormPacksIntoOneByte() {
+        // code 0 one unit wide, then code 0 eight units wide: 0x53 is column 5, eight across, and
+        // 0xf5 is column 15 and twenty.
+        LineTable lines = new LineTable(table(0x80, 0x53, 0x87, 0xf5), 7, 9);
+
+        assertThat(lines.entries())
+                .containsExactly(
+                        new LineTable.Entry(0, 1, 7, 7, 5, 8),
+                        new LineTable.Entry(1, 8, 7, 7, 15, 20));
     }
 
     /** Every entry starts with a byte whose top bit is set; one that does not is a broken stream. */

@@ -25,7 +25,7 @@ public final class PyNativeFunction extends PyObject {
     private final Body body;
 
     /**
-     * The owner this method was reached through, or null when it is a plain function.
+     * The owner this function was reached through, or null when it is a plain function.
      *
      * {@code int.mro} is one of these: a builtin method that needs no receiver of its own keeps its body
      * and gains the type it was read from, which is what makes {@code int.mro()} answer for {@code int}
@@ -35,20 +35,38 @@ public final class PyNativeFunction extends PyObject {
      */
     private final PyObject receiver;
 
+    /**
+     * CPython's {@code ml_doc}, or null where the built-in has none and {@code __doc__} reads {@code None}.
+     *
+     * <p>A handful of the module-level builtins carry a sentence of their own — {@code sys.excepthook}
+     * among them — and a person reading it off the function is reading the same text the docs print.
+     */
+    private final String doc;
+
     public PyNativeFunction(String name, Body body) {
-        this(name, body, null);
+        this(name, body, null, null);
     }
 
     private PyNativeFunction(String name, Body body, PyObject receiver) {
+        this(name, body, receiver, null);
+    }
+
+    private PyNativeFunction(String name, Body body, PyObject receiver, String doc) {
         super(PyType.BUILTIN_FUNCTION);
         this.name = name;
         this.body = body;
         this.receiver = receiver;
+        this.doc = doc;
     }
 
     /** This method read through {@code owner}, with the receiver already attached to it. */
     PyNativeFunction withReceiver(PyObject owner) {
-        return new PyNativeFunction(name, body, owner);
+        return new PyNativeFunction(name, body, owner, doc);
+    }
+
+    /** This function answering {@code __doc__} with {@code text} rather than with {@code None}. */
+    PyNativeFunction documented(String text) {
+        return new PyNativeFunction(name, body, receiver, text);
     }
 
     /** The name CPython qualifies a receiver-bound method with: {@code int.mro}. */
@@ -89,7 +107,7 @@ public final class PyNativeFunction extends PyObject {
         return switch (attribute) {
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> PyStr.of(qualifiedName());
-            case "__doc__" -> PyNone.INSTANCE;
+            case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
             case "__self__" -> receiver == null ? PyNotImplemented.INSTANCE : receiver;
             default -> PyNotImplemented.INSTANCE;
         };

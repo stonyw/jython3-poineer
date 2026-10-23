@@ -63,8 +63,10 @@ public final class PySuper extends PyObject {
         if (obj.getType().matches(kind)) {
             return obj.getType();
         }
-        // The slow way round, which is what lets a proxy stand in for the class it reports.
-        PyObject claimed = obj.getAttr("__class__");
+        // The slow way round, which is what lets a proxy stand in for the class it reports. Asked of
+        // Slots rather than of the value, because a built-in value answers that name from `object` and a
+        // Java refusal would otherwise read as a value that claims nothing.
+        PyObject claimed = Slots.findAttr(obj, "__class__");
         if (claimed instanceof PyType icls && icls != obj.getType() && icls.matches(kind)) {
             return icls;
         }
@@ -161,7 +163,6 @@ public final class PySuper extends PyObject {
             case "__self__" -> obj == null ? PyNone.INSTANCE : obj;
             case "__self_class__" -> startType == null ? PyNone.INSTANCE : startType;
             case "__thisclass__" -> thisClass;
-            case "__class__" -> PyType.SUPER;
             default -> PyNotImplemented.INSTANCE;
         };
     }

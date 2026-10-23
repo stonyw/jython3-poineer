@@ -6,16 +6,25 @@ package org.python.core;
  * Immutability is what lets a tuple be a dictionary key, and is why {@link #fill(int, PyObject)}
  * exists at all: the marshal reader needs to publish a tuple before its elements are known, and that
  * one window is the only time a tuple's contents are not final.
+ *
+ * <p>Not final, because {@link PyVersionInfo} is a tuple that reports a type of its own — the one way
+ * CPython's named sequences exist, and the reason every operation below builds a {@code PyTuple} rather
+ * than {@code getClass().cast(this)}: {@code version[:2]} is a plain tuple in CPython, and a slice that
+ * kept the subtype would be a wrong answer rather than a stylistic one.
  */
-public final class PyTuple extends PyObject {
+public class PyTuple extends PyObject {
 
     public static final PyTuple EMPTY = new PyTuple(new PyObject[0]);
 
     private final PyObject[] items;
 
-    private PyTuple(PyObject[] items) {
-        super(PyType.TUPLE);
+    PyTuple(PyObject[] items, PyType kind) {
+        super(kind);
         this.items = items;
+    }
+
+    private PyTuple(PyObject[] items) {
+        this(items, PyType.TUPLE);
     }
 
     public static PyTuple of(PyObject... items) {
