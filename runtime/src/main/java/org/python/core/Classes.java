@@ -651,7 +651,9 @@ final class Classes {
             if (kwNames != null && kwNames.size() > 0) {
                 throw Slots.typeError("%s() takes no keyword arguments", kind.name());
             }
-            return new PyBaseException(kind, args);
+            return kind.matches(ExceptionTypes.OS_ERROR)
+                    ? PyOSError.create(kind, args)
+                    : new PyBaseException(kind, args);
         }
         if (excess(args, kwNames) && !Specials.defines(kind, "__init__")) {
             throw Slots.typeError("%s() takes no arguments", kind.name());

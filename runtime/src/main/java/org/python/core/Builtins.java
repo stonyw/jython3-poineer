@@ -82,33 +82,74 @@ final class Builtins {
         put(out, "ArithmeticError", ExceptionTypes.ARITHMETIC_ERROR);
         put(out, "AssertionError", ExceptionTypes.ASSERTION_ERROR);
         put(out, "AttributeError", ExceptionTypes.ATTRIBUTE_ERROR);
+        put(out, "BlockingIOError", ExceptionTypes.BLOCKING_IO_ERROR);
+        put(out, "BrokenPipeError", ExceptionTypes.BROKEN_PIPE_ERROR);
+        put(out, "BufferError", ExceptionTypes.BUFFER_ERROR);
+        put(out, "BytesWarning", ExceptionTypes.BYTES_WARNING);
+        put(out, "ChildProcessError", ExceptionTypes.CHILD_PROCESS_ERROR);
+        put(out, "ConnectionAbortedError", ExceptionTypes.CONNECTION_ABORTED_ERROR);
+        put(out, "ConnectionError", ExceptionTypes.CONNECTION_ERROR);
+        put(out, "ConnectionRefusedError", ExceptionTypes.CONNECTION_REFUSED_ERROR);
+        put(out, "ConnectionResetError", ExceptionTypes.CONNECTION_RESET_ERROR);
+        put(out, "DeprecationWarning", ExceptionTypes.DEPRECATION_WARNING);
+        put(out, "EOFError", ExceptionTypes.EOF_ERROR);
+        put(out, "EncodingWarning", ExceptionTypes.ENCODING_WARNING);
+        put(out, "FileExistsError", ExceptionTypes.FILE_EXISTS_ERROR);
         put(out, "FileNotFoundError", ExceptionTypes.FILE_NOT_FOUND_ERROR);
+        put(out, "FloatingPointError", ExceptionTypes.FLOATING_POINT_ERROR);
+        put(out, "FutureWarning", ExceptionTypes.FUTURE_WARNING);
         put(out, "GeneratorExit", ExceptionTypes.GENERATOR_EXIT);
         put(out, "ImportError", ExceptionTypes.IMPORT_ERROR);
+        put(out, "ImportWarning", ExceptionTypes.IMPORT_WARNING);
+        put(out, "IndentationError", ExceptionTypes.INDENTATION_ERROR);
         put(out, "IndexError", ExceptionTypes.INDEX_ERROR);
+        put(out, "InterruptedError", ExceptionTypes.INTERRUPTED_ERROR);
+        put(out, "IsADirectoryError", ExceptionTypes.IS_A_DIRECTORY_ERROR);
         put(out, "KeyError", ExceptionTypes.KEY_ERROR);
         put(out, "KeyboardInterrupt", ExceptionTypes.KEYBOARD_INTERRUPT);
         put(out, "LookupError", ExceptionTypes.LOOKUP_ERROR);
         put(out, "MemoryError", ExceptionTypes.MEMORY_ERROR);
         put(out, "ModuleNotFoundError", ExceptionTypes.MODULE_NOT_FOUND_ERROR);
         put(out, "NameError", ExceptionTypes.NAME_ERROR);
+        put(out, "NotADirectoryError", ExceptionTypes.NOT_A_DIRECTORY_ERROR);
         put(out, "NotImplementedError", ExceptionTypes.NOT_IMPLEMENTED_ERROR);
         put(out, "OSError", ExceptionTypes.OS_ERROR);
         put(out, "OverflowError", ExceptionTypes.OVERFLOW_ERROR);
+        put(out, "PendingDeprecationWarning", ExceptionTypes.PENDING_DEPRECATION_WARNING);
+        put(out, "PermissionError", ExceptionTypes.PERMISSION_ERROR);
+        put(out, "ProcessLookupError", ExceptionTypes.PROCESS_LOOKUP_ERROR);
+        put(out, "PythonFinalizationError", ExceptionTypes.PYTHON_FINALIZATION_ERROR);
         put(out, "RecursionError", ExceptionTypes.RECURSION_ERROR);
+        put(out, "ReferenceError", ExceptionTypes.REFERENCE_ERROR);
+        put(out, "ResourceWarning", ExceptionTypes.RESOURCE_WARNING);
         put(out, "RuntimeError", ExceptionTypes.RUNTIME_ERROR);
+        put(out, "RuntimeWarning", ExceptionTypes.RUNTIME_WARNING);
+        put(out, "StopAsyncIteration", ExceptionTypes.STOP_ASYNC_ITERATION);
         put(out, "StopIteration", ExceptionTypes.STOP_ITERATION);
         put(out, "SyntaxError", ExceptionTypes.SYNTAX_ERROR);
+        put(out, "SyntaxWarning", ExceptionTypes.SYNTAX_WARNING);
         put(out, "SystemError", ExceptionTypes.SYSTEM_ERROR);
         put(out, "SystemExit", ExceptionTypes.SYSTEM_EXIT);
+        put(out, "TabError", ExceptionTypes.TAB_ERROR);
+        put(out, "TimeoutError", ExceptionTypes.TIMEOUT_ERROR);
         put(out, "TypeError", ExceptionTypes.TYPE_ERROR);
         put(out, "UnboundLocalError", ExceptionTypes.UNBOUND_LOCAL_ERROR);
         put(out, "UnicodeDecodeError", ExceptionTypes.UNICODE_DECODE_ERROR);
         put(out, "UnicodeEncodeError", ExceptionTypes.UNICODE_ENCODE_ERROR);
         put(out, "UnicodeError", ExceptionTypes.UNICODE_ERROR);
         put(out, "UnicodeTranslateError", ExceptionTypes.UNICODE_TRANSLATE_ERROR);
+        put(out, "UnicodeWarning", ExceptionTypes.UNICODE_WARNING);
+        put(out, "UserWarning", ExceptionTypes.USER_WARNING);
         put(out, "ValueError", ExceptionTypes.VALUE_ERROR);
+        put(out, "Warning", ExceptionTypes.WARNING);
         put(out, "ZeroDivisionError", ExceptionTypes.ZERO_DIVISION_ERROR);
+        put(out, "_IncompleteInputError", ExceptionTypes.INCOMPLETE_INPUT_ERROR);
+        // Two names the same class answers to, which _PyBuiltins_AddExceptions files as aliases of
+        // OSError rather than as classes: they are the same object, so `IOError is OSError` holds and a
+        // raise of one is caught by the other. WindowsError is the third of these and is not filed here,
+        // because CPython files it only in a Windows build.
+        put(out, "EnvironmentError", ExceptionTypes.OS_ERROR);
+        put(out, "IOError", ExceptionTypes.OS_ERROR);
     }
 
     private static void addFunctions(PyDict out) {

@@ -92,6 +92,28 @@ final class Numbers {
     }
 
     /**
+     * {@code PyNumber_AsSsize_t(value, PyExc_ValueError)}: a count asked of a value, with the overflow
+     * complained about as a bad value rather than as a type.
+     *
+     * <p>The second argument is the whole difference from {@link #size} and it is visible in one word of
+     * the sentence: {@code OSError.characters_written = 2**70} is {@code ValueError: cannot fit 'int' into
+     * an index-sized integer} where {@code to_bytes(2**70)} is the {@code OverflowError} about a C
+     * {@code ssize_t}. What arrives is a {@code Py_ssize_t} rather than an index, so the window is the
+     * same sixty-four bits and only the refusal changes.
+     */
+    static long count(PyObject value) {
+        BigInteger number = asInteger(value);
+        if (number == null) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer", value.getType().name());
+        }
+        if (number.bitLength() > 63) {
+            throw Slots.valueError("cannot fit 'int' into an index-sized integer");
+        }
+        return number.longValue();
+    }
+
+    /**
      * Whether an integer of any size is one Java can hold in an {@code int}, which is what a Python
      * index has to be before it can address anything.
      */

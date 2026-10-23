@@ -19,7 +19,20 @@ final class Formats {
     static String apply(PyObject value, String spec) {
         Spec parsed = Spec.parse(spec);
         String body = convert(value, parsed);
-        return parsed.align(body);
+        return parsed.align(body, counted(value));
+    }
+
+    /**
+     * Whether the value's own default alignment is the numeric one, which is the whole of CPython's rule
+     * for a spec that names no alignment: {@code >} for a number and {@code <} for a string.
+     *
+     * <p>It is asked of the value and not of the text it presents as, because the two disagree for every
+     * string that ends with a digit: {@code format('12', '6')} is {@code '12    '} while {@code
+     * format(12, '6')} is {@code '    12'}, and CPython's rewrite of {@code '%-6s' % ('12',)} into {@code
+     * FORMAT_WITH_SPEC} hands the same text to both.
+     */
+    private static boolean counted(PyObject value) {
+        return value instanceof PyInt || value instanceof PyBool || value instanceof PyFloat;
     }
 
     /** {@code value} presented according to the type-specific half of its spec, before padding. */
@@ -219,7 +232,8 @@ final class Formats {
             if (at < spec.length() && spec.charAt(at) == '0') {
                 out.zeroPad = true;
                 if (out.align == 0) {
-                    out.align = '=';
+                    // The fill is the digit for every type; only the alignment it stands for is the
+                    // number's, which is why format('12', '06') left-justifies inside zeroes.
                     out.fill = "0";
                 }
                 at++;
@@ -254,13 +268,18 @@ final class Formats {
         }
 
         /** Pad to the width CPython was asked for, on the side the alignment selects. */
-        String align(String body) {
+        String align(String body, boolean numeric) {
             if (width < 0 || body.length() >= width) {
                 return body;
             }
             char pad = fill.length() == 1 ? fill.charAt(0) : ' ';
             int missing = width - body.length();
-            char alignment = align == 0 ? (zeroPad ? '=' : (isNumeric(body) ? '>' : '<')) : align;
+            char alignment =
+                    align != 0
+                            ? align
+                            : numeric
+                                    ? (zeroPad ? '=' : '>')
+                                    : '<';
             switch (alignment) {
                 case '<':
                     return body + repeat(pad, missing);
@@ -276,11 +295,6 @@ final class Formats {
                             + repeat(pad, missing)
                             + body.substring(signLength);
             }
-        }
-
-        private static boolean isNumeric(String body) {
-            return !body.isEmpty() && (Character.isDigit(body.charAt(body.length() - 1))
-                    || "%".equals(body));
         }
 
         private static String repeat(char c, int times) {

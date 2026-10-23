@@ -384,7 +384,9 @@ final class TypeDict {
                     "BaseException.__new__(%s): %s is not a subtype of BaseException",
                     kind.name(), kind.name());
         }
-        return new PyBaseException(kind, Arrays.copyOfRange(args, 1, given));
+        return kind.matches(ExceptionTypes.OS_ERROR)
+                ? PyOSError.create(kind, Arrays.copyOfRange(args, 1, given))
+                : new PyBaseException(kind, Arrays.copyOfRange(args, 1, given));
     }
 
     /**

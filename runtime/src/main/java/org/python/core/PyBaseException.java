@@ -253,6 +253,17 @@ public class PyBaseException extends PyObject {
         if (declared != null) {
             return display(declared, "__str__");
         }
+        return described();
+    }
+
+    /**
+     * {@code BaseException_str} itself, without the {@code __str__} question first.
+     *
+     * <p>Split out because {@link PyOSError} replaces this half and keeps the half above it: a class under
+     * {@code OSError} that declares a {@code __str__} is asked for it, and one that does not gets the
+     * error number and the file names rather than these rules.
+     */
+    String described() {
         if (args.length == 1 && exceptionType.matches(ExceptionTypes.KEY_ERROR)) {
             return args[0].repr();
         }
@@ -530,12 +541,20 @@ public class PyBaseException extends PyObject {
     }
 
     /**
-     * {@code del e.name}: the arguments cannot be taken away, and everything else is the ordinary
-     * deletion of a value's own attribute.
+     * {@code del e.name}: the name is taken away in the order it would have been read, and the six names
+     * CPython keeps in C fields that no delete can reach refuse before anything is looked up.
+     *
+     * <p>Two of the refusals are the same sentence twice over, because {@code args} and the three chain
+     * fields are getsets whose deleting half is {@code ex_del}, while {@code __dict__} is a member and
+     * {@code __class__} a getset of its own family; {@code __suppress_context__} is a {@code T_BOOL}
+     * member, and a numeric or char member cannot be deleted at all.
      *
      * <p>{@code StopIteration.value} is the exception, because a member of {@code _Py_T_OBJECT} type
      * deletes by writing null to the field: {@code del si.value} succeeds, reading it afterwards gives
-     * {@code None}, and deleting it a second time is still silent.
+     * {@code None}, and deleting it a second time is still silent. A member that answers for itself —
+     * a property a class declared over the field — is asked instead, which is how a subclass gets its
+     * {@code AttributeError: property 'errno' of 'Guarded' object has no deleter} rather than a complaint
+     * about the instance dictionary.
      */
     @Override
     public PyObject delAttr(String name) {
@@ -543,8 +562,18 @@ public class PyBaseException extends PyObject {
         if (hook instanceof PyFunction function) {
             return function.call(new PyObject[] {this, PyStr.of(name)}, null);
         }
-        if (name.equals("args")) {
-            throw Slots.typeError("args may not be deleted");
+        switch (name) {
+            case "args" -> throw Slots.typeError("args may not be deleted");
+            case "__dict__" -> throw Slots.typeError("cannot delete __dict__");
+            case "__class__" -> throw Slots.typeError("can't delete __class__ attribute");
+            case "__traceback__" ->
+                    throw Slots.typeError("__traceback__ may not be deleted");
+            case "__cause__" -> throw Slots.typeError("__cause__ may not be deleted");
+            case "__context__" -> throw Slots.typeError("__context__ may not be deleted");
+            case "__suppress_context__" ->
+                    throw Slots.typeError("can't delete numeric/char attribute");
+            default -> {
+            }
         }
         if (name.equals("value") && carriesValue()) {
             stopIterationValue = null;
@@ -556,6 +585,11 @@ public class PyBaseException extends PyObject {
         }
         if (name.equals("obj") && carriesObject()) {
             failureObject = null;
+            return PyNone.INSTANCE;
+        }
+        PyObject member = Specials.member(exceptionType, name);
+        if (member != null && Descriptors.writes(member)) {
+            Descriptors.delete(member, this);
             return PyNone.INSTANCE;
         }
         PyStr key = PyStr.interned(name);

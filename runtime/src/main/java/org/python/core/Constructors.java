@@ -182,6 +182,11 @@ final class Constructors {
         if (kwNames != null) {
             throw Slots.typeError("%s() takes no keyword arguments", type.name());
         }
+        if (type.matches(ExceptionTypes.OS_ERROR)) {
+            // The one family whose creator reads its arguments rather than keeping them, and whose value
+            // may be of a narrower class than the one that was called.
+            return PyOSError.create(type, args);
+        }
         return new PyBaseException(type, args);
     }
 
