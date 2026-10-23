@@ -318,8 +318,11 @@ final class Suggestions {
      * best distance it has, and the budget it works to is tightened by that best as it goes. A candidate
      * equal to the wrong name is skipped rather than suggested — the name the read missed is exactly the one
      * a list that holds it would otherwise hand back.
+     *
+     * <p>{@link Arguments} asks the same question of a method's parameter names when a call gives a keyword
+     * none of them is, which is why this is the chooser rather than a private step of the report.
      */
-    private static String closest(List<String> candidates, String wrongName) {
+    static String closest(List<String> candidates, String wrongName) {
         if (candidates.size() >= MAX_CANDIDATE_ITEMS) {
             return null;
         }

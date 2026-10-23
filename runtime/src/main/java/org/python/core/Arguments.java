@@ -215,6 +215,122 @@ final class Arguments {
         return values;
     }
 
+    /**
+     * {@code _PyArg_UnpackKeywords}: a clinic-parsed method's arity and keyword questions, every one of
+     * them answered before a converter has looked at a value.
+     *
+     * <p>Two bounds and the names drive the four refusals: {@code minPositional} how many parameters a
+     * call has to fill by position, {@code maxPositional} how many it may, and {@code names} how many
+     * there are altogether. A call that gives more than that last number is refused by the count of
+     * everything it gave — {@code to_bytes(1, "big", 2, 3)} is four arguments and the message says four —
+     * while one with room in the names but not in the position bound is refused by that bound, because a
+     * parameter it has room for was only reached the wrong way. {@code keyword} joins the first of the two
+     * when nothing arrived positionally, which is CPython's guard against the wrong sentence for a call
+     * that named all four of its arguments.
+     *
+     * <p>A name missing from a required position is complained about before a name nobody has, because
+     * the copy loop runs first and the leftover scan runs after it: {@code from_bytes(byte="x")} is about
+     * the {@code bytes} that never arrived, not about the name that was.
+     *
+     * @param names the parser's keyword tuple, in parameter order
+     * @return one slot per name, null where the call left that parameter out for its default to fill
+     */
+    static PyObject[] unpackKeywords(
+            String name,
+            PyObject[] args,
+            String[] kwNames,
+            String[] names,
+            int minPositional,
+            int maxPositional) {
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = positional(args, kwNames);
+        if (keywords == 0 && minPositional <= positional && positional <= maxPositional) {
+            // CPython's fast path hands the caller `args` itself; the extra slots are its defaults.
+            return Arrays.copyOf(args, names.length);
+        }
+        if (positional + keywords > names.length) {
+            throw Slots.typeError(
+                    "%s() takes at most %d %sargument%s (%d given)",
+                    name,
+                    names.length,
+                    positional == 0 ? "keyword " : "",
+                    names.length == 1 ? "" : "s",
+                    positional + keywords);
+        }
+        if (positional > maxPositional) {
+            if (maxPositional == 0) {
+                throw Slots.typeError("%s() takes no positional arguments", name);
+            }
+            throw Slots.typeError(
+                    "%s() takes %s %d positional argument%s (%d given)",
+                    name,
+                    minPositional < maxPositional ? "at most" : "exactly",
+                    maxPositional,
+                    maxPositional == 1 ? "" : "s",
+                    positional);
+        }
+        PyObject[] values = new PyObject[names.length];
+        System.arraycopy(args, 0, values, 0, positional);
+        int left = keywords;
+        for (int i = positional; i < values.length; i++) {
+            values[i] = left == 0 ? null : behind(args, positional, kwNames, names[i]);
+            if (values[i] != null) {
+                left--;
+            } else if (i < minPositional) {
+                throw Slots.typeError(
+                        "%s() missing required argument '%s' (pos %d)", name, names[i], i + 1);
+            }
+        }
+        if (left > 0) {
+            // The receiver counts as position zero here too, so `f(x, sep=y)` is position one.
+            for (int i = 0; i < positional; i++) {
+                if (behind(args, positional, kwNames, names[i]) != null) {
+                    throw Slots.typeError(
+                            "argument for %s() given by name ('%s') and position (%d)",
+                            name, names[i], i + 1);
+                }
+            }
+            unexpected(name, args, positional, kwNames, names);
+        }
+        return values;
+    }
+
+    /** {@code find_keyword}: the value stacked behind that name, or null when the call gave none. */
+    private static PyObject behind(PyObject[] args, int positional, String[] kwNames, String name) {
+        for (int i = 0; i < kwNames.length; i++) {
+            if (kwNames[i].equals(name)) {
+                return args[positional + i];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * {@code error_unexpected_keyword_arg}: the first name the parameters do not have, with the nearest
+     * one they do.
+     *
+     * <p>The candidate list is the parameters in their own order and nothing else, and the sentence is
+     * joined with a period rather than the colon {@code AttributeError} uses. A leftover name that every
+     * parameter has is the case CPython says it does not bother to work out.
+     */
+    private static void unexpected(
+            String name, PyObject[] args, int positional, String[] kwNames, String[] names) {
+        java.util.List<String> parameters = Arrays.asList(names);
+        for (String keyword : kwNames) {
+            if (position(names, keyword) < 0) {
+                String guess = Suggestions.closest(parameters, keyword);
+                if (guess == null) {
+                    throw Slots.typeError(
+                            "%s() got an unexpected keyword argument '%s'", name, keyword);
+                }
+                throw Slots.typeError(
+                        "%s() got an unexpected keyword argument '%s'. Did you mean '%s'?",
+                        name, keyword, guess);
+            }
+        }
+        throw Slots.typeError("invalid keyword argument for %s()", name);
+    }
+
     /** A positional-only signature: {@code getattr() takes no keyword arguments}. */
     static void noKeywords(String qualified, String[] kwNames) {
         if (kwNames != null) {

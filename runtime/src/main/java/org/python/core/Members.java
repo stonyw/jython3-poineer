@@ -31,6 +31,11 @@ final class Members {
         PyObject apply(PyObject self, PyObject argument);
     }
 
+    /** A method of the type rather than of one of its values, with the type kept apart from the call. */
+    interface OnType {
+        PyObject apply(PyObject type, PyObject[] args, String[] kwNames);
+    }
+
     /** Each table by the type it was built for, which is what a lookup on the class consults. */
     private static final Map<PyType, Members> REGISTRY = new ConcurrentHashMap<>();
 
@@ -290,13 +295,41 @@ final class Members {
      * A method whose first argument is the type it was read from: {@code bytes.fromhex}.
      *
      * <p>A fresh object per read, which is CPython's too: {@code bytes.fromhex is bytes.fromhex} is
-     * false, and {@code __self__} names the type the read was made through. The body is handed the
-     * arguments of the call rather than that type, since a built-in type has no values of its own to
-     * build and nothing a Java body here can reach subclasses one.
+     * false, and {@code __self__} names the type the read was made through — not the one that declares
+     * the name, which is why the table keeps these with no receiver attached and lets {@link #describe}
+     * hand the read to {@link Descriptors}. The body is handed the arguments of the call rather than
+     * that type, because {@code fromhex} builds a {@code bytes} and nothing else — a method that builds
+     * a value <em>of the type it was reached through</em> is {@link #addClassNamed}.
      */
     Members addClass(String name, PyNativeFunction.Body body) {
-        classMethods.put(name, new PyNativeFunction(name, (args, kwNames) -> body.apply(
-                        java.util.Arrays.copyOfRange(args, 1, args.length), kwNames)));
+        classMethods.put(
+                name,
+                PyNativeFunction.onType(
+                        name,
+                        (args, kwNames) -> body.apply(
+                                java.util.Arrays.copyOfRange(args, 1, args.length), kwNames)));
+        return this;
+    }
+
+    /**
+     * A class method the body sees the type of: {@code int.from_bytes}.
+     *
+     * <p>CPython hands {@code METH_CLASS} methods their type and, when it is not the one that declared
+     * them, calls it with the value it worked out — which is what makes {@code bool.from_bytes(b'\xff')}
+     * {@code True} rather than {@code 255}. Stripping the receiver, as {@link #addClass} does, would
+     * throw that rule away, so the body is given the type it was reached through and the call's own
+     * arguments apart from it. That type is the one the <em>read</em> ran on, which is why this table
+     * holds the function unbound and {@link PyNativeFunction} answers the read.
+     */
+    Members addClassNamed(String name, OnType body) {
+        classMethods.put(
+                name,
+                PyNativeFunction.onType(
+                        name,
+                        (args, kwNames) -> body.apply(
+                                args[0],
+                                java.util.Arrays.copyOfRange(args, 1, args.length),
+                                kwNames)));
         return this;
     }
 
@@ -351,7 +384,10 @@ final class Members {
         }
         PyNativeFunction onType = classMethods.get(name);
         if (onType != null) {
-            return onType.withReceiver(owner);
+            // Unbound, so that the type asking is the one the read attaches: CPython's dictionary holds
+            // a classmethod_descriptor here, not the method, and its getter names the class it was read
+            // through rather than the one that declared it.
+            return onType;
         }
         if (!defines(name)) {
             return PyNotImplemented.INSTANCE;

@@ -223,7 +223,9 @@ class Jy3LauncherTest {
                 "47_bytes_padding.py",
                 "48_bytes_case.py",
                 "49_bytes_hex.py",
-                "50_bytes_translate.py");
+                "50_bytes_translate.py",
+                "51_int_to_bytes.py",
+                "52_int_from_bytes.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

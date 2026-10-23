@@ -8,7 +8,7 @@ package org.python.core;
  * vectorcall arguments and answer with a value or a Python exception, which is why {@code CALL} has a
  * single implementation of argument count and keyword handling rather than one per kind of callee.
  */
-public final class PyNativeFunction extends PyObject {
+public final class PyNativeFunction extends PyObject implements Descriptors.Protocol {
 
     /**
      * A native body.
@@ -53,17 +53,40 @@ public final class PyNativeFunction extends PyObject {
      */
     private final String declaredBy;
 
+    /**
+     * Whether the first argument of this body is the class it was reached through: {@code METH_CLASS}.
+     *
+     * <p>CPython keeps such a builtin in the type's dictionary as a {@code classmethod_descriptor}, whose
+     * getter ignores the object it was handed and binds to the <em>class the read ran on</em> — which is
+     * what makes {@code bool.from_bytes(b'\xff')} a {@code bool} and {@code int.from_bytes} the same call
+     * over {@code int}. A function that is not one of these is not a descriptor at all: reading
+     * {@code bytes.maketrans} hands out the very object the dictionary holds.
+     */
+    private final boolean onType;
+
     public PyNativeFunction(String name, Body body) {
-        this(name, body, null, null, null);
+        this(name, body, null, null, null, false);
     }
 
-    private PyNativeFunction(String name, Body body, PyObject receiver, String doc, String declaredBy) {
+    private PyNativeFunction(
+            String name, Body body, PyObject receiver, String doc, String declaredBy, boolean onType) {
         super(PyType.BUILTIN_FUNCTION);
         this.name = name;
         this.body = body;
         this.receiver = receiver;
         this.doc = doc;
         this.declaredBy = declaredBy;
+        this.onType = onType;
+    }
+
+    /**
+     * A class method of {@code owner} as its dictionary holds it: with no receiver attached yet.
+     *
+     * <p>The receiver is what the read makes, not what the table keeps, so {@code int.from_bytes} and
+     * {@code bool.from_bytes} are two objects naming two different classes over one body.
+     */
+    static PyNativeFunction onType(String name, Body body) {
+        return new PyNativeFunction(name, body, null, null, null, true);
     }
 
     /**
@@ -74,17 +97,36 @@ public final class PyNativeFunction extends PyObject {
      * that names it.
      */
     static PyNativeFunction declaredBy(String owner, String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, owner);
+        return new PyNativeFunction(name, body, null, null, owner, false);
     }
 
     /** This method read through {@code owner}, with the receiver already attached to it. */
     PyNativeFunction withReceiver(PyObject owner) {
-        return new PyNativeFunction(name, body, owner, doc, declaredBy);
+        return new PyNativeFunction(name, body, owner, doc, declaredBy, onType);
     }
 
     /** This function answering {@code __doc__} with {@code text} rather than with {@code None}. */
     PyNativeFunction documented(String text) {
-        return new PyNativeFunction(name, body, receiver, text, declaredBy);
+        return new PyNativeFunction(name, body, receiver, text, declaredBy, onType);
+    }
+
+    /**
+     * Reading this member as an attribute of a class, which is the whole of a class method's descriptor
+     * half: the type the read ran on becomes the receiver, and the object it ran on — if there was one —
+     * is dropped, exactly as {@code classmethod_get} drops it.
+     *
+     * <p>Anything already bound answers with itself, so a second read of a member that a table hands out
+     * bound cannot bind the receiver again.
+     */
+    @Override
+    public PyObject asAttribute(PyObject obj, PyObject owner) {
+        return onType && receiver == null ? withReceiver(owner) : this;
+    }
+
+    /** Only a class method is a descriptor; a static method or a plain builtin is not one. */
+    @Override
+    public boolean binds() {
+        return onType;
     }
 
     /** The name CPython qualifies a receiver-bound method with: {@code int.mro}. */
