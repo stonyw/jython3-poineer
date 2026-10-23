@@ -43,30 +43,48 @@ public final class PyNativeFunction extends PyObject {
      */
     private final String doc;
 
+    /**
+     * The type a static method is named after, or null for every other builtin.
+     *
+     * <p>{@code bytes.maketrans} belongs to a type but takes no receiver, so CPython qualifies its name
+     * with the type ({@code __qualname__} is {@code bytes.maketrans}) while its {@code __self__} reads
+     * {@code None}. The name alone is not enough to print that, and the receiver is not the answer,
+     * because a receiver would also be prepended to the arguments.
+     */
+    private final String declaredBy;
+
     public PyNativeFunction(String name, Body body) {
-        this(name, body, null, null);
+        this(name, body, null, null, null);
     }
 
-    private PyNativeFunction(String name, Body body, PyObject receiver) {
-        this(name, body, receiver, null);
-    }
-
-    private PyNativeFunction(String name, Body body, PyObject receiver, String doc) {
+    private PyNativeFunction(String name, Body body, PyObject receiver, String doc, String declaredBy) {
         super(PyType.BUILTIN_FUNCTION);
         this.name = name;
         this.body = body;
         this.receiver = receiver;
         this.doc = doc;
+        this.declaredBy = declaredBy;
+    }
+
+    /**
+     * A method of {@code owner} that takes no receiver: {@code bytes.maketrans}.
+     *
+     * <p>One object serves the type and every value of it, which is what makes {@code bytes.maketrans is
+     * b''.maketrans} true, and it answers {@code __self__} with {@code None} rather than with the type
+     * that names it.
+     */
+    static PyNativeFunction declaredBy(String owner, String name, Body body) {
+        return new PyNativeFunction(name, body, null, null, owner);
     }
 
     /** This method read through {@code owner}, with the receiver already attached to it. */
     PyNativeFunction withReceiver(PyObject owner) {
-        return new PyNativeFunction(name, body, owner, doc);
+        return new PyNativeFunction(name, body, owner, doc, declaredBy);
     }
 
     /** This function answering {@code __doc__} with {@code text} rather than with {@code None}. */
     PyNativeFunction documented(String text) {
-        return new PyNativeFunction(name, body, receiver, text);
+        return new PyNativeFunction(name, body, receiver, text, declaredBy);
     }
 
     /** The name CPython qualifies a receiver-bound method with: {@code int.mro}. */
@@ -74,7 +92,7 @@ public final class PyNativeFunction extends PyObject {
         if (receiver instanceof PyType owner) {
             return owner.name() + "." + name;
         }
-        return name;
+        return declaredBy == null ? name : declaredBy + "." + name;
     }
 
     /** A body that takes positionals only; a keyword argument reaching it is an error, as in Python. */
@@ -108,15 +126,22 @@ public final class PyNativeFunction extends PyObject {
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> PyStr.of(qualifiedName());
             case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
-            case "__self__" -> receiver == null ? PyNotImplemented.INSTANCE : receiver;
+            case "__self__" -> receiver != null
+                    ? receiver
+                    : declaredBy == null ? PyNotImplemented.INSTANCE : PyNone.INSTANCE;
             default -> PyNotImplemented.INSTANCE;
         };
     }
 
     @Override
     public String repr() {
-        return receiver == null
+        if (receiver != null) {
+            return "<built-in method " + name + " of " + receiver.getType().name() + " object>";
+        }
+        // CPython prints the type object a static method was read from, which it keeps behind
+        // `__self__` even though that reads None; the address is the rest of its sentence.
+        return declaredBy == null
                 ? "<built-in function " + name + ">"
-                : "<built-in method " + name + " of " + receiver.getType().name() + " object>";
+                : "<built-in method " + name + " of type object>";
     }
 }

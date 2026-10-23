@@ -299,6 +299,19 @@ public final class PyBytes extends PyObject {
 
     private static final BigInteger OCTET_MAX = BigInteger.valueOf(255);
 
+    /** {@code hex}'s two parameters, which a caller may name; the separator has no default value. */
+    private static final String[] HEX = {"sep", "bytes_per_sep"};
+
+    private static final PyObject[] HEX_DEFAULTS = {PyInt.of(1)};
+
+    /** {@code translate}'s two parameters, both of which CPython leaves NULL until a call fills them. */
+    private static final String[] TABLE_AND_DELETE = {"table", "delete"};
+
+    private static final PyObject[] TRANSLATE_DEFAULTS = {};
+
+    /** {@code Py_hexdigits}: the two digits of one octet, lower case always. */
+    private static final String HEX_DIGITS = "0123456789abcdef";
+
     private static final Members METHODS = Members.of(PyType.BYTES)
             .addNoArgument("capitalize", self -> PyBytes.wrap(capitalized(octets(self))))
             .add("center", (self, args, kwNames) -> padded(self, args, kwNames, "center", true, true))
@@ -322,7 +335,10 @@ public final class PyBytes extends PyObject {
                     Numbers.cInteger(Arguments.parameters(
                             "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]))))
             .add("find", (self, args, kwNames) -> search(self, args, kwNames, "find", false, false))
-            .addNoArgument("hex", self -> PyStr.of(hexadecimal(octets(self))))
+            .addClass("fromhex", (args, kwNames) -> fromHexadecimal(args, kwNames))
+            .add("hex", (self, args, kwNames) -> hexadecimal(
+                    octets(self),
+                    Arguments.parameters("hex", args, kwNames, HEX, HEX_DEFAULTS, 0)))
             .add("index", (self, args, kwNames) -> search(self, args, kwNames, "index", false, true))
             .addNoArgument("isalnum", self -> PyBool.of(allOf(octets(self), PyBytes::isAlnum)))
             .addNoArgument("isalpha", self -> PyBool.of(allOf(octets(self), PyBytes::isAlpha)))
@@ -337,6 +353,7 @@ public final class PyBytes extends PyObject {
                     padded(self, args, kwNames, "ljust", false, true))
             .addNoArgument("lower", self -> PyBytes.wrap(cased(octets(self), false)))
             .add("lstrip", (self, args, kwNames) -> trim(self, args, kwNames, "lstrip", true, false))
+            .addStatic("maketrans", (args, kwNames) -> translationTable(args, kwNames))
             .addOne("partition", (self, argument) -> divided(self, octets(self), argument, true))
             .addOne("removeprefix", (self, argument) -> shortened(self, argument, true))
             .addOne("removesuffix", (self, argument) -> shortened(self, argument, false))
@@ -366,6 +383,11 @@ public final class PyBytes extends PyObject {
             .add("strip", (self, args, kwNames) -> trim(self, args, kwNames, "strip", true, true))
             .addNoArgument("swapcase", self -> PyBytes.wrap(swapped(octets(self))))
             .addNoArgument("title", self -> PyBytes.wrap(titleCased(octets(self))))
+            .add("translate", (self, args, kwNames) -> translated(
+                    octets(self),
+                    Arguments.parameters(
+                            "translate", args, kwNames, TABLE_AND_DELETE, TRANSLATE_DEFAULTS, 1),
+                    self))
             .addNoArgument("upper", self -> PyBytes.wrap(cased(octets(self), true)))
             .addOne("zfill", (self, width) -> zeroFilled(self, octets(self), Numbers.size(width)));
 
@@ -1115,12 +1137,246 @@ public final class PyBytes extends PyObject {
         return true;
     }
 
+    /**
+     * {@code b'ab'.hex(sep, bytes_per_sep)}: two digits per octet, optionally grouped.
+     *
+     * <p>The step is converted while the arguments are being read, before the separator is looked at,
+     * which is why {@code b'ab'.hex(None, 2.0)} complains about a float rather than about a separator with
+     * no length. Both numbers are a C {@code int}, so a step wider than one is an {@code OverflowError}
+     * even when its sign would have made it a group of nothing.
+     */
+    private static PyObject hexadecimal(byte[] text, PyObject[] given) {
+        int step = Numbers.cInteger(given[1]);
+        if (given[0] == null) {
+            return PyStr.of(hexadecimal(text));
+        }
+        char between = (char) separator(given[0]);
+        // CPython takes the absolute value into an unsigned word, so the most negative int is a group of
+        // 2**31 — always wider than any bytes it could be applied to, and so a plain run of digits.
+        long group = Math.abs((long) step);
+        if (step == 0 || group >= text.length) {
+            return PyStr.of(hexadecimal(text));
+        }
+        // The count of separators is the number of whole groups that fit in all but the last octet, and
+        // where they land is the only difference between the two signs: positive counts them from the
+        // right, negative from the left.
+        int groups = (int) ((text.length - 1) / group);
+        int next = step > 0 ? text.length - groups * (int) group : (int) group;
+        StringBuilder out = new StringBuilder(text.length * 2 + groups);
+        for (int at = 0; at < text.length; at++) {
+            if (at == next) {
+                out.append(between);
+                next += (int) group;
+            }
+            appendDigits(out, text[at]);
+        }
+        return PyStr.of(out.toString());
+    }
+
+    /**
+     * The one character {@code hex} separates its groups with, asked in CPython's order.
+     *
+     * <p>The length comes first and of anything, which is why a number is refused for having no
+     * {@code len()} while a one-element list is refused for not being a string. Only then is the type
+     * read, and then the value: a separator is two digits beside one octet in a string this method
+     * returns, so nothing above {@code 0x7f} can be written into it — whether because it needed two or
+     * four bytes to store, or because one was enough for a byte no ASCII letter is.
+     */
+    private static int separator(PyObject sep) {
+        long length = Numbers.size(Slots.length(sep));
+        if (length != 1) {
+            throw Slots.valueError("sep must be length 1.");
+        }
+        int value;
+        if (sep instanceof PyStr text) {
+            value = text.getValue().codePointAt(0);
+        } else if (sep instanceof PyBytes one) {
+            value = one.value[0] & 0xff;
+        } else {
+            throw Slots.typeError("sep must be str or bytes.");
+        }
+        if (value > 127) {
+            throw Slots.valueError("sep must be ASCII.");
+        }
+        return value;
+    }
+
+    /** {@code bytes.fromhex(string)}: two digits per octet, with a space allowed between the pair. */
+    private static PyObject fromHexadecimal(PyObject[] args, String[] kwNames) {
+        Arguments.exactlyOne("bytes.fromhex()", args, kwNames);
+        return PyBytes.wrap(hexadecimalDigits(args[0]));
+    }
+
+    /**
+     * The octets behind the digits {@code fromhex} reads.
+     *
+     * <p>A string is tested for anything above ASCII before a single digit is read, so its position is a
+     * count of code points and is the only thing a mixed string ever reports; a bytes is read as digits
+     * from its first octet, and an octet that is not one reports the same sentence at the same count.
+     * Anything that is neither — a buffer this runtime has no type for included — is refused by name.
+     */
+    private static byte[] hexadecimalDigits(PyObject source) {
+        if (source instanceof PyStr text) {
+            String value = text.getValue();
+            int index = 0;
+            for (int at = 0; at < value.length(); ) {
+                int code = value.codePointAt(at);
+                at += Character.charCount(code);
+                if (code >= 128) {
+                    throw Slots.valueError(
+                            "non-hexadecimal number found in fromhex() arg at position %d", index);
+                }
+                index++;
+            }
+            return hexadecimalDigits(value.getBytes(StandardCharsets.ISO_8859_1));
+        }
+        if (source instanceof PyBytes one) {
+            return hexadecimalDigits(one.value);
+        }
+        throw Slots.typeError(
+                "fromhex() argument must be str or bytes-like, not %s", source.getType().name());
+    }
+
+    /** The walk itself, which reads a space only where a pair of digits would otherwise begin. */
+    private static byte[] hexadecimalDigits(byte[] digits) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(digits.length / 2);
+        int at = 0;
+        while (at < digits.length) {
+            if (isHexSpace(digits[at] & 0xff)) {
+                do {
+                    at++;
+                    if (at >= digits.length) {
+                        return out.toByteArray();
+                    }
+                } while (isHexSpace(digits[at] & 0xff));
+            }
+            int top = hexDigit(digits[at] & 0xff);
+            if (top >= 16) {
+                throw Slots.valueError(
+                        "non-hexadecimal number found in fromhex() arg at position %d", at);
+            }
+            at++;
+            if (at >= digits.length) {
+                throw Slots.valueError(
+                        "fromhex() arg must contain an even number of hexadecimal digits");
+            }
+            int low = hexDigit(digits[at] & 0xff);
+            if (low >= 16) {
+                throw Slots.valueError(
+                        "non-hexadecimal number found in fromhex() arg at position %d", at);
+            }
+            at++;
+            out.write((top << 4) + low);
+        }
+        return out.toByteArray();
+    }
+
+    /** The octets {@code fromhex} skips between two numbers: CPython's {@code Py_ISSPACE}. */
+    private static boolean isHexSpace(int code) {
+        // Only the six that a C locale calls a space — a vertical tab is one and a non-breaking space is
+        // not, and a string that reached this method never got as far as a space above ASCII anyway.
+        return code == 0x20 || (code >= 0x09 && code <= 0x0d);
+    }
+
+    /** {@code _PyLong_DigitValue}: the sixteen digits, and anything else a number that is not one. */
+    private static int hexDigit(int code) {
+        if (code >= '0' && code <= '9') {
+            return code - '0';
+        }
+        if (code >= 'a' && code <= 'f') {
+            return code - 'a' + 10;
+        }
+        if (code >= 'A' && code <= 'F') {
+            return code - 'A' + 10;
+        }
+        return 255;
+    }
+
+    /** {@code bytes.maketrans(frm, to)}: the identity table with each octet of one pointed at the other. */
+    private static PyObject translationTable(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("bytes.maketrans()", kwNames);
+        Arguments.exactly("maketrans", args, kwNames, 2);
+        byte[] from = run(args[0]);
+        byte[] to = run(args[1]);
+        if (from.length != to.length) {
+            throw Slots.valueError("maketrans arguments must have same length");
+        }
+        byte[] table = new byte[256];
+        for (int at = 0; at < 256; at++) {
+            table[at] = (byte) at;
+        }
+        for (int at = 0; at < from.length; at++) {
+            // Written in order onto one table, so the last of two claims on an octet is the answer.
+            table[from[at] & 0xff] = to[at];
+        }
+        return PyBytes.wrap(table);
+    }
+
+    /**
+     * {@code b'abc'.translate(table, delete)}: one octet in, one out, or none.
+     *
+     * <p>The table is read before the deletions are, so a table of the wrong length is refused even by a
+     * call whose second argument could not be a table either, and {@code None} is the only argument that
+     * is not a run of octets — it means the identity, and so is how a call deletes without mapping.
+     *
+     * <p>An answer that is octet for octet the receiver is the receiver itself, which is what makes
+     * {@code b'ab'.translate(bytes.maketrans(b'', b'')) is b'ab'} true. A deletion that never happens and
+     * a mapping that maps nothing both count as no change.
+     */
+    private static PyObject translated(byte[] text, PyObject[] given, PyObject self) {
+        byte[] table = given[0] instanceof PyNone ? null : run(given[0]);
+        if (table != null && table.length != 256) {
+            throw Slots.valueError("translation table must be 256 characters long");
+        }
+        byte[] delete = given[1] == null ? null : run(given[1]);
+        if (delete == null || delete.length == 0) {
+            if (table != null) {
+                // CPython's fast path, the only one that reads the table as octets rather than as ints.
+                byte[] out = new byte[text.length];
+                boolean changed = false;
+                for (int at = 0; at < text.length; at++) {
+                    byte mapped = table[text[at] & 0xff];
+                    out[at] = mapped;
+                    changed |= mapped != text[at];
+                }
+                return changed ? PyBytes.wrap(out) : self;
+            }
+        }
+        int[] mapped = new int[256];
+        for (int at = 0; at < 256; at++) {
+            mapped[at] = table == null ? at : table[at] & 0xff;
+        }
+        if (delete != null) {
+            for (byte doomed : delete) {
+                mapped[doomed & 0xff] = -1;
+            }
+        }
+        byte[] out = new byte[text.length];
+        int written = 0;
+        boolean changed = false;
+        for (byte octet : text) {
+            int value = mapped[octet & 0xff];
+            if (value < 0) {
+                changed = true;
+            } else if ((out[written++] = (byte) value) != octet) {
+                changed = true;
+            }
+        }
+        return changed ? PyBytes.wrap(Arrays.copyOf(out, written)) : self;
+    }
+
     private static String hexadecimal(byte[] text) {
         StringBuilder out = new StringBuilder(text.length * 2);
         for (byte octet : text) {
-            out.append(String.format("%02x", octet & 0xff));
+            appendDigits(out, octet);
         }
         return out.toString();
+    }
+
+    /** The two {@code Py_hexdigits} of one octet. */
+    private static void appendDigits(StringBuilder out, byte octet) {
+        int value = octet & 0xff;
+        out.append(HEX_DIGITS.charAt(value >> 4)).append(HEX_DIGITS.charAt(value & 0xf));
     }
 
     private static PyList bytes(List<byte[]> parts) {

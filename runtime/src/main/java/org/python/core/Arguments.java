@@ -177,9 +177,11 @@ final class Arguments {
         int keywords = kwNames == null ? 0 : kwNames.length;
         int positional = positional(args, kwNames);
         if (positional < required) {
+            // One is singular: `translate() takes at least 1 positional argument (0 given)`, which is
+            // CPython's `(num_required < 2 ? "" : "s")` and the reason the message is built per count.
             throw Slots.typeError(
-                    "%s() takes at least %d positional arguments (%d given)",
-                    name, required, positional);
+                    "%s() takes at least %d positional argument%s (%d given)",
+                    name, required, required == 1 ? "" : "s", positional);
         }
         if (args.length > names.length) {
             throw Slots.typeError(

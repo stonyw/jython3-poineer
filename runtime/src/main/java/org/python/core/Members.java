@@ -66,6 +66,18 @@ final class Members {
     private final Map<String, PyBoundMethod.Body> entries = new LinkedHashMap<>();
 
     /**
+     * The methods this type declares that take no receiver: {@code bytes.maketrans}.
+     *
+     * <p>One object per name, held here rather than in {@link #values}, because the two differ in what a
+     * read hands out: a value is the object the dictionary holds, and these are answered identically from
+     * the type and from any value of it, which is what a {@code staticmethod} in a built-in type is.
+     */
+    private final Map<String, PyNativeFunction> statics = new LinkedHashMap<>();
+
+    /** The methods whose first argument is the type itself: {@code bytes.fromhex}. */
+    private final Map<String, PyNativeFunction> classMethods = new LinkedHashMap<>();
+
+    /**
      * The names this type files as storage rather than as behaviour: {@code sys.version_info}'s five
      * fields, each a {@link PyMemberDescriptor} the dictionary holds once.
      */
@@ -263,12 +275,46 @@ final class Members {
     }
 
     /**
+     * A method that takes no receiver: {@code bytes.maketrans}.
+     *
+     * <p>The one object in the table answers for the type and for every value of it, because CPython's
+     * {@code staticmethod} descriptor hands back the function it wraps — {@code bytes.maketrans is
+     * b''.maketrans} is true — and its {@code __self__} is {@code None}, not the type it belongs to.
+     */
+    Members addStatic(String name, PyNativeFunction.Body body) {
+        statics.put(name, PyNativeFunction.declaredBy(owner.name(), name, body));
+        return this;
+    }
+
+    /**
+     * A method whose first argument is the type it was read from: {@code bytes.fromhex}.
+     *
+     * <p>A fresh object per read, which is CPython's too: {@code bytes.fromhex is bytes.fromhex} is
+     * false, and {@code __self__} names the type the read was made through. The body is handed the
+     * arguments of the call rather than that type, since a built-in type has no values of its own to
+     * build and nothing a Java body here can reach subclasses one.
+     */
+    Members addClass(String name, PyNativeFunction.Body body) {
+        classMethods.put(name, new PyNativeFunction(name, (args, kwNames) -> body.apply(
+                        java.util.Arrays.copyOfRange(args, 1, args.length), kwNames)));
+        return this;
+    }
+
+    /**
      * The method named {@code name}, bound to {@code self}, or a refusal if this type has no such method.
      *
      * <p>{@code self} is kept as the receiver and only the body sees the adapted one, so that a method a
      * bool inherits from int still reports itself as {@code bool.bit_length}.
      */
     PyObject bind(PyObject self, String name) {
+        PyNativeFunction noReceiver = statics.get(name);
+        if (noReceiver != null) {
+            return noReceiver;
+        }
+        PyNativeFunction onType = classMethods.get(name);
+        if (onType != null) {
+            return onType.withReceiver(self.getType());
+        }
         PyBoundMethod.Body body = entries.get(name);
         if (body == null) {
             return PyNotImplemented.INSTANCE;
@@ -299,6 +345,14 @@ final class Members {
         if (filed != null) {
             return filed;
         }
+        PyNativeFunction noReceiver = statics.get(name);
+        if (noReceiver != null) {
+            return noReceiver;
+        }
+        PyNativeFunction onType = classMethods.get(name);
+        if (onType != null) {
+            return onType.withReceiver(owner);
+        }
         if (!defines(name)) {
             return PyNotImplemented.INSTANCE;
         }
@@ -308,7 +362,7 @@ final class Members {
 
     /** Whether this type defines that method at all, which {@code hasattr} and {@code in} both ask. */
     boolean defines(String name) {
-        return entries.containsKey(name);
+        return entries.containsKey(name) || statics.containsKey(name) || classMethods.containsKey(name);
     }
 
     /** Whether this type files the name at all, as a method, a field or a value. */
@@ -319,6 +373,8 @@ final class Members {
     /** The names Python sees, in declaration order, for {@code dir()}. */
     String[] names() {
         java.util.List<String> all = new java.util.ArrayList<>(entries.keySet());
+        all.addAll(statics.keySet());
+        all.addAll(classMethods.keySet());
         all.addAll(fields.keySet());
         all.addAll(values.keySet());
         return all.toArray(new String[0]);
