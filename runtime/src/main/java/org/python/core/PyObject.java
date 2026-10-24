@@ -267,10 +267,29 @@ public abstract class PyObject {
      * {@code self(*args, **kwNames)}: the calling convention of CPython's vectorcall, where the
      * keyword values are the {@code kwNames.length} entries at the end of {@code args}.
      *
+     * <p>The refusal belongs to the value that cannot answer a call rather than to the call site, because
+     * {@link PyNotImplemented} is a legal <em>answer</em>: {@code b'ab'.__eq__('ab')} hands one back, and a
+     * caller that read it as "not callable" would report {@code 'method-wrapper' object is not callable}
+     * about a method that was called. A type that overrides this is callable; everything else says so in
+     * CPython's words here.
+     *
      * @param kwNames interned keyword names, or null when every argument is positional
      */
     public PyObject call(PyObject[] args, PyTuple kwNames) {
-        return PyNotImplemented.INSTANCE;
+        throw Slots.typeError("'%s' object is not callable", getType().filedName());
+    }
+
+    /**
+     * Whether the value has a call slot, which is the whole of what {@code callable()} asks.
+     *
+     * <p>CPython reads {@code tp_call}, a field its own type layout fills in only for a class that
+     * implements the slot, so this is a question about the value's class rather than about a call it might
+     * one day refuse. The default answer is no, and every class that overrides {@link #call} says yes
+     * beside it; a {@link PyInstance} is the one value whose answer is not its class's, because a class
+     * that declares no {@code __call__} has no slot to run.
+     */
+    public boolean isCallable() {
+        return false;
     }
 
     /** Python {@code hash()}. */

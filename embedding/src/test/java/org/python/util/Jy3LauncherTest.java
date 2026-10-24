@@ -231,7 +231,10 @@ class Jy3LauncherTest {
                 "55_type_namespace.py",
                 "56_descriptor_kinds.py",
                 "57_class_attribute_writes.py",
-                "58_metaclass_side_write.py");
+                "58_metaclass_side_write.py",
+                "59_bytes_dictionary.py",
+                "60_str_dictionary.py",
+                "61_call_slot.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

@@ -136,11 +136,16 @@ public final class PyStr extends PyObject {
         return op == BinaryOp.MUL ? PyStr.of(repeated(other)) : PyNotImplemented.INSTANCE;
     }
 
+    /**
+     * Code-point order against another string, and the decline of anything else.
+     *
+     * <p>{@code unicode_richcompare} compares only what it can read as text, so a program that asks for
+     * the slot instead of running the operator — {@code 'a'.__eq__(3)} — is handed {@code NotImplemented}
+     * rather than a {@code False} it did not compute.
+     */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
-        return other instanceof PyStr text
-                ? ordered(cmp, compareTo(text))
-                : super.richCompare(cmp, other);
+        return other instanceof PyStr text ? ordered(cmp, compareTo(text)) : PyNotImplemented.INSTANCE;
     }
 
     @Override
@@ -320,10 +325,11 @@ public final class PyStr extends PyObject {
      * {@link Arguments} or one of the helpers below, because the wording of the failure is part of
      * what a program can see.
      *
-     * {@code maketrans} is not here at all: it is a static method, which a table of instance methods
-     * cannot express. {@code translate} and {@code format_map} are present as refusals, because an
-     * unimplemented method reports better than an {@code AttributeError} for a name every Python
-     * programmer knows.
+     * {@code maketrans} is the one entry that takes no receiver, and so is declared with
+     * {@link Members#addStatic}: the same object answers for the type and for every value of it, which is
+     * what makes {@code str.maketrans is ''.maketrans} true. {@code translate} and {@code format_map} are
+     * present as refusals, because an unimplemented method reports better than an {@code AttributeError}
+     * for a name every Python programmer knows.
      */
     private static final Members METHODS = Members.of(PyType.STR)
             .addNoArgument("capitalize", self -> PyStr.of(capitalize(text(self), false)))
@@ -383,6 +389,7 @@ public final class PyStr extends PyObject {
             .add("ljust", (self, args, kwNames) -> align(self, args, kwNames, "ljust", Side.LEFT))
             .addNoArgument("lower", self -> PyStr.of(text(self).toLowerCase(Locale.ROOT)))
             .add("lstrip", (self, args, kwNames) -> trim(self, args, kwNames, "lstrip", true, false))
+            .addStatic("maketrans", PyStr::makeTrans)
             .addOne("partition", (self, separator) ->
                     triples(((PyStr) self).divide(divided(separator), true)))
             .addOne("removeprefix", (self, prefix) -> {
@@ -428,10 +435,116 @@ public final class PyStr extends PyObject {
             })
             .addNoArgument("title", self -> PyStr.of(capitalize(text(self), true)))
             .addNoArgument("upper", self -> PyStr.of(text(self).toUpperCase(Locale.ROOT)))
-            .addOne("zfill", (self, width) -> zeroFilled(self, text(self), Numbers.size(width)));
+            .addOne("zfill", (self, width) -> zeroFilled(self, text(self), Numbers.size(width)))
+            // The three names CPython files after the methods a person calls, in the dictionary rather than
+            // among them. `__format__` is what a `format()` call reaches, and answers through the same
+            // {@link Formats} the builtin does, so that the two spellings of a spec cannot drift; the empty
+            // spec hands back the string itself. `__sizeof__` counts a C struct this runtime does not have,
+            // and so says nought. `__getnewargs__` hands pickle the one argument a string is rebuilt from.
+            .add(
+                    "__format__",
+                    "Return a formatted version of the string as described by format_spec.",
+                    (self, args, kwNames) -> {
+                        Arguments.exactlyOne("str.__format__()", args, kwNames);
+                        if (!(args[0] instanceof PyStr spec)) {
+                            throw Slots.typeError(
+                                    "__format__() argument must be str, not %s",
+                                    Slots.argumentName(args[0]));
+                        }
+                        return spec.value.isEmpty()
+                                ? self
+                                : PyStr.of(Formats.apply(self, spec.value));
+                    })
+            .add(
+                    "__sizeof__",
+                    "Return the size of the string in memory, in bytes.",
+                    (self, args, kwNames) -> {
+                        Arguments.none("str.__sizeof__()", args, kwNames);
+                        return PyInt.of(0);
+                    })
+            .add("__getnewargs__", (self, args, kwNames) -> {
+                Arguments.none("str.__getnewargs__()", args, kwNames);
+                return PyTuple.of(self);
+            });
 
     private static String text(PyObject self) {
         return ((PyStr) self).value;
+    }
+
+    /**
+     * {@code str.maketrans(x[, y[, z]])}: the dictionary {@code translate} is fed.
+     *
+     * <p>Two shapes and one order of refusals. The second and third arguments are converted by the
+     * argument table before the body sees anything, so {@code maketrans(3, 4)} complains about argument 2
+     * rather than about the first argument, and only then does the one-argument shape ask for a dict. A
+     * dict is re-keyed but never re-valued: a character key becomes its ordinal, an integer key stays as
+     * it is, and a value is stored whatever it holds — {@code maketrans({'a': 3})} is accepted even though
+     * {@code translate} will not be. CPython's two messages about keys are mis-spelled in its own source
+     * ("translatetable", "mustbe"), and are transcribed here rather than tidied.
+     */
+    private static PyObject makeTrans(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("str.maketrans()", kwNames);
+        Arguments.between("maketrans", args, kwNames, 1, 3);
+        PyDict built = PyDict.empty();
+        if (args.length == 1) {
+            if (!(args[0] instanceof PyDict table)) {
+                throw Slots.typeError(
+                        "if you give only one argument to maketrans it must be a dict");
+            }
+            for (PyObject pair : table.pairs()) {
+                PyObject key = ((PyTuple) pair).at(0);
+                PyObject value = ((PyTuple) pair).at(1);
+                if (key instanceof PyStr character) {
+                    if (character.codePoints != 1) {
+                        throw Slots.valueError("string keys in translatetable must be of length 1");
+                    }
+                    built.put(PyInt.of(character.value.codePointAt(0)), value);
+                } else if (key instanceof PyInt ordinal) {
+                    built.put(ordinal, value);
+                } else {
+                    throw Slots.typeError("keys in translate table mustbe strings or integers");
+                }
+            }
+            return built;
+        }
+        if (!(args[1] instanceof PyStr to)) {
+            throw Slots.typeError(
+                    "maketrans() argument 2 must be str, not %s", args[1].getType().name());
+        }
+        if (args.length > 2 && !(args[2] instanceof PyStr)) {
+            throw Slots.typeError(
+                    "maketrans() argument 3 must be str, not %s", args[2].getType().name());
+        }
+        if (!(args[0] instanceof PyStr from)) {
+            throw Slots.typeError(
+                    "first maketrans argument must be a string if there is a second argument");
+        }
+        int[] source = points(from.value);
+        int[] target = points(to.value);
+        if (source.length != target.length) {
+            throw Slots.valueError("the first two maketrans arguments must have equal length");
+        }
+        for (int at = 0; at < source.length; at++) {
+            built.put(PyInt.of(source[at]), PyInt.of(target[at]));
+        }
+        if (args.length > 2) {
+            // The deletions are named by the text they read as, and every one of them answers None.
+            for (int doomed : points(((PyStr) args[2]).value)) {
+                built.put(PyInt.of(doomed), PyNone.INSTANCE);
+            }
+        }
+        return built;
+    }
+
+    /** The code points of a text, which is what {@code maketrans} pairs up and counts by. */
+    private static int[] points(String text) {
+        int[] out = new int[text.codePointCount(0, text.length())];
+        for (int at = 0, read = 0; at < out.length; at++) {
+            int point = text.codePointAt(read);
+            out[at] = point;
+            read += Character.charCount(point);
+        }
+        return out;
     }
 
     // --- argument helpers ------------------------------------------------------------------

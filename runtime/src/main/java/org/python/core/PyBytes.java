@@ -206,7 +206,14 @@ public final class PyBytes extends PyObject {
 
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
-        if (op == BinaryOp.ADD && other instanceof PyBytes b) {
+        if (op == BinaryOp.ADD) {
+            // `bytes_concat` does not decline: it tries to read the right operand as a buffer and, when
+            // that fails, says which of the two it could not concat — `[] + b'ab'` is the list's own
+            // complaint about a bytes, while `b'ab' + []` is this one about a list.
+            if (!(other instanceof PyBytes b)) {
+                throw Slots.typeError(
+                        "can't concat %s to %s", other.getType().name(), getType().name());
+            }
             return PyBytes.wrap(concat(value, b.value));
         }
         if (op == BinaryOp.MUL) {
@@ -266,11 +273,18 @@ public final class PyBytes extends PyObject {
         return PyIterator.of(elements);
     }
 
+    /**
+     * {@code bytes_richcompare}: an octet run compares against another one and declines everything else.
+     *
+     * <p>The decline is what a program sees when it asks for the slot rather than running the operator —
+     * {@code b'ab'.__eq__(3)} is {@code NotImplemented}, not {@code False} — and the operator still ends up
+     * with {@code False}, because {@link Slots} falls back to identity once both sides have declined.
+     */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
         return other instanceof PyBytes b
                 ? PyObject.ordered(cmp, Arrays.compare(value, b.value))
-                : super.richCompare(cmp, other);
+                : PyNotImplemented.INSTANCE;
     }
 
     @Override
@@ -389,7 +403,21 @@ public final class PyBytes extends PyObject {
                             "translate", args, kwNames, TABLE_AND_DELETE, TRANSLATE_DEFAULTS, 1),
                     self))
             .addNoArgument("upper", self -> PyBytes.wrap(cased(octets(self), true)))
-            .addOne("zfill", (self, width) -> zeroFilled(self, octets(self), Numbers.size(width)));
+            .addOne("zfill", (self, width) -> zeroFilled(self, octets(self), Numbers.size(width)))
+            // The two names pickle and the buffer protocol read off a value rather than call: the argument
+            // list a rebuild is made from is the octet run itself, and `__bytes__` answers the same object
+            // it was asked on, because a bytes is already the exact type it converts to.
+            .add("__getnewargs__", (self, args, kwNames) -> {
+                Arguments.none("bytes.__getnewargs__()", args, kwNames);
+                return PyTuple.of(self);
+            })
+            .add(
+                    "__bytes__",
+                    "Convert this value to exact type bytes.",
+                    (self, args, kwNames) -> {
+                        Arguments.none("bytes.__bytes__()", args, kwNames);
+                        return self;
+                    });
 
     // --- argument helpers ------------------------------------------------------------------
 

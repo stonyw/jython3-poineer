@@ -45,6 +45,11 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
                 kwNames);
     }
 
+    @Override
+    public boolean isCallable() {
+        return true;
+    }
+
     /**
      * The method as an attribute: itself through the class, bound through a value.
      *
@@ -71,6 +76,9 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
         return switch (attribute) {
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> PyStr.of(owner.name() + "." + name);
+            // Every descriptor of CPython's `PyDescrObject` family answers this, and answers it with the
+            // type whose method it is — the same type the repr names.
+            case "__objclass__" -> owner;
             // The sentence is the table's, so a descriptor answers with it and a method bound from the same
             // entry answers with the same text; where the table declares none this is the None CPython
             // leaves NULL beside the function pointer.

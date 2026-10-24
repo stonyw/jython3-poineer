@@ -99,6 +99,11 @@ public final class PyBoundMethod extends PyObject {
     }
 
     @Override
+    public boolean isCallable() {
+        return true;
+    }
+
+    @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "__self__" -> target;

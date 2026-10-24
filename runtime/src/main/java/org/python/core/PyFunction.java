@@ -130,6 +130,11 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
         return Interpreter.run(frame);
     }
 
+    @Override
+    public boolean isCallable() {
+        return true;
+    }
+
     /**
      * Run this function as a class body, filling {@code namespace} with what the body defines.
      *

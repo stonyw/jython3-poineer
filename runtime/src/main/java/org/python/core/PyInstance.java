@@ -217,10 +217,40 @@ public final class PyInstance extends PyObject {
 
     // --- calls ---------------------------------------------------------------------------
 
-    /** {@code self(...)}: only a class that declares {@code __call__} can be called. */
+    /**
+     * {@code self(...)}: only a class that declares {@code __call__} can be called.
+     *
+     * <p>The name is read off the type, as every special name is, and then whatever stands under it is
+     * called: a function Python wrote binds to the value, an unbound built-in method takes the value as its
+     * first argument, and anything else is called as it stands — which is why {@code __call__ = 5} is
+     * refused as an {@code int} rather than as the class, and {@code __call__ = str.upper} by the
+     * descriptor's own complaint about a receiver it was not written for. Only a class that files nothing
+     * under the name is refused as itself, and that refusal is every value's own.
+     */
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
-        return Specials.invoke(this, "__call__", args, kwNames);
+        PyObject declared = Specials.member(getType(), "__call__");
+        if (declared == null) {
+            return super.call(args, kwNames);
+        }
+        if (declared instanceof PyMethodDescriptor unbound) {
+            PyObject[] withSelf = new PyObject[args.length + 1];
+            withSelf[0] = this;
+            System.arraycopy(args, 0, withSelf, 1, args.length);
+            return unbound.call(withSelf, kwNames);
+        }
+        return Slots.call(Descriptors.get(declared, this, getType()), args, kwNames);
+    }
+
+    /**
+     * {@code callable(x)} for a value a class statement made: the class's own question, because
+     * {@code type_new} fills {@code tp_call} only for a class that files a {@code __call__}. What stands
+     * under the name does not matter — {@code callable(x)} is true for {@code __call__ = None}, and the
+     * call itself is what finds out that a {@code NoneType} answers no calls.
+     */
+    @Override
+    public boolean isCallable() {
+        return Specials.member(getType(), "__call__") != null;
     }
 
     // --- operators -----------------------------------------------------------------------

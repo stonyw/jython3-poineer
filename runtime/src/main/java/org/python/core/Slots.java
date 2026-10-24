@@ -426,37 +426,32 @@ public final class Slots {
      * Whether {@code value} may be called, which is what {@code callable()} answers and what any caller
      * of {@link #call} is about to find out the hard way.
      *
-     * <p>One list, read by both the builtin and the interop layer: a caller who is told
+     * <p>One question, read by both the builtin and the interop layer: a caller who is told
      * {@code callable(x)} is true and then gets a {@code TypeError} from a Java parameter has been lied
-     * to. A class Python wrote joins it only when it declares {@code __call__}, which is CPython's rule
-     * too: an instance of a class that defines no {@code __call__} has no call slot, and
-     * {@code callable(Marker())} is false. Of the three descriptor builtins only a {@code staticmethod}
-     * object is on the list, because CPython made it callable in 3.11 and left {@code classmethod} and
-     * {@code property} out: {@code callable(C.__dict__["m"])} is false. An exception <em>instance</em> is
-     * not on it either, which is what makes {@code callable(ValueError("x"))} false and lets
-     * {@code split(ValueError("x"))} refuse the matcher before trying to call it.
+     * to. The answer is the value's own, because CPython reads {@code tp_call} off the type and a type
+     * fills that slot by implementing it — see {@link PyObject#isCallable}. A class Python wrote joins
+     * only when it declares {@code __call__}, which is CPython's rule too: an instance of a class that
+     * defines no {@code __call__} has no call slot, and {@code callable(Marker())} is false. Of the three
+     * descriptor builtins only a {@code staticmethod} answers calls, because CPython made it callable in
+     * 3.11 and left {@code classmethod} and {@code property} out: {@code callable(C.__dict__["m"])} is
+     * false. An exception <em>instance</em> is not callable either, which is what makes
+     * {@code callable(ValueError("x"))} false and lets {@code split(ValueError("x"))} refuse the matcher
+     * before trying to call it.
      */
     public static boolean isCallable(PyObject value) {
-        return value instanceof PyType
-                || value instanceof PyMethodDescriptor
-                || value instanceof PyFunction
-                || value instanceof PyStaticMethod
-                || value instanceof PyNativeFunction
-                || value instanceof PyBoundMethod
-                || (value instanceof PyInstance instance
-                        && Specials.defines(instance.getType(), "__call__"));
+        return value.isCallable();
     }
 
     /**
      * {@code callable(*args, **kwNames)}: the calling convention the interpreter uses, in which the
      * keyword values are the trailing entries of {@code args}.
+     *
+     * <p>Nothing is decided here. A value that has no call slot refuses in {@link PyObject#call}, which
+     * leaves {@link PyNotImplemented} free to be what it is — the answer a comparison gives when it does
+     * not know how to compare.
      */
     public static PyObject call(PyObject callable, PyObject[] args, PyTuple kwNames) {
-        PyObject answer = callable.call(args, kwNames);
-        if (answer != PyNotImplemented.INSTANCE) {
-            return answer;
-        }
-        throw typeError("'%s' object is not callable", callable.getType().filedName());
+        return callable.call(args, kwNames);
     }
 
     public static String str(PyObject value) {
@@ -584,6 +579,16 @@ public final class Slots {
     /** A feature this slice does not cover yet, reported instead of quietly half-done. */
     public static PyRaise notImplemented(String what) {
         return PyRaise.raise(ExceptionTypes.NOT_IMPLEMENTED_ERROR, what + " is not implemented");
+    }
+
+    /**
+     * {@code BufferError}: what the buffer protocol answers a request it cannot grant with.
+     *
+     * <p>It is a sibling of {@code Exception} rather than of {@code ValueError}, which is why a read of
+     * {@code b''.__buffer__(1)} is refused as this and not as a number out of range.
+     */
+    public static PyRaise bufferError(String format, Object... args) {
+        return PyRaise.raise(ExceptionTypes.BUFFER_ERROR, text(format, args));
     }
 
     /**

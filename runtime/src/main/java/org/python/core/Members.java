@@ -79,6 +79,16 @@ final class Members {
      */
     private final Map<String, PyNativeFunction> statics = new LinkedHashMap<>();
 
+    /**
+     * The same static methods as the dictionary holds them: wrapped in a {@code staticmethod}.
+     *
+     * <p>CPython's {@code bytes.__dict__['maketrans']} is the wrapper, and its {@code __get__} hands back
+     * the function underneath — which is why the entry reads as a {@code staticmethod} while the attribute
+     * read of the same name reads as a function. Two answers, so two objects, and the one the read gives is
+     * the one {@link #statics} keeps so that a value and its type still come back with the same method.
+     */
+    private final Map<String, PyObject> published = new LinkedHashMap<>();
+
     /** The methods whose first argument is the type itself: {@code bytes.fromhex}. */
     private final Map<String, PyNativeFunction> classMethods = new LinkedHashMap<>();
 
@@ -282,12 +292,19 @@ final class Members {
     /**
      * A method that takes no receiver: {@code bytes.maketrans}.
      *
-     * <p>The one object in the table answers for the type and for every value of it, because CPython's
-     * {@code staticmethod} descriptor hands back the function it wraps — {@code bytes.maketrans is
-     * b''.maketrans} is true — and its {@code __self__} is {@code None}, not the type it belongs to.
+     * <p>The one function in {@link #statics} answers for the type and for every value of it, because
+     * CPython's {@code staticmethod} descriptor hands back the function it wraps — {@code bytes.maketrans
+     * is b''.maketrans} is true — and its {@code __self__} is {@code None}, not the type it belongs to.
+     * The dictionary holds the wrapper around that function, so {@code bytes.__dict__['maketrans']} reads
+     * as a {@code staticmethod} and {@code bytes.maketrans} as the function, which is what
+     * {@link #published} keeps the two apart for. That wrapper is the one a method table files — it was
+     * never handed a function to {@code functools_wraps}, so it answers none of {@code __name__},
+     * {@code __qualname__} or {@code __module__}, exactly as {@code str.__dict__['maketrans']} is silent.
      */
     Members addStatic(String name, PyNativeFunction.Body body) {
-        statics.put(name, PyNativeFunction.declaredBy(owner.name(), name, body));
+        PyNativeFunction function = PyNativeFunction.declaredBy(owner.name(), name, body);
+        statics.put(name, function);
+        published.put(name, PyStaticMethod.filed(function));
         return this;
     }
 
@@ -305,6 +322,7 @@ final class Members {
         classMethods.put(
                 name,
                 PyNativeFunction.onType(
+                        owner,
                         name,
                         (args, kwNames) -> body.apply(
                                 java.util.Arrays.copyOfRange(args, 1, args.length), kwNames)));
@@ -325,6 +343,7 @@ final class Members {
         classMethods.put(
                 name,
                 PyNativeFunction.onType(
+                        owner,
                         name,
                         (args, kwNames) -> body.apply(
                                 args[0],
@@ -380,7 +399,10 @@ final class Members {
         }
         PyNativeFunction noReceiver = statics.get(name);
         if (noReceiver != null) {
-            return noReceiver;
+            // The wrapper rather than the function: CPython's dictionary holds a `staticmethod` here and
+            // its descriptor hands back the function underneath, which is what makes the entry read as a
+            // `staticmethod` while `bytes.maketrans` reads as a function.
+            return published.get(name);
         }
         PyNativeFunction onType = classMethods.get(name);
         if (onType != null) {

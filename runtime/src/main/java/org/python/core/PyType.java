@@ -82,8 +82,32 @@ public class PyType extends PyObject {
     public static final PyType BOOL = subclass("bool", INT);
     public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF);
     public static final PyType COMPLEX = builtin("complex");
-    public static final PyType STR = builtin("str").flagged(MATCH_SELF);
-    public static final PyType BYTES = builtin("bytes").flagged(MATCH_SELF);
+
+    /**
+     * The two sentences CPython's {@code unicode_doc} and {@code bytes_doc} write for these types.
+     *
+     * <p>Each is a plain string in the type's own dictionary, which is what puts it in front of the
+     * inherited {@code object.__doc__} and makes {@code bytes.__doc__} answer for {@code bytes} while a
+     * class under it answers {@code None}. Both list the constructor's shapes before they say anything
+     * about behaviour, because both are read first by {@code help()} and by the interactive echo.
+     */
+    private static final String STR_DOC =
+            "str(object='') -> str\nstr(bytes_or_buffer[, encoding[, errors]]) -> str\n\nCreate a new"
+                    + " string object from the given object. If encoding or\nerrors is specified, then the"
+                    + " object must expose a data buffer\nthat will be decoded using the given encoding and"
+                    + " error handler.\nOtherwise, returns the result of object.__str__() (if defined)\nor"
+                    + " repr(object).\nencoding defaults to 'utf-8'.\nerrors defaults to 'strict'.";
+
+    private static final String BYTES_DOC =
+            "bytes(iterable_of_ints) -> bytes\nbytes(string, encoding[, errors]) -> bytes\nbytes"
+                    + "(bytes_or_buffer) -> immutable copy of bytes_or_buffer\nbytes(int) -> bytes object"
+                    + " of size given by the parameter initialized with null bytes\nbytes() -> empty bytes"
+                    + " object\n\nConstruct an immutable array of bytes from:\n  - an iterable yielding"
+                    + " integers in range(256)\n  - a text string encoded using the specified encoding\n "
+                    + " - any object implementing the buffer API.\n  - an integer";
+
+    public static final PyType STR = builtin("str").flagged(MATCH_SELF).documented(STR_DOC);
+    public static final PyType BYTES = builtin("bytes").flagged(MATCH_SELF).documented(BYTES_DOC);
     public static final PyType TUPLE = builtin("tuple").flagged(SEQUENCE | MATCH_SELF);
     public static final PyType LIST = builtin("list").flagged(SEQUENCE | MATCH_SELF);
     public static final PyType DICT = builtin("dict").flagged(MAPPING | MATCH_SELF);
@@ -677,6 +701,12 @@ public class PyType extends PyObject {
             return declared;
         }
         return Classes.typeCall(this, args, kwNames);
+    }
+
+    /** A class is always callable: {@code tp_call} of {@code type} is {@code type_call}. */
+    @Override
+    public boolean isCallable() {
+        return true;
     }
 
     /**

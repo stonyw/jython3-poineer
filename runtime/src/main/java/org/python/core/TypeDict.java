@@ -144,6 +144,26 @@ final class TypeDict {
     private static final String ROR_DOC = "Return value|self.";
     private static final String IOR_DOC = "Return self|=value.";
 
+    /**
+     * The sentences a value type's own slots carry, which {@code object} has none of.
+     *
+     * <p>Each is the {@code docstring} of one {@code PySlotDef} in the type's {@code tp_as_number} or
+     * {@code tp_as_sequence}, so {@code bytes.__dict__['__mod__'].__doc__} says what the {@code %} of an
+     * octet run does and not what the {@code %} of anything else does. The three sentences a value type
+     * declares as a {@code PyMethodDef} — {@code bytes.__bytes__}, {@code str.__format__} and {@code
+     * str.__sizeof__} — are not here: they belong to the table of the type that declares the method, and
+     * are written beside its body in {@link PyBytes} and {@link PyStr}.
+     */
+    private static final String MOD_DOC = "Return self%value.";
+
+    private static final String RMOD_DOC = "Return value%self.";
+    private static final String ADD_DOC = "Return self+value.";
+    private static final String MUL_DOC = "Return self*value.";
+    private static final String RMUL_DOC = "Return value*self.";
+
+    private static final String BUFFER_DOC =
+            "Return a buffer object that exposes the underlying memory of the object.";
+
     /** {@code type.__new__(mcs, name, bases, dict)}: the metaclass idiom, and no descriptor at all. */
     static final Member NEW =
             new Member(PyType.TYPE, "__new__", Shape.RAW, null, NEW_DOC, TypeDict::newMember);
@@ -365,6 +385,14 @@ final class TypeDict {
             proxyTable(into);
             return;
         }
+        if (owner == PyType.BYTES) {
+            bytesTable(into);
+            return;
+        }
+        if (owner == PyType.STR) {
+            strTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -521,6 +549,219 @@ final class TypeDict {
                 "__class_getitem__", PROXY_CLASS_GETITEM_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
         table.method("__reversed__", REVERSED_DOC, args -> reversedKeys(window(args[0])));
         table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code bytes}'s own dictionary: the sixty-five names an octet run files.
+     *
+     * <p>Nineteen of them are slot wrappers. CPython copies a static type's {@code tp_as_sequence} and
+     * {@code tp_as_number} halves into that type's own dictionary instead of leaving them inherited, so
+     * {@code bytes.__dict__['__len__']} is a name a program can read while this runtime's {@code int} has
+     * no such entry — the asymmetry the plan has carried since slice 11. {@code __buffer__} is the private
+     * one of the nineteen: the slot a {@code memoryview} is built from, and the only name here a person has
+     * no ordinary way to call. The two method descriptors before the methods are pickle's {@code
+     * __getnewargs__} and {@code __bytes__}, declared by the value class so that a read of {@code
+     * b''.__bytes__} and the dictionary's own entry are one method; the forty-four after them are the rest
+     * of {@link PyBytes}'s table, filed in the order the reference interpreter's dictionary shows them —
+     * which is not the order its {@code bytes_methods} list was written in, and not this runtime's
+     * declaration order either.
+     */
+    private static void bytesTable(PyDict into) {
+        PyType owner = PyType.BYTES;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::octetsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__buffer__", BUFFER_DOC, TypeDict::exposeBuffer);
+        table.wrapper("__mod__", MOD_DOC, TypeDict::modulo);
+        table.wrapper("__rmod__", RMOD_DOC, TypeDict::reflectedMod);
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__add__", ADD_DOC, TypeDict::joined);
+        table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
+        table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);
+        table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+        table.named("__getnewargs__", "__bytes__");
+        table.named(
+                "capitalize", "center", "count", "decode", "endswith", "expandtabs", "find", "fromhex",
+                "hex", "index", "isalnum", "isalpha", "isascii", "isdigit", "islower", "isspace", "istitle",
+                "isupper", "join", "ljust", "lower", "lstrip", "maketrans", "partition", "replace",
+                "removeprefix", "removesuffix", "rfind", "rindex", "rjust", "rpartition", "rsplit", "rstrip",
+                "split", "splitlines", "startswith", "strip", "swapcase", "title", "translate", "upper",
+                "zfill");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code str}'s own dictionary: the seventy names a run of text files.
+     *
+     * <p>The same nineteen slots as {@code bytes}, less {@code __buffer__} — a string has no memory to
+     * expose, which is why {@code memoryview('ab')} is refused while {@code memoryview(b'ab')} is not — and
+     * then forty-six methods, four of which sit after them in the dictionary rather than inside the list:
+     * {@code __format__} and {@code maketrans} and the two names pickle uses, {@code __sizeof__} and {@code
+     * __getnewargs__}. {@code maketrans} is filed as the {@code staticmethod} its table holds, so the
+     * dictionary reads as a wrapper while {@code str.maketrans} reads as the function underneath it.
+     */
+    private static void strTable(PyDict into) {
+        PyType owner = PyType.STR;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::textNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__mod__", MOD_DOC, TypeDict::modulo);
+        table.wrapper("__rmod__", RMOD_DOC, TypeDict::reflectedMod);
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__add__", ADD_DOC, TypeDict::joined);
+        table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
+        table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);
+        table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+        table.named(
+                "encode", "replace", "split", "rsplit", "join", "capitalize", "casefold", "title", "center",
+                "count", "expandtabs", "find", "partition", "index", "ljust", "lower", "lstrip", "rfind",
+                "rindex", "rjust", "rstrip", "rpartition", "splitlines", "strip", "swapcase", "translate",
+                "upper", "startswith", "endswith", "removeprefix", "removesuffix", "isascii", "islower",
+                "isupper", "istitle", "isspace", "isdecimal", "isdigit", "isnumeric", "isalpha", "isalnum",
+                "isidentifier", "isprintable", "zfill", "format", "format_map");
+        table.named("__format__");
+        table.named("maketrans");
+        table.named("__sizeof__", "__getnewargs__");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code tp_new_wrapper} over a value type: the three refusals, then the constructor.
+     *
+     * <p>{@code bytes.__new__} and {@code str.__new__} are the same builtin with a different first
+     * argument, and all three of CPython's complaints name the type whose dictionary holds them rather
+     * than the one handed over: {@code bytes.__new__(int, 3)} says {@code int} is not a subtype of {@code
+     * bytes}, and the arguments after the class go to that class's own constructor, which is what makes
+     * {@code bytes.__new__(bytes, 'ab', 'utf8')} an octet run and {@code bytes.__new__(bytes, 'ab')} the
+     * {@code TypeError} about a missing encoding.
+     */
+    private static PyObject constructorNew(PyType declaring, PyObject[] args, String[] kwNames) {
+        if (Arguments.positional(args, kwNames) < 1) {
+            throw Slots.typeError("%s.__new__(): not enough arguments", declaring.name());
+        }
+        if (!(args[0] instanceof PyType subtype)) {
+            throw Slots.typeError(
+                    "%s.__new__(X): X is not a type object (%s)",
+                    declaring.name(), args[0].getType().name());
+        }
+        if (!subtype.matches(declaring)) {
+            throw Slots.typeError(
+                    "%s.__new__(%s): %s is not a subtype of %s",
+                    declaring.name(), subtype.name(), subtype.name(), declaring.name());
+        }
+        return Constructors.instantiate(
+                declaring, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
+    }
+
+    private static PyObject octetsNew(PyObject[] args, String[] kwNames, String qualified) {
+        return constructorNew(PyType.BYTES, args, kwNames);
+    }
+
+    private static PyObject textNew(PyObject[] args, String[] kwNames, String qualified) {
+        return constructorNew(PyType.STR, args, kwNames);
+    }
+
+    /**
+     * {@code tp_richcompare} as a slot wrapper: the value's own comparison, decline included.
+     *
+     * <p>The answer is what the slot gives and nothing is made of it afterwards, which is what puts
+     * {@code NotImplemented} in front of a program that asks for the slot rather than running the
+     * operator: {@code b'ab' < 3} is refused by the driver that tries the reflected slot next, while
+     * {@code b'ab'.__lt__(3)} reports what the slot itself declined.
+     */
+    private static Method comparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> args[0].richCompare(cmp, args[1]);
+    }
+
+    /** {@code sq_concat}, and {@code sq_repeat} in the same shape: the forward slot of the receiver. */
+    private static PyObject joined(PyObject[] args) {
+        return args[0].binaryOp(BinaryOp.ADD, args[1]);
+    }
+
+    private static PyObject modulo(PyObject[] args) {
+        return args[0].binaryOp(BinaryOp.MOD, args[1]);
+    }
+
+    /**
+     * {@code RBINSLOT}'s reflected wrapper, which hands the C function its operands the other way round.
+     *
+     * <p>That swap is the whole of {@code __rmod__}: {@code '%s'.__rmod__('ab')} is {@code 'ab' % '%s'} and
+     * not a second way of asking the left-hand string, and a value on the right whose type has no modulo
+     * slot at all leaves the wrapper with nothing to report but the decline.
+     */
+    private static PyObject reflectedMod(PyObject[] args) {
+        PyObject other = args[1];
+        return other instanceof PyStr || other instanceof PyBytes
+                ? other.binaryOp(BinaryOp.MOD, args[0])
+                : PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * {@code sq_repeat}: the count arrives as an index, which the operator's wording is not.
+     *
+     * <p>{@code b'ab' * 1.5} complains about multiplying a sequence, because the operator tries the int's
+     * own {@code __mul__} and reports the pair that failed; {@code b'ab'.__mul__(1.5)} is the slot asked
+     * directly and says only what it could not read. The number itself is then the value's to check, so an
+     * index too wide for a machine word keeps {@link PyBytes}'s own refusal.
+     */
+    private static PyObject repeated(PyObject[] args) {
+        if (Numbers.asInteger(args[1]) == null) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer", args[1].getType().name());
+        }
+        return args[0].binaryOp(BinaryOp.MUL, args[1]);
+    }
+
+    /**
+     * {@code wrap_buffer}: the one private slot a value type files, and the window its flags keep.
+     *
+     * <p>Three refusals arrive before any buffer is made, and all three are printable. A number that is
+     * not one is {@code PyNumber_AsSsize_t}'s complaint about interpretation; a number too wide for a
+     * machine word is the same complaint as an overflow, which is why {@code __buffer__(2 ** 70)} says
+     * "index-sized" where {@code __buffer__(2 ** 31)} — a number that fits the word but not the {@code int}
+     * the flags are kept in — says they are out of range. What is left is the flags themselves, and a
+     * bytes or a str asks that its memory not be written to: {@code b''.__buffer__(-1)} asks for every flag
+     * there is, including that one, and is refused as not writable.
+     *
+     * <p>The buffer a valid call would answer with is this runtime's gap: there is no {@code memoryview}
+     * yet, and so no object to hand back.
+     */
+    private static PyObject exposeBuffer(PyObject[] args, String[] kwNames, String qualified) {
+        java.math.BigInteger flags = Numbers.asInteger(args[1]);
+        if (flags == null) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer", args[1].getType().name());
+        }
+        if (flags.bitLength() > 63) {
+            throw Slots.overflowError("cannot fit 'int' into an index-sized integer");
+        }
+        if (flags.bitLength() > 31) {
+            throw Slots.overflowError("buffer flags out of range");
+        }
+        if ((flags.intValue() & 1) != 0) {
+            throw Slots.bufferError("Object is not writable.");
+        }
+        throw Slots.notImplemented("memoryview");
     }
 
     /**
@@ -1780,19 +2021,24 @@ final class TypeDict {
     }
 
     /**
-     * {@code wrapperdescr_call}'s three gates, before a slot wrapper runs.
+     * {@code wrapperdescr_call}'s four gates, before a slot wrapper runs.
      *
      * <p>Only the slots that count their arguments are checked at all: {@code tp_init} and {@code tp_call}
      * hand the whole argument list, keywords included, to the slot they wrap, which is why
      * {@code object.__init__(3, x=1)} answers {@code None} while {@code type.__init__(A, x=1)} is refused
-     * by the count the slot itself makes. Of the three, the keyword refusal comes first —
-     * {@code type.__setattr__(int, 'x', 1, y=2)} complains about the keyword rather than about anything
-     * else — then the receiver, then the count: {@code type.__repr__(3, 4)} is refused as an {@code int},
-     * not as one argument too many.
+     * by the count the slot itself makes.
      *
-     * <p>The receiver is only checked against {@code type} for the wrappers a metatype files, because those
-     * are the {@code tp_*} slots and a value cannot be asked one of them; every {@code tp_*} of a value
-     * {@code object} files takes whatever it is given.
+     * <p>The order of the rest is visible and not arbitrary: the receiver comes first, because
+     * {@code bytes.__dict__['__len__'](3, x=1)} complains about the {@code int} rather than about the
+     * keyword, and {@code (3, 4)} complains about the {@code int} rather than about the count. The keyword
+     * comes next, because {@code bytes.__dict__['__len__'](b'', x=1)} has by then nothing left to complain
+     * about except how the call was written.
+     *
+     * <p>Every type is checked against its own values. {@code object} files the {@code tp_*} slots of
+     * everything and so refuses nothing, since every value is one of its own; {@code type} files the
+     * metaclass slots, which a value cannot be asked for; and {@code bytes} and {@code str} each file the
+     * seventeen sequence and number slots their structs fill in, which is where the phrase "requires a
+     * 'bytes' object" comes from.
      */
     private static void wrapperCall(
             PyType declaring, String name, PyObject[] args, String[] kwNames) {
@@ -1800,18 +2046,17 @@ final class TypeDict {
         if (extra < 0) {
             return;
         }
-        Arguments.noWrapperKeywords(name, kwNames);
-        int given = Arguments.positional(args, kwNames);
-        if (given < 1) {
+        if (Arguments.positional(args, kwNames) < 1) {
             throw Slots.typeError(
                     "descriptor '%s' of '%s' object needs an argument", name, declaring.name());
         }
-        if (declaring.matches(PyType.TYPE) && !(args[0] instanceof PyType)) {
+        if (!declaring.instanceOf(args[0])) {
             throw Slots.typeError(
-                    "descriptor '%s' requires a 'type' object but received a '%s'",
-                    name, args[0].getType().name());
+                    "descriptor '%s' requires a '%s' object but received a '%s'",
+                    name, declaring.name(), args[0].getType().name());
         }
-        slotArity(name, extra, given - 1);
+        Arguments.noWrapperKeywords(name, kwNames);
+        slotArity(name, extra, Arguments.positional(args, kwNames) - 1);
     }
 
     /**
@@ -1835,17 +2080,22 @@ final class TypeDict {
      * {@code wrapperdescr_call}'s refusal of the wrong count.
      *
      * <p>A slot that takes only its receiver says the number bare — {@code expected 0 arguments, got 1} —
-     * because there is no method name that would help; {@code tp_setattro} is the one that names itself.
+     * because there is no method name that would help. Two wrappers name themselves, and each is the
+     * because of the C function behind it: {@code wrap_setattr} hands {@code PyArg_UnpackTuple} the name
+     * {@code __setattr__}, and {@code wrap_buffer} hands it {@code __buffer__}. Everything else, including
+     * the {@code __delattr__} and {@code __getattribute__} that sit beside the first, passes no name and so
+     * prints none.
      */
     private static void slotArity(String name, int need, int got) {
         if (got == need) {
             return;
         }
-        if (need > 1) {
-            throw Slots.typeError("%s expected %d arguments, got %d", name, need, got);
+        String plural = need == 1 ? "" : "s";
+        if (name.equals("__setattr__") || name.equals("__buffer__")) {
+            throw Slots.typeError(
+                    "%s expected %d argument%s, got %d", name, need, plural, got);
         }
-        throw Slots.typeError(
-                "expected %d argument%s, got %d", need, need == 1 ? "" : "s", got);
+        throw Slots.typeError("expected %d argument%s, got %d", need, plural, got);
     }
 
     /**
@@ -1902,6 +2152,28 @@ final class TypeDict {
         /** {@code METH_CLASS}: binds the class the read ran on, and never a value. */
         void classMethod(String name, String doc, Method body) {
             put(name, new Member(owner, name, Shape.CLASSMETHOD, null, doc, body));
+        }
+
+        /**
+         * The names a {@link Members} table declares, filed in the order the dictionary shows them.
+         *
+         * <p>A table's order is its declaration order, and the reference interpreter does not keep one
+         * order: {@code bytes} files {@code maketrans} between {@code lstrip} and {@code partition}, where
+         * {@link Members#names} would collect it at the tail with the names that take no receiver, and
+         * {@code str} puts {@code __format__} and {@code __sizeof__} after the forty-six methods a person
+         * calls. Each entry is the one {@link Members#describe} hands out, so the dictionary and a read of
+         * the type hold the same object rather than two that compare equal.
+         */
+        void named(String... names) {
+            Members methods = Members.tableOf(owner);
+            for (String name : names) {
+                PyObject entry = methods.describe(name);
+                if (entry == PyNotImplemented.INSTANCE) {
+                    throw Slots.runtimeError(
+                            "the " + owner.name() + " table files no member named '" + name + "'");
+                }
+                put(name, entry);
+            }
         }
 
         /** {@code __new__}: a plain static method in the dictionary, which is not a descriptor at all. */
@@ -2035,6 +2307,12 @@ final class TypeDict {
             return body.apply(args, keywords, qualified);
         }
 
+        /** Every kind a dictionary files is callable: a slot, a method, a class method, {@code __new__}. */
+        @Override
+        public boolean isCallable() {
+            return true;
+        }
+
         @Override
         public PyObject asAttribute(PyObject obj, PyObject owner) {
             PyObject receiver =
@@ -2158,6 +2436,11 @@ final class TypeDict {
             return body.apply(withReceiver, keywords, qualifiedName());
         }
 
+        @Override
+        public boolean isCallable() {
+            return true;
+        }
+
         /**
          * The name the arity complaint and {@code __qualname__} both use.
          *
@@ -2189,6 +2472,11 @@ final class TypeDict {
                 case "__qualname__" -> PyStr.of(qualifiedName());
                 case "__self__" -> receiver;
                 case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
+                // Only a bound slot wrapper keeps the type that declared its slot: CPython reads the class
+                // out of the wrapper record a method-wrapper still points at, and a built-in method bound
+                // to a value — `b''.upper`, `bytes.fromhex` — has no such record to read.
+                case "__objclass__" ->
+                        shape == Shape.WRAPPER ? declaring : PyNotImplemented.INSTANCE;
                 default -> PyNotImplemented.INSTANCE;
             };
         }

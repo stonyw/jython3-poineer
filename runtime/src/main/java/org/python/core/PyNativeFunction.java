@@ -64,19 +64,40 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      */
     private final boolean onType;
 
+    /**
+     * The type whose dictionary holds this class method, or {@code null} for every other builtin.
+     *
+     * <p>A {@code classmethod_descriptor} names its declaring type in three places: as {@code
+     * __objclass__}, as the type in its {@code method_repr} — {@code <method 'fromhex' of 'bytes'
+     * objects>} — and as the qualifier of the {@code __qualname__} the dictionary entry answers with. Once
+     * a class is bound to the method it is an ordinary {@code builtin_function_or_method} again and says
+     * none of that: {@code bytes.fromhex} has no {@code __objclass__} at all.
+     */
+    private final PyType declaring;
+
     public PyNativeFunction(String name, Body body) {
-        this(name, body, null, null, null, false);
+        this(name, body, null, null, null, false, null);
     }
 
     private PyNativeFunction(
-            String name, Body body, PyObject receiver, String doc, String declaredBy, boolean onType) {
-        super(PyType.BUILTIN_FUNCTION);
+            String name,
+            Body body,
+            PyObject receiver,
+            String doc,
+            String declaredBy,
+            boolean onType,
+            PyType declaring) {
+        super(
+                onType && receiver == null
+                        ? PyType.CLASS_METHOD_DESCRIPTOR
+                        : PyType.BUILTIN_FUNCTION);
         this.name = name;
         this.body = body;
         this.receiver = receiver;
         this.doc = doc;
         this.declaredBy = declaredBy;
         this.onType = onType;
+        this.declaring = declaring;
     }
 
     /**
@@ -85,8 +106,8 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * <p>The receiver is what the read makes, not what the table keeps, so {@code int.from_bytes} and
      * {@code bool.from_bytes} are two objects naming two different classes over one body.
      */
-    static PyNativeFunction onType(String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, null, true);
+    static PyNativeFunction onType(PyType owner, String name, Body body) {
+        return new PyNativeFunction(name, body, null, null, null, true, owner);
     }
 
     /**
@@ -97,17 +118,17 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * that names it.
      */
     static PyNativeFunction declaredBy(String owner, String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, owner, false);
+        return new PyNativeFunction(name, body, null, null, owner, false, null);
     }
 
     /** This method read through {@code owner}, with the receiver already attached to it. */
     PyNativeFunction withReceiver(PyObject owner) {
-        return new PyNativeFunction(name, body, owner, doc, declaredBy, onType);
+        return new PyNativeFunction(name, body, owner, doc, declaredBy, onType, declaring);
     }
 
     /** This function answering {@code __doc__} with {@code text} rather than with {@code None}. */
     PyNativeFunction documented(String text) {
-        return new PyNativeFunction(name, body, receiver, text, declaredBy, onType);
+        return new PyNativeFunction(name, body, receiver, text, declaredBy, onType, declaring);
     }
 
     /**
@@ -120,7 +141,28 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      */
     @Override
     public PyObject asAttribute(PyObject obj, PyObject owner) {
-        return onType && receiver == null ? withReceiver(owner) : this;
+        return onType && receiver == null ? boundTo(owner) : this;
+    }
+
+    /**
+     * {@code classmethod_get}: the class a read runs on, checked before it is attached.
+     *
+     * <p>Two refusals, both naming the type that declares the method rather than the one being bound. The
+     * second is what stops {@code int.__dict__["from_bytes"].__get__(None, str)} from handing out a method
+     * over a class that could never hold the value it builds.
+     */
+    private PyNativeFunction boundTo(PyObject owner) {
+        if (!(owner instanceof PyType type)) {
+            throw Slots.typeError(
+                    "descriptor '%s' for type '%s' needs a type, not a '%s' as arg 2",
+                    name, declaring.filedName(), owner.getType().filedName());
+        }
+        if (!type.matches(declaring)) {
+            throw Slots.typeError(
+                    "descriptor '%s' requires a subtype of '%s' but received '%s'",
+                    name, declaring.filedName(), type.filedName());
+        }
+        return withReceiver(owner);
     }
 
     /** Only a class method is a descriptor; a static method or a plain builtin is not one. */
@@ -133,6 +175,9 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     String qualifiedName() {
         if (receiver instanceof PyType owner) {
             return owner.name() + "." + name;
+        }
+        if (declaring != null) {
+            return declaring.name() + "." + name;
         }
         return declaredBy == null ? name : declaredBy + "." + name;
     }
@@ -154,12 +199,38 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
         if (receiver == null) {
+            if (onType) {
+                return classMethodCall(args, kwNames);
+            }
             return body.apply(args, PyBoundMethod.keywordNames(kwNames));
         }
         PyObject[] withSelf = new PyObject[args.length + 1];
         withSelf[0] = receiver;
         System.arraycopy(args, 0, withSelf, 1, args.length);
         return body.apply(withSelf, PyBoundMethod.keywordNames(kwNames));
+    }
+
+    @Override
+    public boolean isCallable() {
+        return true;
+    }
+
+    /**
+     * {@code classmethoddescr_call}: calling the dictionary's own entry, which takes its class as the
+     * first argument and then behaves as the bound method it makes itself into.
+     *
+     * <p>{@code bytes.__dict__["fromhex"](bytes, "61")} is {@code bytes.fromhex("61")}, and the argument
+     * that names no class at all is refused before the body is reached — with the sentence a descriptor
+     * tells rather than the one the method's own parameter list would.
+     */
+    private PyObject classMethodCall(PyObject[] args, PyTuple kwNames) {
+        String[] names = PyBoundMethod.keywordNames(kwNames);
+        if (Arguments.positional(args, names) < 1) {
+            throw Slots.typeError(
+                    "descriptor '%s' of '%s' object needs an argument", name, declaring.filedName());
+        }
+        return boundTo(args[0])
+                .call(java.util.Arrays.copyOfRange(args, 1, args.length), kwNames);
     }
 
     @Override
@@ -171,6 +242,16 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
             case "__self__" -> receiver != null
                     ? receiver
                     : declaredBy == null ? PyNotImplemented.INSTANCE : PyNone.INSTANCE;
+            // Only the dictionary's own entry has an owner to name; the method a read makes has none.
+            case "__objclass__" -> declaring != null && receiver == null
+                    ? declaring
+                    : PyNotImplemented.INSTANCE;
+            // A classmethod_descriptor is a descriptor; the built-in method a read makes is not one, and
+            // neither is a plain function like `len`, which CPython says has no `__get__` at all.
+            case "__get__" -> onType && receiver == null
+                    ? new PyNativeFunction(
+                            "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames))
+                    : PyNotImplemented.INSTANCE;
             default -> PyNotImplemented.INSTANCE;
         };
     }
@@ -179,6 +260,9 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     public String repr() {
         if (receiver != null) {
             return "<built-in method " + name + " of " + receiver.getType().name() + " object>";
+        }
+        if (declaring != null) {
+            return "<method '" + name + "' of '" + declaring.name() + "' objects>";
         }
         // CPython prints the type object a static method was read from, which it keeps behind
         // `__self__` even though that reads None; the address is the rest of its sentence.
