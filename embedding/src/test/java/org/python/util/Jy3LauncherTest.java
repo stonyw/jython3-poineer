@@ -227,7 +227,11 @@ class Jy3LauncherTest {
                 "51_int_to_bytes.py",
                 "52_int_from_bytes.py",
                 "53_exception_names.py",
-                "54_oserror_fields.py");
+                "54_oserror_fields.py",
+                "55_type_namespace.py",
+                "56_descriptor_kinds.py",
+                "57_class_attribute_writes.py",
+                "58_metaclass_side_write.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

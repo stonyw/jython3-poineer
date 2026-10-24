@@ -83,9 +83,9 @@ class MetaclassTest {
         return new PyProperty(getter, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE);
     }
 
-    /** {@code C.__dict__}, which is where the names a class was built from are kept. */
+    /** {@code C.__dict__} unwrapped: the dictionary the names a class was built from are kept in. */
     private static PyDict dictOf(PyType kind) {
-        return (PyDict) Slots.getAttr(kind, "__dict__");
+        return ((PyMappingProxy) Slots.getAttr(kind, "__dict__")).mapping();
     }
 
     /** {@code TypeError}, {@code NotImplementedError} and {@code RuntimeError} in CPython's own words. */

@@ -158,10 +158,11 @@ class NamespaceTest {
     }
 
     /**
-     * A class answers the namespace it was built with, because this runtime has no {@code mappingproxy}:
-     * 3.14 hands out a read-only view of that same dictionary, so the question asked in Python gets a false
-     * there and a true here, while at the Java level it is one object either way — the shape {@link
-     * ClassBodyCellTest} gives the same reasoning for.
+     * A class answers a window over the namespace it was built with, which is what 3.14 answers.
+     *
+     * <p>The window is made fresh for every read — {@code vars(C) is vars(C)} is false — while the mapping
+     * underneath is the one dictionary the class keeps, which is why a name written through
+     * {@link PyClass#setAttr} shows up in every window made afterwards.
      */
     @Test
     void varsOfAClassIsTheNamespaceTheClassWasBuiltWith() throws Exception {
@@ -174,7 +175,9 @@ class NamespaceTest {
                         """);
         PyClass held = (PyClass) module.get("Held");
 
-        assertThat(answer("vars", held)).isSameAs(held.namespace());
+        assertThat(answer("vars", held)).isInstanceOf(PyMappingProxy.class);
+        assertThat(((PyMappingProxy) answer("vars", held)).mapping()).isSameAs(held.namespace());
+        assertThat(answer("vars", held)).isNotSameAs(answer("vars", held));
         assertThat(number(held.namespace().get(PyStr.interned("member")))).isEqualTo(1);
     }
 

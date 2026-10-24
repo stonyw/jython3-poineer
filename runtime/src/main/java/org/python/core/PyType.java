@@ -37,13 +37,30 @@ public class PyType extends PyObject {
     static final int MATCH_SELF = 1 << 2;
 
     /**
+     * Every type this runtime has made, in the order each was declared.
+     *
+     * <p>{@code X.__subclasses__()} reads it for the classes whose bases name {@code X}. CPython keeps a
+     * list of them on each type and prunes it as a class dies; a class here is never collected, so one list
+     * for the whole runtime answers the same question without the bookkeeping. It is declared above the
+     * built-in types because they are what first fills it: {@code OBJECT} is constructed before anything
+     * else in this class runs.
+     */
+    private static final java.util.List<PyType> MADE =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /**
      * The root of every class's inheritance chain, and the only type with no parent.
      *
      * It is declared before {@link #TYPE} because the two complete each other: {@code object} is an
      * instance of {@code type} and {@code type} is a subclass of {@code object}, and the second of
      * those is what makes {@code isinstance(x, object)} answer for every value.
      */
-    public static final PyType OBJECT = new PyType("object", null);
+    public static final PyType OBJECT =
+            new PyType("object", null)
+                    .documented(
+                            "The base class of the class hierarchy.\n\nWhen called, it accepts no arguments"
+                                    + " and returns a new featureless\ninstance that has no instance"
+                                    + " attributes and cannot be given any.\n");
 
     public static final PyType TYPE = new PyType("type", OBJECT);
 
@@ -95,6 +112,18 @@ public class PyType extends PyObject {
     static final PyType WRAPPER_DESCRIPTOR = builtin("wrapper_descriptor");
     /** What {@code type.__prepare__} is before a class reads it: a class method of a built-in type. */
     static final PyType CLASS_METHOD_DESCRIPTOR = builtin("classmethod_descriptor");
+    /** What {@code BaseException.args} is: a pair of C functions reached as an attribute. */
+    static final PyType GETSET_DESCRIPTOR = builtin("getset_descriptor");
+    /**
+     * What {@code int.__dict__} is: the read-only window a type's dictionary opens onto itself.
+     *
+     * <p>Named here because the window is a value Python reads members off, and because its own class is
+     * one of the types this file declares a table for — {@code mappingproxy} is not in {@code builtins},
+     * which is what CPython's {@code static PyTypeObject mappingproxy_type} with no {@code tp_name} dot
+     * gives it.
+     */
+    public static final PyType MAPPING_PROXY =
+            builtin("mappingproxy").documented("Read-only proxy of a mapping.");
     /** What {@code Plain.__call__} is: a built-in slot already bound to a value. */
     static final PyType METHOD_WRAPPER = builtin("method-wrapper");
     /** The three members that are nothing but the descriptor protocol, each its own type. */
@@ -199,6 +228,18 @@ public class PyType extends PyObject {
     private PyType[] declaredBases;
 
     /**
+     * The dictionary this type's values inherit their members from, as one object kept for as long as
+     * the type lives.
+     *
+     * <p>CPython's {@code tp_dict} is the same pointer for the whole life of a static type, and that is
+     * what makes {@code int.__dict__ == int.__dict__} true while {@code int.__dict__ is int.__dict__} is
+     * false: the read makes a new {@link PyMappingProxy} over the one dictionary, and two of those compare
+     * by the mapping underneath them. Built lazily because the tables are written in the order {@link
+     * TypeDict} declares them, which is after the types themselves.
+     */
+    private PyDict namespace;
+
+    /**
      * Protected because a type declared outside this package has to be able to name its parent:
      * {@code PyJavaType} in the interop module is a {@code PyType} like any other, and the seam that
      * lets it exist is this constructor rather than a copy of the dispatch above it.
@@ -212,6 +253,12 @@ public class PyType extends PyObject {
         this.filedName = name;
         this.parent = parent;
         this.withoutInstances = withoutInstances;
+        MADE.add(this);
+    }
+
+    /** The types this runtime has made, for {@code X.__subclasses__()} to pick its children out of. */
+    static PyType[] children() {
+        return MADE.toArray(new PyType[0]);
     }
 
     /**
@@ -371,6 +418,38 @@ public class PyType extends PyObject {
     }
 
     /**
+     * CPython's {@code tp_dictoffset != 0}: whether a value of this type keeps attributes of its own.
+     *
+     * <p>{@link Classes} asks this of the base before deciding whether the class it is building files a
+     * {@code __dict__} descriptor, because the name belongs to the class that <em>introduces</em> the
+     * storage: a derived class writes neither name and its values still have a dictionary, which the
+     * attribute walk finds by going up. A built-in type answers where this runtime really does keep one —
+     * {@code type}, whose values are classes and so have a namespace, {@code module} and {@code function},
+     * whose attributes are dictionary entries, and the exception family, which carries {@code e.x = 1} — and
+     * {@code object} itself answers where CPython does: the root has no dictionary, which is why {@code
+     * object().__dict__} is the {@code AttributeError} it is. {@link GenericAttributes} asks the same
+     * question before it writes a name it found nowhere on the class.
+     */
+    boolean hasValueDict() {
+        return this == TYPE || this == MODULE || this == FUNCTION
+                || matches(ExceptionTypes.BASE_EXCEPTION);
+    }
+
+    /**
+     * CPython's {@code tp_weaklistoffset != 0}, the same question about the list of weak references whose
+     * visible half is the {@code __weakref__} descriptor.
+     *
+     * <p>{@code type} is the one built-in here with such a list, which is why {@code class M(type)} files
+     * neither name, and {@code ExceptionGroup} is the one exception with one — the reference interpreter
+     * gives the list to that class alone, so a class under it files no {@code __weakref__} of its own
+     * while a class under {@code Exception} still introduces the list for itself. A plain class keeps the
+     * answer of whichever class in its order first introduced it, which {@link PyClass} stores.
+     */
+    boolean hasWeakRefList() {
+        return this == TYPE || this == ExceptionTypes.EXCEPTION_GROUP;
+    }
+
+    /**
      * The order this type's members are looked up in: itself, then its bases, then {@code object}.
      *
      * A built-in type has only the chain its parents declare, and that is already C3's answer for a
@@ -419,8 +498,30 @@ public class PyType extends PyObject {
             case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(bases());
             case "__mro__" -> PyTuple.of(mro());
             case "__class__" -> type;
+            case "__dict__" -> PyMappingProxy.of(namespace());
             default -> classMember(attribute);
         };
+    }
+
+    /**
+     * The dictionary this type declares, as the one object a hundred reads of {@code __dict__} share.
+     *
+     * <p>Two sources, in this order: the members {@link TypeDict} keeps for the types the class system is
+     * built on and for the exception family, then the {@link Members} table a built-in value class
+     * compiles in. A type with neither — one of the iterators whose members this runtime does not have —
+     * gets an empty dictionary, which is why {@code len(line_iterator.__dict__)} is shorter than
+     * CPython's. {@link PyClass} answers this with the namespace its class statement filled.
+     */
+    PyDict namespace() {
+        if (namespace == null) {
+            namespace = TypeDict.declared(this);
+        }
+        return namespace;
+    }
+
+    /** The sentence this type answers {@code __doc__} with, or null where it declares none. */
+    String docText() {
+        return doc;
     }
 
     /**
@@ -434,7 +535,7 @@ public class PyType extends PyObject {
      * A class Python wrote is not reached here: its own namespace holds the name, and
      * {@link PyClass#getAttr} asks that first.
      */
-    private String moduleName() {
+    String moduleName() {
         int dot = filedName.lastIndexOf('.');
         return dot < 0 ? "builtins" : filedName.substring(0, dot);
     }
@@ -443,8 +544,11 @@ public class PyType extends PyObject {
      * The bases this type is declared over. One for every built-in but {@code ExceptionGroup}, which
      * CPython creates over {@code (BaseExceptionGroup, Exception)} and which therefore cannot be a parent
      * pointer twice.
+     *
+     * <p>Package-private because {@code __bases__} and {@code X.__subclasses__()} both read it: the first
+     * answers a tuple of these, and the second asks which classes name this one among them.
      */
-    private PyType[] bases() {
+    PyType[] bases() {
         if (declaredBases != null) {
             return declaredBases;
         }

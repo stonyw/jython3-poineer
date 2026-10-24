@@ -333,13 +333,13 @@ public final class Cpython314Code extends PyObject implements PyCode {
      */
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
-        CodeMembers.refuse(attribute);
+        CodeMembers.refuse(this, attribute, value);
         return PyNone.INSTANCE;
     }
 
     @Override
     public PyObject delAttr(String attribute) {
-        CodeMembers.refuse(attribute);
+        CodeMembers.refuse(this, attribute, null);
         return PyNone.INSTANCE;
     }
 

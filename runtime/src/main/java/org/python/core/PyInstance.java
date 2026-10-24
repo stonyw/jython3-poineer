@@ -17,11 +17,91 @@ import java.math.BigInteger;
  */
 public final class PyInstance extends PyObject {
 
-    /** {@code self.__dict__}: the attributes this one value holds, which a class does not. */
-    private final PyDict dictionary = PyDict.empty();
+    /**
+     * {@code self.__dict__}: the attributes this one value holds, which a class does not.
+     *
+     * <p>Null for a value of {@code object} itself, which CPython gives no dictionary: {@code object()}
+     * answers {@code AttributeError} for {@code __dict__} and refuses every attribute write in {@link
+     * GenericAttributes}' words. {@code object.__new__(object)} is what makes one.
+     *
+     * <p>Not final, because {@code self.__dict__ = {...}} replaces the whole dictionary rather than writing
+     * a name into it, and {@code del self.__dict__} leaves an empty one behind for the next read.
+     *
+     * <p>A class that declares {@code __slots__} without {@code __dict__} among them has no use for this
+     * one, and CPython gives its values none at all; here the dictionary is still there but nothing reaches
+     * it, because {@link GenericAttributes} asks {@link PyType#hasValueDict()} rather than whether this
+     * field is null.
+     */
+    private PyDict dictionary;
 
-    PyInstance(PyClass kind) {
+    PyInstance(PyType kind) {
         super(kind);
+        this.dictionary = kind == PyType.OBJECT ? null : PyDict.empty();
+    }
+
+    /** {@code subtype_dict}: the read of the descriptor a class files for the storage it introduces. */
+    static PyObject valueDict(PyObject self) {
+        PyInstance held = (PyInstance) self;
+        if (held.dictionary == null) {
+            held.dictionary = PyDict.empty();
+        }
+        return held.dictionary;
+    }
+
+    /**
+     * {@code subtype_setdict}, which {@code del} reaches through the same pointer with nothing handed
+     * over.
+     *
+     * <p>The refusal is about the value, since CPython moves the pointer rather than copying into the
+     * dictionary: {@code t.__dict__ = 5} names the number, and {@code del t.__dict__} leaves an empty
+     * dictionary standing for the next read to find.
+     */
+    static void writeDict(PyObject self, PyObject value) {
+        PyInstance held = (PyInstance) self;
+        if (value == null) {
+            held.dictionary = PyDict.empty();
+            return;
+        }
+        if (!(value instanceof PyDict replacement)) {
+            throw Slots.typeError(
+                    "__dict__ must be set to a dictionary, not a '%s'", value.getType().filedName());
+        }
+        held.dictionary = replacement;
+    }
+
+    /**
+     * The values of the fields this class declared in {@code __slots__}, kept apart from {@code __dict__}
+     * because CPython keeps them apart too: {@code __slots__ = ("__dict__", "b")} stores {@code b} in an
+     * offset beside the dictionary, so setting it leaves the name out of {@code vars(self)} all the same.
+     */
+    private PyDict slotValues;
+
+    @Override
+    PyObject slotValue(String name) {
+        PyObject held = slotValues == null ? null : slotValues.get(PyStr.interned(name));
+        if (held == null) {
+            throw Slots.attributeError(
+                    "'%s' object has no attribute '%s'", getType().filedName(), name);
+        }
+        return held;
+    }
+
+    @Override
+    void writeSlot(String name, PyObject value) {
+        PyStr key = PyStr.interned(name);
+        if (value == null) {
+            // `member_object_set` reached by `del`, which finds nothing to empty and complains with the
+            // bare name: no class, no attribute sentence, only `AttributeError: a`.
+            if (slotValues == null || slotValues.get(key) == null) {
+                throw Slots.attributeError("%s", name);
+            }
+            slotValues.remove(key);
+            return;
+        }
+        if (slotValues == null) {
+            slotValues = PyDict.empty();
+        }
+        slotValues.put(key, value);
     }
 
     // --- attributes ----------------------------------------------------------------------
@@ -35,13 +115,16 @@ public final class PyInstance extends PyObject {
      * {@code p.as_text()} passes {@code p} as {@code self} without anyone writing that down, and a member
      * that can write owns the name outright. A member that can only read is the one thing the dictionary
      * outranks, which is what lets {@code a.quiet = "mine"} shadow it.
+     *
+     * <p>{@code __dict__} is answered by that walk rather than here, by the {@code getset_descriptor}
+     * {@link Classes} files on the class that introduces the storage. A class that files no descriptor —
+     * one under {@code object} that declares {@code __slots__}, or {@code object} itself — therefore has no
+     * {@code __dict__} to read even though this runtime has not taken its dictionary away from it, which is
+     * the named deviation about slot layout wearing a second hat.
      */
     @Override
     public PyObject getAttr(String name) {
-        return switch (name) {
-            case "__dict__" -> dictionary;
-            default -> owned(name);
-        };
+        return owned(name);
     }
 
     /**
@@ -60,7 +143,7 @@ public final class PyInstance extends PyObject {
         if (member != null && Descriptors.writes(member)) {
             return Descriptors.get(member, this, type);
         }
-        PyObject held = dictionary.get(PyStr.interned(name));
+        PyObject held = dictionary == null ? null : dictionary.get(PyStr.interned(name));
         if (held != null) {
             return held;
         }
@@ -88,13 +171,19 @@ public final class PyInstance extends PyObject {
     }
 
     /**
-     * {@code self.name = value}, which a descriptor or a {@code __setattr__} may take over.
+     * {@code self.name = value}: {@code slot_tp_setattro} when the class declares the method, {@link
+     * GenericAttributes} when it does not.
      *
      * <p>The method is called rather than consulted for advice, and it is the class's declaration that
      * decides whether the instance dictionary is written at all — which is why a class that logs its
      * assignments has to write to {@code self.__dict__} itself to store anything. Without one, the
      * dictionary is the fallback only for a name no member of the class owns: {@code thing.keep = 7} goes
      * to {@code Kept.__set__} and leaves {@code thing.__dict__} empty.
+     *
+     * <p>Asking the class rather than the value is what makes {@code super().__setattr__(name, value)} stop
+     * instead of coming back round to the same method: CPython's {@code object.__setattr__} is the generic
+     * write, which never consults a {@code __setattr__} the value's own class declared, so this hook is run
+     * once and the half below it is where the name really goes.
      */
     @Override
     public PyObject setAttr(String name, PyObject value) {
@@ -102,22 +191,13 @@ public final class PyInstance extends PyObject {
         if (hook instanceof PyFunction function) {
             return function.call(new PyObject[] {this, PyStr.of(name), value}, null);
         }
-        PyObject member = Specials.lookUp(type, name);
-        if (member != null && Descriptors.writes(member)) {
-            Descriptors.set(member, this, value);
-            return PyNone.INSTANCE;
-        }
-        dictionary.put(PyStr.interned(name), value);
+        GenericAttributes.write(this, name, value);
         return PyNone.INSTANCE;
     }
 
     /**
-     * {@code del self.name}, the other half of {@link #setAttr}.
-     *
-     * <p>A descriptor that owns the name is asked before the dictionary, exactly as it is when writing,
-     * and the {@code AttributeError} naming the value's class is what CPython says when the name is on the
-     * class but not on the value — an attribute the instance does not have, rather than one that is merely
-     * not deletable from here.
+     * {@code del self.name}, the other half of {@link #setAttr} and the same two-step: the class's {@code
+     * __delattr__} if it wrote one, {@link GenericAttributes} otherwise.
      */
     @Override
     public PyObject delAttr(String name) {
@@ -125,17 +205,14 @@ public final class PyInstance extends PyObject {
         if (hook instanceof PyFunction function) {
             return function.call(new PyObject[] {this, PyStr.of(name)}, null);
         }
-        PyObject member = Specials.lookUp(type, name);
-        if (member != null && Descriptors.writes(member)) {
-            Descriptors.delete(member, this);
-            return PyNone.INSTANCE;
-        }
-        PyStr key = PyStr.interned(name);
-        if (dictionary.get(key) == null) {
-            throw Slots.attributeError("'%s' object has no attribute '%s'", type.name(), name);
-        }
-        dictionary.remove(key);
+        GenericAttributes.delete(this, name);
         return PyNone.INSTANCE;
+    }
+
+    /** {@code _PyObject_GetManagedDict}: the dictionary {@link GenericAttributes} writes through. */
+    @Override
+    PyDict attributeStore() {
+        return dictionary;
     }
 
     // --- calls ---------------------------------------------------------------------------

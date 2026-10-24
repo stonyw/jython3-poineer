@@ -77,7 +77,10 @@ public final class PyFrame extends PyObject {
      * the generic complaint about an attribute that is not writable; {@code f_trace_lines} is a member of
      * {@code bool} type, so it complains about the value rather than the name; {@code f_lineno} is settable
      * in principle and only from inside a trace function, which this runtime cannot be in, and it checks
-     * the value's type before it says so.
+     * the value's type before it says so. What is left is {@link GenericAttributes}' to answer, and it
+     * reads the type's dictionary: {@code __doc__} is filed there and so is read-only, {@code __class__}
+     * reaches {@code object}'s getset, and a name nothing files has nowhere to go, because a frame keeps no
+     * instance dictionary.
      */
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
@@ -97,10 +100,9 @@ public final class PyFrame extends PyObject {
             default:
                 break;
         }
-        throw Slots.attributeError(
-                writable(attribute)
-                        ? "attribute '" + attribute + "' of 'frame' objects is not writable"
-                        : readOnly(attribute));
+        refused(attribute);
+        GenericAttributes.write(this, attribute, value);
+        return PyNone.INSTANCE;
     }
 
     /**
@@ -124,10 +126,9 @@ public final class PyFrame extends PyObject {
         if (attribute.equals("f_trace_lines")) {
             throw Slots.typeError("can't delete numeric/char attribute");
         }
-        throw Slots.attributeError(
-                writable(attribute)
-                        ? "attribute '" + attribute + "' of 'frame' objects is not writable"
-                        : readOnly(attribute));
+        refused(attribute);
+        GenericAttributes.delete(this, attribute);
+        return PyNone.INSTANCE;
     }
 
     /**
@@ -195,19 +196,18 @@ public final class PyFrame extends PyObject {
     }
 
     /**
-     * The refusal for a name that is not an attribute of {@code frame} at all.
-     *
-     * <p>A method the type publishes — {@code clear} is the one here — is found in the type and has no
-     * setter, so CPython complains that the attribute is read-only. A name the type does not publish has
-     * nowhere to go, and that is the other complaint. The difference shows in a script that overwrites a
-     * method by mistake, and only one of the two wordings is right for each.
+     * The complaint for a name {@code frame} keeps in a C table rather than in the dictionary its type
+     * publishes, which is the one {@link GenericAttributes} would otherwise read: the seven getsets with no
+     * setter, and {@code clear}, the method this runtime answers from a field of its own.
      */
-    private static String readOnly(String attribute) {
-        return attribute.equals("clear")
-                ? "'frame' object attribute '" + attribute + "' is read-only"
-                : "'frame' object has no attribute '"
-                        + attribute
-                        + "' and no __dict__ for setting new attributes";
+    private void refused(String attribute) {
+        if (writable(attribute)) {
+            throw Slots.attributeError(
+                    "attribute '" + attribute + "' of 'frame' objects is not writable");
+        }
+        if (attribute.equals("clear")) {
+            throw Slots.attributeError("'frame' object attribute 'clear' is read-only");
+        }
     }
 
     /**

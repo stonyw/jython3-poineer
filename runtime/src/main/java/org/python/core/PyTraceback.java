@@ -118,8 +118,10 @@ public final class PyTraceback extends PyObject {
      * <p>The difference in wording is CPython's. {@code tb_frame} and {@code tb_lasti} are {@code
      * PyMemberDef}s marked {@code Py_READONLY}, so writing or deleting them is the generic complaint about
      * a read-only attribute; {@code tb_lineno} is a getset with no setter, and that one names the
-     * attribute and the type. Everything else reaches the refusal for a value with no dictionary, because
-     * a traceback has no instance dictionary to file a new name in.
+     * attribute and the type. Both live in C fields this runtime reads by hand rather than in the type's
+     * dictionary, so the two tables have to say so; everything else is left to {@link GenericAttributes},
+     * which reads that dictionary and so calls {@code __doc__} read-only, and refuses a name nothing files
+     * because a traceback keeps no instance dictionary.
      */
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
@@ -127,8 +129,9 @@ public final class PyTraceback extends PyObject {
             next = asNext(value, this);
             return PyNone.INSTANCE;
         }
-        throw Slots.attributeError(
-                member(attribute) ? "readonly attribute" : notWritable(attribute));
+        refused(attribute);
+        GenericAttributes.write(this, attribute, value);
+        return PyNone.INSTANCE;
     }
 
     @Override
@@ -136,8 +139,29 @@ public final class PyTraceback extends PyObject {
         if (attribute.equals("tb_next")) {
             throw Slots.typeError("can't delete tb_next attribute");
         }
-        throw Slots.attributeError(
-                member(attribute) ? "readonly attribute" : notWritable(attribute));
+        refused(attribute);
+        GenericAttributes.delete(this, attribute);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * The complaint for a name {@code traceback} keeps in a C table rather than in the dictionary its type
+     * publishes, which is the one {@link GenericAttributes} would otherwise read.
+     *
+     * <p>Two {@code PyMemberDef}s marked {@code Py_READONLY}, one getset with no setter, and the {@code
+     * __dir__} this runtime answers from a field of its own instead of from a table.
+     */
+    private void refused(String attribute) {
+        if (member(attribute)) {
+            throw Slots.attributeError("readonly attribute");
+        }
+        if (attribute.equals("tb_lineno")) {
+            throw Slots.attributeError(
+                    "attribute 'tb_lineno' of 'traceback' objects is not writable");
+        }
+        if (attribute.equals("__dir__")) {
+            throw Slots.attributeError("'traceback' object attribute '__dir__' is read-only");
+        }
     }
 
     /**
@@ -166,26 +190,6 @@ public final class PyTraceback extends PyObject {
     /** The two names {@code traceback}'s {@code PyMemberDef} table holds, and so refuses by address. */
     private static boolean member(String attribute) {
         return attribute.equals("tb_frame") || attribute.equals("tb_lasti");
-    }
-
-    /**
-     * The refusal for a name that is not a writable attribute of {@code traceback}.
-     *
-     * <p>{@code tb_lineno} is a getset with no setter, so it names the attribute and the type; {@code
-     * __dir__} is a method the type publishes, and a method has no setter either, which is the third
-     * wording CPython uses for the same refusal; anything else has nowhere to be filed, because a
-     * traceback has no instance dictionary.
-     */
-    private static String notWritable(String attribute) {
-        if (attribute.equals("tb_lineno")) {
-            return "attribute 'tb_lineno' of 'traceback' objects is not writable";
-        }
-        if (attribute.equals("__dir__")) {
-            return "'traceback' object attribute '__dir__' is read-only";
-        }
-        return "'traceback' object has no attribute '"
-                + attribute
-                + "' and no __dict__ for setting new attributes";
     }
 
     /**

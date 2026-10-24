@@ -116,8 +116,10 @@ public final class PyProperty extends PyObject implements Descriptors.Protocol {
     /**
      * {@code obj.name = value}, or {@code del obj.name} when {@code value} is null.
      *
-     * <p>The two refusals are worded alike with only the last name swapped, and name the value's class
-     * rather than the property's, which is what makes the sentence useful to whoever wrote the class.
+     * <p>The two refusals are worded alike with only the last name swapped, and name the value's own class
+     * rather than the property's, which is what makes the sentence useful to whoever wrote the class. It is
+     * the class as it is *qualified*, because CPython takes {@code PyType_GetQualName} for it: a metaclass
+     * defined inside a function reports {@code make.<locals>.Meta} there.
      */
     @Override
     public void write(PyObject obj, PyObject value) {
@@ -126,7 +128,7 @@ public final class PyProperty extends PyObject implements Descriptors.Protocol {
             throw Slots.attributeError(
                     "property%s of '%s' object has no %s",
                     quotedName(),
-                    obj.getType().name(),
+                    obj.getType().dottedName(),
                     value == null ? "deleter" : "setter");
         }
         Slots.call(

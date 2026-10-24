@@ -404,8 +404,18 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__globals__" -> globals;
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
-            default -> PyNotImplemented.INSTANCE;
+            default -> {
+                PyObject held =
+                        attributes == null ? null : attributes.get(PyStr.interned(attribute));
+                yield held == null ? PyNotImplemented.INSTANCE : held;
+            }
         };
+    }
+
+    /** {@code func_dict}: the dictionary {@code f.x = 1} writes and {@code f.x} reads. */
+    @Override
+    PyDict attributeStore() {
+        return attributes();
     }
 
     @Override
@@ -415,7 +425,7 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__qualname__" -> qualName = value;
             case "__doc__" -> doc = value;
             case "__module__" -> module = value;
-            default -> attributes().put(PyStr.of(attribute), value);
+            default -> attributes().put(PyStr.interned(attribute), value);
         }
         return PyNone.INSTANCE;
     }

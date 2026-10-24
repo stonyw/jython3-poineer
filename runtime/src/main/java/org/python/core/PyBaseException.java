@@ -374,27 +374,32 @@ public class PyBaseException extends PyObject {
         return traceback;
     }
 
+    /** The chain flag {@code BaseException} files as a {@code T_BOOL} member. */
+    PyObject suppressContext() {
+        return suppressContext;
+    }
+
     /**
-     * {@code e.name}: the exception's own fields first, then what CPython's generic read finds.
+     * {@code e.name}: the fields this runtime answers from a slot, then what CPython's generic read finds.
      *
-     * <p>{@code args}, the chain and {@code __dict__} are getsets on {@code BaseException}, so they are
-     * data descriptors and outrank anything the value holds under the same name — {@code class
-     * Q(Exception): args = 5} leaves {@code Q().args} reading the empty tuple the value was made with.
-     * The rest of the lookup is every other value's: a member the class declares and that can write
-     * outranks the dictionary, the dictionary outranks a member that only reads, and {@code __module__}
-     * is in that last group, which is why a class Python wrote answers it from its own dictionary while
-     * {@code ValueError('x').__module__} is an {@code AttributeError} — a built-in type keeps its module
-     * on the type, not in a dictionary an instance can walk.
+     * <p>Only three names are taken before the class is asked, and they are the three whose storage has no
+     * descriptor to read it through — {@code StopIteration.value} and {@code NameError.name} and {@code
+     * AttributeError.obj}, which CPython files as members of the leaf classes and this runtime keeps as
+     * slots. Everything else is {@link #owned}, which is CPython's {@code _PyType_Lookup} order: the first
+     * class in the method resolution order that names the attribute decides, so {@code class Q(Exception):
+     * args = 5} answers {@code 5} where the base's getset would have answered the tuple, and a property
+     * filed under {@code args} is asked before the field is read at all. The six names {@code BaseException}
+     * itself files — {@code args}, the chain, {@code __suppress_context__} and {@code __dict__} — are
+     * descriptors like any other, and a value holds them only as long as nothing in front of the base
+     * claims the name. The four-step order {@link #owned} answers by is every other value's: a member that
+     * can write outranks the dictionary, the dictionary outranks a member that only reads, and {@code
+     * __module__} is in that last group — which is why a class Python wrote answers it from its own
+     * dictionary while {@code ValueError('x').__module__} is an {@code AttributeError}, a built-in type
+     * keeping its module on the type rather than in a dictionary an instance can walk.
      */
     @Override
     public PyObject getAttr(String name) {
         return switch (name) {
-            case "args" -> arguments;
-            case "__cause__" -> cause;
-            case "__context__" -> context;
-            case "__suppress_context__" -> suppressContext;
-            case "__traceback__" -> traceback();
-            case "__dict__" -> held();
             case "value" ->
                     carriesValue()
                             ? (stopIterationValue == null ? PyNone.INSTANCE : stopIterationValue)
@@ -458,22 +463,80 @@ public class PyBaseException extends PyObject {
     }
 
     /** {@code e.__dict__}, which a value of an exception class has had since CPython gave it one. */
-    private PyDict held() {
+    PyDict held() {
         if (dictionary == null) {
             dictionary = PyDict.empty();
         }
         return dictionary;
     }
 
+    /** The same dictionary, offered to {@link GenericAttributes} for every name it writes plainly. */
+    @Override
+    PyDict attributeStore() {
+        return held();
+    }
+
+    /**
+     * {@code e.__dict__ = {...}}, which {@code BaseException}'s getset answers with and {@code del} reaches
+     * with nothing handed over.
+     *
+     * <p>An exception's dictionary cannot be deleted at all — that refusal is {@link #delAttr}'s — so the
+     * two sentences here are the type check and nothing else: {@code TypeError: __dict__ must be set to a
+     * dictionary, not a 'int'}, naming the value rather than the class the way {@code subtype_setdict}
+     * does for every other value.
+     */
+    void replaceDict(PyObject value) {
+        if (value == null) {
+            throw Slots.typeError("cannot delete __dict__");
+        }
+        if (!(value instanceof PyDict replacement)) {
+            throw Slots.typeError(
+                    "__dict__ must be set to a dictionary, not a '%s'", value.getType().filedName());
+        }
+        dictionary = replacement;
+    }
+
+    /**
+     * The values of the fields a class under {@code Exception} declared in {@code __slots__}, kept apart
+     * from the exception's own dictionary the way CPython keeps an offset apart from {@code tp_dictoffset}:
+     * {@code vars(e)} stays empty when such a field is set.
+     */
+    private PyDict slotValues;
+
+    @Override
+    PyObject slotValue(String name) {
+        PyObject held = slotValues == null ? null : slotValues.get(PyStr.interned(name));
+        if (held == null) {
+            throw Slots.attributeError(
+                    "'%s' object has no attribute '%s'", exceptionType.filedName(), name);
+        }
+        return held;
+    }
+
+    @Override
+    void writeSlot(String name, PyObject value) {
+        PyStr key = PyStr.interned(name);
+        if (value == null) {
+            if (slotValues == null || slotValues.get(key) == null) {
+                throw Slots.attributeError("%s", name);
+            }
+            slotValues.remove(key);
+            return;
+        }
+        if (slotValues == null) {
+            slotValues = PyDict.empty();
+        }
+        slotValues.put(key, value);
+    }
+
     /**
      * {@code e.name = value}, with the same order as the read and {@code __setattr__} above all of it.
      *
-     * <p>The three chain fields are checked the way {@code PyException_SetCause} and its siblings check:
-     * only an exception or {@code None} reaches {@code __cause__} and {@code __context__}, and the
-     * complaint names what was tried. Writing the cause goes through {@link #setCause}, so {@code e.__cause__
-     * = None} hides the context exactly as {@code raise X from None} does — the assignment is the same
-     * function CPython calls, not a field write of its own. {@code args} takes any iterable and stores it
-     * as a tuple.
+     * <p>The six names {@code BaseException} files as descriptors are written by those descriptors, which
+     * is where CPython's checks live — see {@link #writeArguments} and its siblings — and the walk that
+     * finds them is {@link GenericAttributes}, the same {@code _PyType_Lookup} the read walks, so {@code
+     * class Q(Exception): args = 5} leaves the assignment to the instance dictionary rather than to the
+     * field. What is left in this method is the three fields that have no descriptor filed for them yet.
      */
     @Override
     public PyObject setAttr(String name, PyObject value) {
@@ -482,10 +545,6 @@ public class PyBaseException extends PyObject {
             return function.call(new PyObject[] {this, PyStr.of(name), value}, null);
         }
         switch (name) {
-            case "args" -> {
-                setArguments(value);
-                return PyNone.INSTANCE;
-            }
             case "value" -> {
                 if (carriesValue()) {
                     stopIterationValue = value;
@@ -504,32 +563,72 @@ public class PyBaseException extends PyObject {
                     return PyNone.INSTANCE;
                 }
             }
-            case "__cause__" -> {
-                setCause(chain("exception cause", value));
-                return PyNone.INSTANCE;
-            }
-            case "__context__" -> {
-                setContext(chain("exception context", value));
-                return PyNone.INSTANCE;
-            }
-            case "__suppress_context__" -> {
-                suppressContext = value;
-                return PyNone.INSTANCE;
-            }
-            case "__traceback__" -> {
-                setTraceback(value);
-                return PyNone.INSTANCE;
-            }
             default -> {
             }
         }
-        PyObject member = Specials.member(exceptionType, name);
-        if (member != null && Descriptors.writes(member)) {
-            Descriptors.set(member, this, value);
-            return PyNone.INSTANCE;
-        }
-        held().put(PyStr.interned(name), value);
+        GenericAttributes.write(this, name, value);
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code BaseException_set_args}: any iterable, stored as the tuple {@code tuple(value)} makes.
+     *
+     * <p>{@code value} null is {@code del e.args}, which reaches the same pointer with NULL handed over and
+     * is refused there: {@code args} is a C array of arguments, not a dictionary entry, and CPython's
+     * setter is the only place that says so.
+     */
+    void writeArguments(PyObject value) {
+        if (value == null) {
+            throw Slots.typeError("args may not be deleted");
+        }
+        setArguments(value);
+    }
+
+    /** {@code BaseException_set_traceback}: a traceback, {@code None}, and nothing deleted. */
+    void writeTraceback(PyObject value) {
+        if (value == null) {
+            throw Slots.typeError("__traceback__ may not be deleted");
+        }
+        setTraceback(value);
+    }
+
+    /**
+     * {@code BaseException_set_cause}: an exception or {@code None}, written through {@link #setCause}.
+     *
+     * <p>The assignment is the same function {@code raise X from Y} calls, so {@code e.__cause__ = None}
+     * hides the context exactly as {@code raise X from None} does — the flag travels with the field.
+     */
+    void writeCause(PyObject value) {
+        if (value == null) {
+            throw Slots.typeError("__cause__ may not be deleted");
+        }
+        setCause(chain("exception cause", value));
+    }
+
+    /** {@code BaseException_set_context}: an exception or {@code None}, leaving the flag alone. */
+    void writeContext(PyObject value) {
+        if (value == null) {
+            throw Slots.typeError("__context__ may not be deleted");
+        }
+        setContext(chain("exception context", value));
+    }
+
+    /**
+     * {@code BaseException}'s {@code __suppress_context__} member, which is a {@code T_BOOL} offset.
+     *
+     * <p>Two refusals come out of {@code PyMember_SetOne} rather than out of this field: a value that is
+     * not a bool is refused although {@code bool(value)} would have answered, because the member is the
+     * one kind of offset that checks its type instead of converting, and {@code del} is the sentence that
+     * a numeric or char offset cannot be emptied at all.
+     */
+    void writeSuppressContext(PyObject value) {
+        if (value == null) {
+            throw Slots.typeError("can't delete numeric/char attribute");
+        }
+        if (!(value instanceof PyBool)) {
+            throw Slots.typeError("attribute value type must be bool");
+        }
+        suppressContext = value;
     }
 
     /** The value a chain field accepts: an exception, or {@code None} to say there is none. */
@@ -541,39 +640,27 @@ public class PyBaseException extends PyObject {
     }
 
     /**
-     * {@code del e.name}: the name is taken away in the order it would have been read, and the six names
-     * CPython keeps in C fields that no delete can reach refuse before anything is looked up.
+     * {@code del e.name}: the name is taken away in the order it would have been read.
      *
-     * <p>Two of the refusals are the same sentence twice over, because {@code args} and the three chain
-     * fields are getsets whose deleting half is {@code ex_del}, while {@code __dict__} is a member and
-     * {@code __class__} a getset of its own family; {@code __suppress_context__} is a {@code T_BOOL}
-     * member, and a numeric or char member cannot be deleted at all.
+     * <p>The six names {@code BaseException} files refuse in the writing half of their own descriptors,
+     * which is where CPython's {@code ex_del} and {@code PyMember_SetOne} say so — {@code args} and the
+     * chain by name, {@code __dict__} in the words {@code PyObject_GenericSetDict} chooses, {@code
+     * __suppress_context__} as the numeric attribute it is, and {@code __class__} in the sentence {@code
+     * object}'s own getset keeps for itself. All four are reached through {@link GenericAttributes}, which
+     * is also where a name the class files as something else — a property a subclass wrote over the field —
+     * is asked rather than refused, so {@code Guarded} gets its {@code AttributeError: property 'errno' of
+     * 'Guarded' object has no deleter} instead of a complaint about the instance dictionary.
      *
-     * <p>{@code StopIteration.value} is the exception, because a member of {@code _Py_T_OBJECT} type
-     * deletes by writing null to the field: {@code del si.value} succeeds, reading it afterwards gives
-     * {@code None}, and deleting it a second time is still silent. A member that answers for itself —
-     * a property a class declared over the field — is asked instead, which is how a subclass gets its
-     * {@code AttributeError: property 'errno' of 'Guarded' object has no deleter} rather than a complaint
-     * about the instance dictionary.
+     * <p>{@code StopIteration.value} is the one name this class empties itself, because a member of {@code
+     * _Py_T_OBJECT} type deletes by writing null to the field: {@code del si.value} is silent, reading it
+     * afterwards gives {@code None}, and deleting it a second time is still silent. The three fields it
+     * stands for are answered but not yet filed, so nothing above them would reach them.
      */
     @Override
     public PyObject delAttr(String name) {
         PyObject hook = Specials.lookUp(exceptionType, "__delattr__");
         if (hook instanceof PyFunction function) {
             return function.call(new PyObject[] {this, PyStr.of(name)}, null);
-        }
-        switch (name) {
-            case "args" -> throw Slots.typeError("args may not be deleted");
-            case "__dict__" -> throw Slots.typeError("cannot delete __dict__");
-            case "__class__" -> throw Slots.typeError("can't delete __class__ attribute");
-            case "__traceback__" ->
-                    throw Slots.typeError("__traceback__ may not be deleted");
-            case "__cause__" -> throw Slots.typeError("__cause__ may not be deleted");
-            case "__context__" -> throw Slots.typeError("__context__ may not be deleted");
-            case "__suppress_context__" ->
-                    throw Slots.typeError("can't delete numeric/char attribute");
-            default -> {
-            }
         }
         if (name.equals("value") && carriesValue()) {
             stopIterationValue = null;
@@ -587,17 +674,7 @@ public class PyBaseException extends PyObject {
             failureObject = null;
             return PyNone.INSTANCE;
         }
-        PyObject member = Specials.member(exceptionType, name);
-        if (member != null && Descriptors.writes(member)) {
-            Descriptors.delete(member, this);
-            return PyNone.INSTANCE;
-        }
-        PyStr key = PyStr.interned(name);
-        if (held().get(key) == null) {
-            throw Slots.attributeError(
-                    "'%s' object has no attribute '%s'", exceptionType.name(), name);
-        }
-        held().remove(key);
+        GenericAttributes.delete(this, name);
         return PyNone.INSTANCE;
     }
 

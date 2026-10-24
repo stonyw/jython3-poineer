@@ -338,6 +338,15 @@ public final class Slots {
             throw failedRead(
                     target, name, "module '%s' has no attribute '%s'", module.name(), name);
         }
+        // The last question a read asks is the one CPython's generic read asks first for a value whose own
+        // type keeps a dictionary: the MRO is walked and the first entry under the name is run through its
+        // descriptor, which is how a built-in value answers `__doc__` — a plain string its type files — and
+        // how the members a type publishes but this runtime reads from a C field anyway are answered twice
+        // the same way.
+        PyObject published = TypeDict.read(target, name);
+        if (published != PyNotImplemented.INSTANCE) {
+            return published;
+        }
         throw failedRead(
                 target, name, "'%s' object has no attribute '%s'", target.getType().filedName(), name);
     }
@@ -359,6 +368,17 @@ public final class Slots {
         return name.equals(ClassAttribute.NAME) ? ClassAttribute.read(target) : null;
     }
 
+    /**
+     * {@code target.name = value}: CPython's {@code PyObject_SetAttr}, which is the value's own {@code
+     * tp_setattro} and nothing else.
+     *
+     * <p>A value that writes no attributes of its own — a Java object reached through the interop layer —
+     * falls back to {@link GenericAttributes}, so the one algorithm that knows the difference between a
+     * read-only member and a missing one answers for it too. Every runtime type writes its own attributes
+     * or uses that algorithm directly, which is why {@code object.__setattr__} is not routed through here:
+     * it must not consult the {@code __setattr__} the value's class declared, or {@code
+     * super().__setattr__(name, value)} would only come back round to the same method.
+     */
     public static void setAttr(PyObject target, String name, PyObject value) {
         if (name.equals(ClassAttribute.NAME) && !target.filedByItsClass(name)) {
             ClassAttribute.write(target, value);
@@ -368,8 +388,7 @@ public final class Slots {
         if (answer != PyNotImplemented.INSTANCE) {
             return;
         }
-        throw attributeError(
-                "'%s' object has no attribute '%s'", target.getType().filedName(), name);
+        GenericAttributes.write(target, name, value);
     }
 
     /** {@code del target.name}, which a type may refuse even when it accepts an assignment. */
@@ -382,8 +401,7 @@ public final class Slots {
         if (answer != PyNotImplemented.INSTANCE) {
             return;
         }
-        throw attributeError(
-                "'%.200s' object has no attribute '%s'", target.getType().filedName(), name);
+        GenericAttributes.delete(target, name);
     }
 
     /** Whether {@code value} can be iterated, which is what {@code *} and {@code in} ask before failing. */
@@ -396,12 +414,12 @@ public final class Slots {
      *
      * CPython answers this with a type flag, {@code Py_TPFLAGS_MAPPING}, which is set when a class
      * declares {@code keys} or inherits it from {@code dict}. A pattern match asks that flag directly and
-     * gets CPython's answer — see {@link PyType#MAPPING}; this question is still a dict, because a merge
-     * reaches it only through code that hands {@code **} a dict, and CPython's own refusal of the frame
-     * that also carries the flag says the same words this one does.
+     * gets CPython's answer — see {@link PyType#MAPPING}; what is reachable here are the two types that set
+     * the flag beside {@code dict} itself, so a window over a type's namespace unpacks as its mapping does
+     * and a class that merely declares {@code keys} still does not.
      */
     public static boolean isMapping(PyObject value) {
-        return value instanceof PyDict;
+        return value instanceof PyDict || value instanceof PyMappingProxy;
     }
 
     /**

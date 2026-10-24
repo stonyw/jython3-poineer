@@ -72,28 +72,14 @@ final class Specials {
      * The raw member {@code owner} holds under {@code name}, with no walk past it.
      *
      * <p>This is CPython's {@code lookup_tp_dict} step of {@code _super_lookup_descr} and of
-     * {@code _PyType_Lookup}: one class's own dictionary, which for a built-in type is the {@link Members}
-     * table and the {@link TypeDict} entry it is named in.
+     * {@code _PyType_Lookup}: one class's own dictionary, which every type here keeps — a class Python
+     * wrote holds the namespace its statement collected, and a built-in type the table {@link TypeDict}
+     * builds for it from the members its value class compiles in.
      *
      * @return the member, or null when this class holds nothing under the name
      */
     static PyObject declared(PyType owner, String name) {
-        PyObject fromDict = TypeDict.member(owner, name);
-        if (fromDict != null) {
-            return fromDict;
-        }
-        if (owner instanceof PyClass namespace) {
-            PyObject value = namespace.namespace().get(PyStr.interned(name));
-            if (value != null) {
-                return value;
-            }
-        }
-        Members methods = Members.tableOf(owner);
-        if (methods == null) {
-            return null;
-        }
-        PyObject descriptor = methods.describe(name);
-        return descriptor == PyNotImplemented.INSTANCE ? null : descriptor;
+        return owner.namespace().get(PyStr.interned(name));
     }
 
     /**

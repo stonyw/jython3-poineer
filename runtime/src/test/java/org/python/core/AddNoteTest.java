@@ -355,7 +355,7 @@ class AddNoteTest {
                 .hasToString("'BaseException.add_note'");
         assertThat(Slots.getAttr(TypeDict.ADD_NOTE, "__doc__"))
                 .hasToString("'Add a note to the exception'");
-        assertThat(TypeDict.ADD_NOTE.repr())
+        assertThat(Slots.repr(TypeDict.ADD_NOTE))
                 .isEqualTo("<method 'add_note' of 'BaseException' objects>");
         assertThat(Slots.getAttr(held, "add_note").repr())
                 .isEqualTo("<built-in method add_note of Written object>");

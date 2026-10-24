@@ -25,6 +25,18 @@ public class PyClass extends PyType {
 
     private PyStr qualName;
 
+    /**
+     * Whether this class keeps the two slots whose descriptors {@link Classes} files, in CPython's terms
+     * {@code tp_dictoffset} and {@code tp_weaklistoffset}.
+     *
+     * <p>Each is true when this class introduced the storage or one of its bases did, which is what makes
+     * the question {@link Classes#declare} asks of a base answerable for a class Python wrote: a class
+     * under {@code Thing} has both and files neither.
+     */
+    private boolean valueDict;
+
+    private boolean weakRefs;
+
     PyClass(
             String name,
             PyTuple bases,
@@ -38,7 +50,27 @@ public class PyClass extends PyType {
         this.qualName = PyStr.of(qualName);
     }
 
+    /** The two slot storages this class's values have, told to it by the class system. */
+    void storesValueDict(boolean stored) {
+        valueDict = stored;
+    }
+
+    void storesWeakRefs(boolean stored) {
+        weakRefs = stored;
+    }
+
+    @Override
+    boolean hasValueDict() {
+        return valueDict;
+    }
+
+    @Override
+    boolean hasWeakRefList() {
+        return weakRefs;
+    }
+
     /** The dictionary the class body filled, which is where {@link Specials} reads a declaration. */
+    @Override
     PyDict namespace() {
         return namespace;
     }
@@ -56,7 +88,8 @@ public class PyClass extends PyType {
      * wrote. {@code __class__} is the metatype rather than {@code type}, which is what a program reads
      * back after {@code class Sub(Meta, tag=3)}. The metatype step that decides the rest is
      * {@link PyType#classMember}, and it is why a {@code property} written in a metaclass answers for a
-     * class that never mentions the name.
+     * class that never mentions the name — and why a {@code __getattr__} written there answers for a name
+     * nobody mentions at all, which is the last step here rather than the first.
      */
     @Override
     public PyObject getAttr(String attribute) {
@@ -75,53 +108,99 @@ public class PyClass extends PyType {
         // this class's own dictionary; asking classMember would hand the dictionary to a metaclass's
         // property first, which is a thing a program can write but never means by `C.__dict__`.
         if (attribute.equals("__dict__")) {
-            return namespace;
+            return PyMappingProxy.of(namespace);
         }
         PyObject member = classMember(attribute);
-        // The rest of the names a type answers for itself — `__name__`, `__base__` — are the
-        // built-in type's own, and a class has nothing to say about them.
-        return member == PyNotImplemented.INSTANCE ? super.getAttr(attribute) : member;
+        if (member != PyNotImplemented.INSTANCE) {
+            return member;
+        }
+        // The rest of the names a type answers for itself — `__name__`, `__base__` — are the built-in
+        // type's own, and a class has nothing to say about them.
+        PyObject answered = super.getAttr(attribute);
+        return answered == PyNotImplemented.INSTANCE
+                ? Specials.invoke(this, "__getattr__", PyStr.of(attribute))
+                : answered;
     }
 
     /**
-     * {@code Point.kind = 'point'}, and {@code Point.__name__ = 'Other'}.
+     * {@code Point.kind = 'point'}, and {@code Point.__name__ = 'Other'}, and their {@code del}.
      *
-     * <p>Writing into the dictionary is what makes both a re-assignment of an inherited name and a new
-     * class attribute land where the lookup will find it — and where {@code del} can remove it again,
-     * which is how a shadow is taken back off.
+     * <p>Two steps in CPython's order. A metatype that declares {@code __setattr__} owns every name its
+     * classes are given, because {@code tp_setattro} for such a class is {@code slot_tp_setattro} and that
+     * is what {@code setattr} reaches — the same rule {@link PyInstance} follows for a value's own class.
+     * With no hook to run, what is left is {@link #write}.
      */
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
-        return switch (attribute) {
-            case "__name__" -> {
-                setName(text(attribute, value));
-                yield PyNone.INSTANCE;
-            }
-            case "__qualname__" -> {
-                qualName = PyStr.of(text(attribute, value));
-                yield PyNone.INSTANCE;
-            }
-            default -> {
-                namespace.put(PyStr.interned(attribute), value);
-                yield PyNone.INSTANCE;
-            }
-        };
+        PyObject hook = Specials.lookUp(getType(), "__setattr__");
+        if (hook instanceof PyFunction function) {
+            return function.call(new PyObject[] {this, PyStr.of(attribute), value}, null);
+        }
+        write(attribute, value);
+        return PyNone.INSTANCE;
     }
 
     /** {@code del Point.kind}, which only removes what this class's own dictionary holds. */
     @Override
     public PyObject delAttr(String attribute) {
-        // The two names that are part of the type's identity are not in the dictionary to take away,
-        // and CPython refuses their deletion as a type's, not as an attribute's.
-        if (attribute.equals("__name__") || attribute.equals("__qualname__")) {
-            throw Slots.typeError(
-                    "cannot delete '%s' attribute of immutable type '%s'", attribute, name());
+        PyObject hook = Specials.lookUp(getType(), "__delattr__");
+        if (hook instanceof PyFunction function) {
+            return function.call(new PyObject[] {this, PyStr.of(attribute)}, null);
         }
-        if (namespace.remove(PyStr.interned(attribute)) == null) {
-            throw Slots.failedRead(
-                    this, attribute, "type object '%s' has no attribute '%s'", name(), attribute);
-        }
+        write(attribute, null);
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code type_setattro}: the metatype's descriptor first, this class's own dictionary after it.
+     *
+     * <p>The name is looked up in the metatype's order rather than in the class's, and only a member there
+     * that can write takes it — which is what makes {@code C.__doc__ = 'text'} a filing rather than an
+     * assignment, and what makes a {@code property} a metaclass declares answer for its classes. The
+     * dictionary step then takes everything else, including a name the metatype files but cannot write:
+     * {@code C.__basicsize__ = 1} lands in the dictionary, because a read-only member is not a gate.
+     *
+     * <p>This is also the half {@code type.__setattr__} answers with. It has to be reached without the
+     * hook above, or {@code super().__setattr__(name, value)} inside a metaclass's own {@code __setattr__}
+     * would only come back round to the same method.
+     */
+    void write(String attribute, PyObject value) {
+        PyObject member = Specials.member(getType(), attribute);
+        if (member != null && Descriptors.writes(member)) {
+            if (value == null) {
+                Descriptors.delete(member, this);
+            } else {
+                Descriptors.set(member, this, value);
+            }
+            return;
+        }
+        // {@code type_update_dict}. A delete of a name the dictionary does not hold is CPython's odd
+        // sentence: the setter it calls is a dictionary write of NULL, whose KeyError the gate above turns
+        // into this AttributeError rather than the usual read failure.
+        PyStr key = PyStr.interned(attribute);
+        if (value == null) {
+            if (namespace.remove(key) == null) {
+                throw Slots.failedRead(
+                        this, attribute, "type object '%s' has no attribute '%s'", name(), attribute);
+            }
+            return;
+        }
+        namespace.put(key, value);
+    }
+
+    /**
+     * The name the type is called by, which is not a dictionary entry but part of what it is.
+     *
+     * <p>{@code C.__name__ = 'Other'} leaves {@code repr(C)} reading the module and the qualified name,
+     * which are the two things CPython keeps apart from {@code tp_name}.
+     */
+    void writeName(PyObject value) {
+        setName(text("__name__", value));
+    }
+
+    /** {@code C.__qualname__ = 'Outer.Inner'}: the dotted half of the same identity. */
+    void writeQualName(PyObject value) {
+        qualName = PyStr.of(text("__qualname__", value));
     }
 
     /**
@@ -137,13 +216,18 @@ public class PyClass extends PyType {
     /**
      * The name the type is called by, which CPython requires to be text.
      *
-     * {@code can only assign string to Point.__name__, not 'int'} — the only place the class system
-     * refuses a value rather than storing it and letting a later read complain.
+     * <p>{@code can only assign string to Point.__name__, not 'int'} — the only place the class system
+     * refuses a value rather than storing it and letting a later read complain. The second refusal is the
+     * one {@code type_set_name} makes before it copies the text anywhere: a name is a C string there, so
+     * an embedded null character is a name that cannot be written down.
      */
     private String text(String attribute, PyObject value) {
         if (!(value instanceof PyStr name)) {
             throw Slots.typeError(
                     "can only assign string to %s.%s, not '%s'", name(), attribute, value.getType().name());
+        }
+        if (name.getValue().indexOf('\0') >= 0) {
+            throw Slots.valueError("type name must not contain null characters");
         }
         return name.getValue();
     }

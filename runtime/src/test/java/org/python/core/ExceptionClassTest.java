@@ -181,25 +181,35 @@ class ExceptionClassTest {
     }
 
     /**
-     * Which dictionary holds the three names, and how far down the family they reach.
+     * Which dictionary holds which name, and how far down the family each reaches.
      *
-     * <p>{@code BaseException} owns them and no other class repeats them, so {@code ValueError}'s own
-     * dictionary is empty of {@code __new__} while its lookup order finds the one it inherits — which is
-     * what lets {@link Specials}, {@link PySuper} and a direct read from Python all reach one object.
-     * {@code type} and {@code object} keep their own, and a class Python wrote keeps nothing until its
-     * body writes it.
+     * <p>{@code BaseException} owns the four it declares and the classes that CPython gives a {@code
+     * tp_new} of their own — {@code Exception} and {@code ValueError} among them — repeat that one name as
+     * a separate object, so reading {@code ValueError.__new__.__qualname__} answers {@code
+     * ValueError.__new__} while {@code KeyError}, which declares nothing, reaches the inherited one. The
+     * rest of the names are owned once: {@link Specials}, {@link PySuper} and a direct read from Python all
+     * find the same object for them. {@code type} and {@code object} keep their own, and a class Python
+     * wrote keeps nothing until its body writes it.
      */
     @Test
     void oneDictionaryInTheFamilyHoldsThemAndTheRestInherit() {
         assertThat(Specials.declared(ExceptionTypes.BASE_EXCEPTION, "__new__"))
                 .isSameAs(TypeDict.EXCEPTION_NEW);
-        assertThat(Specials.declared(ExceptionTypes.EXCEPTION, "__new__")).isNull();
+        assertThat(Specials.declared(ExceptionTypes.EXCEPTION, "__new__"))
+                .isNotSameAs(TypeDict.EXCEPTION_NEW);
         assertThat(Specials.declared(ExceptionTypes.VALUE_ERROR, "with_traceback")).isNull();
         assertThat(Specials.declared(PyType.TYPE, "__new__")).isSameAs(TypeDict.NEW);
         assertThat(Specials.declared(PyType.OBJECT, "__init_subclass__"))
                 .isSameAs(TypeDict.INIT_SUBCLASS);
 
-        assertThat(Specials.member(ExceptionTypes.VALUE_ERROR, "__new__"))
+        // `Exception` files its own creator, and so reports its own name rather than BaseException's.
+        assertThat(Slots.getAttr(Specials.declared(ExceptionTypes.EXCEPTION, "__new__"), "__qualname__"))
+                .hasToString("'Exception.__new__'");
+        // `LookupError` files a creator of its own as well, and that is the one `KeyError` reads; only a
+        // class that derives straight from `BaseException` reaches the family's own.
+        assertThat(Specials.member(ExceptionTypes.KEY_ERROR, "__new__"))
+                .isSameAs(Specials.declared(ExceptionTypes.LOOKUP_ERROR, "__new__"));
+        assertThat(Specials.member(exception("Direct", ExceptionTypes.BASE_EXCEPTION), "__new__"))
                 .isSameAs(TypeDict.EXCEPTION_NEW);
         assertThat(Specials.member(ExceptionTypes.KEY_ERROR, "__init__"))
                 .isSameAs(TypeDict.EXCEPTION_INIT);
@@ -301,9 +311,17 @@ class ExceptionClassTest {
         refuses("TypeError: args may not be deleted", () -> held.delAttr("args"));
     }
 
-    /** {@code e.args} outranks a name the class wrote in its own dictionary, as a data descriptor does. */
+    /**
+     * {@code class Shadow(Exception): args = 5}: the class that stands in front of the field owns the name.
+     *
+     * <p>{@code _PyType_Lookup} walks the MRO and stops at {@code Shadow}, which holds a plain number and
+     * not one of {@code BaseException}'s getsets, so {@code e.args} is the {@code 5} the body wrote and the
+     * tuple the value was made with is unread. A write of the same name reaches the instance dictionary,
+     * which is what the walk then finds before it — and deleting that entry uncovers the class value again,
+     * because the field underneath was never what the name meant.
+     */
     @Test
-    void theFieldsTheValueOwnsOutrankTheClass() {
+    void aClassThatNamesAFieldAgainOwnsTheName() {
         PyType shadow =
                 exception(
                         "Shadow",
@@ -314,17 +332,24 @@ class ExceptionClassTest {
                         PyStr.of("class"));
         PyObject held = make(shadow, PyStr.of("kept"));
 
-        assertThat(Slots.getAttr(held, "args")).hasToString("('kept',)");
+        assertThat(Slots.getAttr(held, "args")).hasToString("5");
         assertThat(Slots.getAttr(shadow, "args")).hasToString("5");
         assertThat(Slots.getAttr(held, "note")).hasToString("'class'");
 
-        // A name the value writes into its own dictionary is what the next read finds, and a name the
-        // class holds that cannot write is what it cannot hide.
+        // The instance dictionary is what a write reaches, and it is the entry the next read finds before
+        // the class value — until the name is deleted from it, which uncovers the class again.
+        held.setAttr("args", PyTuple.of(PyStr.of("w")));
+        assertThat(Slots.getAttr(held, "args")).hasToString("('w',)");
+        assertThat(Slots.getAttr(shadow, "args")).hasToString("5");
+        held.delAttr("args");
+        assertThat(Slots.getAttr(held, "args")).hasToString("5");
+
         held.setAttr("note", PyStr.of("value"));
         assertThat(Slots.getAttr(held, "note")).hasToString("'value'");
         assertThat(Slots.getAttr(shadow, "note")).hasToString("'class'");
         refuses(
-                "AttributeError: 'Shadow' object has no attribute 'missing'", () -> Slots.getAttr(held, "missing"));
+                "AttributeError: 'Shadow' object has no attribute 'missing'",
+                () -> Slots.getAttr(held, "missing"));
     }
 
     /** Identity, which is what an exception is hashed and matched by until its class writes otherwise. */

@@ -152,7 +152,10 @@ public final class PyDict extends PyObject {
 
     @Override
     public boolean eq(PyObject other) {
-        return other instanceof PyDict d && items.equals(d.items);
+        // A window over a dict compares as the dict underneath it, which is what makes `dict(p) == p` and
+        // `{x: p} == {x: p}` answer rather than fall back to identity.
+        PyObject compared = other instanceof PyMappingProxy window ? window.mapping() : other;
+        return compared instanceof PyDict d && items.equals(d.items);
     }
 
     /** Mutable, therefore unhashable; {@link #hashCode()} inherits the same refusal. */
@@ -246,12 +249,19 @@ public final class PyDict extends PyObject {
 
     /**
      * {@code dict.update} and {@code |=}: a mapping merges as it is, and anything else is read as a
-     * sequence of pairs. Only a {@code dict} counts as a mapping here, because that is all
-     * {@link Slots#isMapping} can tell before the class system gives a type its MAPPING flag.
+     * sequence of pairs. A {@code dict} and a {@link PyMappingProxy} count as mappings here, which is
+     * CPython's {@code Py_TPFLAGS_MAPPING} answer for the two types that set it beside {@code dict} itself;
+     * {@link Slots#isMapping} still cannot tell a class that declares {@code keys} from one that does not.
      */
     void merge(PyObject source) {
         if (source instanceof PyDict dict) {
             putAll(dict);
+            return;
+        }
+        if (source instanceof PyMappingProxy window) {
+            // `dict(X.__dict__)` and `{**X.__dict__}`: the window is not the mapping, and CPython reads
+            // the mapping it stands for rather than the keys the window iterates.
+            putAll(window.mapping());
             return;
         }
         PyIterator iterator = Slots.iterator(source);
@@ -281,7 +291,7 @@ public final class PyDict extends PyObject {
         return parts.toArray(new PyObject[0]);
     }
 
-    private void putAll(PyDict source) {
+    void putAll(PyDict source) {
         for (Map.Entry<PyObject, PyObject> entry : source.items.entrySet()) {
             put(entry.getKey(), entry.getValue());
         }

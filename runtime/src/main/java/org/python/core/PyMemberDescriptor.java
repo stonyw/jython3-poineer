@@ -1,7 +1,8 @@
 package org.python.core;
 
 /**
- * A field of a built-in value, reached through the type: {@code sys.version_info.major}.
+ * A field of a built-in value, reached through the type: {@code sys.version_info.major}, {@code
+ * OSError.errno}.
  *
  * <p>This is what CPython's {@code PyMemberDescr_Type} is — one object per field, kept in the type's
  * dictionary, that reads a slot of the value rather than calling anything. It is the member half of the
@@ -14,8 +15,29 @@ package org.python.core;
  * refusal of the receiver quotes {@code tp_name}, the name the type is written down as, while the
  * qualified name it reports is the type's {@code tp_qualname} — the dotted half comes off for
  * {@code __qualname__} and stays for {@code doesn't apply to a 'sys.version_info' objects}.
+ *
+ * <p>The two kinds of offset it reaches are both here, because CPython has one descriptor type for both.
+ * A named sequence reads its item out of the tuple underneath, and is read-only because every one of
+ * those tables is written {@code Py_READONLY}. An exception's field is written either way: a {@code
+ * _Py_T_OBJECT} takes any value and deletes by writing nothing, which is what makes {@code del
+ * e.errno} silent and {@code e.errno} afterwards {@code None}, while a {@code T_BOOL} refuses both the
+ * value that is not a bool and the delete, in the two sentences its setter and deleter have.
  */
 final class PyMemberDescriptor extends PyObject implements Descriptors.Protocol {
+
+    /** {@code PyMemberDef} for a field that is not an item underneath: the read of the offset. */
+    interface Reader {
+        PyObject read(PyObject self);
+    }
+
+    /**
+     * The writing half of an offset, or null where the table declares the field read-only. {@code value}
+     * is null for {@code del}, which a {@code _Py_T_OBJECT} takes by emptying the field and a {@code
+     * T_BOOL} refuses.
+     */
+    interface Writer {
+        void write(PyObject self, PyObject value);
+    }
 
     private final PyType owner;
     private final String name;
@@ -26,12 +48,30 @@ final class PyMemberDescriptor extends PyObject implements Descriptors.Protocol 
     /** The sentence CPython's {@code PyMemberDef} carries, or {@code None} where the table has none. */
     private final String doc;
 
+    /** The read of an offset that is not an item, or null when {@link #index} is the field. */
+    private final Reader reader;
+
+    /** The write of an offset that has one, or null when the field is read-only. */
+    private final Writer writer;
+
     PyMemberDescriptor(PyType owner, String name, int index, String doc) {
+        this(owner, name, index, doc, null, null);
+    }
+
+    /** A field of a value that is not a sequence: {@code OSError.errno}, {@code BaseException.value}. */
+    PyMemberDescriptor(PyType owner, String name, String doc, Reader reader, Writer writer) {
+        this(owner, name, -1, doc, reader, writer);
+    }
+
+    private PyMemberDescriptor(
+            PyType owner, String name, int index, String doc, Reader reader, Writer writer) {
         super(PyType.MEMBER_DESCRIPTOR);
         this.owner = owner;
         this.name = name;
         this.index = index;
         this.doc = doc;
+        this.reader = reader;
+        this.writer = writer;
     }
 
     /**
@@ -53,7 +93,10 @@ final class PyMemberDescriptor extends PyObject implements Descriptors.Protocol 
     @Override
     public void write(PyObject obj, PyObject value) {
         checked(obj);
-        throw Slots.attributeError("readonly attribute");
+        if (writer == null) {
+            throw Slots.attributeError("readonly attribute");
+        }
+        writer.write(obj, value);
     }
 
     /** A {@code PyMemberDef} is writable storage as far as the lookup is concerned, even read-only. */
@@ -62,9 +105,9 @@ final class PyMemberDescriptor extends PyObject implements Descriptors.Protocol 
         return true;
     }
 
-    /** {@code PyMember_GetOne} for a {@code T_OBJECT} field: the item, with nothing asked of it. */
+    /** {@code PyMember_GetOne}: the item of a named sequence, or the answer of the offset's own read. */
     private PyObject read(PyObject self) {
-        return ((PyTuple) self).at(index);
+        return index < 0 ? reader.read(self) : ((PyTuple) self).at(index);
     }
 
     /** The receiver, checked against the type whose field this is. */
@@ -76,6 +119,7 @@ final class PyMemberDescriptor extends PyObject implements Descriptors.Protocol 
         }
         return self;
     }
+
 
     @Override
     public PyObject getAttr(String attribute) {

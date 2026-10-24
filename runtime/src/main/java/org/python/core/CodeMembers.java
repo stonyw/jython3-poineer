@@ -85,11 +85,14 @@ public final class CodeMembers {
      * <p>The three wordings come from CPython's own tables, and they are kept separate even for the names
      * this runtime does not read yet — {@code co_lnotab} and the position iterators cannot be asked for
      * here, but a write to one is refused with the sentence CPython uses, because it is the type's table
-     * that decides the wording and not whether this runtime filled it in.
+     * that decides the wording and not whether this runtime filled it in. A name none of the three tables
+     * holds is left to {@link GenericAttributes}, which reads the type's own dictionary and so calls {@code
+     * __doc__} read-only, reaches {@code object}'s getset for {@code __class__}, and says there is no
+     * dictionary for a name nothing files.
      *
-     * @throws PyRaise always, with the wording CPython uses for that name's kind
+     * @throws PyRaise always, either with the wording of the table the name is in or as the generic refusal
      */
-    public static void refuse(String name) {
+    public static void refuse(PyObject code, String name, PyObject value) {
         if (member(name)) {
             throw Slots.attributeError("readonly attribute");
         }
@@ -101,10 +104,11 @@ public final class CodeMembers {
             throw Slots.attributeError(
                     "'code' object attribute '" + name + "' is read-only");
         }
-        throw Slots.attributeError(
-                "'code' object has no attribute '"
-                        + name
-                        + "' and no __dict__ for setting new attributes");
+        if (value == null) {
+            GenericAttributes.delete(code, name);
+        } else {
+            GenericAttributes.write(code, name, value);
+        }
     }
 
     /** The fourteen fields {@code code} stores, which it publishes as {@code PyMemberDef}s. */

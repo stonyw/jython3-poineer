@@ -61,6 +61,12 @@ public final class PyModule extends PyObject {
         return PyNone.INSTANCE;
     }
 
+    /** {@code md_dict}: the same dictionary {@link #setAttr} writes, offered to the generic one. */
+    @Override
+    PyDict attributeStore() {
+        return dictionary;
+    }
+
     /**
      * {@code del module.name}: the entry goes, and a name the dictionary never held is refused as a read
      * of it is.

@@ -1,6 +1,11 @@
 package org.python.core;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The members the built-ins the class system is built on keep in their own dictionaries: {@code type}'s
@@ -63,17 +68,93 @@ final class TypeDict {
     private static final String INIT_DOC =
             "Initialize self.  See help(type(self)) for accurate signature.";
 
+    /**
+     * The sentences CPython's {@code object.c} and {@code type.c} write next to the methods they declare.
+     *
+     * <p>Each is the {@code ml_doc} of one {@code PyMethodDef}, so it is read off the descriptor and stays
+     * the same however the method is reached — bound to a class, bound to a value, or called unbound
+     * through {@code X.__dict__['name']}. {@link #SUBCLASS_HOOK_DOC} is the one that runs to a paragraph
+     * because {@code __subclasshook__} is a protocol a written class is meant to implement.
+     */
+    private static final String SUBCLASS_HOOK_DOC =
+            "Abstract classes can override this to customize issubclass().\n\nThis is invoked early on by"
+                    + " abc.ABCMeta.__subclasscheck__().\nIt should return True, False or NotImplemented."
+                    + "  If it returns\nNotImplemented, the normal algorithm is used.  Otherwise, it\n"
+                    + "overrides the normal algorithm (and the outcome is cached).\n";
+
+    private static final String FORMAT_DOC =
+            "Default object formatter.\n\nReturn str(self) if format_spec is empty. Raise TypeError"
+                    + " otherwise.";
+
+    private static final String SIZEOF_DOC = "Size of object in memory, in bytes.";
+
+    private static final String SUBCLASSES_DOC = "Return a list of immediate subclasses.";
+
+    private static final String DIR_DOC = "Default dir() implementation.";
+
+    private static final String TYPE_DIR_DOC = "Specialized __dir__ implementation for types.";
+
+    private static final String TYPE_SIZEOF_DOC = "Return memory consumption of the type object.";
+
+    private static final String PICKLE_DOC = "Helper for pickle.";
+
+    /** The four sentences {@code mappingproxy_methods} writes over the mapping underneath a window. */
+    private static final String GET_DOC =
+            "Return the value for key if key is in the mapping, else default.";
+
+    private static final String KEYS_DOC =
+            "D.keys() -> a set-like object providing a view on D's keys";
+
+    private static final String VALUES_DOC =
+            "D.values() -> an object providing a view on D's values";
+
+    private static final String ITEMS_DOC =
+            "D.items() -> a set-like object providing a view on D's items";
+
+    private static final String COPY_DOC = "D.copy() -> a shallow copy of D";
+
+    private static final String REVERSED_DOC = "D.__reversed__() -> reverse iterator";
+
+    private static final String PROXY_CLASS_GETITEM_DOC =
+            "mappingproxy objects are generic over two types, signifying (respectively) the types of"
+                    + " their keys and values";
+
+    /** {@code object.__class__}'s own sentence, which is the only {@code PyGetSetDef} doc here. */
+    private static final String CLASS_DOC = "the object's class";
+
+    /** The slot wrappers' one-line docs, which {@code object.c} and {@code type.c} share verbatim. */
+    private static final String REPR_DOC = "Return repr(self).";
+
+    private static final String HASH_DOC = "Return hash(self).";
+    private static final String STR_DOC = "Return str(self).";
+    private static final String GETATTR_DOC = "Return getattr(self, name).";
+    private static final String SETATTR_DOC = "Implement setattr(self, name, value).";
+    private static final String DELATTR_DOC = "Implement delattr(self, name).";
+    private static final String ITER_DOC = "Implement iter(self).";
+    private static final String LEN_DOC = "Return len(self).";
+    private static final String GETITEM_DOC = "Return self[key].";
+    private static final String CONTAINS_DOC = "Return bool(key in self).";
+    private static final String LT_DOC = "Return self<value.";
+    private static final String LE_DOC = "Return self<=value.";
+    private static final String EQ_DOC = "Return self==value.";
+    private static final String NE_DOC = "Return self!=value.";
+    private static final String GT_DOC = "Return self>value.";
+    private static final String GE_DOC = "Return self>=value.";
+    private static final String OR_DOC = "Return self|value.";
+    private static final String ROR_DOC = "Return value|self.";
+    private static final String IOR_DOC = "Return self|=value.";
+
     /** {@code type.__new__(mcs, name, bases, dict)}: the metaclass idiom, and no descriptor at all. */
-    static final PyObject NEW =
+    static final Member NEW =
             new Member(PyType.TYPE, "__new__", Shape.RAW, null, NEW_DOC, TypeDict::newMember);
 
     /** {@code type.__init__(cls, name, bases, dict)}: the checks {@code type_init} makes and nothing else. */
-    static final PyObject INIT =
+    static final Member INIT =
             new Member(
                     PyType.TYPE, "__init__", Shape.WRAPPER, null, INIT_DOC, TypeDict::initMember);
 
     /** {@code type.__call__(cls, *args)}: {@code type_call} for the class given as the receiver. */
-    static final PyObject CALL =
+    static final Member CALL =
             new Member(
                     PyType.TYPE,
                     "__call__",
@@ -83,7 +164,7 @@ final class TypeDict {
                     TypeDict::callMember);
 
     /** {@code cls.mro()}: the lookup order as a list. */
-    static final PyObject MRO =
+    static final Member MRO =
             new Member(
                     PyType.TYPE,
                     "mro",
@@ -93,17 +174,17 @@ final class TypeDict {
                     TypeDict::mroMember);
 
     /** {@code type.__prepare__(mcs, name, bases, **kwds)}: always a plain dict, whatever it is asked. */
-    static final PyObject PREPARE =
+    static final Member PREPARE =
             new Member(
                     PyType.TYPE,
                     "__prepare__",
                     Shape.CLASSMETHOD,
                     null,
                     "Create the namespace for the class statement",
-                    (args, kwNames, qualified) -> PyDict.empty());
+                    TypeDict::prepare);
 
     /** {@code type.__instancecheck__(cls, inst)}: the test {@code isinstance} makes without a hook. */
-    static final PyObject INSTANCE_CHECK =
+    static final Member INSTANCE_CHECK =
             new Member(
                     PyType.TYPE,
                     "__instancecheck__",
@@ -113,7 +194,7 @@ final class TypeDict {
                     TypeDict::instanceCheck);
 
     /** {@code type.__subclasscheck__(cls, sub)}: the test {@code issubclass} makes without a hook. */
-    static final PyObject SUBCLASS_CHECK =
+    static final Member SUBCLASS_CHECK =
             new Member(
                     PyType.TYPE,
                     "__subclasscheck__",
@@ -123,7 +204,7 @@ final class TypeDict {
                     TypeDict::subclassCheck);
 
     /** {@code object.__init_subclass__(cls, **kwds)}: the hook that refuses what it was not asked for. */
-    static final PyObject INIT_SUBCLASS =
+    static final Member INIT_SUBCLASS =
             new Member(
                     PyType.OBJECT,
                     "__init_subclass__",
@@ -141,7 +222,7 @@ final class TypeDict {
      * because its argument table was written for that class: {@code Bare.__new__.__qualname__} is
      * {@code Exception.__new__}.
      */
-    static final PyObject EXCEPTION_NEW =
+    static final Member EXCEPTION_NEW =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION,
                     "__new__",
@@ -151,7 +232,7 @@ final class TypeDict {
                     TypeDict::exceptionNew);
 
     /** {@code BaseException.__init__(self, *args)}: the arguments of the call, taken over. */
-    static final PyObject EXCEPTION_INIT =
+    static final Member EXCEPTION_INIT =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION,
                     "__init__",
@@ -161,7 +242,7 @@ final class TypeDict {
                     TypeDict::exceptionInit);
 
     /** {@code e.with_traceback(traceback)}: the one method an exception value answers with. */
-    static final PyObject WITH_TRACEBACK =
+    static final Member WITH_TRACEBACK =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION,
                     "with_traceback",
@@ -178,7 +259,7 @@ final class TypeDict {
      * under that name — or a value whose {@code __setattr__} throws the write away — be answered the way
      * CPython answers them.
      */
-    static final PyObject ADD_NOTE =
+    static final Member ADD_NOTE =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION,
                     "add_note",
@@ -197,7 +278,7 @@ final class TypeDict {
      * positional tuple only. The refusal for a named argument belongs to {@code __init__}, which runs
      * after the class has already been chosen.
      */
-    static final PyObject GROUP_NEW =
+    static final Member GROUP_NEW =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "__new__",
@@ -207,7 +288,7 @@ final class TypeDict {
                     TypeDict::groupNew);
 
     /** {@code BaseExceptionGroup.__init__(self, *args)}: the arguments taken over, keywords refused. */
-    static final PyObject GROUP_INIT =
+    static final Member GROUP_INIT =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "__init__",
@@ -217,7 +298,7 @@ final class TypeDict {
                     TypeDict::groupInit);
 
     /** {@code g.derive(exceptions)}: a group of the same shape holding the children given. */
-    static final PyObject GROUP_DERIVE =
+    static final Member GROUP_DERIVE =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "derive",
@@ -225,7 +306,7 @@ final class TypeDict {
                     TypeDict::groupDerive);
 
     /** {@code g.split(matcher)}: the matching part and the rest, as a two-tuple. */
-    static final PyObject GROUP_SPLIT =
+    static final Member GROUP_SPLIT =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "split",
@@ -233,7 +314,7 @@ final class TypeDict {
                     TypeDict::groupSplit);
 
     /** {@code g.subgroup(matcher)}: the matching part alone, or {@code None}. */
-    static final PyObject GROUP_SUBGROUP =
+    static final Member GROUP_SUBGROUP =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "subgroup",
@@ -244,49 +325,893 @@ final class TypeDict {
     }
 
     /**
-     * The raw member {@code owner}'s own dictionary holds under {@code name}.
+     * The one dictionary each built-in type keeps, as CPython's {@code tp_dict} is one pointer per type.
      *
-     * @return the member, or null when this type keeps nothing there — which is every type but the four
-     *     the class system is built on
+     * <p>{@code int.__dict__ == int.__dict__} is true while {@code int.__dict__ is int.__dict__} is false
+     * because the read makes a fresh {@link PyMappingProxy} over this one dictionary every time.
      */
-    static PyObject member(PyType owner, String name) {
-        if (owner == PyType.TYPE) {
-            return switch (name) {
-                case "__new__" -> NEW;
-                case "__init__" -> INIT;
-                case "__call__" -> CALL;
-                case "mro" -> MRO;
-                case "__prepare__" -> PREPARE;
-                case "__instancecheck__" -> INSTANCE_CHECK;
-                case "__subclasscheck__" -> SUBCLASS_CHECK;
-                default -> null;
-            };
+    private static final Map<PyType, PyDict> DECLARED = new ConcurrentHashMap<>();
+
+    /**
+     * The members {@code owner} files in its own dictionary, built the first time the type is asked.
+     *
+     * <p>Put into {@link #DECLARED} empty and filled afterwards rather than built and then added, because
+     * filling a table can read another type's table — {@link #fromTable} runs a value class's static
+     * initialiser, and the sentences and constants it files may read a type's {@code __doc__}, which is a
+     * name in the very dictionary being filled. A table added only after it was finished would be built
+     * twice during that recursion, and the second reader would hold a window over the half of it the first
+     * build had filled.
+     */
+    static PyDict declared(PyType owner) {
+        PyDict built = DECLARED.get(owner);
+        if (built == null) {
+            built = PyDict.empty();
+            DECLARED.put(owner, built);
+            fill(owner, built);
         }
+        return built;
+    }
+
+    private static void fill(PyType owner, PyDict into) {
         if (owner == PyType.OBJECT) {
-            return name.equals("__init_subclass__") ? INIT_SUBCLASS : null;
+            objectTable(into);
+            return;
+        }
+        if (owner == PyType.TYPE) {
+            typeTable(into);
+            return;
+        }
+        if (owner == PyType.MAPPING_PROXY) {
+            proxyTable(into);
+            return;
+        }
+        if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
+            exceptionTable(owner, into);
+            return;
+        }
+        fromTable(owner, into);
+    }
+
+    /**
+     * {@code p.name} for the window {@code p}: the entry under the name, run through its descriptor.
+     *
+     * <p>A window has no dictionary of its own, so the members are read from the type's table — which is
+     * what CPython's {@code PyDescr_NewGetSet} list for {@code mappingproxy} is. The walk stops at the
+     * first type that files the name, and {@code object} answers {@code __class__} for the window the
+     * same way it does for every other value.
+     */
+    static PyObject read(PyObject self, String name) {
+        PyStr key = PyStr.interned(name);
+        for (PyType owner : self.getType().mro()) {
+            PyObject entry = owner.namespace().get(key);
+            if (entry != null) {
+                return Descriptors.get(entry, self, owner);
+            }
+        }
+        return PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * {@code object}'s own dictionary, as the reference interpreter files it: twenty-four names.
+     *
+     * <p>Fourteen are slot wrappers — the C functions every value inherits and that nothing below
+     * {@code object} replaces unless a type declares its own. Three are pickle's helpers, one is the
+     * formatter, one the size, one {@code dir()}'s default, and two are {@code METH_CLASS} methods that
+     * bind the class they were read from rather than any value. {@code __class__} is the only getset, and
+     * {@code __doc__} is not a descriptor at all: a static type's sentence is a plain string in its
+     * dictionary, which is why {@code BaseException.__doc__} is read out of the class rather than
+     * inherited.
+     */
+    private static void objectTable(PyDict into) {
+        PyType owner = PyType.OBJECT;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::objectNew);
+        table.wrapper("__repr__", REPR_DOC, TypeDict::objectRepr);
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
+        table.wrapper("__getattribute__", GETATTR_DOC, TypeDict::objectGetAttribute);
+        table.wrapper("__setattr__", SETATTR_DOC, TypeDict::objectSetAttribute);
+        table.wrapper("__delattr__", DELATTR_DOC, TypeDict::objectDelAttribute);
+        table.wrapper("__lt__", LT_DOC, (args, kw, q) -> identity(args, CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, (args, kw, q) -> identity(args, CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, (args, kw, q) -> identity(args, CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, (args, kw, q) -> identity(args, CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, (args, kw, q) -> identity(args, CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, (args, kw, q) -> identity(args, CompareOp.GE));
+        table.wrapper("__init__", INIT_DOC, TypeDict::objectInit);
+        table.method("__reduce_ex__", PICKLE_DOC, TypeDict::objectReduceEx);
+        table.method("__reduce__", PICKLE_DOC, TypeDict::objectReduce);
+        table.method("__getstate__", PICKLE_DOC, TypeDict::objectState);
+        table.classMethod("__subclasshook__", SUBCLASS_HOOK_DOC, TypeDict::subclassHook);
+        table.put("__init_subclass__", INIT_SUBCLASS);
+        table.method("__format__", FORMAT_DOC, TypeDict::objectFormat);
+        table.method("__sizeof__", SIZEOF_DOC, TypeDict::objectSize);
+        table.method("__dir__", DIR_DOC, TypeDict::objectDir);
+        table.getset("__class__", CLASS_DOC, ClassAttribute::read, TypeDict::writeClass);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code type}'s own dictionary: the thirty-four names every class inherits through its metatype.
+     *
+     * <p>Five of the names already existed as {@link #NEW}, {@link #INIT}, {@link #CALL}, {@link #MRO},
+     * {@link #PREPARE}, {@link #INSTANCE_CHECK} and {@link #SUBCLASS_CHECK}, and are filed here as the
+     * same objects so that {@code type.__dict__['mro'] is type.mro} stays true. The rest are new: six
+     * {@code member_descriptor}s over the C struct's own fields — which this runtime has no layout for, so
+     * the four sizes and offsets answer nought — and twelve {@code getset_descriptor}s over the names a
+     * class reports about itself, which are now the half of {@link PyType#getAttr} a program can reach
+     * through the dictionary.
+     */
+    private static void typeTable(PyDict into) {
+        PyType owner = PyType.TYPE;
+        Table table = new Table(owner, into);
+        table.put("__new__", NEW);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.put("__call__", CALL);
+        table.wrapper("__getattribute__", GETATTR_DOC, TypeDict::typeGetAttribute);
+        table.wrapper("__setattr__", SETATTR_DOC, TypeDict::typeSetAttribute);
+        table.wrapper("__delattr__", DELATTR_DOC, TypeDict::typeDelAttribute);
+        table.put("__init__", INIT);
+        table.wrapper("__or__", OR_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
+        table.wrapper("__ror__", ROR_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
+        table.put("mro", MRO);
+        table.method("__subclasses__", SUBCLASSES_DOC, TypeDict::subclasses);
+        table.put("__prepare__", PREPARE);
+        table.put("__instancecheck__", INSTANCE_CHECK);
+        table.put("__subclasscheck__", SUBCLASS_CHECK);
+        table.method("__dir__", TYPE_DIR_DOC, TypeDict::typeDir);
+        table.method("__sizeof__", TYPE_SIZEOF_DOC, TypeDict::typeSize);
+        table.member("__basicsize__");
+        table.member("__itemsize__");
+        table.member("__flags__");
+        table.member("__weakrefoffset__");
+        table.member("__base__", TypeDict::baseOf);
+        table.member("__dictoffset__");
+        table.getset("__name__", null, TypeDict::nameOf, writesIdentity("__name__"));
+        table.getset("__qualname__", null, TypeDict::nameOf, writesIdentity("__qualname__"));
+        table.getset("__bases__", null, TypeDict::basesOf, writesBases());
+        table.getset("__mro__", null, TypeDict::mroOf, refuses("__mro__"));
+        table.getset("__module__", null, TypeDict::moduleOf, writesModule());
+        table.getset(
+                "__abstractmethods__", null, TypeDict::abstractMethods, files("__abstractmethods__"));
+        table.getset("__dict__", null, TypeDict::dictOf, refuses("__dict__"));
+        table.getset("__doc__", null, TypeDict::docOf, writes("__doc__"));
+        table.getset("__text_signature__", null, kind -> PyNone.INSTANCE, refuses("__text_signature__"));
+        table.getset("__annotations__", null, TypeDict::annotationsOf, files("__annotations__"));
+        table.getset("__annotate__", null, TypeDict::annotateOf, writesAnnotate());
+        table.getset("__type_params__", null, TypeDict::typeParamsOf, writes("__type_params__"));
+    }
+
+    /**
+     * {@code mappingproxy}'s own dictionary: the twenty-five names a window answers itself with.
+     *
+     * <p>Seventeen are the slots that hand the <em>mapping</em> underneath to CPython rather than the
+     * window — which is why {@code p | {}} answers a dict — and six are {@code PyMethodDef}s over the same
+     * mapping. There is no {@code __setitem__} or {@code __delitem__} among them, and that absence is the
+     * whole of why writing through a window complains about a missing attribute rather than about a type
+     * that will not be written.
+     */
+    private static void proxyTable(PyDict into) {
+        PyType owner = PyType.MAPPING_PROXY;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::proxyNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
+        table.wrapper("__lt__", LT_DOC, (args, kw, q) -> windowed(args, CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, (args, kw, q) -> windowed(args, CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, (args, kw, q) -> windowed(args, CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, (args, kw, q) -> windowed(args, CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, (args, kw, q) -> windowed(args, CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, (args, kw, q) -> windowed(args, CompareOp.GE));
+        table.wrapper("__iter__", "Implement iter(self).", args -> args[0].iterator());
+        table.wrapper("__or__", "Return self|value.", TypeDict::windowOr);
+        table.wrapper("__ror__", "Return value|self.", TypeDict::windowOr);
+        table.wrapper("__ior__", IOR_DOC, TypeDict::refuseIor);
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, (args, kw, q) -> window(args[0]).getItem(args[1]));
+        table.wrapper(
+                "__contains__", CONTAINS_DOC, (args, kw, q) -> window(args[0]).contains(args[1]));
+        table.method("get", GET_DOC, TypeDict::proxyGet);
+        table.method("keys", KEYS_DOC, args -> proxyView(args[0], "keys"));
+        table.method("values", VALUES_DOC, args -> proxyView(args[0], "values"));
+        table.method("items", ITEMS_DOC, args -> proxyView(args[0], "items"));
+        table.method("copy", COPY_DOC, args -> window(args[0]).copy());
+        table.classMethod(
+                "__class_getitem__", PROXY_CLASS_GETITEM_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
+        table.method("__reversed__", REVERSED_DOC, args -> reversedKeys(window(args[0])));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * The dictionary one class of the exception family files.
+     *
+     * <p>Only the names this runtime answers are published: {@code BaseException}'s own ten — the four
+     * that make and shape a value, the {@code T_BOOL} chain flag, and the five C fields whose getsets
+     * {@link PyBaseException} writes — plus each class's {@code __new__} where the reference interpreter
+     * declares one and {@code __doc__} for every one of them. The rest of what CPython files there is the
+     * other half of {@code BaseException}'s table, which is behaviour this runtime has but not as names of
+     * its own: {@code __repr__} and {@code __str__} and {@code __reduce__} are answered from the value
+     * class rather than published, and the fields a {@code SyntaxError}, an {@code ImportError} or a {@code
+     * StopIteration} keeps are named in the plan rather than faked.
+     */
+    private static void exceptionTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        if (owner == ExceptionTypes.BASE_EXCEPTION_GROUP) {
+            table.put("__new__", GROUP_NEW);
+            table.put("__init__", GROUP_INIT);
+            table.put("derive", GROUP_DERIVE);
+            table.put("split", GROUP_SPLIT);
+            table.put("subgroup", GROUP_SUBGROUP);
+            table.value("__doc__", docValue(owner));
+            return;
         }
         if (owner == ExceptionTypes.BASE_EXCEPTION) {
-            return switch (name) {
-                case "__new__" -> EXCEPTION_NEW;
-                case "__init__" -> EXCEPTION_INIT;
-                case "with_traceback" -> WITH_TRACEBACK;
-                case "add_note" -> ADD_NOTE;
-                default -> null;
+            table.put("__new__", EXCEPTION_NEW);
+            table.put("__init__", EXCEPTION_INIT);
+            table.put("with_traceback", WITH_TRACEBACK);
+            table.put("add_note", ADD_NOTE);
+            // The five fields CPython keeps in `PyBaseExceptionObject`, filed in the order its tables put
+            // them: `BaseException_members` before `BaseException_getset`, and `__dict__` first inside the
+            // getsets because `PyObject_GenericGetDict` is the one entry of that table with no sentence
+            // beside it and no sibling ahead of it.
+            table.member(
+                    "__suppress_context__",
+                    self -> ((PyBaseException) self).suppressContext(),
+                    (self, value) -> ((PyBaseException) self).writeSuppressContext(value));
+            // The one storage `BaseException` keeps in a dictionary rather than in a C field, and the
+            // reason a class under `Exception` files `__weakref__` but no `__dict__` of its own. CPython
+            // declares no sentence beside it, and its deleting half refuses by name rather than by type.
+            table.getset(
+                    "__dict__",
+                    null,
+                    self -> ((PyBaseException) self).held(),
+                    (self, value) -> ((PyBaseException) self).replaceDict(value));
+            table.getset(
+                    "args",
+                    null,
+                    self -> ((PyBaseException) self).args(),
+                    (self, value) -> ((PyBaseException) self).writeArguments(value));
+            table.getset(
+                    "__traceback__",
+                    null,
+                    self -> ((PyBaseException) self).traceback(),
+                    (self, value) -> ((PyBaseException) self).writeTraceback(value));
+            table.getset(
+                    "__context__",
+                    null,
+                    self -> ((PyBaseException) self).context(),
+                    (self, value) -> ((PyBaseException) self).writeContext(value));
+            table.getset(
+                    "__cause__",
+                    null,
+                    self -> ((PyBaseException) self).cause(),
+                    (self, value) -> ((PyBaseException) self).writeCause(value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.EXCEPTION_GROUP) {
+            // The one built-in of the exception family with a weak reference list of its own, in spite of
+            // the fact that nothing under {@code BaseException} has one — which is why a class under {@code
+            // ExceptionGroup} files neither name, taking both from here.
+            table.getset(
+                    "__weakref__",
+                    "list of weak references to the object",
+                    self -> PyNone.INSTANCE,
+                    null);
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (ownsNew(owner)) {
+            table.raw("__new__", NEW_DOC, TypeDict::exceptionNew);
+        }
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * The classes the reference interpreter files a {@code __new__} of their own for.
+     *
+     * <p>It is not the leaves that have one: {@code KeyError}, {@code NameError}, {@code StopIteration},
+     * {@code SystemExit}, {@code SyntaxError}, {@code ImportError} and {@code AttributeError} answer with
+     * {@code __init__} and their fields instead, and every class under {@code OSError} and under
+     * {@code Warning} that declares nothing inherits. What decides it is CPython's own {@code tp_new} —
+     * {@code BaseException_new} is copied into the static table of the types that have no behaviour of
+     * their own, and the ones that do leave the slot to the class they came from.
+     */
+    private static boolean ownsNew(PyType owner) {
+        return OWN_NEW.contains(owner.name());
+    }
+
+    private static final Set<String> OWN_NEW =
+            Set.of(
+                    "Exception",
+                    "ArithmeticError",
+                    "LookupError",
+                    "OverflowError",
+                    "ZeroDivisionError",
+                    "FloatingPointError",
+                    "ValueError",
+                    "UnicodeError",
+                    "UnicodeEncodeError",
+                    "UnicodeDecodeError",
+                    "UnicodeTranslateError",
+                    "TypeError",
+                    "IndexError",
+                    "StopAsyncIteration",
+                    "RuntimeError",
+                    "RecursionError",
+                    "NotImplementedError",
+                    "PythonFinalizationError",
+                    "ReferenceError",
+                    "MemoryError",
+                    "AssertionError",
+                    "EOFError",
+                    "BufferError",
+                    "SystemError",
+                    "OSError",
+                    "Warning",
+                    "BytesWarning",
+                    "DeprecationWarning",
+                    "EncodingWarning",
+                    "FutureWarning",
+                    "ImportWarning",
+                    "PendingDeprecationWarning",
+                    "ResourceWarning",
+                    "RuntimeWarning",
+                    "SyntaxWarning",
+                    "UnicodeWarning",
+                    "UserWarning",
+                    "KeyboardInterrupt",
+                    "GeneratorExit");
+
+    /**
+     * The dictionary a built-in value type files: its {@link Members} table, and the sentence beside it.
+     *
+     * <p>{@code int.__dict__} in the reference interpreter holds sixty-two names, because CPython copies
+     * every inherited slot wrapper into every static type's dictionary. This runtime's tables hold the
+     * methods Python calls by name and nothing else, so {@code len(int.__dict__)} is the shorter answer and
+     * {@code dir(int)} with it — the deviation the plan has named since slice 11.
+     */
+    private static void fromTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        Members methods = Members.tableOf(owner);
+        if (methods != null) {
+            for (String name : methods.names()) {
+                table.put(name, methods.describe(name));
+            }
+        }
+        if (!table.holds("__doc__")) {
+            table.value("__doc__", docValue(owner));
+        }
+    }
+
+    /** The {@code __doc__} entry of a static type: a string, or {@code None} where the type says nothing. */
+    private static PyObject docValue(PyType owner) {
+        String text = owner.docText();
+        return text == null ? PyNone.INSTANCE : PyStr.of(text);
+    }
+
+    /** {@code type.__doc__}, and of every class: the sentence the type declares for itself, or {@code None}. */
+    private static PyObject docOf(PyObject target) {
+        if (target instanceof PyClass declaring) {
+            // A heap type's doc is its own dictionary's, and is never inherited: `class D(C): pass`
+            // reports None however much C had to say about itself.
+            PyObject filed = declaring.namespace().get(PyStr.interned("__doc__"));
+            return filed == null ? PyNone.INSTANCE : filed;
+        }
+        return docValue((PyType) target);
+    }
+
+    /** {@code type.__module__}: what the class was written down as, or what its body said. */
+    private static PyObject moduleOf(PyObject target) {
+        if (target instanceof PyClass declaring) {
+            PyObject filed = declaring.namespace().get(PyStr.interned("__module__"));
+            if (filed != null) {
+                return filed;
+            }
+        }
+        return PyStr.of(((PyType) target).moduleName());
+    }
+
+    /** {@code type.__abstractmethods__}: only ever set by {@code ABCMeta}, and refused while unset. */
+    private static PyObject abstractMethods(PyObject target) {
+        PyObject filed = ((PyType) target).namespace().get(PyStr.interned("__abstractmethods__"));
+        if (filed == null) {
+            throw Slots.attributeError("__abstractmethods__");
+        }
+        return filed;
+    }
+
+    /** {@code type.__annotations__}: the dictionary the body filled, made empty when nothing was annotated. */
+    private static PyObject annotationsOf(PyObject target) {
+        PyType kind = (PyType) target;
+        PyStr key = PyStr.interned("__annotations__");
+        PyObject filed = kind.namespace().get(key);
+        if (filed != null) {
+            return filed;
+        }
+        if (!(kind instanceof PyClass)) {
+            throw Slots.typeError(
+                    "type object '%s' has no attribute '__annotations__'", kind.filedName());
+        }
+        PyDict built = PyDict.empty();
+        kind.namespace().put(key, built);
+        return built;
+    }
+
+    /**
+     * The setter of a name that takes any value and is filed in the class's own dictionary.
+     *
+     * <p>{@code __doc__} and {@code __type_params__} are the two: {@code type_set_doc} and {@code
+     * type_set_type_params} each ask {@link #checkSpecial} first and then hand the value to the dictionary
+     * without looking at it, which is why {@code C.__doc__ = 5} succeeds and the read afterwards reports an
+     * {@code int}.
+     */
+    private static PyGetSetDescriptor.Setter writes(String name) {
+        return (target, value) -> {
+            checkSpecial(target, name, value);
+            file((PyClass) target, name, value);
+        };
+    }
+
+    /**
+     * The setter of {@code __module__}, which is the one name a class files that also takes a filing off.
+     *
+     * <p>{@code type_set_module} pops {@code __firstlineno__} before it stores the new module, because the
+     * line number was read out of the frame that built the class under the old one — so {@code
+     * C.__module__ = 'other'} leaves {@code C.__firstlineno__} asking for its AttributeError.
+     */
+    private static PyGetSetDescriptor.Setter writesModule() {
+        return (target, value) -> {
+            checkSpecial(target, "__module__", value);
+            PyClass kind = (PyClass) target;
+            kind.namespace().remove(PyStr.interned("__firstlineno__"));
+            file(kind, "__module__", value);
+        };
+    }
+
+    /**
+     * The setter of the two names of identity: {@code __name__} and {@code __qualname__}.
+     *
+     * <p>These are the only two a class keeps out of its dictionary — {@code C.__name__} is never in {@code
+     * C.__dict__}, which is why {@link #writes} cannot serve them and why their text check lives on {@link
+     * PyClass} beside the fields it writes.
+     */
+    private static PyGetSetDescriptor.Setter writesIdentity(String name) {
+        return (target, value) -> {
+            checkSpecial(target, name, value);
+            PyClass kind = (PyClass) target;
+            if (name.equals("__name__")) {
+                kind.writeName(value);
+            } else {
+                kind.writeQualName(value);
+            }
+        };
+    }
+
+    /**
+     * The setter of {@code __bases__}: {@code type_set_bases}, as far as this runtime takes it.
+     *
+     * <p>Three answers, in CPython's order. The two refusals of {@link #checkSpecial} come first, so {@code
+     * del C.__bases__} complains about an immutable type rather than about a name. A value that is not a
+     * tuple is then refused by name — {@code can only assign tuple to C.__bases__, not NoneType} — and a
+     * tuple that is one reaches the deviation this filing carries: the reference interpreter recomputes the
+     * linearisation for a class already made, and this runtime has no way to build a second order for one,
+     * so it answers with the refusal a type with no setter at all gives.
+     */
+    private static PyGetSetDescriptor.Setter writesBases() {
+        return (target, value) -> {
+            checkSpecial(target, "__bases__", value);
+            if (!(value instanceof PyTuple)) {
+                throw Slots.typeError(
+                        "can only assign tuple to %s.__bases__, not %s",
+                        ((PyType) target).filedName(), value.getType().name());
+            }
+            throw Slots.attributeError(
+                    "attribute '__bases__' of 'type' objects is not writable");
+        };
+    }
+
+    /**
+     * {@code check_set_special_type_attr}: the two refusals every one of {@code type}'s setters asks
+     * before it looks at the value it was handed.
+     *
+     * <p>A type Python did not build is refused before anything else is looked at, and the same words serve
+     * a delete as a write — which is why {@code del int.__name__} says {@code cannot set}. A class that is
+     * asked to take one of its identity names back out is refused in the delete's own words, because {@code
+     * __name__}, {@code __qualname__}, {@code __module__}, {@code __doc__}, {@code __bases__}, {@code
+     * __type_params__} and {@code __firstlineno__} are a type's own rather than entries it can lose.
+     */
+    private static void checkSpecial(PyObject target, String name, PyObject value) {
+        if (!(target instanceof PyClass)) {
+            throw Slots.typeError(
+                    "cannot set '%s' attribute of immutable type '%s'", name, immutableName(target));
+        }
+        if (value == null) {
+            throw Slots.typeError(
+                    "cannot delete '%s' attribute of immutable type '%s'",
+                    name,
+                    ((PyType) target).filedName());
+        }
+    }
+
+    /** The dictionary write a setter ends with, which is {@code type_update_dict}'s own step. */
+    private static void file(PyClass kind, String name, PyObject value) {
+        kind.namespace().put(PyStr.interned(name), value);
+    }
+
+    /**
+     * The setter of a name a class keeps in its own dictionary and can take back out again.
+     *
+     * <p>{@code __abstractmethods__} and {@code __annotations__} are the two, and they share the one
+     * answer that is not any other name's: a delete of a filing that is not there is the bare {@code
+     * AttributeError} naming the attribute, because CPython raises it from inside the setter when {@code
+     * PyDict_Pop} reports nothing removed. A write takes any value at all — {@code
+     * type_set_abstractmethods} only asks {@code PyObject_IsTrue} of it.
+     *
+     * <p>{@code __annotations__} deviates on the write: the reference interpreter puts a value there under
+     * {@code __annotations_cache__} when the dictionary holds no {@code __annotations__} yet, and this
+     * runtime files the name itself, so the two disagree about what a following {@code C.__dict__} lists.
+     */
+    private static PyGetSetDescriptor.Setter files(String name) {
+        return (target, value) -> {
+            if (!(target instanceof PyClass kind)) {
+                throw Slots.typeError(
+                        "cannot set '%s' attribute of immutable type '%s'", name, immutableName(target));
+            }
+            PyStr key = PyStr.interned(name);
+            if (value == null) {
+                if (kind.namespace().remove(key) == null) {
+                    throw Slots.attributeError(name);
+                }
+                return;
+            }
+            kind.namespace().put(key, value);
+        };
+    }
+
+    /**
+     * The setter of {@code __annotate__}: the callable a class body's annotations are kept behind.
+     *
+     * <p>Two refusals are this name's own and are worded unlike the other names': a delete drops the
+     * quotes around the name <em>and</em> comes before the immutable-type check, so {@code del
+     * int.__annotate__} is refused as {@code __annotate__} rather than as {@code int}; and a value that is
+     * neither callable nor {@code None} is refused before it is filed. {@code type_set_annotate} files it
+     * under {@code __annotate_func__} rather than under its own name, which this runtime does not have —
+     * see the {@code __annotate__} entry in the plan.
+     */
+    private static PyGetSetDescriptor.Setter writesAnnotate() {
+        return (target, value) -> {
+            if (value == null) {
+                throw Slots.typeError("cannot delete __annotate__ attribute");
+            }
+            checkSpecial(target, "__annotate__", value);
+            if (value != PyNone.INSTANCE && !Slots.isCallable(value)) {
+                throw Slots.typeError("__annotate__ must be callable or None");
+            }
+            file((PyClass) target, "__annotate__", value);
+        };
+    }
+
+    /**
+     * The setter of a name CPython gives no setter to at all.
+     *
+     * <p>{@code __mro__}, {@code __dict__} and {@code __text_signature__} are getsets whose {@code setter}
+     * is null, and {@code descr_set} answers that in the words of the attribute rather than of the type —
+     * and it answers it <em>for a delete too</em>, because CPython hands the same {@code NULL} value to the
+     * same function and only the fall-through to the dictionary would have taken a name away. Before that
+     * refusal a built-in type is refused in the usual words, which the reference interpreter asks first.
+     */
+    private static PyGetSetDescriptor.Setter refuses(String name) {
+        return (target, value) -> {
+            if (!(target instanceof PyClass)) {
+                throw Slots.typeError(
+                        "cannot set '%s' attribute of immutable type '%s'", name, immutableName(target));
+            }
+            throw Slots.attributeError(
+                    "attribute '%s' of 'type' objects is not writable", name);
+        };
+    }
+
+    /** The name the two immutable-type refusals quote, which is a built-in type's as written down. */
+    private static String immutableName(PyObject target) {
+        return ((PyType) target).filedName();
+    }
+
+    /**
+     * {@code x.__class__ = C}: the swap {@code object}'s getset answers with, and {@code del x.__class__},
+     * which no value allows.
+     */
+    private static void writeClass(PyObject target, PyObject value) {
+        if (value == null) {
+            ClassAttribute.delete();
+        }
+        ClassAttribute.write(target, value);
+    }
+
+    /** {@code type.__name__} and {@code type.__qualname__}, which this runtime keeps as one name. */
+    private static PyObject nameOf(PyObject target) {
+        return PyStr.of(((PyType) target).name());
+    }
+
+    /** {@code type.__bases__}: the tuple of the bases the type was declared over. */
+    private static PyObject basesOf(PyObject target) {
+        return PyTuple.of(((PyType) target).bases());
+    }
+
+    /** {@code type.__mro__}: the same order {@code mro()} answers with, as a tuple. */
+    private static PyObject mroOf(PyObject target) {
+        return PyTuple.of(((PyType) target).mro());
+    }
+
+    /** {@code type.__base__}: the first of those, or {@code None} for {@code object} itself. */
+    private static PyObject baseOf(PyObject target) {
+        PyType parent = ((PyType) target).parent();
+        return parent == null ? PyNone.INSTANCE : parent;
+    }
+
+    /** {@code type.__dict__}: a fresh window over the one dictionary, every time. */
+    private static PyObject dictOf(PyObject target) {
+        return PyMappingProxy.of(((PyType) target).namespace());
+    }
+
+    /**
+     * {@code type.__annotate__}: the function 3.14 files for a class body that annotated anything.
+     *
+     * <p>A class Python wrote answers {@code None} when its body said nothing, because {@code type_new}
+     * files the name with nothing in it; a built-in type has no such entry and says so in the words the
+     * attribute lookup uses, which is what {@code int.__annotate__} is.
+     */
+    private static PyObject annotateOf(PyObject target) {
+        PyType kind = (PyType) target;
+        if (!(kind instanceof PyClass)) {
+            throw Slots.typeError(
+                    "type object '%s' has no attribute '__annotate__'", kind.filedName());
+        }
+        PyObject filed = kind.namespace().get(PyStr.interned("__annotate__"));
+        return filed == null ? PyNone.INSTANCE : filed;
+    }
+
+    /**
+     * {@code type.__type_params__}: the PEP 695 parameters, which this runtime never files.
+     *
+     * <p>A class answers the empty tuple because no {@code class C[T]} declaration has reached the runtime,
+     * and a write of anything is filed like any other name — which is what makes the read afterwards give
+     * back what was written.
+     */
+    private static PyObject typeParamsOf(PyObject target) {
+        PyObject filed =
+                ((PyType) target).namespace().get(PyStr.interned("__type_params__"));
+        return filed == null ? PyTuple.EMPTY : filed;
+    }
+
+    /**
+     * {@code object.__new__(cls)}: the one class a bare {@code object} creator is allowed to make.
+     *
+     * <p>CPython's {@code tp_new_wrapper} compares the creator's own type with the {@code tp_new} the
+     * class being made actually has, so {@code object.__new__(int)} is refused — {@code int} builds its
+     * values a different way — and a class Python wrote with no {@code __new__} of its own is accepted,
+     * because its slot still belongs to {@code object}. {@code object} itself is the one class this
+     * runtime builds without a dictionary, which is what {@code object.__new__(object).__dict__} complains
+     * about.
+     */
+    private static PyObject objectNew(PyObject[] args, String[] kwNames, String qualified) {
+        int given = Arguments.positional(args, kwNames);
+        if (given < 1) {
+            throw Slots.typeError("object.__new__(): not enough arguments");
+        }
+        if (!(args[0] instanceof PyType kind)) {
+            throw Slots.typeError(
+                    "object.__new__(X): X is not a type object (%s)", args[0].getType().name());
+        }
+        if (kind != PyType.OBJECT
+                && !(kind instanceof PyClass && Specials.lookUp(kind, "__new__") == null)) {
+            throw Slots.typeError(
+                    "object.__new__(%s) is not safe, use %s.__new__()", kind.name(), kind.name());
+        }
+        return new PyInstance(kind);
+    }
+
+    /**
+     * {@code object.__init__}, which takes its receiver and nothing else — for a class whose values the
+     * default creator makes.
+     *
+     * <p>The refusal names the initializer rather than the call, because that is what {@code object_init}
+     * says when {@code tp_new} is still {@code object_new} and somebody handed arguments anyway. A type
+     * that fills its own {@code tp_new} — every built-in here, and any class that wrote {@code __new__} —
+     * takes them and throws them away, which is what {@code object.__init__(3, 1)} is.
+     */
+    private static PyObject objectInit(PyObject[] args, String[] kwNames, String qualified) {
+        if (args.length > 1 && !makesItsOwnValues(args[0].getType())) {
+            throw Slots.typeError(
+                    "object.__init__() takes exactly one argument (the instance to initialize)");
+        }
+        return PyNone.INSTANCE;
+    }
+
+    private static boolean makesItsOwnValues(PyType kind) {
+        if (kind == PyType.OBJECT) {
+            return false;
+        }
+        return !(kind instanceof PyClass) || Specials.lookUp(kind, "__new__") != null;
+    }
+
+    /** {@code object.__repr__}: the address this runtime gives a value, which is not CPython's. */
+    private static PyObject objectRepr(PyObject[] args, String[] kwNames, String qualified) {
+        return PyStr.of(
+                "<" + args[0].getType().filedName() + " object at 0x"
+                        + Long.toHexString(System.identityHashCode(args[0]))
+                        + ">");
+    }
+
+    /**
+     * {@code object.__eq__} and its five siblings: identity, and nothing else.
+     *
+     * <p>{@code object_richcompare} answers equality out of the pointer and declines the four orderings,
+     * so a program that calls {@code object.__lt__(3, 4)} by hand gets {@code NotImplemented} and the
+     * complaint about two ints from the operator that called it.
+     */
+    private static PyObject identity(PyObject[] args, CompareOp cmp) {
+        boolean same = args[0] == (args.length > 1 ? args[1] : null);
+        return switch (cmp) {
+            case EQ -> PyBool.of(same);
+            case NE -> PyBool.of(!same);
+            default -> PyNotImplemented.INSTANCE;
+        };
+    }
+
+    /**
+     * The same six for a window, with the mapping underneath doing the comparing.
+     *
+     * <p>Two windows are equal when they are windows over the one dictionary rather than when their
+     * contents agree, which is why {@code object.__dict__ == int.__dict__} is false although both hold
+     * {@code __new__}; the four orderings go to the dictionaries, in the words of the operator CPython
+     * reaches after swapping them — {@code p < p} complains about {@code '>'} between two dicts.
+     */
+    private static PyObject windowed(PyObject[] args, CompareOp cmp) {
+        PyObject other = args.length > 1 ? args[1] : null;
+        PyDict left = window(args[0]);
+        if (other instanceof PyMappingProxy) {
+            PyDict right = window(other);
+            return switch (cmp) {
+                case EQ -> PyBool.of(left == right);
+                case NE -> PyBool.of(left != right);
+                default -> Slots.compare(cmp.reflected(), left, right);
             };
         }
-        // ExceptionGroup's own dictionary holds nothing that is read here, so every one of these names
-        // reaches a group through BaseExceptionGroup in its order.
-        if (owner == ExceptionTypes.BASE_EXCEPTION_GROUP) {
-            return switch (name) {
-                case "__new__" -> GROUP_NEW;
-                case "__init__" -> GROUP_INIT;
-                case "derive" -> GROUP_DERIVE;
-                case "split" -> GROUP_SPLIT;
-                case "subgroup" -> GROUP_SUBGROUP;
-                default -> null;
-            };
+        return Slots.compare(cmp, left, other);
+    }
+
+    /** The mapping a window stands for, which is the operand CPython hands to every one of its slots. */
+    private static PyDict window(PyObject value) {
+        return ((PyMappingProxy) value).mapping();
+    }
+
+    /**
+     * {@code reversed(p)}: the keys from the last one written back to the first.
+     *
+     * <p>The order is the mapping's insertion order, not the sorted order {@code dir()} takes, which is
+     * what makes {@code list(reversed(C.__dict__))} end with the two names a class body writes last.
+     */
+    private static PyObject reversedKeys(PyDict mapping) {
+        PyObject[] keys = mapping.keys();
+        PyObject[] backwards = new PyObject[keys.length];
+        for (int at = 0; at < keys.length; at++) {
+            backwards[at] = keys[keys.length - 1 - at];
         }
-        return null;
+        return PyIterator.of(backwards);
+    }
+
+    /** {@code p | q} and {@code q | p} reached as the slot: the operands the window stands for. */
+    private static PyObject windowOr(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject other = args[1];
+        return Slots.binary(
+                BinaryOp.OR, window(args[0]), other instanceof PyMappingProxy ? window(other) : other);
+    }
+
+    /** {@code p |= q}: the one in-place slot the type fills, and it only refuses. */
+    private static PyObject refuseIor(PyObject[] args, String[] kwNames, String qualified) {
+        throw Slots.typeError("'|=' is not supported by mappingproxy; use '|' instead");
+    }
+
+    /**
+     * {@code object.__getstate__}: the instance dictionary, or {@code None} where there is nothing.
+     *
+     * <p>The name in its refusals is the one {@code object.c} writes, so {@code (3).__getstate__(x=1)}
+     * says {@code object.__getstate__() takes no keyword arguments} where a read of the same method reports
+     * itself as {@code int.__getstate__}.
+     */
+    private static PyObject objectState(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        PyObject found = Slots.findAttr(args[0], "__dict__");
+        return found instanceof PyDict held && held.size() > 0 ? held : PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code object.__format__(format_spec)}: the empty spec, and the one sentence that names the value's
+     * own class.
+     *
+     * <p>The arity complaint is written under {@code object} however the method was reached —
+     * {@code A().__format__()} says {@code object.__format__() takes exactly one argument (0 given)} —
+     * because CPython's {@code object.c} names its own function there, and not the class of the value it
+     * was handed. The refusal of a spec that is not text is the one exception, and writes itself
+     * {@code __format__()} bare.
+     */
+    private static PyObject objectFormat(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.exactlyOne(qualified + "()", tail(args, kwNames), kwNames);
+        PyObject spec = tail(args, kwNames)[0];
+        if (!(spec instanceof PyStr)) {
+            throw Slots.typeError(
+                    "__format__() argument must be str, not %s", Slots.argumentName(spec));
+        }
+        if (((PyStr) spec).getValue().isEmpty()) {
+            return PyStr.of(args[0].str());
+        }
+        throw Slots.typeError(
+                "unsupported format string passed to %s.__format__", args[0].getType().name());
+    }
+
+    /** {@code object.__sizeof__}: this runtime has no struct, so it counts nothing. */
+    private static PyObject objectSize(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return PyInt.of(0);
+    }
+
+    /** {@code object.__dir__}: the value's own dictionary and its class's order. */
+    private static PyObject objectDir(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return nameList(Dirs.valueNames(args[0]));
+    }
+
+    /** The list a {@code __dir__} answers with, in the order the merge kept the names. */
+    private static PyObject nameList(List<String> names) {
+        PyObject[] items = new PyObject[names.size()];
+        for (int at = 0; at < items.length; at++) {
+            items[at] = PyStr.of(names.get(at));
+        }
+        return PyList.of(items);
+    }
+
+    /** {@code cls.__subclasses__()}: the classes that name this one among their bases. */
+    private static PyObject subclasses(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        List<PyObject> children = new ArrayList<>();
+        for (PyType child : PyType.children()) {
+            for (PyType base : child.bases()) {
+                if (base == args[0]) {
+                    children.add(child);
+                    break;
+                }
+            }
+        }
+        return PyList.of(children.toArray(new PyObject[0]));
+    }
+
+    /** {@code mappingproxy(mapping)}: a window over the mapping that was handed over. */
+    private static PyObject proxyNew(PyObject[] args, String[] kwNames, String qualified) {
+        if (Arguments.positional(args, kwNames) != 1) {
+            throw Slots.typeError("mappingproxy() takes exactly one argument (%d given)",
+                    Arguments.positional(args, kwNames));
+        }
+        return args[0] instanceof PyDict held
+                ? PyMappingProxy.of(held)
+                : PyMappingProxy.of(((PyMappingProxy) args[0]).mapping());
+    }
+
+    private static PyObject proxyGet(PyObject[] args, String[] kwNames, String qualified) {
+        PyDict held = ((PyMappingProxy) args[0]).mapping();
+        PyObject[] rest = tail(args, kwNames);
+        if (rest.length < 1 || rest.length > 2) {
+            throw Slots.typeError("get() takes at least 1 argument (%d given)", rest.length);
+        }
+        PyObject found = held.get(rest[0]);
+        return found == null ? (rest.length > 1 ? rest[1] : PyNone.INSTANCE) : found;
+    }
+
+    /** {@code p.keys()} and its two siblings: the dict's own view over the same mapping. */
+    private static PyObject proxyView(PyObject self, String name) {
+        return Slots.call(
+                Slots.getAttr(((PyMappingProxy) self).mapping(), name), new PyObject[0], null);
     }
 
     /**
@@ -599,18 +1524,32 @@ final class TypeDict {
      *
      * <p>The two refusals name the class the hook was bound to by its qualified name —
      * {@code Outer.Inner.__init_subclass__() takes no keyword arguments} — because CPython builds that
-     * name from the bound class when it binds a {@code METH_CLASS} method.
+     * name from the bound class when it binds a {@code METH_CLASS} method. Reached unbound, the class
+     * arrives as the first argument instead, and so does the refusal of anything that is not a class.
      */
     private static PyObject initSubclass(PyObject[] args, String[] kwNames, String qualified) {
-        String owner = args[0] instanceof PyType kind ? kind.dottedName() : args[0].getType().name();
-        if (kwNames != null && kwNames.length > 0) {
-            throw Slots.typeError("%s.__init_subclass__() takes no keyword arguments", owner);
+        PyType kind = classReceiver("__init_subclass__", PyType.OBJECT, args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("%s.__init_subclass__() takes no keyword arguments", kind.dottedName());
         }
-        if (args.length > 1) {
+        int given = Arguments.positional(args, kwNames) - 1;
+        if (given > 0) {
             throw Slots.typeError(
-                    "%s.__init_subclass__() takes no arguments (%d given)", owner, args.length - 1);
+                    "%s.__init_subclass__() takes no arguments (%d given)", kind.dottedName(), given);
         }
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code type.__prepare__(mcs, name, bases, **kwds)}: a plain dict, whatever the body asked for.
+     *
+     * <p>No argument is checked, because {@code type_prepare} checks none: the reference interpreter
+     * answers {@code {}} for {@code type.__prepare__('s', 'n', ())} as readily as for the call the class
+     * statement makes. A metaclass that wants a different namespace overrides it, and the override is what
+     * a program sees.
+     */
+    private static PyObject prepare(PyObject[] args, String[] kwNames, String qualified) {
+        return PyDict.empty();
     }
 
     /**
@@ -637,6 +1576,376 @@ final class TypeDict {
         PyObject[] rest = new PyObject[args.length - 1];
         System.arraycopy(args, 1, rest, 0, rest.length);
         return rest;
+    }
+
+    /** The same argument list with {@code receiver} in front of it, which is how a bound method runs. */
+    private static PyObject[] prepend(PyObject receiver, PyObject[] args) {
+        PyObject[] withReceiver = new PyObject[args.length + 1];
+        withReceiver[0] = receiver;
+        System.arraycopy(args, 0, withReceiver, 1, args.length);
+        return withReceiver;
+    }
+
+    // --- the attribute slots ---------------------------------------------------------------
+
+    /**
+     * {@code object.__getattribute__(x, name)}: the lookup every value inherits.
+     *
+     * <p>The name is checked before anything is read, and the read is the ordinary one — a slot wrapper
+     * calls {@code PyObject_GetAttr}, which starts the lookup again from the top rather than reaching into
+     * the dictionary beside it.
+     */
+    private static PyObject objectGetAttribute(PyObject[] args, String[] kwNames, String qualified) {
+        return Slots.getAttr(args[0], attributeName(args[1]));
+    }
+
+    /**
+     * {@code object.__setattr__(x, name, value)}: {@link GenericAttributes}' write, and nothing above it.
+     *
+     * <p>This is the reason {@code super().__setattr__(name, value)} ends rather than comes back round: the
+     * method a class declares is not consulted here, so the call reaches the descriptor the class files, or
+     * the dictionary, exactly once. Going through {@link Slots} instead would run the value's own {@code
+     * __setattr__} again from the top of the order and recurse.
+     *
+     * <p>The Carlo Verre hack comes first: {@code object.__setattr__(int, 'x', 1)} is refused rather than
+     * allowed to land a name in a class dictionary behind {@code type_setattro}'s back. The sentence names
+     * the receiver's <em>metatype</em>, which is why a class and a {@code type} subclass both answer {@code
+     * type object}.
+     */
+    private static PyObject objectSetAttribute(PyObject[] args, String[] kwNames, String qualified) {
+        hackChecked(args[0], "__setattr__");
+        GenericAttributes.write(args[0], attributeName(args[1]), args[2]);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code object.__delattr__(x, name)}: the same write with the name taken back out. */
+    private static PyObject objectDelAttribute(PyObject[] args, String[] kwNames, String qualified) {
+        hackChecked(args[0], "__delattr__");
+        GenericAttributes.delete(args[0], attributeName(args[1]));
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code hackcheck}: the guard {@code wrap_setattr} and {@code wrap_delattr} run before handing the
+     * value to the slot they wrap.
+     *
+     * <p>It looks for the C-level function the receiver's type actually uses for the write and refuses the
+     * call when the wrapped one it is about to make would jump over an override in between — for a class,
+     * {@code type_setattro}. {@code object.__getattribute__} has no such guard, since reading is the same
+     * function wherever in the MRO it came from.
+     */
+    private static void hackChecked(PyObject receiver, String what) {
+        if (receiver instanceof PyType kind) {
+            throw Slots.typeError("can't apply this %s to %s object", what, kind.getType().filedName());
+        }
+    }
+
+    /**
+     * {@code type.__getattribute__(cls, name)}: the metatype's order, asked of the class it was given.
+     *
+     * <p>The receiver has to be a class before the name is read, which is why {@code type.__getattribute__
+     * ('x', 'upper')} complains about the {@code str} it was handed rather than about a name {@code str}
+     * does answer.
+     */
+    private static PyObject typeGetAttribute(PyObject[] args, String[] kwNames, String qualified) {
+        PyType kind = wrapperReceiver("__getattribute__", args, kwNames);
+        return Slots.getAttr(kind, attributeName(args[1]));
+    }
+
+    /**
+     * {@code type.__setattr__(cls, name, value)}: a class's own dictionary, or the gate above it.
+     *
+     * <p>{@code type_setattro} checks that the type is one Python built <em>before</em> it looks at the
+     * name, so {@code type.__setattr__(int, 'x', 1)} and {@code type.__setattr__(int, 3, 4)} are both
+     * refused as an immutable type, the second with the name printed in its own repr — the one place in
+     * this file where a non-text name reaches that far.
+     *
+     * <p>The write is {@link PyClass#write} rather than {@link Slots#setAttr} because this is the half with
+     * no hook in it: a metaclass's {@code super().__setattr__(name, value)} has to land the name, not look
+     * the metaclass's own {@code __setattr__} up again.
+     */
+    private static PyObject typeSetAttribute(PyObject[] args, String[] kwNames, String qualified) {
+        PyType kind = wrapperReceiver("__setattr__", args, kwNames);
+        if (!(kind instanceof PyClass declaring)) {
+            throw Slots.typeError(
+                    "cannot set %s attribute of immutable type '%s'", named(args[1]), kind.filedName());
+        }
+        declaring.write(attributeName(args[1]), args[2]);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code type.__delattr__(cls, name)}: the delete, refused with the <em>setting</em> sentence. */
+    private static PyObject typeDelAttribute(PyObject[] args, String[] kwNames, String qualified) {
+        PyType kind = wrapperReceiver("__delattr__", args, kwNames);
+        if (!(kind instanceof PyClass declaring)) {
+            throw Slots.typeError(
+                    "cannot set %s attribute of immutable type '%s'", named(args[1]), kind.filedName());
+        }
+        declaring.write(attributeName(args[1]), null);
+        return PyNone.INSTANCE;
+    }
+
+    /** The name an attribute slot was handed: text, or CPython's refusal of anything else. */
+    private static String attributeName(PyObject value) {
+        if (value instanceof PyStr text) {
+            return text.getValue();
+        }
+        throw Slots.typeError("attribute name must be string, not '%s'", value.getType().name());
+    }
+
+    /** The name as {@code type_setattro} prints it: quoted for text, and in its own repr otherwise. */
+    private static String named(PyObject value) {
+        return value instanceof PyStr text ? "'" + text.getValue() + "'" : text(value);
+    }
+
+    private static String text(PyObject value) {
+        try {
+            return Slots.repr(value);
+        } catch (PyRaise refused) {
+            return "<unprintable " + value.getType().name() + " object>";
+        }
+    }
+
+    /**
+     * {@code object.__subclasshook__}: the test {@code issubclass} lets a class answer for itself.
+     *
+     * <p>It declines every question, because the abstract bases that would answer it are in the standard
+     * library this runtime does not import. The name in the arity complaint is the class the read bound
+     * the hook to, in its dotted form: {@code Outer.Inner.__subclasshook__()}.
+     */
+    private static PyObject subclassHook(PyObject[] args, String[] kwNames, String qualified) {
+        PyType kind = classReceiver("__subclasshook__", PyType.OBJECT, args, kwNames);
+        Arguments.exactlyOne(kind.dottedName() + ".__subclasshook__()", tail(args, kwNames), kwNames);
+        return PyNotImplemented.INSTANCE;
+    }
+
+    /** {@code type.__dir__(cls)}: the class's own dictionary first, and never its metatype's. */
+    private static PyObject typeDir(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return nameList(Dirs.classNames((PyType) args[0]));
+    }
+
+    /** {@code type.__sizeof__(cls)}: the size of a type this runtime has no layout for. */
+    private static PyObject typeSize(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return PyInt.of(0);
+    }
+
+    /**
+     * {@code object.__reduce_ex__(protocol)}: pickle's other helper.
+     *
+     * <p>The reference interpreter answers a real recipe here — {@code copyreg.__newobj__} plus the value
+     * and its state — for a protocol of two or more, and this runtime has no {@code copyreg} to reach.
+     * The refusal is the one {@code __reduce__} gives, which is what CPython falls back to for protocol
+     * zero and one.
+     *
+     * <p>Both halves name themselves {@code object.__reduce_ex__} however they were reached:
+     * {@code A().__reduce_ex__(1, 2)} says {@code object.__reduce_ex__() takes exactly one argument (2
+     * given)} although {@code A().__reduce_ex__.__qualname__} is {@code A.__reduce_ex__}, because the
+     * sentence is written into {@code object.c} rather than built from the value.
+     */
+    private static PyObject objectReduceEx(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.exactlyOne(qualified + "()", tail(args, kwNames), kwNames);
+        return unpicklable(args[0]);
+    }
+
+    private static PyObject objectReduce(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return unpicklable(args[0]);
+    }
+
+    /** The one sentence both halves of pickle's protocol answer with, naming the value's class. */
+    private static PyObject unpicklable(PyObject value) {
+        throw Slots.typeError("cannot pickle '%s' object", value.getType().filedName());
+    }
+
+    /**
+     * The class a {@code classmethod_descriptor} was called with.
+     *
+     * <p>The two refusals are {@code descr_classmethod_call}'s own: the first is what an empty argument
+     * list reaches, the second what reaches it with anything that is not a type — which is why the message
+     * counts the class as arg 2 and names the declaring type rather than the one asked.
+     */
+    private static PyType classReceiver(String name, PyType declaring, PyObject[] args, String[] kwNames) {
+        if (Arguments.positional(args, kwNames) < 1) {
+            throw Slots.typeError(
+                    "descriptor '%s' of '%s' object needs an argument", name, declaring.name());
+        }
+        if (!(args[0] instanceof PyType kind)) {
+            throw Slots.typeError(
+                    "descriptor '%s' for type '%s' needs a type, not a '%s' as arg 2",
+                    name, declaring.name(), args[0].getType().filedName());
+        }
+        return kind;
+    }
+
+    /**
+     * {@code wrapperdescr_call}'s three gates, before a slot wrapper runs.
+     *
+     * <p>Only the slots that count their arguments are checked at all: {@code tp_init} and {@code tp_call}
+     * hand the whole argument list, keywords included, to the slot they wrap, which is why
+     * {@code object.__init__(3, x=1)} answers {@code None} while {@code type.__init__(A, x=1)} is refused
+     * by the count the slot itself makes. Of the three, the keyword refusal comes first —
+     * {@code type.__setattr__(int, 'x', 1, y=2)} complains about the keyword rather than about anything
+     * else — then the receiver, then the count: {@code type.__repr__(3, 4)} is refused as an {@code int},
+     * not as one argument too many.
+     *
+     * <p>The receiver is only checked against {@code type} for the wrappers a metatype files, because those
+     * are the {@code tp_*} slots and a value cannot be asked one of them; every {@code tp_*} of a value
+     * {@code object} files takes whatever it is given.
+     */
+    private static void wrapperCall(
+            PyType declaring, String name, PyObject[] args, String[] kwNames) {
+        int extra = slotExtra(name);
+        if (extra < 0) {
+            return;
+        }
+        Arguments.noWrapperKeywords(name, kwNames);
+        int given = Arguments.positional(args, kwNames);
+        if (given < 1) {
+            throw Slots.typeError(
+                    "descriptor '%s' of '%s' object needs an argument", name, declaring.name());
+        }
+        if (declaring.matches(PyType.TYPE) && !(args[0] instanceof PyType)) {
+            throw Slots.typeError(
+                    "descriptor '%s' requires a 'type' object but received a '%s'",
+                    name, args[0].getType().name());
+        }
+        slotArity(name, extra, given - 1);
+    }
+
+    /**
+     * The number of arguments a slot wrapper takes besides its receiver, which is a property of the slot
+     * and not of the type that files it.
+     *
+     * <p>{@code wrapperdescr_call} counts them before it calls anything, and the two that answer a whole
+     * argument list — {@code tp_init} and {@code tp_call} — are the ones it leaves uncounted. Every other
+     * slot here is {@code PyObject_} something over the receiver plus one or two arguments.
+     */
+    private static int slotExtra(String name) {
+        return switch (name) {
+            case "__setattr__" -> 2;
+            case "__init__", "__call__" -> -1;
+            case "__repr__", "__str__", "__hash__", "__iter__", "__len__" -> 0;
+            default -> 1;
+        };
+    }
+
+    /**
+     * {@code wrapperdescr_call}'s refusal of the wrong count.
+     *
+     * <p>A slot that takes only its receiver says the number bare — {@code expected 0 arguments, got 1} —
+     * because there is no method name that would help; {@code tp_setattro} is the one that names itself.
+     */
+    private static void slotArity(String name, int need, int got) {
+        if (got == need) {
+            return;
+        }
+        if (need > 1) {
+            throw Slots.typeError("%s expected %d arguments, got %d", name, need, got);
+        }
+        throw Slots.typeError(
+                "expected %d argument%s, got %d", need, need == 1 ? "" : "s", got);
+    }
+
+    /**
+     * The names one type files, written into the one dictionary every window over it shows.
+     *
+     * <p>Each of the seven ways is one of CPython's: a {@code PyMethodDef} with the {@code METH_*} flag
+     * that decides what binds to it, a {@code PyGetSetDef}, a {@code PyMemberDef}, or the entry a
+     * {@code tp_dict} holds outright. The tables above read as those lists, in the order {@code X.__dict__}
+     * shows them.
+     */
+    private static final class Table {
+
+        private final PyType owner;
+        private final PyDict into;
+
+        Table(PyType owner, PyDict into) {
+            this.owner = owner;
+            this.into = into;
+        }
+
+        /** Whether the name is filed already, which is how a type's own {@code __doc__} survives. */
+        boolean holds(String name) {
+            return into.get(PyStr.interned(name)) != null;
+        }
+
+        /** An entry another part of the runtime already keeps, filed as this type's own. */
+        void put(String name, PyObject entry) {
+            into.put(PyStr.interned(name), entry);
+        }
+
+        /** A value the dictionary holds outright: a string, a {@code None}, a class's own constant. */
+        void value(String name, PyObject entry) {
+            put(name, entry);
+        }
+
+        /** {@code slot_tp_*}: the C function behind a double-underscore slot. */
+        void wrapper(String name, String doc, Method body) {
+            put(name, new Member(owner, name, Shape.WRAPPER, null, doc, body));
+        }
+
+        void wrapper(String name, String doc, Receiver body) {
+            wrapper(name, doc, (args, kwNames, qualified) -> body.apply(args));
+        }
+
+        /** {@code METH_VARARGS} over a value: the method a value of this type answers. */
+        void method(String name, String doc, Method body) {
+            put(name, new Member(owner, name, Shape.METHOD, null, doc, body));
+        }
+
+        void method(String name, String doc, Receiver body) {
+            method(name, doc, (args, kwNames, qualified) -> body.apply(args));
+        }
+
+        /** {@code METH_CLASS}: binds the class the read ran on, and never a value. */
+        void classMethod(String name, String doc, Method body) {
+            put(name, new Member(owner, name, Shape.CLASSMETHOD, null, doc, body));
+        }
+
+        /** {@code __new__}: a plain static method in the dictionary, which is not a descriptor at all. */
+        void raw(String name, String doc, Method body) {
+            put(name, new Member(owner, name, Shape.RAW, null, doc, body));
+        }
+
+        /** {@code PyGetSetDef}: two C functions, the second one null where the name cannot be written. */
+        void getset(String name, String doc, PyGetSetDescriptor.Getter read, PyGetSetDescriptor.Setter write) {
+            put(name, new PyGetSetDescriptor(owner, name, doc, read, write));
+        }
+
+        /**
+         * {@code PyMemberDef} over a field of the type's own struct.
+         *
+         * <p>The four sizes and offsets answer nought, because a type here is a Java object rather than a
+         * {@code PyTypeObject} with a layout to measure; {@code __base__} is the one offset this runtime
+         * does keep, and is named by the read that answers it.
+         */
+        void member(String name) {
+            member(name, self -> PyInt.of(0));
+        }
+
+        void member(String name, PyMemberDescriptor.Reader read) {
+            member(name, read, null);
+        }
+
+        /**
+         * An offset the reference interpreter lets a value be written through: {@code
+         * BaseException.__suppress_context__} is a {@code T_BOOL}, the exception fields a {@code
+         * _Py_T_OBJECT}.
+         */
+        void member(
+                String name,
+                PyMemberDescriptor.Reader read,
+                PyMemberDescriptor.Writer write) {
+            put(name, new PyMemberDescriptor(owner, name, null, read, write));
+        }
+    }
+
+    /** A member that takes its receiver and nothing else, which most of {@code object}'s and {@code
+     * mappingproxy}'s slots do. */
+    private interface Receiver {
+        PyObject apply(PyObject[] args);
     }
 
     /**
@@ -712,7 +2021,18 @@ final class TypeDict {
 
         @Override
         public PyObject call(PyObject[] args, PyTuple kwNames) {
-            return body.apply(args, PyBoundMethod.keywordNames(kwNames), qualified);
+            String[] keywords = PyBoundMethod.keywordNames(kwNames);
+            switch (shape) {
+                case WRAPPER -> wrapperCall(declaring, name, args, keywords);
+                // `methoddescr_call` wants its receiver among the arguments it was handed and checks it
+                // before the body counts anything: `object.__dir__(x=1)` is refused as an absent argument
+                // rather than as a keyword.
+                case METHOD -> methodReceiver(name, declaring, args, keywords);
+                // A `classmethod_descriptor` takes its class out of the argument list, and the bodies that
+                // bind one ask for it themselves; `__new__` binds nothing at all.
+                case CLASSMETHOD, RAW -> {}
+            }
+            return body.apply(args, keywords, qualified);
         }
 
         @Override
@@ -830,11 +2150,12 @@ final class TypeDict {
 
         @Override
         public PyObject call(PyObject[] args, PyTuple kwNames) {
-            PyObject[] withReceiver = new PyObject[args.length + 1];
-            withReceiver[0] = receiver;
-            System.arraycopy(args, 0, withReceiver, 1, args.length);
-            return body.apply(
-                    withReceiver, PyBoundMethod.keywordNames(kwNames), qualifiedName());
+            String[] keywords = PyBoundMethod.keywordNames(kwNames);
+            PyObject[] withReceiver = prepend(receiver, args);
+            if (shape == Shape.WRAPPER) {
+                wrapperCall(declaring, name, withReceiver, keywords);
+            }
+            return body.apply(withReceiver, keywords, qualifiedName());
         }
 
         /**
@@ -856,8 +2177,8 @@ final class TypeDict {
                     shape == Shape.WRAPPER
                             ? declaring.name()
                             : receiver instanceof PyType kind
-                                    ? kind.name()
-                                    : receiver.getType().name();
+                                    ? kind.dottedName()
+                                    : receiver.getType().dottedName();
             return owner + "." + name;
         }
 

@@ -294,9 +294,10 @@ final class Classes {
             // later assignment to X.__dict__ could change.
             dict.remove(qualNameKey);
         }
-        if (dict.get(PyStr.interned("__doc__")) == null) {
-            dict.put(PyStr.interned("__doc__"), PyNone.INSTANCE);
-        }
+        // `type_dict_set_doc` runs after the two slot descriptors are filed, so a class that says nothing
+        // about itself ends its dictionary with `__doc__` while one with a docstring has it third.
+        PyStr docKey = PyStr.interned("__doc__");
+        boolean docWritten = dict.get(docKey) != null;
         autoWrap(dict, "__new__", false);
         autoWrap(dict, "__init_subclass__", true);
         autoWrap(dict, "__class_getitem__", true);
@@ -309,11 +310,167 @@ final class Classes {
 
         PyClass kind = new PyClass(name, bases, dict, qualified, metatype);
         kind.order = linearize(kind, bases);
+        addSlotDescriptors(kind, dict);
+        if (!docWritten) {
+            dict.put(docKey, PyNone.INSTANCE);
+        }
         propagateCells(dict, kind);
         setNames(dict, kind);
         initSubclass(kind, keywordValues, kwNames);
         return kind;
     }
+
+    /**
+     * {@code collect_slots}, {@code type_new_descriptors} and {@code type_add_getset}: the names a class
+     * files for the storage its values keep, and the fields its {@code __slots__} declares.
+     *
+     * <p>The fields come first, because {@code PyType_Ready} walks {@code tp_members} before {@code
+     * tp_getset}: {@code class DictSlot: __slots__ = ("__dict__", "b")} ends with {@code b} and then
+     * {@code __dict__} beside it, and each field is a {@code member_descriptor} that reads and writes the
+     * value's own storage for slots. A metatype is the one class whose values keep nothing of the kind —
+     * a class writes every name into its own dictionary — so the fields it declares are not filed, which
+     * is the same deviation that makes {@code K.a = 1} land in {@code vars(K)}.
+     *
+     * <p>Which halves of the storage a class introduces is a question about its base, not about its body:
+     * CPython gives a dictionary and a weak reference list to a class whose primary base has neither, and
+     * files a {@code getset_descriptor} for each under exactly those two names. A class under one that
+     * already has them writes neither name — {@code vars(Sub)} has no {@code __dict__} although {@code
+     * Sub().x = 1} works — because the entry belongs to the class that introduced the storage and the
+     * lookup walks up to it.
+     *
+     * <p>{@code __slots__} changes the answer in one way that has nothing to do with layout: a body that
+     * declares slots takes only the two names it writes down there, so {@code __slots__ = ()} files
+     * neither and {@code __slots__ = ("__dict__",)} files one. Each of those two is filed as {@code
+     * PyDict_SetDefaultRef} does it, so a body that wrote one of them keeps what it wrote and the class
+     * simply has no descriptor to answer with.
+     */
+    private static void addSlotDescriptors(PyClass kind, PyDict dict) {
+        PyType base = kind.parent();
+        PyObject slots = dict.get(PyStr.interned("__slots__"));
+        Declared declared = collect(slots);
+        if (!base.matches(PyType.TYPE)) {
+            for (String field : declared.fields()) {
+                // `collect_slots` asks the class dictionary before it lays out a single offset, so a body
+                // that wrote the name as well as declaring it never reaches the descriptor at all.
+                if (dict.get(PyStr.interned(field)) != null) {
+                    throw Slots.valueError("'%s' in __slots__ conflicts with class variable", field);
+                }
+                dict.put(
+                        PyStr.interned(field),
+                        new PyMemberDescriptor(
+                                kind,
+                                field,
+                                null,
+                                self -> self.slotValue(field),
+                                (self, value) -> self.writeSlot(field, value)));
+            }
+        }
+        boolean dictSlot = takesStorage(slots, declared.dict(), base.hasValueDict(), "__dict__");
+        boolean weakSlot =
+                takesStorage(slots, declared.weak(), base.hasWeakRefList(), "__weakref__");
+        kind.storesValueDict(dictSlot || base.hasValueDict());
+        kind.storesWeakRefs(weakSlot || base.hasWeakRefList());
+        if (dictSlot) {
+            putDefault(
+                    dict,
+                    "__dict__",
+                    new PyGetSetDescriptor(
+                            kind,
+                            "__dict__",
+                            VALUE_DICT_DOC,
+                            PyInstance::valueDict,
+                            PyInstance::writeDict));
+        }
+        if (weakSlot) {
+            // The getter answers None forever: this runtime has no `weakref` module, so there is no list
+            // for it to read. The setter is absent exactly as CPython's is, which is what makes the name a
+            // data descriptor that refuses both writing and deleting.
+            putDefault(
+                    dict,
+                    "__weakref__",
+                    new PyGetSetDescriptor(
+                            kind, "__weakref__", WEAKREF_LIST_DOC, self -> PyNone.INSTANCE, null));
+        }
+    }
+
+    /** What a body's {@code __slots__} declares: the fields it names, and which storages it asks for. */
+    private record Declared(List<String> fields, boolean dict, boolean weak) {}
+
+    /**
+     * {@code collect_slots}: the names read out of {@code __slots__}, in the order the body wrote them and
+     * with the duplicates and the two storage names set apart from the fields.
+     *
+     * <p>Three shapes are legal — a bare string is the one field it names, a dictionary declares its keys,
+     * and anything else is iterated — and only a string is an item, which is the difference between {@code
+     * __slots__ items must be strings, not 'int'} for one item and the {@code 'int' object is not
+     * iterable} a bare number reaches before any item is looked at. {@code __slots__} itself stays in the
+     * class dictionary beside the descriptors it produced, which is what makes {@code C.__slots__} a
+     * question about the body rather than about the layout.
+     */
+    private static Declared collect(PyObject slots) {
+        if (slots == null) {
+            return new Declared(List.of(), false, false);
+        }
+        List<PyObject> items =
+                slots instanceof PyStr only ? List.of(only) : Constructors.materialise(slots);
+        List<String> fields = new ArrayList<>();
+        boolean dict = false;
+        boolean weak = false;
+        for (PyObject item : items) {
+            if (!(item instanceof PyStr name)) {
+                throw Slots.typeError(
+                        "__slots__ items must be strings, not '%s'", item.getType().filedName());
+            }
+            switch (name.str()) {
+                case "__dict__" -> dict = declares(dict, "__dict__");
+                case "__weakref__" -> weak = declares(weak, "__weakref__");
+                default -> {
+                    if (!fields.contains(name.str())) {
+                        fields.add(name.str());
+                    }
+                }
+            }
+        }
+        return new Declared(fields, dict, weak);
+    }
+
+    /** The second time a body writes one of the two storage names is the time it is refused. */
+    private static boolean declares(boolean alreadyDeclared, String name) {
+        if (alreadyDeclared) {
+            throw Slots.typeError("%s slot disallowed: we already got one", name);
+        }
+        return true;
+    }
+
+    /**
+     * Whether a class takes one of the two storages, and what it says when it cannot take that one.
+     *
+     * <p>A body with no {@code __slots__} takes every storage its base lacks; a body that declares slots
+     * takes a storage only where it wrote that storage's own name among them — {@code __slots__ = ()} is a
+     * declared empty set of slots rather than no declaration. Writing the name where the base already has
+     * the storage is not a silent no-op but the refusal {@code collect_slots} makes before any part of the
+     * class is built, in the one sentence it shares with writing the name twice.
+     */
+    private static boolean takesStorage(
+            PyObject slots, boolean declared, boolean baseHas, String name) {
+        if (declared && baseHas) {
+            throw Slots.typeError("%s slot disallowed: we already got one", name);
+        }
+        return !baseHas && (slots == null || declared);
+    }
+
+    /** {@code PyDict_SetDefaultRef}: a name the class body already wrote is left alone. */
+    private static void putDefault(PyDict dict, String name, PyObject descriptor) {
+        PyStr key = PyStr.interned(name);
+        if (dict.get(key) == null) {
+            dict.put(key, descriptor);
+        }
+    }
+
+    /** The two sentences {@code subtype_getsets} files beside the two descriptors. */
+    private static final String VALUE_DICT_DOC = "dictionary for instance variables";
+
+    private static final String WEAKREF_LIST_DOC = "list of weak references to the object";
 
     /**
      * {@code type_new_staticmethod} and {@code type_new_classmethod}: a plain function filed under one

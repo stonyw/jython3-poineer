@@ -342,8 +342,16 @@ final class Builtins {
      *
      * Reversal is not iteration: an iterator and a set are both iterable but neither has a last
      * element, so the refusal is by type and comes before anything is read.
+     *
+     * <p>The special goes first, as {@code builtin_reversed} asks it: a type that declares
+     * {@code __reversed__} — a {@code dict}, a {@code mappingproxy} — answers for itself, and only one that
+     * does not is measured as a sequence.
      */
     private static PyObject reversed(PyObject value) {
+        PyObject hook = Slots.findAttr(value, "__reversed__");
+        if (hook != null) {
+            return Slots.call(hook, new PyObject[0], null);
+        }
         if (!(value instanceof PyList
                 || value instanceof PyTuple
                 || value instanceof PyStr
@@ -835,39 +843,25 @@ final class Builtins {
         }
     }
 
+    /**
+     * {@code setattr(x, name, value)}: the same write the {@code STORE_ATTR} instruction makes.
+     *
+     * <p>Routing it through {@link Slots} rather than calling the value is what lets {@code
+     * setattr(3, '__class__', int)} be refused as a class assignment instead of as a name {@code int} does
+     * not keep, and lets a class that declares {@code __setattr__} see the call from either spelling.
+     */
     private static PyObject setAttribute(PyObject[] args, String[] kwNames) {
         Arguments.noKeywords("setattr()", kwNames);
         Arguments.exactly("setattr", args, kwNames, 3);
-        String name = attributeName(args[1]);
-        PyObject answer = args[0].setAttr(name, args[2]);
-        if (answer != PyNotImplemented.INSTANCE) {
-            return PyNone.INSTANCE;
-        }
-        throw Slots.failedRead(
-                args[0],
-                name,
-                "'%s' object has no attribute '%s' and no __dict__ for setting new attributes",
-                args[0].getType().name(),
-                name);
+        Slots.setAttr(args[0], attributeName(args[1]), args[2]);
+        return PyNone.INSTANCE;
     }
 
     private static PyObject deleteAttribute(PyObject[] args, String[] kwNames) {
         Arguments.noKeywords("delattr()", kwNames);
         Arguments.exactly("delattr", args, kwNames, 2);
-        String name = attributeName(args[1]);
-        PyObject answer = args[0].delAttr(name);
-        if (answer != PyNotImplemented.INSTANCE) {
-            return PyNone.INSTANCE;
-        }
-        // The refusal of a delete from an object that has no dictionary is the same refusal a write makes,
-        // and CPython names the object and the member on it too — unlike the delete of a name an instance's
-        // own dictionary does not hold, which is complained about without.
-        throw Slots.failedRead(
-                args[0],
-                name,
-                "'%s' object has no attribute '%s' and no __dict__ for setting new attributes",
-                args[0].getType().name(),
-                name);
+        Slots.delAttr(args[0], attributeName(args[1]));
+        return PyNone.INSTANCE;
     }
 
     private static String attributeName(PyObject value) {

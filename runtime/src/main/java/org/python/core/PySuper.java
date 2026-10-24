@@ -155,6 +155,12 @@ public final class PySuper extends PyObject {
      */
     @Override
     public PyObject getAttr(String attribute) {
+        // `super_getattro` diverts the one nine-character name before the walk, precisely because the
+        // walk would reach `object`'s getset and answer it for `su->obj`: the comment in that function
+        // says the name has to give the class of the proxy, not the class of the value.
+        if (attribute.equals(ClassAttribute.NAME)) {
+            return ClassAttribute.read(this);
+        }
         PyObject found = beyond(attribute);
         if (found != null) {
             return found;
@@ -188,14 +194,33 @@ public final class PySuper extends PyObject {
         return null;
     }
 
+    /**
+     * {@code s.name = value}: three names the proxy refuses itself, and the generic write for the rest.
+     *
+     * <p>The three are {@code super}'s {@code PyMemberDef}s, which CPython marks read-only, so the refusal
+     * is the one that names no attribute at all. Everything else is {@link GenericAttributes}' answer, and
+     * it is the type's own dictionary that decides which wording a name gets: {@code __doc__} is filed
+     * there, so it is read-only, {@code __class__} reaches {@code object}'s getset and its type check, and
+     * a name nothing files has nowhere to go because a proxy keeps no instance dictionary.
+     */
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
-        throw Slots.attributeError(readonly(attribute) ? "readonly attribute" : writable(attribute));
+        refused(attribute);
+        GenericAttributes.write(this, attribute, value);
+        return PyNone.INSTANCE;
     }
 
     @Override
     public PyObject delAttr(String attribute) {
-        throw Slots.attributeError(readonly(attribute) ? "readonly attribute" : writable(attribute));
+        refused(attribute);
+        GenericAttributes.delete(this, attribute);
+        return PyNone.INSTANCE;
+    }
+
+    private void refused(String attribute) {
+        if (readonly(attribute)) {
+            throw Slots.attributeError("readonly attribute");
+        }
     }
 
     /** The three names the proxy reads for itself, and the only three it refuses a write by name. */
@@ -203,15 +228,6 @@ public final class PySuper extends PyObject {
         return attribute.equals("__self__")
                 || attribute.equals("__self_class__")
                 || attribute.equals("__thisclass__");
-    }
-
-    /**
-     * CPython's own complaint about a value with nowhere to put a new attribute: it is the generic
-     * {@code setattr} refusal, and it is what a write through super always becomes.
-     */
-    private static String writable(String attribute) {
-        return "'super' object has no attribute '" + attribute + "'"
-                + " and no __dict__ for setting new attributes";
     }
 
     @Override

@@ -163,9 +163,54 @@ public abstract class PyObject {
         return PyNotImplemented.INSTANCE;
     }
 
-    /** {@code self.name = value}. */
+    /**
+     * {@code self.name = value}, for the values whose type declares no attribute writing of its own.
+     *
+     * <p>That is CPython's {@code tp_setattro == PyObject_GenericSetAttr}, and almost every built-in type is
+     * one: the refusal a program sees for {@code (1,).__doc__ = 'x'} is {@link GenericAttributes}' answer
+     * about the descriptor {@code tuple} files, not a complaint from this class about a name it does not
+     * know. A type with storage to keep — an instance of a class Python wrote, an exception, a module —
+     * overrides this and says where the name goes.
+     */
     public PyObject setAttr(String name, PyObject value) {
-        return PyNotImplemented.INSTANCE;
+        GenericAttributes.write(this, name, value);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code self.name} for a field the value's class declared in {@code __slots__} — CPython's {@code
+     * T_OBJECT_EX} offset, which this runtime keeps in a storage of its own beside the attributes a value
+     * can list.
+     *
+     * <p>Reached only through the {@code member_descriptor} the class files, so the name is already known
+     * to be one of those fields, and an empty one is the {@code AttributeError} the getter of that offset
+     * answers with rather than a missing attribute the class dictionary would have to be asked about. Only
+     * the two value shapes that keep attribute storage — an instance of a class Python wrote, and an
+     * exception — override this; the class system builds no other class with slots to read.
+     */
+    PyObject slotValue(String name) {
+        throw Slots.attributeError(
+                "'%s' object has no attribute '%s'", getType().filedName(), name);
+    }
+
+    /** {@code self.name = value} for a slot, with null for the {@code del} that empties the field. */
+    void writeSlot(String name, PyObject value) {
+        throw Slots.attributeError(
+                "'%s' object has no attribute '%s'", getType().filedName(), name);
+    }
+
+    /**
+     * The dictionary a generic write puts a name into — {@code _PyObject_ComputedDictPointer} and its
+     * managed-dict cousin, which CPython reaches as a pointer and so reads as absent for a value whose type
+     * keeps no storage.
+     *
+     * <p>Asked only after {@link PyType#hasValueDict()} has said this value's class stores one, so the two
+     * together are the answer to {@code dictptr == NULL} and the reason a class with {@code __slots__} is
+     * refused by name instead of gaining an attribute. A value with storage of its own overrides this; the
+     * built-in types that have none answer null and are refused.
+     */
+    PyDict attributeStore() {
+        return null;
     }
 
     /**
@@ -205,12 +250,17 @@ public abstract class PyObject {
     }
 
     /**
-     * {@code del self.name}, which is a slot of its own rather than {@code setAttr(name, null)}:
-     * CPython distinguishes an attribute that can be set to {@code None} from one that can be
+     * {@code del self.name}, which is a slot of its own in this runtime rather than {@code setAttr(name,
+     * null)}: CPython distinguishes an attribute that can be set to {@code None} from one that can be
      * removed, and a type that supports only the first must not answer the second.
+     *
+     * <p>The default is the other half of {@link #setAttr}'s, and reaches the same descriptor the write does
+     * — CPython hands it {@code NULL} through {@code tp_descr_set} rather than taking a different road,
+     * which is why {@code del e.args} answers in the words of the field rather than as a missing attribute.
      */
     public PyObject delAttr(String name) {
-        return PyNotImplemented.INSTANCE;
+        GenericAttributes.delete(this, name);
+        return PyNone.INSTANCE;
     }
 
     /**
