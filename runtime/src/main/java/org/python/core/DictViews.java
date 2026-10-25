@@ -20,9 +20,11 @@ final class DictViews {
     private DictViews() {
     }
 
-    private static final PyType KEYS = PyType.declare("dict_keys", PyType.TYPE);
-    private static final PyType VALUES = PyType.declare("dict_values", PyType.TYPE);
-    private static final PyType ITEMS = PyType.declare("dict_items", PyType.TYPE);
+    // Under `object`, as CPython's three view types are: a base of `type` would put `type.__dict__` and
+    // `type.__dir__` in a value's MRO, and those getters cast their receiver to a `PyType`.
+    private static final PyType KEYS = PyType.declare("dict_keys", PyType.OBJECT);
+    private static final PyType VALUES = PyType.declare("dict_values", PyType.OBJECT);
+    private static final PyType ITEMS = PyType.declare("dict_items", PyType.OBJECT);
 
     static PyObject keys(PyDict mapping) {
         return new Keys(mapping);

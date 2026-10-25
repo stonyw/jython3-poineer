@@ -207,16 +207,17 @@ public final class PyList extends PyObject {
     }
 
     /**
-     * {@code l.__init__(iterable)}: the contents of this list, replaced by those already read off.
+     * {@code l.__init__(iterable)}: the receiver emptied, and only then extended from the argument.
      *
-     * <p>The source is a copy made before this method was reached, which is what lets {@code l.__init__(l)}
-     * double the list instead of emptying it — {@code list_init} is {@code list_extend} over a receiver that
-     * was cleared first, and a list argument is measured before anything is thrown away.
+     * <p>That order is {@code list___init___impl}, and it is the whole difference between this and a copy:
+     * {@code l.__init__(l)} is an empty list, because the iterable it extends from is the list that was just
+     * cleared, and a refused {@code l.__init__(5)} still leaves an empty list behind. {@code l.extend(l)} is
+     * the other case — the contents are still there to be read, so they are read twice.
      */
-    void replace(Iterable<PyObject> source) {
+    void initialized(PyObject iterable) {
         items.clear();
-        for (PyObject item : source) {
-            items.add(item);
+        if (iterable != null) {
+            extend(iterable);
         }
     }
 

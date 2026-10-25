@@ -280,6 +280,13 @@ final class Members {
         });
     }
 
+    /** The same, with the sentence that {@code PyMethodDef} carries beside it. */
+    Members addNoArgument(String name, String doc, Function<PyObject, PyObject> body) {
+        addNoArgument(name, body);
+        docs.put(name, doc);
+        return this;
+    }
+
     /** {@code append(x)}, {@code join(x)}: exactly one argument. */
     Members addOne(String name, One body) {
         String qualified = owner.name() + "." + name + "()";
@@ -340,15 +347,21 @@ final class Members {
      * holds the function unbound and {@link PyNativeFunction} answers the read.
      */
     Members addClassNamed(String name, OnType body) {
+        return addClassNamed(name, null, body);
+    }
+
+    /** The same, with the sentence that {@code PyMethodDef} carries beside it. */
+    Members addClassNamed(String name, String doc, OnType body) {
         classMethods.put(
                 name,
                 PyNativeFunction.onType(
-                        owner,
-                        name,
-                        (args, kwNames) -> body.apply(
-                                args[0],
-                                java.util.Arrays.copyOfRange(args, 1, args.length),
-                                kwNames)));
+                                owner,
+                                name,
+                                (args, kwNames) -> body.apply(
+                                        args[0],
+                                        java.util.Arrays.copyOfRange(args, 1, args.length),
+                                        kwNames))
+                        .documented(doc));
         return this;
     }
 

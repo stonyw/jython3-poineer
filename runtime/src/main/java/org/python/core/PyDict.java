@@ -16,7 +16,9 @@ import java.util.Map;
  * Keys are {@link PyObject}s, so a lookup goes through Python's {@code hash} and {@code eq} — which
  * is what makes {@code {1: 'a'}} findable by {@code True}, and what makes a list an unusable key.
  * CPython reports that second fact in the dict's own words, naming both the key it was handed and
- * the type inside it that refused, and {@link #unhashable} is what keeps that wording.
+ * the type inside it that refused, and {@link #unhashable} is what keeps that wording. An empty
+ * {@link LinkedHashMap} does not ask its key to hash at all, so {@link #hashKey} asks on its behalf, and
+ * an unhashable key read from an empty dictionary is a refusal in CPython rather than a miss.
  */
 public final class PyDict extends PyObject {
 
@@ -37,6 +39,7 @@ public final class PyDict extends PyObject {
     }
 
     public PyObject get(PyObject key) {
+        hashKey(key);
         try {
             return items.get(key);
         } catch (PyRaise refusal) {
@@ -108,8 +111,30 @@ public final class PyDict extends PyObject {
 
     /** {@code k in d} at Java level, with the same refusal for a key that will not hash. */
     boolean hasKey(PyObject key) {
+        hashKey(key);
         try {
             return items.containsKey(key);
+        } catch (PyRaise refusal) {
+            throw unhashable(key, refusal);
+        }
+    }
+
+    /**
+     * The hash a lookup on an <em>empty</em> dictionary would have taken.
+     *
+     * <p>{@code dict_find} asks the key to hash before it knows whether there is anything to find, so an
+     * unhashable key read from a dictionary with nothing in it is refused in the dict's own words rather
+     * than reported as missing — and a key whose {@code __hash__} raises is heard raising. A
+     * {@link LinkedHashMap} with no entries answers {@code get} and {@code containsKey} without touching its
+     * key, so this asks once, and only here: a dictionary that has entries hashes through the map itself,
+     * exactly once, as it always did.
+     */
+    private void hashKey(PyObject key) {
+        if (!items.isEmpty()) {
+            return;
+        }
+        try {
+            key.hashCode();
         } catch (PyRaise refusal) {
             throw unhashable(key, refusal);
         }
@@ -148,6 +173,24 @@ public final class PyDict extends PyObject {
     @Override
     public PyObject getAttr(String name) {
         return Members.find(this, name);
+    }
+
+    /**
+     * {@code dict_richcompare}: two dictionaries, and nothing else.
+     *
+     * <p>The first line of that function is a check on <em>both</em> operands, so a dictionary asked about a
+     * list declines rather than answering false — {@code {1: 2}.__eq__([1])} is {@code NotImplemented}, and
+     * the {@code ==} the interpreter runs falls back on identity only after {@code list.__eq__} declines as
+     * well. The four orderings are declined too, even between two dictionaries: the refusal a person reads is
+     * {@link Slots} naming the two types, not a sentence written here.
+     */
+    @Override
+    public PyObject richCompare(CompareOp cmp, PyObject other) {
+        if (!(other instanceof PyDict dict) || cmp != CompareOp.EQ && cmp != CompareOp.NE) {
+            return PyNotImplemented.INSTANCE;
+        }
+        boolean equal = eq(dict);
+        return PyBool.of(cmp == CompareOp.EQ ? equal : !equal);
     }
 
     @Override
@@ -191,6 +234,22 @@ public final class PyDict extends PyObject {
     /** Iterating a dict yields keys; {@code items()} yields the pairs, each as a fresh tuple. */
     PyIterator itemIterator() {
         return new Walker(pairs());
+    }
+
+    /**
+     * The keys from the last one written back to the first, which is what {@code reversed(d)} and {@code
+     * d.__reversed__()} hand out.
+     *
+     * <p>The same snapshot and the same size check as the forward walk, read backwards: a dictionary that
+     * changes while it is being walked backwards complains exactly as it does walking forwards.
+     */
+    PyIterator reverseKeyIterator() {
+        PyObject[] keys = keys();
+        PyObject[] backwards = new PyObject[keys.length];
+        for (int i = 0; i < keys.length; i++) {
+            backwards[i] = keys[keys.length - 1 - i];
+        }
+        return new Walker(backwards);
     }
 
     /** The keys, in insertion order. */
@@ -272,6 +331,29 @@ public final class PyDict extends PyObject {
         }
     }
 
+    /**
+     * {@code dict_update_common}: the one argument {@code update} and {@code __init__} take, then the
+     * keywords that follow it.
+     *
+     * <p>The same body serves both, and CPython's {@code dict_update} and {@code dict_init} are the same
+     * function with a different name written into the complaint — {@code d.__init__({}, {})} says {@code
+     * dict expected at most 1 argument, got 2} where {@code d.update({}, {})} says {@code update}. Only the
+     * positional arguments count there: {@code update(d, a=1)} is one argument.
+     */
+    void mergeFrom(PyObject[] args, String[] kwNames, String who) {
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = args.length - keywords;
+        if (positional > 1) {
+            throw Slots.typeError("%s expected at most 1 argument, got %d", who, positional);
+        }
+        if (positional == 1) {
+            merge(args[0]);
+        }
+        for (int i = 0; i < keywords; i++) {
+            put(PyStr.interned(kwNames[i]), args[positional + i]);
+        }
+    }
+
     /** One {@code (key, value)} element of an update sequence, with CPython's two refusals. */
     private static PyObject[] pair(PyObject element, int position) {
         if (!Slots.isIterable(element)) {
@@ -313,85 +395,167 @@ public final class PyDict extends PyObject {
         }
     }
 
-    /** The method table, in CPython's order, with {@code fromkeys} alongside the rest. */
+    /**
+     * The method table, in the order {@code mapp_methods} writes it.
+     *
+     * <p>The four names before the ones a person calls are the slots CPython declares as methods rather
+     * than copying out of a protocol: {@code __getitem__} because {@code dict_subscript} answers a missing
+     * key as well as a hit, {@code __contains__} because {@code sq_contains} is {@code PyDict_Contains} and
+     * the mapping's own test wants the refusal wording, and the two a {@code reversed()} call and a
+     * {@code sizeof} call ask for. {@code fromkeys} is the one {@code METH_CLASS} name here besides
+     * {@code __class_getitem__}, so its dictionary entry is a {@code classmethod_descriptor} and its three
+     * refusals are the descriptor's rather than the method's.
+     */
     private static final Members METHODS = Members.of(PyType.DICT)
-            .add("fromkeys", (self, args, kwNames) -> {
-                noKeywords("dict.fromkeys()", kwNames);
-                Arguments.between("fromkeys", args, kwNames, 1, 2);
-                // One value shared by every key, which CPython also does: fromkeys([1,2], []) keeps
-                // two names for the same list.
-                PyObject value = args.length > 1 ? args[1] : PyNone.INSTANCE;
-                PyDict dict = empty();
-                PyIterator keys = Slots.iterator(args[0]);
-                PyObject key;
-                while ((key = keys.nextOrNull()) != null) {
-                    dict.put(key, value);
-                }
-                return dict;
-            })
-            .addNoArgument("copy", self -> ((PyDict) self).copy())
-            .addNoArgument("clear", self -> {
-                ((PyDict) self).items.clear();
-                return PyNone.INSTANCE;
-            })
-            .add("get", (self, args, kwNames) -> {
-                noKeywords("dict.get()", kwNames);
-                Arguments.between("get", args, kwNames, 1, 2);
-                PyObject found = ((PyDict) self).get(args[0]);
-                return found != null
-                        ? found
-                        : args.length > 1 ? args[1] : PyNone.INSTANCE;
-            })
-            .addNoArgument("items", self -> DictViews.items((PyDict) self))
-            .addNoArgument("keys", self -> DictViews.keys((PyDict) self))
-            .add("pop", (self, args, kwNames) -> {
-                noKeywords("dict.pop()", kwNames);
-                Arguments.between("pop", args, kwNames, 1, 2);
-                PyObject found = ((PyDict) self).remove(args[0]);
-                if (found != null) {
-                    return found;
-                }
-                if (args.length > 1) {
-                    return args[1];
-                }
-                throw Slots.keyError(args[0]);
-            })
-            .addNoArgument("popitem", self -> {
-                PyDict dict = (PyDict) self;
-                if (dict.items.isEmpty()) {
-                    throw Slots.keyError(PyStr.of("popitem(): dictionary is empty"));
-                }
-                PyObject[] keys = dict.keys();
-                PyObject key = keys[keys.length - 1];
-                return PyTuple.of(key, dict.remove(key));
-            })
-            .add("setdefault", (self, args, kwNames) -> {
-                noKeywords("dict.setdefault()", kwNames);
-                Arguments.between("setdefault", args, kwNames, 1, 2);
-                PyDict dict = (PyDict) self;
-                PyObject found = dict.get(args[0]);
-                if (found != null) {
-                    return found;
-                }
-                PyObject inserted = args.length > 1 ? args[1] : PyNone.INSTANCE;
-                dict.put(args[0], inserted);
-                return inserted;
-            })
-            .add("update", (self, args, kwNames) -> {
-                PyDict dict = (PyDict) self;
-                int keywords = kwNames == null ? 0 : kwNames.length;
-                // Only the positional arguments count here: `update(d, a=1)` is one argument.
-                int positional = args.length - keywords;
-                if (positional > 1) {
-                    throw Slots.typeError("update expected at most 1 argument, got %d", positional);
-                }
-                if (positional == 1) {
-                    dict.merge(args[0]);
-                }
-                for (int i = 0; i < keywords; i++) {
-                    dict.put(PyStr.interned(kwNames[i]), args[positional + i]);
-                }
-                return PyNone.INSTANCE;
-            })
-            .addNoArgument("values", self -> DictViews.values((PyDict) self));
+            .add(
+                    "__getitem__",
+                    "Return self[key].",
+                    (self, args, kwNames) -> {
+                        Arguments.exactlyOne("dict.__getitem__()", args, kwNames);
+                        return self.getItem(args[0]);
+                    })
+            .add(
+                    "__contains__",
+                    "True if the dictionary has the specified key, else False.",
+                    (self, args, kwNames) -> {
+                        Arguments.exactlyOne("dict.__contains__()", args, kwNames);
+                        return self.contains(args[0]);
+                    })
+            .add(
+                    "__sizeof__",
+                    "Return the size of the dict in memory, in bytes.",
+                    (self, args, kwNames) -> {
+                        Arguments.none("dict.__sizeof__()", args, kwNames);
+                        return PyInt.of(0);
+                    })
+            .add(
+                    "__reversed__",
+                    "Return a reverse iterator over the dict keys.",
+                    (self, args, kwNames) -> {
+                        Arguments.none("dict.__reversed__()", args, kwNames);
+                        return ((PyDict) self).reverseKeyIterator();
+                    })
+            .add(
+                    "get",
+                    "Return the value for key if key is in the dictionary, else default.",
+                    (self, args, kwNames) -> {
+                        noKeywords("dict.get()", kwNames);
+                        Arguments.between("get", args, kwNames, 1, 2);
+                        PyObject found = ((PyDict) self).get(args[0]);
+                        return found != null
+                                ? found
+                                : args.length > 1 ? args[1] : PyNone.INSTANCE;
+                    })
+            .addNoArgument(
+                    "items",
+                    "Return a set-like object providing a view on the dict's items.",
+                    self -> DictViews.items((PyDict) self))
+            .addNoArgument(
+                    "keys",
+                    "Return a set-like object providing a view on the dict's keys.",
+                    self -> DictViews.keys((PyDict) self))
+            .add(
+                    "pop",
+                    "D.pop(k[,d]) -> v, remove specified key and return the corresponding value.\n"
+                            + "\n"
+                            + "If the key is not found, return the default if given; otherwise,\n"
+                            + "raise a KeyError.",
+                    (self, args, kwNames) -> {
+                        noKeywords("dict.pop()", kwNames);
+                        Arguments.between("pop", args, kwNames, 1, 2);
+                        PyDict dict = (PyDict) self;
+                        // `_PyDict_Pop` reads the entry count before it looks at the key, so an empty
+                        // dictionary hands back the default — or a KeyError carrying the key — without
+                        // ever hashing it.
+                        if (dict.items.isEmpty()) {
+                            if (args.length > 1) {
+                                return args[1];
+                            }
+                            throw Slots.keyError(args[0]);
+                        }
+                        PyObject found = dict.remove(args[0]);
+                        if (found != null) {
+                            return found;
+                        }
+                        if (args.length > 1) {
+                            return args[1];
+                        }
+                        throw Slots.keyError(args[0]);
+                    })
+            .addNoArgument(
+                    "popitem",
+                    "Remove and return a (key, value) pair as a 2-tuple.\n"
+                            + "\n"
+                            + "Pairs are returned in LIFO (last-in, first-out) order.\n"
+                            + "Raises KeyError if the dict is empty.",
+                    self -> {
+                        PyDict dict = (PyDict) self;
+                        if (dict.items.isEmpty()) {
+                            throw Slots.keyError(PyStr.of("popitem(): dictionary is empty"));
+                        }
+                        PyObject[] keys = dict.keys();
+                        PyObject key = keys[keys.length - 1];
+                        return PyTuple.of(key, dict.remove(key));
+                    })
+            .add(
+                    "setdefault",
+                    "Insert key with a value of default if key is not in the dictionary.\n"
+                            + "\n"
+                            + "Return the value for key if key is in the dictionary, else default.",
+                    (self, args, kwNames) -> {
+                        noKeywords("dict.setdefault()", kwNames);
+                        Arguments.between("setdefault", args, kwNames, 1, 2);
+                        PyDict dict = (PyDict) self;
+                        PyObject found = dict.get(args[0]);
+                        if (found != null) {
+                            return found;
+                        }
+                        PyObject inserted = args.length > 1 ? args[1] : PyNone.INSTANCE;
+                        dict.put(args[0], inserted);
+                        return inserted;
+                    })
+            .add(
+                    "update",
+                    "D.update([E, ]**F) -> None.  Update D from mapping/iterable E and F.\n"
+                            + "If E is present and has a .keys() method, then does:"
+                            + "  for k in E.keys(): D[k] = E[k]\n"
+                            + "If E is present and lacks a .keys() method, then does:"
+                            + "  for k, v in E: D[k] = v\n"
+                            + "In either case, this is followed by: for k in F:  D[k] = F[k]",
+                    (self, args, kwNames) -> {
+                        ((PyDict) self).mergeFrom(args, kwNames, "update");
+                        return PyNone.INSTANCE;
+                    })
+            .addNoArgument(
+                    "values",
+                    "Return an object providing a view on the dict's values.",
+                    self -> DictViews.values((PyDict) self))
+            .addClassNamed(
+                    "fromkeys",
+                    "Create a new dictionary with keys from iterable and values set to value.",
+                    (kind, args, kwNames) -> {
+                        noKeywords("dict.fromkeys()", kwNames);
+                        Arguments.between("fromkeys", args, kwNames, 1, 2);
+                        // One value shared by every key, which CPython also does: fromkeys([1,2], [])
+                        // keeps two names for the same list.
+                        PyObject value = args.length > 1 ? args[1] : PyNone.INSTANCE;
+                        PyDict dict = empty();
+                        PyIterator keys = Slots.iterator(args[0]);
+                        PyObject key;
+                        while ((key = keys.nextOrNull()) != null) {
+                            dict.put(key, value);
+                        }
+                        return dict;
+                    })
+            .addNoArgument(
+                    "clear",
+                    "Remove all items from the dict.",
+                    self -> {
+                        ((PyDict) self).items.clear();
+                        return PyNone.INSTANCE;
+                    })
+            .addNoArgument(
+                    "copy",
+                    "Return a shallow copy of the dict.",
+                    self -> ((PyDict) self).copy());
 }

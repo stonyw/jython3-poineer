@@ -1166,15 +1166,18 @@ public final class Interpreter {
     }
 
     /**
-     * {@code DICT_UPDATE} and {@code DICT_MERGE}, which differ only in how they complain: a merge
-     * into a call's keyword dictionary wants the keys to be strings, an update accepts any mapping.
+     * {@code DICT_UPDATE} and {@code DICT_MERGE}, which differ only in how they complain: a merge into a
+     * call's keyword dictionary wants the keys to be strings, an update accepts any mapping.
+     *
+     * <p>The merge's refusal names nothing but the requirement. CPython's {@code _PyDict_MergeEx} has no
+     * qualname to write into it the way a function's own keyword loop has, so the program is told what went
+     * wrong and not where.
      */
     private static void mergeInto(PyDict target, PyObject source, boolean keywords) {
         if (source instanceof PyDict map) {
             for (java.util.Map.Entry<PyObject, PyObject> entry : map.getItems().entrySet()) {
                 if (keywords && !(entry.getKey() instanceof PyStr)) {
-                    throw Slots.typeError("keywords must be strings, not %s",
-                            entry.getKey().getType().name());
+                    throw Slots.typeError("keywords must be strings");
                 }
                 target.put(entry.getKey(), entry.getValue());
             }
@@ -1413,8 +1416,9 @@ public final class Interpreter {
         int at = 0;
         for (java.util.Map.Entry<PyObject, PyObject> entry : map.getItems().entrySet()) {
             if (!(entry.getKey() instanceof PyStr key)) {
-                throw Slots.typeError(
-                        "keywords must be strings, not %s", entry.getKey().getType().name());
+                // `_PyStack_UnpackDict` checks the keys and then hands them over; the requirement is the
+                // whole of what it says.
+                throw Slots.typeError("keywords must be strings");
             }
             names[at++] = key;
             args.add(entry.getValue());

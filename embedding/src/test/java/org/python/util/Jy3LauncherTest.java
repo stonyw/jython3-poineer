@@ -236,7 +236,8 @@ class Jy3LauncherTest {
                 "60_str_dictionary.py",
                 "61_call_slot.py",
                 "62_list_dictionary.py",
-                "63_tuple_dictionary.py");
+                "63_tuple_dictionary.py",
+                "64_dict_dictionary.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

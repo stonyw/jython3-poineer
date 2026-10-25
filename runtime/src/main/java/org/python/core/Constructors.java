@@ -604,12 +604,15 @@ final class Constructors {
     }
 
     /**
-     * {@code list(iterable)} read as the slot rather than as the call: the same one argument, the same
-     * two refusals, and the same words — {@code list_init} is {@code list_extend}, so {@code l.__init__(2,
-     * 3)} complains about the count exactly as {@code list(2, 3)} does.
+     * The one argument of {@code list(iterable)} as {@code list_init} reads it: the same two refusals, and
+     * the iterable itself rather than a copy of it. {@code list___init___impl} empties the receiver before it
+     * extends from the argument, so the slot has to be handed the argument and not what it holds — the list
+     * it reads is the one that was just thrown away.
      */
-    static List<PyObject> listed(PyObject[] args, String[] kwNames) {
-        return iterable(args, kwNames, "list");
+    static PyObject listed(PyObject[] args, String[] kwNames) {
+        refuseKeywords("list", kwNames);
+        Arguments.atMost("list", args, kwNames, 1);
+        return args.length == 0 ? null : args[0];
     }
 
     /** Every value of an iterable, in order. Shared with the interpreter's own {@code [*x]} paths. */

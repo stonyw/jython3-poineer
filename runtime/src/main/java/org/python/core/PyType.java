@@ -129,13 +129,33 @@ public class PyType extends PyObject {
                     + "\n"
                     + "If the argument is a tuple, the return value is the same object.";
 
+    /**
+     * The sentence CPython's {@code dictionary_doc} writes for {@code dict}.
+     *
+     * <p>The one type sentence here that reads as a constructor's manual rather than as a description:
+     * five lines, each naming one way the class is called, and the last of them an example. {@code
+     * list.__doc__} and {@code tuple.__doc__} say what those types are; this says what {@code dict(...)}
+     * does with what it is handed, which is why it is the longest of the four.
+     */
+    private static final String DICT_DOC =
+            "dict() -> new empty dictionary\n"
+                    + "dict(mapping) -> new dictionary initialized from a mapping object's\n"
+                    + "    (key, value) pairs\n"
+                    + "dict(iterable) -> new dictionary initialized as if via:\n"
+                    + "    d = {}\n"
+                    + "    for k, v in iterable:\n"
+                    + "        d[k] = v\n"
+                    + "dict(**kwargs) -> new dictionary initialized with the name=value pairs\n"
+                    + "    in the keyword argument list.  For example:  dict(one=1, two=2)";
+
     public static final PyType STR = builtin("str").flagged(MATCH_SELF).documented(STR_DOC);
     public static final PyType BYTES = builtin("bytes").flagged(MATCH_SELF).documented(BYTES_DOC);
     public static final PyType TUPLE =
             builtin("tuple").flagged(SEQUENCE | MATCH_SELF).documented(TUPLE_DOC);
     public static final PyType LIST =
             builtin("list").flagged(SEQUENCE | MATCH_SELF).documented(LIST_DOC);
-    public static final PyType DICT = builtin("dict").flagged(MAPPING | MATCH_SELF);
+    public static final PyType DICT =
+            builtin("dict").flagged(MAPPING | MATCH_SELF).documented(DICT_DOC);
     public static final PyType SET = builtin("set").flagged(MATCH_SELF);
     public static final PyType FROZENSET = builtin("frozenset").flagged(MATCH_SELF);
     public static final PyType SLICE = builtin("slice");

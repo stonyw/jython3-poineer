@@ -179,11 +179,14 @@ final class TypeDict {
     private static final String IMUL_DOC = "Implement self*=value.";
 
     /**
-     * The two sentences {@code list.__class_getitem__} and {@code tuple.__class_getitem__} carry.
+     * The three sentences {@code list}, {@code tuple} and {@code dict} write over {@code
+     * __class_getitem__}.
      *
-     * <p>Both are PEP 585 declarations rather than {@code PyMethodDef} docstrings, and the tuple's goes on
-     * for four paragraphs because a tuple's arguments are per position: it has to say what {@code
-     * tuple[int, str]} means before it can say what {@code tuple[int, ...]} means instead.
+     * <p>All three are PEP 585 declarations rather than {@code PyMethodDef} docstrings, and the tuple's goes
+     * on for four paragraphs because a tuple's arguments are per position: it has to say what {@code
+     * tuple[int, str]} means before it can say what {@code tuple[int, ...]} means instead. The other two run
+     * to one line each, and {@code dict}'s is the only one of the three that counts — a mapping is generic
+     * over two types because it has two places for a value to sit.
      */
     private static final String LIST_CLASS_GETITEM_DOC =
             "lists are generic over the type of their contents";
@@ -196,6 +199,9 @@ final class TypeDict {
                     + "\n"
                     + "Tuples also support the form ``tuple[T, ...]`` to indicate\n"
                     + "an arbitrary length tuple of elements of type T.";
+
+    private static final String DICT_CLASS_GETITEM_DOC =
+            "dicts are generic over two types, signifying (respectively) the types of their keys and values";
 
     /** {@code type.__new__(mcs, name, bases, dict)}: the metaclass idiom, and no descriptor at all. */
     static final Member NEW =
@@ -432,6 +438,10 @@ final class TypeDict {
         }
         if (owner == PyType.TUPLE) {
             tupleTable(into);
+            return;
+        }
+        if (owner == PyType.DICT) {
+            dictTable(into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -777,16 +787,119 @@ final class TypeDict {
     }
 
     /**
-     * {@code list(iterable)} as a slot wrapper: the same one argument the constructor takes.
+     * {@code dict}'s own dictionary: the thirty-four names a mapping files.
      *
-     * <p>{@code list_init} is {@code list_extend} over the receiver, and the receiver is emptied first —
-     * which is what makes {@code l.__init__(l)} double the list rather than clear it: the iterable is read
-     * into its own copy before anything is thrown away.
+     * <p>Fifteen of them are slot wrappers, and the shape of the other nineteen is the story of this table.
+     * Four of the nineteen are slots that CPython writes down as {@code PyMethodDef}s instead of copying out
+     * of a protocol — {@code __getitem__} because {@code dict_subscript} answers a missing key as loudly as
+     * a hit, {@code __contains__} because {@code dict_as_sequence} has nothing but that test, {@code
+     * __sizeof__} and {@code __reversed__} because neither is a protocol at all — and so all four count
+     * their arguments as methods do, naming themselves qualified where a wrapper says only {@code expected 1
+     * argument, got 0}. Two more are {@code METH_CLASS}: {@code fromkeys}, which is a mapping's constructor
+     * spelled out as a method, and {@code __class_getitem__}, the generic subscript every one of these four
+     * collection types now files. The thirteen left are the methods a person calls, and they are filed
+     * between the two class methods rather than in one run: {@code update} ends the first twelve and
+     * {@code clear} starts the last two.
+     *
+     * <p>Three names a reader might look for are not here. {@code __hash__} is filed as the value {@code
+     * None}, as it is for {@code list}: a dict is mutable, and {@code hash({})} is refused by the dictionary
+     * rather than by a callable. There is no {@code __str__}, because {@code dict} leaves {@code tp_str} null
+     * and inherits {@code PyObject_Str}, where {@code bytes} and {@code str} each keep a sentence of their
+     * own. And all six comparisons are filed although only the two that ask whether the entries match can
+     * answer: {@code {} < {}} is a decline, and the operator that got it says so in its own words.
+     */
+    private static void dictTable(PyDict into) {
+        PyType owner = PyType.DICT;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::dictsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.value("__hash__", PyNone.INSTANCE);
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__init__", INIT_DOC, TypeDict::dictInit);
+        table.wrapper("__or__", OR_DOC, TypeDict::merged);
+        table.wrapper("__ror__", ROR_DOC, TypeDict::reflectedMerge);
+        table.wrapper("__ior__", IOR_DOC, TypeDict::mergedInPlace);
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.named("__getitem__");
+        table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
+        table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
+        table.named("__contains__", "__sizeof__");
+        table.named("get", "setdefault", "pop", "popitem", "keys", "items", "values", "update");
+        table.named("fromkeys");
+        table.named("clear", "copy", "__reversed__");
+        table.classMethod(
+                "__class_getitem__",
+                DICT_CLASS_GETITEM_DOC,
+                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code dict_init}: the one argument the constructor takes, merged into a dictionary that already
+     * exists.
+     *
+     * <p>Not a clear-then-fill: {@code dict_update_common} merges over the receiver, which is why {@code
+     * d.__init__()} leaves {@code d} exactly as it was and {@code d.__init__(d)} is a no-op rather than an
+     * accident. The complaint about a second positional argument names the class rather than the method,
+     * because {@code dict_init} passes {@code "dict"} as the name {@code _PyArg_CheckPositional} writes.
+     */
+    private static PyObject dictInit(PyObject[] args, String[] kwNames, String qualified) {
+        ((PyDict) args[0]).mergeFrom(tail(args, kwNames), kwNames, "dict");
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code dict_new}: the class is checked and nothing else is read.
+     *
+     * <p>{@code dict.__new__(dict, 'ab')} is an empty dict where {@code dict('ab')} is a {@code
+     * TypeError}, because the constructor also runs {@code dict_init} over the argument and the slot does
+     * not — the same difference {@code list} files, and the same one {@code int} and {@code str} do not,
+     * since those two need their argument just to know how big to make the value.
+     */
+    private static PyObject dictsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.DICT, args, kwNames);
+        return PyDict.empty();
+    }
+
+    /**
+     * {@code nb_or}, {@code nb_inplace_or} and the {@code RBINSLOT} beside them.
+     *
+     * <p>PEP 584 gave a mapping three of the four, and the reflected one is the odd pair: {@code
+     * d.__ror__(e)} is CPython handing {@code nb_or} its two operands the other way round, so the answer
+     * starts from {@code e}, keeps {@code e}'s order, and lets the entries of {@code d} override — the order
+     * the two dictionaries were asked, not the order they were written.
+     */
+    private static PyObject merged(PyObject[] args) {
+        return args[0].binaryOp(BinaryOp.OR, args[1]);
+    }
+
+    private static PyObject reflectedMerge(PyObject[] args) {
+        return args[1].binaryOp(BinaryOp.OR, args[0]);
+    }
+
+    /** {@code nb_inplace_or}: the receiver, merged into, and handed back as the same dictionary. */
+    private static PyObject mergedInPlace(PyObject[] args) {
+        return args[0].inplaceOp(BinaryOp.OR, args[1]);
+    }
+
+    /**
+     * {@code list(iterable)} as a slot wrapper: the same one argument the constructor takes, read as the slot
+     * takes it.
+     *
+     * <p>{@code list___init___impl} parses the argument, empties the receiver and then extends it, so the
+     * iterable is read <em>after</em> anything was thrown away — which is why {@code l.__init__(l)} is an
+     * empty list where {@code l.extend(l)} doubles one, and why {@code l.__init__(5)} refuses and still
+     * leaves an empty list behind. The two refusals come first, so a wrong count changes nothing.
      */
     private static PyObject listInit(PyObject[] args, String[] kwNames, String qualified) {
         PyList list = (PyList) args[0];
-        List<PyObject> source = Constructors.listed(tail(args, kwNames), kwNames);
-        list.replace(source);
+        list.initialized(Constructors.listed(tail(args, kwNames), kwNames));
         return PyNone.INSTANCE;
     }
 
@@ -2245,10 +2358,14 @@ final class TypeDict {
     /**
      * {@code wrapperdescr_call}'s four gates, before a slot wrapper runs.
      *
-     * <p>Only the slots that count their arguments are checked at all: {@code tp_init} and {@code tp_call}
-     * hand the whole argument list, keywords included, to the slot they wrap, which is why
-     * {@code object.__init__(3, x=1)} answers {@code None} while {@code type.__init__(A, x=1)} is refused
-     * by the count the slot itself makes.
+     * <p>Two of the four gates run whatever slot is being called, and the other two only for the slots that
+     * count their arguments. {@code tp_init} and {@code tp_call} hand the whole argument list, keywords
+     * included, to the slot they wrap, so their own wrappers never complain about how the call was written
+     * or how long the list is: {@code object.__init__(3, x=1)} answers {@code None} and
+     * {@code type.__init__(A, x=1)} is refused by the count the slot itself makes. What they do not escape
+     * is the emptiness and the receiver check, which {@code wrapperdescr_call} runs before it has worked
+     * out which slot it is calling — {@code dict.__dict__['__init__'](3)} says the {@code int} is not a
+     * {@code dict} rather than reaching the {@code dict_init} that would cast it.
      *
      * <p>The order of the rest is visible and not arbitrary: the receiver comes first, because
      * {@code bytes.__dict__['__len__'](3, x=1)} complains about the {@code int} rather than about the
@@ -2264,10 +2381,6 @@ final class TypeDict {
      */
     private static void wrapperCall(
             PyType declaring, String name, PyObject[] args, String[] kwNames) {
-        int extra = slotExtra(name);
-        if (extra < 0) {
-            return;
-        }
         if (Arguments.positional(args, kwNames) < 1) {
             throw Slots.typeError(
                     "descriptor '%s' of '%s' object needs an argument", name, declaring.name());
@@ -2276,6 +2389,10 @@ final class TypeDict {
             throw Slots.typeError(
                     "descriptor '%s' requires a '%s' object but received a '%s'",
                     name, declaring.name(), args[0].getType().name());
+        }
+        int extra = slotExtra(name);
+        if (extra < 0) {
+            return;
         }
         Arguments.noWrapperKeywords(name, kwNames);
         slotArity(name, extra, Arguments.positional(args, kwNames) - 1);
