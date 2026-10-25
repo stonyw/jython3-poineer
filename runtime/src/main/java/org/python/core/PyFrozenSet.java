@@ -15,6 +15,7 @@ import java.util.Set;
  */
 public final class PyFrozenSet extends PySet {
 
+    /** The one value this runtime keeps for an empty frozen set, which no Python program ever reads. */
     public static final PyFrozenSet EMPTY = new PyFrozenSet(new LinkedHashSet<>());
 
     PyFrozenSet(Set<PyObject> items) {
@@ -32,6 +33,22 @@ public final class PyFrozenSet extends PySet {
         return set;
     }
 
+    /**
+     * {@code frozenset(iterable)} at Java level, which is what makes the constructor idempotent.
+     *
+     * <p>A frozenset handed to its own type comes back as the same value rather than a copy of it, because
+     * there is nothing a copy could hold that the original does not — {@code frozenset(f) is f} is true. An
+     * empty call is the exception to the rule that no fresh value is made: {@code frozenset() is
+     * frozenset()} is false, because the answer is a new value of zero size rather than a shared one.
+     */
+    static PyFrozenSet collected(PyObject iterable) {
+        if (iterable != null && iterable.getType() == PyType.FROZENSET) {
+            return (PyFrozenSet) iterable;
+        }
+        PyFrozenSet set = new PyFrozenSet(new LinkedHashSet<>());
+        return iterable == null ? set : (PyFrozenSet) set.update(iterable);
+    }
+
     @Override
     protected PySet emptyLike() {
         return new PyFrozenSet(new LinkedHashSet<>());
@@ -41,6 +58,12 @@ public final class PyFrozenSet extends PySet {
     @Override
     protected boolean mutable() {
         return false;
+    }
+
+    /** {@code frozenset.copy()}: the receiver, since a copy of an immutable value is the value. */
+    @Override
+    PySet copy() {
+        return this;
     }
 
     /** {@code frozenset({1, 2})}, and {@code frozenset()} with nothing in it. */
@@ -56,11 +79,18 @@ public final class PyFrozenSet extends PySet {
      */
     @Override
     public long hash() {
+        return contentHash(items);
+    }
+
+    /** The same mix over any collection of values, which is how a set with no hash of its own is found. */
+    static long contentHash(Iterable<PyObject> elements) {
         long hash = 0;
-        for (PyObject element : items) {
+        int size = 0;
+        for (PyObject element : elements) {
             hash ^= shuffle(element.hash());
+            size++;
         }
-        hash ^= (items.size() + 1L) * 1927868237L;
+        hash ^= (size + 1L) * 1927868237L;
         hash ^= (hash >>> 11) ^ (hash >>> 25);
         hash = hash * 69069L + 907133923L;
         // -1 means "no hash" to CPython, so it is replaced rather than returned.

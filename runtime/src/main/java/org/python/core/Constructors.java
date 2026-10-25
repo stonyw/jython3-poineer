@@ -76,10 +76,10 @@ final class Constructors {
             return PyList.of(iterable(args, keywordNames, "list").toArray(new PyObject[0]));
         }
         if (type == PyType.SET) {
-            return PySet.of(iterable(args, keywordNames, "set").toArray(new PyObject[0]));
+            return PySet.collected(single(args, keywordNames, "set"));
         }
         if (type == PyType.FROZENSET) {
-            return PyFrozenSet.of(iterable(args, keywordNames, "frozenset").toArray(new PyObject[0]));
+            return PyFrozenSet.collected(single(args, keywordNames, "frozenset"));
         }
         if (type == PyType.DICT) {
             return mapping(args, keywordNames);
@@ -601,6 +601,20 @@ final class Constructors {
             return List.of();
         }
         return materialise(args[0]);
+    }
+
+    /**
+     * The one argument a set constructor is given, handed over rather than walked out here.
+     *
+     * <p>{@code set_vectorcall} and {@code frozenset_vectorcall} make the same two refusals and then pass
+     * the argument straight to {@code make_new_set}, which adds to the value it is building as it goes. The
+     * difference shows on the way in — {@code set(x=1)} is refused before anything is counted — and leaves
+     * nothing observable behind, since a set abandoned half-filled is never seen again.
+     */
+    private static PyObject single(PyObject[] args, String[] kwNames, String name) {
+        refuseKeywords(name, kwNames);
+        Arguments.atMost(name, args, kwNames, 1);
+        return args.length == 0 ? null : args[0];
     }
 
     /**

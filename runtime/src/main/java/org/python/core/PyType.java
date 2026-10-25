@@ -154,10 +154,26 @@ public class PyType extends PyObject {
             builtin("tuple").flagged(SEQUENCE | MATCH_SELF).documented(TUPLE_DOC);
     public static final PyType LIST =
             builtin("list").flagged(SEQUENCE | MATCH_SELF).documented(LIST_DOC);
+    /**
+     * The two sentences {@code set_doc} and {@code frozenset_doc} write for the pair of unique values.
+     *
+     * <p>Each is one line once {@code _PyType_DocWithoutSignature} has thrown away the {@code
+     * set(iterable=(), /)} header and the {@code --} rule the clinic block puts in front of them, and they
+     * are the only two type sentences here that promise nothing about order: a set's order is an artefact
+     * of the table it is stored in, which is why everything a program can check about one is a count, a
+     * membership or a content comparison and never a position.
+     */
+    private static final String SET_DOC = "Build an unordered collection of unique elements.";
+
+    private static final String FROZENSET_DOC =
+            "Build an immutable unordered collection of unique elements.";
+
     public static final PyType DICT =
             builtin("dict").flagged(MAPPING | MATCH_SELF).documented(DICT_DOC);
-    public static final PyType SET = builtin("set").flagged(MATCH_SELF);
-    public static final PyType FROZENSET = builtin("frozenset").flagged(MATCH_SELF);
+    public static final PyType SET =
+            builtin("set").flagged(MATCH_SELF).documented(SET_DOC);
+    public static final PyType FROZENSET =
+            builtin("frozenset").flagged(MATCH_SELF).documented(FROZENSET_DOC);
     public static final PyType SLICE = builtin("slice");
     public static final PyType CODE = builtin("code");
     /**

@@ -1,6 +1,7 @@
 package org.python.core;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -42,7 +43,8 @@ public class PySet extends PyObject {
 
     /** {@code set(iterable)} at Java level, which is how a view's reflected operator builds its result. */
     static PySet collected(PyObject iterable) {
-        return empty().update(iterable);
+        PySet set = empty();
+        return iterable == null ? set : set.update(iterable);
     }
 
     /** The element count for Java; {@link #length()} is the Python slot. */
@@ -68,7 +70,7 @@ public class PySet extends PyObject {
     /** {@code x in s}: a hash lookup, so a value that will not hash is refused, not missed. */
     @Override
     public PyObject contains(PyObject element) {
-        return PyBool.of(holds(items, element));
+        return PyBool.of(lookedUp(items, element));
     }
 
     @Override
@@ -78,13 +80,18 @@ public class PySet extends PyObject {
 
     /**
      * Subset ordering, with {@code <} a <em>proper</em> subset, so {@code {1} < {1}} is false rather
-     * than an error. Anything that is not a set is refused by both sides, which {@code Slots} reports
-     * in its own two-type words.
+     * than an error.
+     *
+     * <p>Every ordering declines a value that is not a set, {@code ==} and {@code !=} included, which is
+     * what {@code set.__dict__['__eq__']} hands back for a list where {@code object}'s slot would have
+     * answered the identity question. The operator then tries the reflected side, finds nothing there
+     * either, and falls back on identity — so {@code {1} == [1]} is false while the slot reports that it
+     * took no part in the decision.
      */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
         if (!(other instanceof PySet set)) {
-            return super.richCompare(cmp, other);
+            return PyNotImplemented.INSTANCE;
         }
         return switch (cmp) {
             case EQ -> PyBool.of(eq(set));
@@ -103,10 +110,10 @@ public class PySet extends PyObject {
             return PyNotImplemented.INSTANCE;
         }
         return switch (op) {
-            case OR -> copy().update(other);
-            case SUB -> copy().differenceUpdate(other);
-            case AND -> copy().intersectionUpdate(other);
-            case XOR -> copy().symmetricDifferenceUpdate(other);
+            case OR -> detached().update(other);
+            case SUB -> detached().differenceUpdate(other);
+            case AND -> detached().intersectionUpdate(other);
+            case XOR -> detached().symmetricDifferenceUpdate(other);
             default -> PyNotImplemented.INSTANCE;
         };
     }
@@ -171,6 +178,24 @@ public class PySet extends PyObject {
             add(element);
         }
         return this;
+    }
+
+    /**
+     * {@code set_init} over a value that already has contents: emptied, then filled from the argument.
+     *
+     * <p>The clear comes first and the argument is read after it, which is what makes {@code s.__init__(s)}
+     * an empty set where {@code s.union(s)} holds everything it started with — and what makes a refused
+     * {@code s.__init__(5)} leave an empty set behind rather than the one it was called on. Only a set
+     * that had anything in it is emptied, because {@code self->fill} is the test; a fresh value keeps its
+     * hash slot unset instead of being cleared, and nothing a program can see tells the two apart.
+     */
+    void initialized(PyObject iterable) {
+        if (!items.isEmpty()) {
+            items.clear();
+        }
+        if (iterable != null) {
+            update(iterable);
+        }
     }
 
     /** {@code s.difference_update(other)}: everything the other side holds, thrown away. */
@@ -307,8 +332,18 @@ public class PySet extends PyObject {
         return false;
     }
 
-    /** {@code s.copy()}, which CPython makes a set of the same type as the original. */
+    /**
+     * {@code s.copy()}: the same values in a value of the same kind, which a mutable set has to be given.
+     *
+     * <p>A frozenset's version answers with the receiver itself, because nothing can be added to it and so
+     * {@code f.copy() is f} — the one method of this family whose answer is not a fresh value.
+     */
     PySet copy() {
+        return detached();
+    }
+
+    /** The receiver's values, in a fresh value of the same kind: what every operator answers with. */
+    private PySet detached() {
         PySet out = emptyLike();
         out.items.addAll(items);
         return out;
@@ -334,6 +369,11 @@ public class PySet extends PyObject {
         PyObject element = items.iterator().next();
         items.remove(element);
         return element;
+    }
+
+    /** {@code s.__reduce__()}: the type, the values as a list, and no state to restore. */
+    private PyObject reduced() {
+        return PyTuple.of(getType(), PyTuple.of(PyList.of(elements())), PyNone.INSTANCE);
     }
 
     /** The elements as an array, for a walk that must not see a mutation. */
@@ -375,12 +415,60 @@ public class PySet extends PyObject {
         }
     }
 
-    /** A lookup by hash, with the set's own wording, as {@code in} and {@code discard} use it. */
+    /**
+     * A lookup by hash, with the set's own wording, as {@code isdisjoint} and {@code issuperset} ask it.
+     *
+     * <p>Those two walk the other side with {@code set_contains_key}, which wraps a refusal but asks the
+     * question once — so a set handed to {@code isdisjoint} is refused even where {@code in} would have
+     * found it, and {@code {frozenset({1})}.isdisjoint([{1}])} is an error rather than a {@code False}.
+     */
     private static boolean holds(Set<PyObject> target, PyObject element) {
+        asked(target, element, false);
         try {
             return target.contains(element);
         } catch (PyRaise refusal) {
             throw unhashable(element, refusal);
+        }
+    }
+
+    /**
+     * The same lookup as {@code set_contains_lock_held} makes, which is the one place a set is asked
+     * twice.
+     */
+    private static boolean lookedUp(Set<PyObject> target, PyObject element) {
+        asked(target, element, true);
+        try {
+            return target.contains(element);
+        } catch (PyRaise refusal) {
+            if (!hashesAsFrozenSet(element, refusal)) {
+                throw unhashable(element, refusal);
+            }
+            return shares(target, element);
+        }
+    }
+
+    /**
+     * The hash a lookup takes before it knows whether there is anything to find.
+     *
+     * <p>{@code set_contains_key} asks the element to hash first, so an unhashable value tested against a
+     * set with nothing in it is refused in the set's own words rather than reported as missing — and a
+     * {@code __hash__} that raises is heard raising. A {@link LinkedHashSet} with no entries answers
+     * {@code contains} without touching its key, so this asks when there is no map left to ask it, and
+     * {@code retry} says whether the answer may be the second look a set gets: {@code isdisjoint} and
+     * {@code issuperset} use the plain {@code set_contains_key}, which has none, while {@code in} wraps the
+     * refusal and asks again as a frozenset. A removal needs neither: {@code remove} hashes its key even
+     * with nothing to remove from.
+     */
+    private static void asked(Set<PyObject> target, PyObject element, boolean retry) {
+        if (!target.isEmpty()) {
+            return;
+        }
+        try {
+            element.hash();
+        } catch (PyRaise refusal) {
+            if (!retry || !hashesAsFrozenSet(element, refusal)) {
+                throw unhashable(element, refusal);
+            }
         }
     }
 
@@ -389,8 +477,49 @@ public class PySet extends PyObject {
         try {
             return target.remove(element);
         } catch (PyRaise refusal) {
-            throw unhashable(element, refusal);
+            if (!hashesAsFrozenSet(element, refusal)) {
+                throw unhashable(element, refusal);
+            }
+            return throwOut(target, element);
         }
+    }
+
+    /**
+     * The second look CPython takes at a set handed to a set: {@code {1} in {frozenset({1})}} is true, and
+     * so is the same question asked of a {@code frozenset} made from a set.
+     *
+     * <p>A mutable set has no hash of its own, but its contents hash exactly as the frozenset of those
+     * contents does, and that is the value an element of that shape was filed under. The retry is limited
+     * on both sides: only a <em>set</em> is looked at this way — a list or a dictionary is refused outright —
+     * and only when the refusal was a {@code TypeError}. {@code add} and {@code update} have no second look
+     * at all, which is why the same set that answers {@code in} declines to be filed in one.
+     */
+    private static boolean hashesAsFrozenSet(PyObject element, PyRaise refusal) {
+        return element instanceof PySet set
+                && set.mutable()
+                && refusal.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR);
+    }
+
+    /** What the second look finds, which equality decides rather than the hash that was tried. */
+    private static boolean shares(Set<PyObject> target, PyObject element) {
+        for (PyObject held : target) {
+            if (element.equals(held)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The second look's removal, which cannot ask the key for a hash any more than the look can. */
+    private static boolean throwOut(Set<PyObject> target, PyObject element) {
+        Iterator<PyObject> walk = target.iterator();
+        while (walk.hasNext()) {
+            if (element.equals(walk.next())) {
+                walk.remove();
+                return true;
+            }
+        }
+        return false;
     }
 
     // --- iteration -----------------------------------------------------------------------
@@ -433,7 +562,13 @@ public class PySet extends PyObject {
         PyObject apply(PySet self, PyObject[] others);
     }
 
-    /** A {@code METH_VARARGS} method: keywords refused first, then nothing about the count. */
+    /**
+     * A {@code METH_VARARGS} method: keywords refused, and nothing else counted.
+     *
+     * <p>{@code *others: array} in CPython's clinic is a method that never complains about a count, so
+     * {@code s.union()} is a copy, {@code s.update()} changes nothing, and the only refusal a keyword
+     * brings is the one written before the argument tuple is handed over.
+     */
     private static PyBoundMethod.Body varargs(String qualified, Many body) {
         return (self, args, kwNames) -> {
             noKeywords(qualified, kwNames);
@@ -441,90 +576,192 @@ public class PySet extends PyObject {
         };
     }
 
-    /** The set's own table, with the frozen one its same methods minus the ones that change anything. */
+    /**
+     * The two method tables, in the order {@code set_methods} and {@code frozenset_methods} write them.
+     *
+     * <p>{@code frozenset_methods} is that list with the eight names that change a value taken out of it,
+     * and the two rows it declares for itself — {@code __contains__} and {@code copy} — say the same things
+     * in the same words as the set's: CPython's clinic blocks for {@code frozenset.copy} and {@code set.copy}
+     * carry one sentence, so a frozenset's {@code copy().__doc__} calls the copy a set. Every other shared
+     * name is the same {@code SET_*_METHODDEF} in both lists, which is why the two types' refusals differ
+     * only in the type they name.
+     *
+     * <p>Three of the rows are slots that CPython declares as methods. {@code __contains__} is marked
+     * {@code @coexist}, so it keeps the {@code sq_contains} place in the dictionary that the sequence
+     * protocol would otherwise have while reading as a {@code method_descriptor} and counting its argument
+     * as a method does; {@code __reduce__} and {@code __sizeof__} are in no protocol at all. The four
+     * operators are not here: a set's {@code &}, {@code |}, {@code -} and {@code ^} are filed as slot
+     * wrappers by {@link TypeDict}, which is where the difference between {@code s.union(t)} and {@code s |
+     * t} — one takes any iterable, the other only a set — is written down.
+     */
     private static Members table(PyType type, boolean mutable) {
+        String who = type.name();
         Members methods = Members.of(type);
         if (mutable) {
             methods
-                    .addOne("add", (self, element) -> {
-                        ((PySet) self).add(element);
-                        return PyNone.INSTANCE;
-                    })
-                    .addOne("discard", (self, element) -> {
+                    .addOne(
+                            "add",
+                            "Add an element to a set.\n"
+                                    + "\n"
+                                    + "This has no effect if the element is already present.",
+                            (self, element) -> {
+                                ((PySet) self).add(element);
+                                return PyNone.INSTANCE;
+                            })
+                    .addNoArgument(
+                            "clear",
+                            "Remove all elements from this set.",
+                            self -> {
+                                ((PySet) self).items.clear();
+                                return PyNone.INSTANCE;
+                            });
+        }
+        methods
+                .addOne(
+                        "__contains__",
+                        "x.__contains__(y) <==> y in x.",
+                        (self, element) -> self.contains(element))
+                .addNoArgument(
+                        "copy", "Return a shallow copy of a set.", self -> ((PySet) self).copy());
+        if (mutable) {
+            methods.addOne(
+                    "discard",
+                    "Remove an element from a set if it is a member.\n"
+                            + "\n"
+                            + "Unlike set.remove(), the discard() method does not raise\n"
+                            + "an exception when an element is missing from the set.",
+                    (self, element) -> {
                         ((PySet) self).discard(element);
-                        return PyNone.INSTANCE;
-                    })
-                    .addOne("remove", (self, element) -> {
-                        ((PySet) self).removed(element);
-                        return PyNone.INSTANCE;
-                    })
-                    .addNoArgument("pop", self -> ((PySet) self).popped())
-                    .addNoArgument("clear", self -> {
-                        ((PySet) self).items.clear();
                         return PyNone.INSTANCE;
                     });
         }
         methods
-                .addNoArgument("copy", self -> ((PySet) self).copy())
-                .add("union", varargs(type.name() + ".union()",
-                        (self, others) -> {
-                            PySet out = self.copy();
-                            for (PyObject other : others) {
-                                out.update(other);
-                            }
-                            return out;
-                        }))
-                .add("intersection", varargs(type.name() + ".intersection()",
-                        (self, others) -> {
-                            PySet out = self.copy();
-                            for (PyObject other : others) {
-                                out.intersectionUpdate(other);
-                            }
-                            return out;
-                        }))
-                .add("difference", varargs(type.name() + ".difference()",
-                        (self, others) -> {
-                            PySet out = self.copy();
-                            for (PyObject other : others) {
-                                out.differenceUpdate(other);
-                            }
-                            return out;
-                        }))
-                .addOne("issubset", (self, other) -> ((PySet) self).isSubset(other))
-                .addOne("issuperset", (self, other) -> ((PySet) self).isSuperset(other));
+                .add(
+                        "difference",
+                        "Return a new set with elements in the set that are not in the others.",
+                        varargs(
+                                who + ".difference()",
+                                (self, others) -> {
+                                    PySet out = self.detached();
+                                    for (PyObject other : others) {
+                                        out.differenceUpdate(other);
+                                    }
+                                    return out;
+                                }))
+                .add(
+                        "intersection",
+                        "Return a new set with elements common to the set and all others.",
+                        varargs(
+                                who + ".intersection()",
+                                (self, others) -> {
+                                    PySet out = self.detached();
+                                    for (PyObject other : others) {
+                                        out.intersectionUpdate(other);
+                                    }
+                                    return out;
+                                }))
+                .addOne(
+                        "isdisjoint",
+                        "Return True if two sets have a null intersection.",
+                        (self, other) -> ((PySet) self).isDisjoint(other))
+                .addOne(
+                        "issubset",
+                        "Report whether another set contains this set.",
+                        (self, other) -> ((PySet) self).isSubset(other))
+                .addOne(
+                        "issuperset",
+                        "Report whether this set contains another set.",
+                        (self, other) -> ((PySet) self).isSuperset(other));
+        methods.addNoArgument(
+                "__reduce__",
+                "Return state information for pickling.",
+                self -> ((PySet) self).reduced());
         if (mutable) {
             methods
-                    .add("update", varargs(type.name() + ".update()",
-                            (self, others) -> {
-                                for (PyObject other : others) {
-                                    self.update(other);
-                                }
+                    .addNoArgument(
+                            "pop",
+                            "Remove and return an arbitrary set element.\n"
+                                    + "\n"
+                                    + "Raises KeyError if the set is empty.",
+                            self -> ((PySet) self).popped())
+                    .addOne(
+                            "remove",
+                            "Remove an element from a set; it must be a member.\n"
+                                    + "\n"
+                                    + "If the element is not a member, raise a KeyError.",
+                            (self, element) -> {
+                                ((PySet) self).removed(element);
                                 return PyNone.INSTANCE;
-                            }))
-                    .add("intersection_update", varargs(type.name() + ".intersection_update()",
-                            (self, others) -> {
-                                for (PyObject other : others) {
-                                    self.intersectionUpdate(other);
-                                }
-                                return PyNone.INSTANCE;
-                            }))
-                    .add("difference_update", varargs(type.name() + ".difference_update()",
-                            (self, others) -> {
-                                for (PyObject other : others) {
-                                    self.differenceUpdate(other);
-                                }
-                                return PyNone.INSTANCE;
-                            }));
+                            });
         }
-        methods.addOne("symmetric_difference",
-                (self, other) -> ((PySet) self).copy().symmetricDifferenceUpdate(other));
+        methods.addNoArgument(
+                "__sizeof__",
+                "S.__sizeof__() -> size of S in memory, in bytes.",
+                self -> PyInt.of(0));
         if (mutable) {
-            methods.addOne("symmetric_difference_update", (self, other) -> {
-                ((PySet) self).symmetricDifferenceUpdate(other);
-                return PyNone.INSTANCE;
-            });
+            methods.addOne(
+                    "symmetric_difference_update",
+                    "Update the set, keeping only elements found in either set, but not in both.",
+                    (self, other) -> {
+                        ((PySet) self).symmetricDifferenceUpdate(other);
+                        return PyNone.INSTANCE;
+                    });
         }
-        return methods.addOne("isdisjoint", (self, other) -> ((PySet) self).isDisjoint(other));
+        methods
+                .addOne(
+                        "symmetric_difference",
+                        "Return a new set with elements in either the set or other but not both.",
+                        (self, other) ->
+                                ((PySet) self).detached().symmetricDifferenceUpdate(other))
+                .add(
+                        "union",
+                        "Return a new set with elements from the set and all others.",
+                        varargs(
+                                who + ".union()",
+                                (self, others) -> {
+                                    PySet out = self.detached();
+                                    for (PyObject other : others) {
+                                        out.update(other);
+                                    }
+                                    return out;
+                                }));
+        if (mutable) {
+            methods
+                    .add(
+                            "update",
+                            "Update the set, adding elements from all others.",
+                            varargs(
+                                    who + ".update()",
+                                    (self, others) -> {
+                                        for (PyObject other : others) {
+                                            self.update(other);
+                                        }
+                                        return PyNone.INSTANCE;
+                                    }))
+                    .add(
+                            "difference_update",
+                            "Update the set, removing elements found in others.",
+                            varargs(
+                                    who + ".difference_update()",
+                                    (self, others) -> {
+                                        for (PyObject other : others) {
+                                            self.differenceUpdate(other);
+                                        }
+                                        return PyNone.INSTANCE;
+                                    }))
+                    .add(
+                            "intersection_update",
+                            "Update the set, keeping only elements found in it and all others.",
+                            varargs(
+                                    who + ".intersection_update()",
+                                    (self, others) -> {
+                                        for (PyObject other : others) {
+                                            self.intersectionUpdate(other);
+                                        }
+                                        return PyNone.INSTANCE;
+                                    }));
+        }
+        return methods;
     }
 
     private static final Members METHODS = table(PyType.SET, true);

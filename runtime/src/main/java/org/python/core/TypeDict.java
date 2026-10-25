@@ -145,6 +145,27 @@ final class TypeDict {
     private static final String IOR_DOC = "Return self|=value.";
 
     /**
+     * The six sentences the {@code PyNumberMethods} half of a set's struct carries.
+     *
+     * <p>{@code set} and {@code frozenset} are the only types here whose operators are number slots rather
+     * than sequence or mapping ones, which is why a set's dictionary has {@code __sub__} where a list's has
+     * {@code __add__} — {@code -} is {@code nb_subtract} for a set and nothing at all for a list. The four
+     * in-place slots say {@code Return} where {@code list}'s {@code __iadd__} says {@code Implement}: the
+     * sentence comes from the slot's own row in {@code slotdefs}, and only the sequence protocol's
+     * {@code sq_inplace_*} rows were worded that way.
+     */
+    private static final String SUB_DOC = "Return self-value.";
+
+    private static final String RSUB_DOC = "Return value-self.";
+    private static final String AND_DOC = "Return self&value.";
+    private static final String RAND_DOC = "Return value&self.";
+    private static final String XOR_DOC = "Return self^value.";
+    private static final String RXOR_DOC = "Return value^self.";
+    private static final String ISUB_DOC = "Return self-=value.";
+    private static final String IAND_DOC = "Return self&=value.";
+    private static final String IXOR_DOC = "Return self^=value.";
+
+    /**
      * The sentences a value type's own slots carry, which {@code object} has none of.
      *
      * <p>Each is the {@code docstring} of one {@code PySlotDef} in the type's {@code tp_as_number} or
@@ -179,14 +200,14 @@ final class TypeDict {
     private static final String IMUL_DOC = "Implement self*=value.";
 
     /**
-     * The three sentences {@code list}, {@code tuple} and {@code dict} write over {@code
-     * __class_getitem__}.
+     * The five sentences the collection types write over {@code __class_getitem__}.
      *
-     * <p>All three are PEP 585 declarations rather than {@code PyMethodDef} docstrings, and the tuple's goes
+     * <p>All five are PEP 585 declarations rather than {@code PyMethodDef} docstrings, and the tuple's goes
      * on for four paragraphs because a tuple's arguments are per position: it has to say what {@code
-     * tuple[int, str]} means before it can say what {@code tuple[int, ...]} means instead. The other two run
-     * to one line each, and {@code dict}'s is the only one of the three that counts — a mapping is generic
-     * over two types because it has two places for a value to sit.
+     * tuple[int, str]} means before it can say what {@code tuple[int, ...]} means instead. The other four run
+     * to one line each, and {@code dict}'s is the only one of them that counts — a mapping is generic over
+     * two types because it has two places for a value to sit. The two sets spell the same thing out in the
+     * plural, because a set holds any number of elements of one type rather than one element per position.
      */
     private static final String LIST_CLASS_GETITEM_DOC =
             "lists are generic over the type of their contents";
@@ -202,6 +223,12 @@ final class TypeDict {
 
     private static final String DICT_CLASS_GETITEM_DOC =
             "dicts are generic over two types, signifying (respectively) the types of their keys and values";
+
+    private static final String SET_CLASS_GETITEM_DOC =
+            "sets are generic over the type of their elements";
+
+    private static final String FROZENSET_CLASS_GETITEM_DOC =
+            "frozensets are generic over the type of their elements";
 
     /** {@code type.__new__(mcs, name, bases, dict)}: the metaclass idiom, and no descriptor at all. */
     static final Member NEW =
@@ -442,6 +469,14 @@ final class TypeDict {
         }
         if (owner == PyType.DICT) {
             dictTable(into);
+            return;
+        }
+        if (owner == PyType.SET) {
+            setTable(into);
+            return;
+        }
+        if (owner == PyType.FROZENSET) {
+            frozenSetTable(into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -838,6 +873,197 @@ final class TypeDict {
                 DICT_CLASS_GETITEM_DOC,
                 (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
         table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code set}'s own dictionary: the forty-six names a mutable collection of uniques files.
+     *
+     * <p>Twenty-two of them are slot wrappers, and they are the reason this table looks unlike the other
+     * collections'. A set's operators are {@code PyNumberMethods} entries — {@code nb_subtract} for {@code
+     * -}, {@code nb_and} for {@code &}, {@code nb_or} for {@code |}, {@code nb_xor} for {@code ^}, each with
+     * a reflected twin and, for the mutable half of the family, an in-place one — so a set files
+     * {@code __sub__} where a list files {@code __add__}, and the four in-place slots sit between the
+     * forward operators and {@code __len__}. {@code __hash__} is filed as the value {@code None}, as for
+     * {@code list} and {@code dict}: a set changes, and {@code hash({1})} is refused by that entry rather
+     * than by a callable.
+     *
+     * <p>{@code __contains__} is the twenty-third name that is not a wrapper. {@code sq_contains} is
+     * {@code set_contains}, and the clinic block beside it is marked {@code @coexist}, so the method writes
+     * over the slot's entry instead of adding a second one: the name keeps its place right after {@code
+     * __len__} while reading as a {@code method_descriptor} and counting its argument in method words
+     * ({@code set.__contains__() takes exactly one argument (0 given)}) rather than in the wrapper's bare
+     * {@code expected 1 argument, got 0}. {@code __reduce__} and {@code __sizeof__} are the other two
+     * methods among the slots' names, and neither is a protocol at all.
+     *
+     * <p>The nineteen method rows after it are {@code set_methods}, which is written in alphabetical order
+     * and so reads as no grouping at all: {@code add} and {@code clear} come first, {@code pop} and {@code
+     * remove} and {@code update} are scattered among them, and the four {@code *_update} names are not
+     * together. {@code __init__} is a slot here although {@code frozenset} leaves it inherited, and
+     * {@code set.__new__} is the one constructor in this family that ignores its argument outright.
+     */
+    private static void setTable(PyDict into) {
+        PyType owner = PyType.SET;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::setsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.value("__hash__", PyNone.INSTANCE);
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__init__", INIT_DOC, TypeDict::setInit);
+        table.wrapper("__sub__", SUB_DOC, operating(BinaryOp.SUB));
+        table.wrapper("__rsub__", RSUB_DOC, reflectedOperating(BinaryOp.SUB));
+        table.wrapper("__and__", AND_DOC, operating(BinaryOp.AND));
+        table.wrapper("__rand__", RAND_DOC, reflectedOperating(BinaryOp.AND));
+        table.wrapper("__xor__", XOR_DOC, operating(BinaryOp.XOR));
+        table.wrapper("__rxor__", RXOR_DOC, reflectedOperating(BinaryOp.XOR));
+        table.wrapper("__or__", OR_DOC, operating(BinaryOp.OR));
+        table.wrapper("__ror__", ROR_DOC, reflectedOperating(BinaryOp.OR));
+        table.wrapper("__isub__", ISUB_DOC, operatingInPlace(BinaryOp.SUB));
+        table.wrapper("__iand__", IAND_DOC, operatingInPlace(BinaryOp.AND));
+        table.wrapper("__ixor__", IXOR_DOC, operatingInPlace(BinaryOp.XOR));
+        table.wrapper("__ior__", IOR_DOC, operatingInPlace(BinaryOp.OR));
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.named("__contains__");
+        table.named(
+                "add", "clear", "copy", "discard", "difference", "difference_update", "intersection",
+                "intersection_update", "isdisjoint", "issubset", "issuperset", "pop", "__reduce__",
+                "remove", "__sizeof__", "symmetric_difference", "symmetric_difference_update", "union",
+                "update");
+        table.classMethod(
+                "__class_getitem__",
+                SET_CLASS_GETITEM_DOC,
+                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code frozenset}'s own dictionary: the thirty-two names an immutable one files.
+     *
+     * <p>The same table less the eight names that change a value — {@code add}, {@code clear}, {@code
+     * discard}, {@code pop}, {@code remove}, and the three {@code *_update} methods the in-place slots call —
+     * and less {@code __init__}, which {@code frozenset} leaves null so that {@code f.__init__(1, 2)} is the
+     * inherited {@code object.__init__} ignoring extras rather than a refusal. Its {@code __hash__} is the
+     * slot, not {@code None}: {@code hash(frozenset())} answers, and that single difference is the whole of
+     * why a frozenset is a dictionary key and a set is not. The four in-place operators are absent from the
+     * number half as well, which is why {@code f |= other} names a new frozenset instead of complaining.
+     *
+     * <p>Two rows are the frozenset's own {@code PyMethodDef}s rather than the shared {@code SET_*} ones —
+     * {@code __contains__} and {@code copy} — and both carry the sentence the set's version carries, because
+     * CPython's clinic blocks repeat it verbatim. The ten method rows are {@code frozenset_methods}, and the
+     * one name a reader looks for and does not find is {@code update}: a frozenset has no way to be given
+     * more values, only the eight that return a set with them in.
+     */
+    private static void frozenSetTable(PyDict into) {
+        PyType owner = PyType.FROZENSET;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::frozenSetsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__sub__", SUB_DOC, operating(BinaryOp.SUB));
+        table.wrapper("__rsub__", RSUB_DOC, reflectedOperating(BinaryOp.SUB));
+        table.wrapper("__and__", AND_DOC, operating(BinaryOp.AND));
+        table.wrapper("__rand__", RAND_DOC, reflectedOperating(BinaryOp.AND));
+        table.wrapper("__xor__", XOR_DOC, operating(BinaryOp.XOR));
+        table.wrapper("__rxor__", RXOR_DOC, reflectedOperating(BinaryOp.XOR));
+        table.wrapper("__or__", OR_DOC, operating(BinaryOp.OR));
+        table.wrapper("__ror__", ROR_DOC, reflectedOperating(BinaryOp.OR));
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.named("__contains__");
+        table.named(
+                "copy", "difference", "intersection", "isdisjoint", "issubset", "issuperset",
+                "__reduce__", "__sizeof__", "symmetric_difference", "union");
+        table.classMethod(
+                "__class_getitem__",
+                FROZENSET_CLASS_GETITEM_DOC,
+                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code set_new}: the class is checked and the rest of the call is thrown away.
+     *
+     * <p>{@code set_new} hands {@code make_new_set} a null iterable whatever it was given, so {@code
+     * set.__new__(set, 'ab')} is an empty set where {@code set('ab')} is two characters, and {@code
+     * set.__new__(set, x=1)} answers without so much as refusing the keyword. It is the only constructor in
+     * this family that ignores an argument outright: {@code list_new} and {@code dict_new} still read one to
+     * size the value, and {@code frozenset_new} parses it because a frozen value has to be full before it
+     * can be hashed.
+     */
+    private static PyObject setsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.SET, args, kwNames);
+        return PySet.empty();
+    }
+
+    /**
+     * {@code frozenset_new}: one argument, no keywords, and the argument read by the value being made.
+     *
+     * <p>The two refusals come in CPython's order and name different things. Keywords are refused for the
+     * class whose dictionary holds the slot — and only for a class that does not bring its own {@code
+     * tp_init}, which is what lets a subclass of {@code frozenset} have an initializer of its own — while
+     * the count is unpacked against {@code type->tp_name}, the class that was handed over. What is left is
+     * {@code make_new_frozenset}, whose one extra rule is that a frozenset handed to its own type comes back
+     * as itself.
+     */
+    private static PyObject frozenSetsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.FROZENSET, args, kwNames);
+        Arguments.noKeywords("frozenset()", kwNames);
+        PyObject[] rest = tail(args, kwNames);
+        Arguments.atMost(PyType.FROZENSET.name(), rest, kwNames, 1);
+        return PyFrozenSet.collected(rest.length == 0 ? null : rest[0]);
+    }
+
+    /**
+     * {@code set_init}: emptied first, then filled, in that order.
+     *
+     * <p>Both refusals come before anything is touched — the keyword one names the class the slot was
+     * written for and the count one the receiver's own type, because {@code PyArg_UnpackTuple} is handed
+     * {@code Py_TYPE(self)->tp_name}. After them the values already in the set go, which is what makes
+     * {@code s.__init__(s)} an empty set where {@code s.union(s)} holds everything it started with, and
+     * {@code s.__init__(5)} a refusal that still leaves an empty set behind. {@code frozenset} files no such
+     * name: its {@code tp_init} is null, so {@code f.__init__([1])} is {@code object}'s answer of {@code
+     * None} and a frozenset that keeps whatever it had.
+     */
+    private static PyObject setInit(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.noKeywords("set()", kwNames);
+        PyObject[] rest = tail(args, kwNames);
+        Arguments.atMost(args[0].getType().name(), rest, kwNames, 1);
+        ((PySet) args[0]).initialized(rest.length == 0 ? null : rest[0]);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code nb_subtract} and its three siblings, filed as the slots the number protocol copies.
+     *
+     * <p>A set's operators are the only ones here to arrive through {@code tp_as_number}, and they gate on
+     * their operand the way {@code set_sub} does: {@code s - [1]} is a decline, not an iterable error, so
+     * the operator goes on to try the list's own {@code __rsub__} and reports the pair it could not make
+     * work. {@code s.union([1])} takes the same list without complaint, and that is the whole difference
+     * between the method and the slot.
+     */
+    private static Method operating(BinaryOp op) {
+        return (args, kwNames, qualified) -> args[0].binaryOp(op, args[1]);
+    }
+
+    /** {@code RBINSLOT} over the same four C functions, with the operands the other way round. */
+    private static Method reflectedOperating(BinaryOp op) {
+        return (args, kwNames, qualified) -> args[1].binaryOp(op, args[0]);
+    }
+
+    /** {@code nb_inplace_*}: the receiver changed and handed back, which is what {@code s -= t} binds. */
+    private static Method operatingInPlace(BinaryOp op) {
+        return (args, kwNames, qualified) -> args[0].inplaceOp(op, args[1]);
     }
 
     /**
@@ -2700,7 +2926,7 @@ final class TypeDict {
             return switch (shape) {
                 case WRAPPER -> "<slot wrapper '" + name + "' of '" + owner + "' objects>";
                 case METHOD -> "<method '" + name + "' of '" + owner + "' objects>";
-                case CLASSMETHOD -> "<classmethod_descriptor for method '" + name + "'>";
+                case CLASSMETHOD -> "<method '" + name + "' of '" + owner + "' objects>";
                 // CPython names the type of the receiver here, and a class's own type is `type` however
                 // far down the exception hierarchy the static method sits.
                 case RAW -> "<built-in method " + name + " of type object>";

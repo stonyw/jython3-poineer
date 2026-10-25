@@ -296,6 +296,13 @@ final class Members {
         });
     }
 
+    /** The same, with the sentence that {@code PyMethodDef} carries beside it. */
+    Members addOne(String name, String doc, One body) {
+        addOne(name, body);
+        docs.put(name, doc);
+        return this;
+    }
+
     /**
      * A method that takes no receiver: {@code bytes.maketrans}.
      *
