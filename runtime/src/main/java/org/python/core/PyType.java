@@ -106,10 +106,35 @@ public class PyType extends PyObject {
                     + " integers in range(256)\n  - a text string encoded using the specified encoding\n "
                     + " - any object implementing the buffer API.\n  - an integer";
 
+    /**
+     * The two sentences CPython's {@code list_doc} and {@code tuple_doc} write for these types.
+     *
+     * <p>Neither names a constructor the way {@link #STR_DOC} does: a list and a tuple say what they
+     * <em>are</em> — mutable, immutable — and then the one rule about the argument, which is that it has
+     * to be an iterable. Each is a plain string in the type's own dictionary, and each is the reason
+     * {@code list.__doc__} and {@code tuple.__doc__} are not the {@code None} a value type with nothing
+     * to say about itself answers.
+     */
+    private static final String LIST_DOC =
+            "Built-in mutable sequence.\n"
+                    + "\n"
+                    + "If no argument is given, the constructor creates a new empty list.\n"
+                    + "The argument must be an iterable if specified.";
+
+    private static final String TUPLE_DOC =
+            "Built-in immutable sequence.\n"
+                    + "\n"
+                    + "If no argument is given, the constructor returns an empty tuple.\n"
+                    + "If iterable is specified the tuple is initialized from iterable's items.\n"
+                    + "\n"
+                    + "If the argument is a tuple, the return value is the same object.";
+
     public static final PyType STR = builtin("str").flagged(MATCH_SELF).documented(STR_DOC);
     public static final PyType BYTES = builtin("bytes").flagged(MATCH_SELF).documented(BYTES_DOC);
-    public static final PyType TUPLE = builtin("tuple").flagged(SEQUENCE | MATCH_SELF);
-    public static final PyType LIST = builtin("list").flagged(SEQUENCE | MATCH_SELF);
+    public static final PyType TUPLE =
+            builtin("tuple").flagged(SEQUENCE | MATCH_SELF).documented(TUPLE_DOC);
+    public static final PyType LIST =
+            builtin("list").flagged(SEQUENCE | MATCH_SELF).documented(LIST_DOC);
     public static final PyType DICT = builtin("dict").flagged(MAPPING | MATCH_SELF);
     public static final PyType SET = builtin("set").flagged(MATCH_SELF);
     public static final PyType FROZENSET = builtin("frozenset").flagged(MATCH_SELF);
@@ -157,6 +182,18 @@ public class PyType extends PyObject {
     public static final PyType MODULE = builtin("module");
     public static final PyType CELL = builtin("cell");
     public static final PyType ITERATOR = builtin("iterator");
+    /**
+     * What {@code list[int]} is: the one value of a parameterized built-in type this runtime makes.
+     *
+     * <p>It is filed under {@code types} rather than {@code builtins}, which is what CPython's
+     * {@code GaObject} with its {@code tp_name = "types.GenericAlias"} gives it: Python reads the last
+     * half as {@code __name__} and the first as {@code __module__}, while a message about the value
+     * quotes the name in full. Nothing here gives a program a route to the type itself — {@code types} is
+     * not imported yet — so the only way to see it is the way the subscripting built-in types answer.
+     */
+    public static final PyType GENERIC_ALIAS =
+            builtin("GenericAlias").filedUnder("types.GenericAlias");
+
     /**
      * {@code type(co.co_lines())} and {@code type(co.co_positions())}.
      *
@@ -339,6 +376,18 @@ public class PyType extends PyObject {
      */
     PyType documented(String text) {
         doc = text;
+        return this;
+    }
+
+    /**
+     * The dotted name CPython writes a built-in down with when it is not one of the {@code builtins}.
+     *
+     * <p>{@code types.GenericAlias} is the only one here so far: the type's bare name is what Python reads
+     * as {@code __name__}, and the half before the dot is what it reads as {@code __module__} — which is
+     * how {@code type(list[int])} can be named correctly without the {@code types} module existing.
+     */
+    PyType filedUnder(String dotted) {
+        filedName = dotted;
         return this;
     }
 
@@ -716,9 +765,10 @@ public class PyType extends PyObject {
      * first is a real {@code mp_subscript} slot and the special case for classes in the generic
      * {@code PyObject_GetItem} only runs when the type has no subscript of its own. Nothing here is
      * subscriptable by itself: a refusal leaves {@link Slots#getItem} to word it as {@code type 'C' is not
-     * subscriptable}, which is what CPython says for {@code int[int]}, and the two built-in families that
-     * do answer in CPython — {@code type[int]} and {@code list[int]} — hand back a {@code types.GenericAlias},
-     * which this runtime has no model of.
+     * subscriptable}, which is what CPython says for {@code int[int]}. The two built-in families that do
+     * answer — {@code list[int]} and {@code tuple[int, str]} — file a {@code __class_getitem__} and hand
+     * back a {@link PyGenericAlias}; {@code type[int]} is answered in CPython by a {@code mp_subscript} of
+     * {@code type} itself, which is not a name its dictionary files, and so still refuses here.
      */
     @Override
     public PyObject getItem(PyObject key) {

@@ -80,7 +80,12 @@ public class PyTuple extends PyObject {
     /** {@code a + b}, which is defined for a tuple and a tuple only. */
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
-        if (op == BinaryOp.ADD && other instanceof PyTuple t) {
+        if (op == BinaryOp.ADD) {
+            // `tuple_concat` raises rather than declining, so `() + []` names only the right operand.
+            if (!(other instanceof PyTuple t)) {
+                throw Slots.typeError(
+                        "can only concatenate tuple (not \"%s\") to tuple", other.getType().name());
+            }
             PyObject[] joined = new PyObject[items.length + t.items.length];
             System.arraycopy(items, 0, joined, 0, items.length);
             System.arraycopy(t.items, 0, joined, items.length, t.items.length);
@@ -115,12 +120,16 @@ public class PyTuple extends PyObject {
     /**
      * Ordering, element by element with length as the tie-break — CPython's rule, and observable:
      * {@code (1, 2) < (1, 2, 0)} is true because the prefix is equal and the shorter comes first.
+     *
+     * <p>A foreign operand is declined rather than answered: {@code tuple_tp_richcompare} returns
+     * {@code NULL, NULL} without an error when the other value is not a tuple, so {@code (1,).__eq__([1])}
+     * is {@code NotImplemented} and the {@code ==} operator is left to fall back on identity.
      */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
         return other instanceof PyTuple t
                 ? Sequences.compare(cmp, items, t.items)
-                : super.richCompare(cmp, other);
+                : PyNotImplemented.INSTANCE;
     }
 
     @Override
@@ -130,9 +139,15 @@ public class PyTuple extends PyObject {
 
     /** {@code count} and {@code index}, the only two a tuple has, since nothing may change it. */
     private static final Members METHODS = Members.of(PyType.TUPLE)
+            // Pickle's one argument: a tuple is rebuilt from the tuple it already is, which is why
+            // {@code (1, 2).__getnewargs__()} is {@code ((1, 2),)} and not the two elements loose. The
+            // entry is the one in either of these two tables whose {@code ml_doc} is NULL, so the table
+            // transcribes no sentence — which is the deviation and the reference agreeing for once.
+            .addNoArgument("__getnewargs__", self -> PyTuple.of(self))
             .addOne("count", (self, item) ->
                     PyInt.of(Sequences.countOf(((PyTuple) self).items, item, 0, ((PyTuple) self).size())))
             .add("index", (self, args, kwNames) -> {
+                Arguments.noKeywords("tuple.index()", kwNames);
                 PyTuple tuple = (PyTuple) self;
                 Arguments.between("index", args, kwNames, 1, 3);
                 int found = Sequences.indexOf(

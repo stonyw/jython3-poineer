@@ -62,7 +62,15 @@ final class Constructors {
             return bytes(args, keywordNames);
         }
         if (type == PyType.TUPLE) {
-            return PyTuple.of(iterable(args, keywordNames, "tuple").toArray(new PyObject[0]));
+            List<PyObject> source = iterable(args, keywordNames, "tuple");
+            // `tuple(t)` of a tuple is the one object rather than a copy of it: `PySequence_Tuple` keeps what
+            // it is handed for a `PyTuple_CheckExact`, which is what makes `tuple(pair) is pair` hold while
+            // `list(values) is values` never does. A subclass is not exact, so `tuple(version_info)` builds a
+            // plain tuple and the value it came from is not what comes back.
+            if (args.length == 1 && args[0].getType() == PyType.TUPLE) {
+                return (PyTuple) args[0];
+            }
+            return PyTuple.of(source.toArray(new PyObject[0]));
         }
         if (type == PyType.LIST) {
             return PyList.of(iterable(args, keywordNames, "list").toArray(new PyObject[0]));
@@ -593,6 +601,15 @@ final class Constructors {
             return List.of();
         }
         return materialise(args[0]);
+    }
+
+    /**
+     * {@code list(iterable)} read as the slot rather than as the call: the same one argument, the same
+     * two refusals, and the same words — {@code list_init} is {@code list_extend}, so {@code l.__init__(2,
+     * 3)} complains about the count exactly as {@code list(2, 3)} does.
+     */
+    static List<PyObject> listed(PyObject[] args, String[] kwNames) {
+        return iterable(args, kwNames, "list");
     }
 
     /** Every value of an iterable, in order. Shared with the interpreter's own {@code [*x]} paths. */

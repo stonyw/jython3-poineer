@@ -146,12 +146,16 @@ public final class PyList extends PyObject {
         return PyNotImplemented.INSTANCE;
     }
 
-    /** Element-wise order with length as the tie-break, as for a {@code tuple}. */
+    /**
+     * Element-wise order with length as the tie-break, as for a {@code tuple}, and declined rather than
+     * answered for anything that is not a list — {@code [1].__eq__((1,))} is {@code NotImplemented}, and the
+     * {@code ==} operator falls back on identity.
+     */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
         return other instanceof PyList list
                 ? Sequences.compare(cmp, elements(), list.elements())
-                : super.richCompare(cmp, other);
+                : PyNotImplemented.INSTANCE;
     }
 
     @Override
@@ -200,6 +204,20 @@ public final class PyList extends PyObject {
 
     private static PyList gathered(PyObject[] elements) {
         return new PyList(new ArrayList<>(Arrays.asList(elements)));
+    }
+
+    /**
+     * {@code l.__init__(iterable)}: the contents of this list, replaced by those already read off.
+     *
+     * <p>The source is a copy made before this method was reached, which is what lets {@code l.__init__(l)}
+     * double the list instead of emptying it — {@code list_init} is {@code list_extend} over a receiver that
+     * was cleared first, and a list argument is measured before anything is thrown away.
+     */
+    void replace(Iterable<PyObject> source) {
+        items.clear();
+        for (PyObject item : source) {
+            items.add(item);
+        }
     }
 
     /** {@code l[a:b] = value} and {@code l[a:b:c] = value}, and the same two in deletion form. */
@@ -461,7 +479,35 @@ public final class PyList extends PyObject {
                 PyObject[] parameters = sortParameters(args, kwNames);
                 ((PyList) self).sort(parameters[0], parameters[1]);
                 return PyNone.INSTANCE;
-            });
+            })
+            // The three names CPython files among its slots rather than copying them out of the sequence
+            // protocol. `__getitem__` is here because `list_subscript` answers a slice as well as an index
+            // and is therefore written down in `list_methods`, unlike the `bytes` and `tuple` copies of
+            // `sq_item`; `__reversed__` is the one a `reversed()` call asks before it measures the list; and
+            // `__sizeof__` counts a C struct this runtime does not have, so it says nought.
+            .add(
+                    "__getitem__",
+                    "Return self[index].",
+                    (self, args, kwNames) -> {
+                        Arguments.exactlyOne("list.__getitem__()", args, kwNames);
+                        return self.getItem(args[0]);
+                    })
+            .add(
+                    "__reversed__",
+                    "Return a reverse iterator over the list.",
+                    (self, args, kwNames) -> {
+                        Arguments.none("list.__reversed__()", args, kwNames);
+                        List<PyObject> back = new ArrayList<>(((PyList) self).items);
+                        Collections.reverse(back);
+                        return PyIterator.of(back);
+                    })
+            .add(
+                    "__sizeof__",
+                    "Return the size of the list in memory, in bytes.",
+                    (self, args, kwNames) -> {
+                        Arguments.none("list.__sizeof__()", args, kwNames);
+                        return PyInt.of(0);
+                    });
 
     /** {@code a.extend(b)}: append every value of an iterable, which may be the list itself. */
     private void extend(PyObject iterable) {

@@ -164,6 +164,39 @@ final class TypeDict {
     private static final String BUFFER_DOC =
             "Return a buffer object that exposes the underlying memory of the object.";
 
+    /**
+     * The three slots a mutable sequence files that an octet run does not.
+     *
+     * <p>{@code sq_ass_item} and {@code sq_ass_slice} are one {@code __setitem__} and {@code sq_slice}
+     * with an argument to put in it, and {@code sq_inplace_concat} and {@code sq_inplace_repeat} are the
+     * two that change the receiver and hand it back — which is why their sentences say {@code Implement}
+     * rather than {@code Return}: the answer is the same list, not a new one.
+     */
+    private static final String SETITEM_DOC = "Set self[key] to value.";
+
+    private static final String DELITEM_DOC = "Delete self[key].";
+    private static final String IADD_DOC = "Implement self+=value.";
+    private static final String IMUL_DOC = "Implement self*=value.";
+
+    /**
+     * The two sentences {@code list.__class_getitem__} and {@code tuple.__class_getitem__} carry.
+     *
+     * <p>Both are PEP 585 declarations rather than {@code PyMethodDef} docstrings, and the tuple's goes on
+     * for four paragraphs because a tuple's arguments are per position: it has to say what {@code
+     * tuple[int, str]} means before it can say what {@code tuple[int, ...]} means instead.
+     */
+    private static final String LIST_CLASS_GETITEM_DOC =
+            "lists are generic over the type of their contents";
+
+    private static final String TUPLE_CLASS_GETITEM_DOC =
+            "Tuples are generic over the types of their contents.\n"
+                    + "\n"
+                    + "For example, use ``tuple[int, str]`` for a pair whose first element\n"
+                    + "is an int and second element is a string.\n"
+                    + "\n"
+                    + "Tuples also support the form ``tuple[T, ...]`` to indicate\n"
+                    + "an arbitrary length tuple of elements of type T.";
+
     /** {@code type.__new__(mcs, name, bases, dict)}: the metaclass idiom, and no descriptor at all. */
     static final Member NEW =
             new Member(PyType.TYPE, "__new__", Shape.RAW, null, NEW_DOC, TypeDict::newMember);
@@ -391,6 +424,14 @@ final class TypeDict {
         }
         if (owner == PyType.STR) {
             strTable(into);
+            return;
+        }
+        if (owner == PyType.LIST) {
+            listTable(into);
+            return;
+        }
+        if (owner == PyType.TUPLE) {
+            tupleTable(into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -646,6 +687,175 @@ final class TypeDict {
     }
 
     /**
+     * {@code list}'s own dictionary: the thirty-six names a mutable sequence files.
+     *
+     * <p>Eighteen of them are slots, and the two that differ from an octet run's are the interesting ones.
+     * {@code __hash__} is not a slot at all: a list is mutable, so CPython files {@code None} under the name
+     * and the inherited {@code object.__hash__} is out of reach — {@code list.__hash__ is None} is the whole
+     * of why {@code hash([])} complains about unhashability rather than about a missing name. And
+     * {@code __getitem__} is a {@code METH_O} method here, not the {@code sq_item} copy {@code bytes} and
+     * {@code tuple} file, because {@code list_subscript} answers a slice as well as an index and is written
+     * down in {@code list_methods} rather than copied out of the sequence protocol. The two in-place slots
+     * sit after {@code __contains__}, and the eleven methods a person calls are the entries of
+     * {@code list_methods} that follow them, with {@code sort} — the one with two keyword parameters — last.
+     */
+    private static void listTable(PyDict into) {
+        PyType owner = PyType.LIST;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::listsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.value("__hash__", PyNone.INSTANCE);
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__init__", INIT_DOC, TypeDict::listInit);
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.named("__getitem__");
+        table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
+        table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
+        table.wrapper("__add__", ADD_DOC, TypeDict::joined);
+        table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
+        table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);
+        table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+        table.wrapper("__iadd__", IADD_DOC, TypeDict::joinedInPlace);
+        table.wrapper("__imul__", IMUL_DOC, TypeDict::repeatedInPlace);
+        table.named("__reversed__", "__sizeof__");
+        table.named(
+                "clear", "copy", "append", "insert", "extend", "pop", "remove", "index", "count", "reverse",
+                "sort");
+        table.classMethod(
+                "__class_getitem__",
+                LIST_CLASS_GETITEM_DOC,
+                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code tuple}'s own dictionary: the twenty-one names an immutable sequence files.
+     *
+     * <p>Fifteen slots, and every one of them the sequence protocol's — {@code __getitem__} is the
+     * {@code sq_item} copy here, where {@code list} files a method, because {@code tuple_subscript} is
+     * {@code PySequence_GetItem} over the same slot. {@code __hash__} is a slot and not {@code None}, which
+     * is the whole difference between a dictionary key and the {@code TypeError} a list gets. Then pickle's
+     * {@code __getnewargs__} — the one entry in either table whose clinic {@code ml_doc} is nothing but a
+     * signature header, so {@code _PyType_GetDocFromInternalDoc} has nothing left to hand back and the name
+     * says nothing about itself — then {@code index} and {@code count}, the only two
+     * methods a value of this type has, then the generic subscript and the type's own sentence. There is no
+     * {@code __init__}: a tuple is built by {@code __new__} alone, which is why {@code (1,).__init__} is the
+     * one inherited from {@code object} and refuses a second argument.
+     */
+    private static void tupleTable(PyDict into) {
+        PyType owner = PyType.TUPLE;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::tuplesNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__add__", ADD_DOC, TypeDict::joined);
+        table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
+        table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);
+        table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+        table.named("__getnewargs__");
+        table.named("index", "count");
+        table.classMethod(
+                "__class_getitem__",
+                TUPLE_CLASS_GETITEM_DOC,
+                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code list(iterable)} as a slot wrapper: the same one argument the constructor takes.
+     *
+     * <p>{@code list_init} is {@code list_extend} over the receiver, and the receiver is emptied first —
+     * which is what makes {@code l.__init__(l)} double the list rather than clear it: the iterable is read
+     * into its own copy before anything is thrown away.
+     */
+    private static PyObject listInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyList list = (PyList) args[0];
+        List<PyObject> source = Constructors.listed(tail(args, kwNames), kwNames);
+        list.replace(source);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code list.__new__}: the class is checked and the rest of the call is thrown away.
+     *
+     * <p>{@code list_new} reads one argument, and only to work out how much to allocate — so {@code
+     * list.__new__(list, 'ab')} is an empty list where {@code list('ab')} is {@code ['a', 'b']}, the
+     * difference being that the constructor also runs {@code __init__} and the slot does not.
+     */
+    private static PyObject listsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.LIST, args, kwNames);
+        return PyList.empty();
+    }
+
+    private static PyObject tuplesNew(PyObject[] args, String[] kwNames, String qualified) {
+        return constructorNew(PyType.TUPLE, args, kwNames);
+    }
+
+    /**
+     * {@code C[key]} for the types that file {@code __class_getitem__}: the key, kept as the arguments.
+     *
+     * <p>Nothing about the key is checked, which is why {@code list[3]} is an alias of {@code 3} and not a
+     * complaint; a tuple key is the argument list itself, so {@code list[()]} keeps none. The class the read
+     * bound to is the origin, and that is the only part of the answer that has to be a class.
+     *
+     * <p>A {@code classmethod_descriptor} is called through {@code classmethoddescr_call}, which takes the
+     * class out of the argument list before the body counts anything — so an entry read straight from the
+     * dictionary and given nothing complains that the descriptor needs an argument, one given a non-class says
+     * the class would have been its second, and one given a class that could never hold the values it builds
+     * says so before the key is read at all. A read through the type supplies that class itself, and the
+     * refusals after that point are the wrapped {@code METH_O}'s own.
+     */
+    private static PyObject classGetItem(
+            PyType declaring, PyObject[] args, String[] kwNames, String qualified) {
+        String name = qualified.substring(qualified.lastIndexOf('.') + 1);
+        if (Arguments.positional(args, kwNames) < 1) {
+            throw Slots.typeError(
+                    "descriptor '%s' of '%s' object needs an argument", name, declaring.name());
+        }
+        if (!(args[0] instanceof PyType origin)) {
+            throw Slots.typeError(
+                    "descriptor '%s' for type '%s' needs a type, not a '%s' as arg 2",
+                    name, declaring.filedName(), args[0].getType().filedName());
+        }
+        if (!origin.matches(declaring)) {
+            throw Slots.typeError(
+                    "descriptor '%s' requires a subtype of '%s' but received '%s'",
+                    name, declaring.filedName(), origin.filedName());
+        }
+        Arguments.exactlyOne(qualified + "()", tail(args, kwNames), kwNames);
+        return PyGenericAlias.of(origin, args[1]);
+    }
+
+    /** {@code sq_inplace_concat}, filed as {@code __iadd__}: the receiver, extended. */
+    private static PyObject joinedInPlace(PyObject[] args) {
+        return args[0].inplaceOp(BinaryOp.ADD, args[1]);
+    }
+
+    /** {@code sq_inplace_repeat}, filed as {@code __imul__}: the count is read as an index first. */
+    private static PyObject repeatedInPlace(PyObject[] args) {
+        if (Numbers.asInteger(args[1]) == null) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer", args[1].getType().name());
+        }
+        return args[0].inplaceOp(BinaryOp.MUL, args[1]);
+    }
+
+    /**
      * {@code tp_new_wrapper} over a value type: the three refusals, then the constructor.
      *
      * <p>{@code bytes.__new__} and {@code str.__new__} are the same builtin with a different first
@@ -656,6 +866,20 @@ final class TypeDict {
      * {@code TypeError} about a missing encoding.
      */
     private static PyObject constructorNew(PyType declaring, PyObject[] args, String[] kwNames) {
+        declaredClass(declaring, args, kwNames);
+        return Constructors.instantiate(
+                declaring, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
+    }
+
+    /**
+     * {@code tp_new_wrapper}'s three refusals, before any class is asked to build anything.
+     *
+     * <p>Every one of them names the type whose dictionary holds the {@code __new__} rather than the one
+     * handed over: {@code bytes.__new__(int, 3)} says {@code int} is not a subtype of {@code bytes}, and a
+     * call with nothing at all says the type's own {@code __new__} was not given enough arguments. What is
+     * left after the three is the subtype the constructor is asked to build.
+     */
+    private static void declaredClass(PyType declaring, PyObject[] args, String[] kwNames) {
         if (Arguments.positional(args, kwNames) < 1) {
             throw Slots.typeError("%s.__new__(): not enough arguments", declaring.name());
         }
@@ -669,8 +893,6 @@ final class TypeDict {
                     "%s.__new__(%s): %s is not a subtype of %s",
                     declaring.name(), subtype.name(), subtype.name(), declaring.name());
         }
-        return Constructors.instantiate(
-                declaring, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
     }
 
     private static PyObject octetsNew(PyObject[] args, String[] kwNames, String qualified) {
@@ -2065,11 +2287,13 @@ final class TypeDict {
      *
      * <p>{@code wrapperdescr_call} counts them before it calls anything, and the two that answer a whole
      * argument list — {@code tp_init} and {@code tp_call} — are the ones it leaves uncounted. Every other
-     * slot here is {@code PyObject_} something over the receiver plus one or two arguments.
+     * slot here is {@code PyObject_} something over the receiver plus one or two arguments; only
+     * {@code tp_ass_subscript} is handed two, which is why a {@code list} that was told to set an item
+     * without a value counts to one and says so.
      */
     private static int slotExtra(String name) {
         return switch (name) {
-            case "__setattr__" -> 2;
+            case "__setattr__", "__setitem__" -> 2;
             case "__init__", "__call__" -> -1;
             case "__repr__", "__str__", "__hash__", "__iter__", "__len__" -> 0;
             default -> 1;
@@ -2080,18 +2304,21 @@ final class TypeDict {
      * {@code wrapperdescr_call}'s refusal of the wrong count.
      *
      * <p>A slot that takes only its receiver says the number bare — {@code expected 0 arguments, got 1} —
-     * because there is no method name that would help. Two wrappers name themselves, and each is the
+     * because there is no method name that would help. Three wrappers name themselves, and each is the
      * because of the C function behind it: {@code wrap_setattr} hands {@code PyArg_UnpackTuple} the name
-     * {@code __setattr__}, and {@code wrap_buffer} hands it {@code __buffer__}. Everything else, including
-     * the {@code __delattr__} and {@code __getattribute__} that sit beside the first, passes no name and so
-     * prints none.
+     * {@code __setattr__}, {@code wrap_ass_subscript} hands it {@code __setitem__}, and {@code wrap_buffer}
+     * hands it {@code __buffer__}. Everything else, including the {@code __delattr__} and
+     * {@code __getattribute__} that sit beside the first and the {@code __delitem__} beside the second,
+     * passes no name and so prints none.
      */
     private static void slotArity(String name, int need, int got) {
         if (got == need) {
             return;
         }
         String plural = need == 1 ? "" : "s";
-        if (name.equals("__setattr__") || name.equals("__buffer__")) {
+        if (name.equals("__setattr__")
+                || name.equals("__setitem__")
+                || name.equals("__buffer__")) {
             throw Slots.typeError(
                     "%s expected %d argument%s, got %d", name, need, plural, got);
         }
