@@ -312,10 +312,20 @@ final class Arguments {
      * <p>The candidate list is the parameters in their own order and nothing else, and the sentence is
      * joined with a period rather than the colon {@code AttributeError} uses. A leftover name that every
      * parameter has is the case CPython says it does not bother to work out.
+     *
+     * <p>Only the names the parser can match are candidates: {@code new_kwtuple} copies the tuple from the
+     * first parameter a call may reach by keyword onwards, so a positional-only parameter — whose slot in
+     * the list is an empty string — never appears in the suggestion. That is why {@code int(x=1)} says
+     * nothing about {@code ''} while a method whose parameters all have names offers a neighbour.
      */
     private static void unexpected(
             String name, PyObject[] args, int positional, String[] kwNames, String[] names) {
-        java.util.List<String> parameters = Arrays.asList(names);
+        java.util.List<String> parameters = new java.util.ArrayList<>();
+        for (String parameter : names) {
+            if (!parameter.isEmpty()) {
+                parameters.add(parameter);
+            }
+        }
         for (String keyword : kwNames) {
             if (position(names, keyword) < 0) {
                 String guess = Suggestions.closest(parameters, keyword);

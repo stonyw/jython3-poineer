@@ -21,10 +21,11 @@ final class DictViews {
     }
 
     // Under `object`, as CPython's three view types are: a base of `type` would put `type.__dict__` and
-    // `type.__dir__` in a value's MRO, and those getters cast their receiver to a `PyType`.
-    private static final PyType KEYS = PyType.declare("dict_keys", PyType.OBJECT);
-    private static final PyType VALUES = PyType.declare("dict_values", PyType.OBJECT);
-    private static final PyType ITEMS = PyType.declare("dict_items", PyType.OBJECT);
+    // `type.__dir__` in a value's MRO, and those getters cast their receiver to a `PyType`. None of the
+    // three can be called — CPython gives each an empty `tp_new`, so a view only ever comes from a dict.
+    private static final PyType KEYS = PyType.declare("dict_keys", PyType.OBJECT).withoutNew();
+    private static final PyType VALUES = PyType.declare("dict_values", PyType.OBJECT).withoutNew();
+    private static final PyType ITEMS = PyType.declare("dict_items", PyType.OBJECT).withoutNew();
 
     static PyObject keys(PyDict mapping) {
         return new Keys(mapping);

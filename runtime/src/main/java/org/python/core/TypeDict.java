@@ -186,6 +186,61 @@ final class TypeDict {
             "Return a buffer object that exposes the underlying memory of the object.";
 
     /**
+     * The twenty-five sentences {@code longobject.c}'s {@code PyNumberMethods} carries.
+     *
+     * <p>Every one is the {@code docstring} of a {@code PySlotDef} row, so the phrase names the operator and
+     * nothing else: {@code int} and {@code bool} are the only types here whose number slots are worth filing,
+     * and {@code bool}'s three are the same rows worded the same way. The five that are not of the "Return
+     * self<em>op</em>value" shape are the unary ones — {@code -self}, {@code +self}, {@code abs(self)},
+     * {@code ~self} and {@code True if self else False} — which {@code slotdefs.py} writes without a
+     * {@code Return} because the slot answers the receiver rather than a pair of them.
+     *
+     * <p>{@code __index__}'s is the longest sentence any slot here carries, and it is the only one that
+     * describes a promise rather than a call: the slot says what it is fit for, which is why {@code
+     * int.__dict__['__index__'].__doc__} reads like documentation and {@code __float__}'s reads like a
+     * signature.
+     */
+    private static final String RADD_DOC = "Return value+self.";
+
+    private static final String DIVMOD_DOC = "Return divmod(self, value).";
+    private static final String RDIVMOD_DOC = "Return divmod(value, self).";
+    private static final String POW_DOC = "Return pow(self, value, mod).";
+    private static final String RPOW_DOC = "Return pow(value, self, mod).";
+    private static final String NEG_DOC = "-self";
+    private static final String POS_DOC = "+self";
+    private static final String ABS_DOC = "abs(self)";
+    private static final String TRUTH_DOC = "True if self else False";
+    private static final String INVERT_DOC = "~self";
+    private static final String LSHIFT_DOC = "Return self<<value.";
+    private static final String RLSHIFT_DOC = "Return value<<self.";
+    private static final String RSHIFT_DOC = "Return self>>value.";
+    private static final String RRSHIFT_DOC = "Return value>>self.";
+    private static final String TO_INT_DOC = "int(self)";
+    private static final String TO_FLOAT_DOC = "float(self)";
+    private static final String FLOORDIV_DOC = "Return self//value.";
+    private static final String RFLOORDIV_DOC = "Return value//self.";
+    private static final String TRUEDIV_DOC = "Return self/value.";
+    private static final String RTRUEDIV_DOC = "Return value/self.";
+
+    private static final String INDEX_DOC =
+            "Return self converted to an integer, if self is suitable for use as an index into a list.";
+
+    /**
+     * The four sentences {@code long_getseters} writes over the parts of a number.
+     *
+     * <p>All four are worded for the complex number a value might be, and an {@code int} answers them with
+     * itself, nothing, itself and one: {@code real} and {@code numerator} are {@code long_long}, which hands
+     * back the receiver rather than a copy of it, so {@code BIG.real is BIG} says true.
+     */
+    private static final String REAL_DOC = "the real part of a complex number";
+
+    private static final String IMAG_DOC = "the imaginary part of a complex number";
+    private static final String NUMERATOR_DOC =
+            "the numerator of a rational number in lowest terms";
+    private static final String DENOMINATOR_DOC =
+            "the denominator of a rational number in lowest terms";
+
+    /**
      * The three slots a mutable sequence files that an octet run does not.
      *
      * <p>{@code sq_ass_item} and {@code sq_ass_slice} are one {@code __setitem__} and {@code sq_slice}
@@ -304,18 +359,26 @@ final class TypeDict {
      * {@code BaseException.__new__(cls, *args)}: the creator every exception class inherits, which keeps
      * the arguments it was handed on the value it makes.
      *
-     * <p>CPython reports this one name under {@code Exception} rather than under the class holding it,
-     * because its argument table was written for that class: {@code Bare.__new__.__qualname__} is
-     * {@code Exception.__new__}.
+     * <p>Each class of the family files its own wrapper over this one body, and names itself in it: {@code
+     * BaseException.__dict__['__new__'].__qualname__} is {@code BaseException.__new__} and the row beside
+     * it under {@code Exception} says {@code Exception.__new__}, even though the two hold pointers to the
+     * same C function. That is why {@code Bare.__new__} for an {@code E(Exception)} reads {@code
+     * Exception.__new__} — the walk of the order stops at the nearest class that files a wrapper, and the
+     * wrapper carries the name of the class it was filed under.
      */
     static final Member EXCEPTION_NEW =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION,
                     "__new__",
                     Shape.RAW,
-                    "Exception.__new__",
+                    null,
                     NEW_DOC,
-                    TypeDict::exceptionNew);
+                    exceptionNewFor(ExceptionTypes.BASE_EXCEPTION));
+
+    /** The {@code BaseException_new} gates, told which class of the family the call came in through. */
+    private static Method exceptionNewFor(PyType declaring) {
+        return (args, kwNames, qualified) -> exceptionNew(declaring, args, kwNames);
+    }
 
     /** {@code BaseException.__init__(self, *args)}: the arguments of the call, taken over. */
     static final Member EXCEPTION_INIT =
@@ -477,6 +540,14 @@ final class TypeDict {
         }
         if (owner == PyType.FROZENSET) {
             frozenSetTable(into);
+            return;
+        }
+        if (owner == PyType.INT) {
+            intTable(into);
+            return;
+        }
+        if (owner == PyType.BOOL) {
+            boolTable(into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -992,6 +1063,225 @@ final class TypeDict {
     }
 
     /**
+     * {@code int}'s own dictionary: the sixty-two names a number files.
+     *
+     * <p>Three groups, in the order {@code type_ready} walks the struct. First the constructor, which is
+     * {@code int.__new__} written by clinic rather than a {@code tp_new_wrapper} over a slot. Then the
+     * forty-two {@code PyNumberMethods} and {@code tp_repr}/{@code tp_hash}/{@code tp_richcompare} rows —
+     * twenty-eight of them in the order {@code slotdefs.py} emits, which puts {@code __int__} and {@code
+     * __float__} between {@code __ror__} and {@code __floordiv__} because the coercion slots come before
+     * the rest of the number block. Then the fourteen {@code long_methods} and the four {@code
+     * long_getseters}, and the sentence the type carries for itself.
+     *
+     * <p>What is <em>not</em> here is worth as much as what is: there is no {@code __str__}, because {@code
+     * int} leaves {@code tp_str} to {@code object} and {@code object.__repr__} is the number's own digits
+     * through {@code tp_repr}; and there is no {@code __init__}, because a number is already full by the
+     * time its creator hands it back. The comparisons are {@code long_richcompare}, which opens with {@code
+     * CHECK_BINOP}, so {@code int.__eq__(5, 5.0)} reports the decline the operator would have answered for
+     * itself, and the four coercion slots answer with {@code long_long} where CPython does: {@code +5},
+     * {@code int(5)} and {@code operator.index(5)} all hand back the very same object, while {@code +True}
+     * hands back the integer the bool stands for.
+     */
+    private static void intTable(PyDict into) {
+        PyType owner = PyType.INT;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::intsNew);
+        table.wrapper("__repr__", REPR_DOC, TypeDict::integerRepr);
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, integerComparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, integerComparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, integerComparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, integerComparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, integerComparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, integerComparing(CompareOp.GE));
+        table.wrapper("__add__", ADD_DOC, integerOperating(BinaryOp.ADD));
+        table.wrapper("__radd__", RADD_DOC, reflectedIntegerOperating(BinaryOp.ADD));
+        table.wrapper("__sub__", SUB_DOC, integerOperating(BinaryOp.SUB));
+        table.wrapper("__rsub__", RSUB_DOC, reflectedIntegerOperating(BinaryOp.SUB));
+        table.wrapper("__mul__", MUL_DOC, integerOperating(BinaryOp.MUL));
+        table.wrapper("__rmul__", RMUL_DOC, reflectedIntegerOperating(BinaryOp.MUL));
+        table.wrapper("__mod__", MOD_DOC, integerOperating(BinaryOp.MOD));
+        table.wrapper("__rmod__", RMOD_DOC, reflectedIntegerOperating(BinaryOp.MOD));
+        table.wrapper("__divmod__", DIVMOD_DOC, TypeDict::dividing);
+        table.wrapper("__rdivmod__", RDIVMOD_DOC, TypeDict::reflectedDividing);
+        table.wrapper("__pow__", POW_DOC, TypeDict::raising);
+        table.wrapper("__rpow__", RPOW_DOC, TypeDict::reflectedRaising);
+        table.wrapper("__neg__", NEG_DOC, args -> Numeric.unary(UnaryOp.NEGATIVE, args[0]));
+        table.wrapper("__pos__", POS_DOC, args -> Numeric.unary(UnaryOp.POSITIVE, args[0]));
+        table.wrapper("__abs__", ABS_DOC, args -> Numeric.unary(UnaryOp.ABSOLUTE, args[0]));
+        table.wrapper("__bool__", TRUTH_DOC, args -> args[0].truth());
+        table.wrapper("__invert__", INVERT_DOC, args -> Numeric.unary(UnaryOp.INVERT, args[0]));
+        table.wrapper("__lshift__", LSHIFT_DOC, integerOperating(BinaryOp.LSHIFT));
+        table.wrapper("__rlshift__", RLSHIFT_DOC, reflectedIntegerOperating(BinaryOp.LSHIFT));
+        table.wrapper("__rshift__", RSHIFT_DOC, integerOperating(BinaryOp.RSHIFT));
+        table.wrapper("__rrshift__", RRSHIFT_DOC, reflectedIntegerOperating(BinaryOp.RSHIFT));
+        table.wrapper("__and__", AND_DOC, integerOperating(BinaryOp.AND));
+        table.wrapper("__rand__", RAND_DOC, reflectedIntegerOperating(BinaryOp.AND));
+        table.wrapper("__xor__", XOR_DOC, integerOperating(BinaryOp.XOR));
+        table.wrapper("__rxor__", RXOR_DOC, reflectedIntegerOperating(BinaryOp.XOR));
+        table.wrapper("__or__", OR_DOC, integerOperating(BinaryOp.OR));
+        table.wrapper("__ror__", ROR_DOC, reflectedIntegerOperating(BinaryOp.OR));
+        table.wrapper("__int__", TO_INT_DOC, args -> Numeric.unary(UnaryOp.POSITIVE, args[0]));
+        table.wrapper("__float__", TO_FLOAT_DOC, args -> PyFloat.of(Numeric.asDouble(args[0])));
+        table.wrapper("__floordiv__", FLOORDIV_DOC, integerOperating(BinaryOp.FLOORDIV));
+        table.wrapper("__rfloordiv__", RFLOORDIV_DOC, reflectedIntegerOperating(BinaryOp.FLOORDIV));
+        table.wrapper("__truediv__", TRUEDIV_DOC, integerOperating(BinaryOp.TRUEDIV));
+        table.wrapper("__rtruediv__", RTRUEDIV_DOC, reflectedIntegerOperating(BinaryOp.TRUEDIV));
+        table.wrapper("__index__", INDEX_DOC, args -> Numeric.unary(UnaryOp.POSITIVE, args[0]));
+        table.named(
+                "conjugate", "bit_length", "bit_count", "to_bytes", "from_bytes", "as_integer_ratio",
+                "__trunc__", "__floor__", "__ceil__", "__round__", "__getnewargs__", "__format__",
+                "__sizeof__", "is_integer");
+        table.getset("real", REAL_DOC, PyInt::longLong, null);
+        table.getset("imag", IMAG_DOC, self -> PyInt.ZERO, null);
+        table.getset("numerator", NUMERATOR_DOC, PyInt::longLong, null);
+        table.getset("denominator", DENOMINATOR_DOC, self -> PyInt.ONE, null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code bool}'s own dictionary: the ten names a truth value files, which is all it has of its own.
+     *
+     * <p>{@code boolobject.c} fills three slots of the number struct and nothing else: {@code nb_invert}
+     * and the three bitwise pairs. The consequence is that a bool borrows everything it actually does —
+     * {@code bool.__hash__} and {@code bool.__eq__} are {@code int}'s wrappers, and reading them prints
+     * {@code of 'int' objects} — and that {@code bool.__dict__} holds neither. Its {@code __new__} is the
+     * one constructor here that refuses keywords <em>before</em> it counts arguments, because {@code
+     * bool_new} asks {@code _PyArg_NoKeywords} first and {@code PyArg_UnpackTuple} second.
+     *
+     * <p>The seven bitwise rows are the pair of C functions that answer a bool with a bool and anything
+     * else with {@code long}'s slot, so {@code bool.__and__(True, True)} is {@code True} while {@code
+     * bool.__and__(True, 2)} is the integer {@code 0}.
+     */
+    private static void boolTable(PyDict into) {
+        PyType owner = PyType.BOOL;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::boolsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__invert__", INVERT_DOC, args -> Numeric.unary(UnaryOp.INVERT, args[0]));
+        table.wrapper("__and__", AND_DOC, boolBit(BinaryOp.AND));
+        table.wrapper("__rand__", RAND_DOC, reflectedBoolBit(BinaryOp.AND));
+        table.wrapper("__xor__", XOR_DOC, boolBit(BinaryOp.XOR));
+        table.wrapper("__rxor__", RXOR_DOC, reflectedBoolBit(BinaryOp.XOR));
+        table.wrapper("__or__", OR_DOC, boolBit(BinaryOp.OR));
+        table.wrapper("__ror__", ROR_DOC, reflectedBoolBit(BinaryOp.OR));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */
+    private static PyObject integerRepr(PyObject[] args) {
+        return PyStr.of(Numbers.asInteger(args[0]).toString());
+    }
+
+    /**
+     * {@code long_new} over a {@code tp_new_wrapper}: the class gates, then clinic's own argument table.
+     *
+     * <p>The arguments after the class reach the constructor rather than the vectorcall fast path, which is
+     * what makes the two spellings of an over-long call disagree: {@code int(2, 3, 4)} says {@code int
+     * expected at most 2 arguments, got 3} and {@code int.__new__(int, 2, 3, 4)} says {@code int() takes at
+     * most 2 arguments (3 given)}.
+     */
+    private static PyObject intsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.INT, args, kwNames);
+        return Constructors.parsedInteger(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * {@code bool_new}: keywords, then count, then the truth of whatever was left.
+     *
+     * <p>Both refusals name {@code bool} rather than the class handed over, and neither of them is about the
+     * value: {@code bool.__new__(bool, [])} is {@code False} because {@code PyObject_IsTrue} says so, and
+     * the answer is always one of the two singletons, so {@code bool.__new__(bool, 1) is True} holds however
+     * the number was written. A call that gave nothing asks the truth of {@code bool_new}'s own default,
+     * which is {@code Py_False} — the same answer {@code bool()} gives, and not the truth of the class.
+     */
+    private static PyObject boolsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.BOOL, args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("bool() takes no keyword arguments");
+        }
+        int given = Arguments.positional(args, kwNames) - 1;
+        if (given > 1) {
+            throw Slots.typeError("bool expected at most 1 argument, got %d", given);
+        }
+        return PyBool.of(given > 0 && Slots.truth(args[1]));
+    }
+
+    /** {@code long_richcompare}: the gate is {@code CHECK_BINOP}, so a float pair is declined. */
+    private static Method integerComparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> Numeric.integerCompare(cmp, args[0], args[1]);
+    }
+
+    /** {@code long_<em>op</em>}: the two-operand slot of the receiver, decline included. */
+    private static Method integerOperating(BinaryOp op) {
+        return (args, kwNames, qualified) -> Numeric.integerSlot(op, args[0], args[1]);
+    }
+
+    /** {@code RBINSLOT}'s swap: the same C function with the operands the other way round. */
+    private static Method reflectedIntegerOperating(BinaryOp op) {
+        return (args, kwNames, qualified) -> Numeric.integerSlot(op, args[1], args[0]);
+    }
+
+    /** {@code long_divmod}: the pair, which no {@link BinaryOp} computes. */
+    private static PyObject dividing(PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.integerDivmod(args[0], args[1]);
+    }
+
+    private static PyObject reflectedDividing(PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.integerDivmod(args[1], args[0]);
+    }
+
+    /**
+     * {@code long_pow}: the one wrapper handed a third argument, which may be {@code None}.
+     *
+     * <p>{@code wrap_ternaryfunc} reads it out of a one-or-two-long argument list and defaults it to {@code
+     * Py_None}, which is why {@code int.__pow__(2, 3)} and {@code int.__pow__(2, 3, None)} answer the same
+     * eight and why the count this wrapper refuses is stated as a range: {@code expected 1 or 2 arguments,
+     * got 0}.
+     */
+    private static PyObject raising(PyObject[] args, String[] kwNames, String qualified) {
+        return Builtins.integerPower(args[0], args[1], modulus(args));
+    }
+
+    private static PyObject reflectedRaising(PyObject[] args, String[] kwNames, String qualified) {
+        return Builtins.integerPower(args[1], args[0], modulus(args));
+    }
+
+    /** The third argument of a power slot, which {@code wrap_ternaryfunc} leaves as {@code None}. */
+    private static PyObject modulus(PyObject[] args) {
+        return args.length > 2 ? args[2] : PyNone.INSTANCE;
+    }
+
+    /** {@code bool_and} and its two siblings: a bool out of two bools, {@code long}'s slot out of any other. */
+    private static Method boolBit(BinaryOp op) {
+        return (args, kwNames, qualified) -> bitwiseOfTruth(op, args[0], args[1]);
+    }
+
+    private static Method reflectedBoolBit(BinaryOp op) {
+        return (args, kwNames, qualified) -> bitwiseOfTruth(op, args[1], args[0]);
+    }
+
+    /**
+     * The bitwise slot of {@code boolobject.c}, which is written twice over.
+     *
+     * <p>The pair of tests is what a reader would expect and the fall-through is not: a bool asked of a
+     * float declines, because {@code long_and} has nothing to read, but a bool asked of a number answers
+     * with an {@code int} — {@code True & 2} is {@code 0} and not {@code False} — so the only calls that
+     * keep the answer a truth value are the ones where both sides already are one.
+     */
+    private static PyObject bitwiseOfTruth(BinaryOp op, PyObject left, PyObject right) {
+        if (left instanceof PyBool first && right instanceof PyBool second) {
+            return PyBool.of(
+                    switch (op) {
+                        case AND -> first.getValue() && second.getValue();
+                        case OR -> first.getValue() || second.getValue();
+                        default -> first.getValue() != second.getValue();
+                    });
+        }
+        return Numeric.integerSlot(op, left, right);
+    }
+
+    /**
      * {@code set_new}: the class is checked and the rest of the call is thrown away.
      *
      * <p>{@code set_new} hands {@code make_new_set} a null iterable whatever it was given, so {@code
@@ -1195,14 +1485,13 @@ final class TypeDict {
     }
 
     /**
-     * {@code tp_new_wrapper} over a value type: the three refusals, then the constructor.
+     * {@code tp_new_wrapper} over a value type: the four gates, then the constructor.
      *
-     * <p>{@code bytes.__new__} and {@code str.__new__} are the same builtin with a different first
-     * argument, and all three of CPython's complaints name the type whose dictionary holds them rather
-     * than the one handed over: {@code bytes.__new__(int, 3)} says {@code int} is not a subtype of {@code
-     * bytes}, and the arguments after the class go to that class's own constructor, which is what makes
-     * {@code bytes.__new__(bytes, 'ab', 'utf8')} an octet run and {@code bytes.__new__(bytes, 'ab')} the
-     * {@code TypeError} about a missing encoding.
+     * <p>The gates are {@link #declaredClass}'s, and every one of the four refusals names the type whose
+     * dictionary holds them rather than the one handed over: {@code bytes.__new__(int, 3)} says {@code int}
+     * is not a subtype of {@code bytes}. What is left then goes to that type's own constructor, which is what
+     * makes {@code bytes.__new__(bytes, 'ab', 'utf8')} an octet run and {@code bytes.__new__(bytes, 'ab')}
+     * the {@code TypeError} about a missing encoding.
      */
     private static PyObject constructorNew(PyType declaring, PyObject[] args, String[] kwNames) {
         declaredClass(declaring, args, kwNames);
@@ -1211,14 +1500,20 @@ final class TypeDict {
     }
 
     /**
-     * {@code tp_new_wrapper}'s three refusals, before any class is asked to build anything.
+     * {@code tp_new_wrapper}'s four refusals, before any class is asked to build anything.
      *
-     * <p>Every one of them names the type whose dictionary holds the {@code __new__} rather than the one
+     * <p>The first three name the type whose dictionary holds the {@code __new__} rather than the one
      * handed over: {@code bytes.__new__(int, 3)} says {@code int} is not a subtype of {@code bytes}, and a
-     * call with nothing at all says the type's own {@code __new__} was not given enough arguments. What is
-     * left after the three is the subtype the constructor is asked to build.
+     * call with nothing at all says the type's own {@code __new__} was not given enough arguments.
+     *
+     * <p>The fourth reads the creator behind the name. {@code tp_new_wrapper} walks back from the subtype
+     * to the nearest class whose {@code tp_new} is written in C and refuses when that creator is not the
+     * one the call was made through — so {@code int.__new__(bool)} complains that {@code bool} builds its
+     * values a different way, while {@code Exception.__new__(ValueError, 'x')} answers because the two
+     * exception classes hold the very same {@code BaseException_new}. What is left after the four is the
+     * subtype the constructor is asked to build.
      */
-    private static void declaredClass(PyType declaring, PyObject[] args, String[] kwNames) {
+    private static PyType declaredClass(PyType declaring, PyObject[] args, String[] kwNames) {
         if (Arguments.positional(args, kwNames) < 1) {
             throw Slots.typeError("%s.__new__(): not enough arguments", declaring.name());
         }
@@ -1232,6 +1527,82 @@ final class TypeDict {
                     "%s.__new__(%s): %s is not a subtype of %s",
                     declaring.name(), subtype.name(), subtype.name(), declaring.name());
         }
+        PyType staticBase = staticBaseOf(subtype);
+        if (staticBase.declaresNoInstances()) {
+            // The walk reached a class with no creator at all — the one refusal that names nothing else.
+            throw Slots.typeError("cannot create '%s' instances", staticBase.filedName());
+        }
+        if (creatorOf(staticBase) != creatorOf(declaring)) {
+            throw Slots.typeError(
+                    "%s.__new__(%s) is not safe, use %s.__new__()",
+                    declaring.name(), subtype.name(), staticBase.name());
+        }
+        return subtype;
+    }
+
+    /**
+     * CPython's {@code staticbase} walk: the nearest class in the chain whose creator is written in C.
+     *
+     * <p>A class Python wrote with a {@code __new__} of its own has {@code slot_tp_new}, which is a
+     * trampoline rather than a creator and is stepped over; a class that inherited a creator keeps it.
+     * That is what makes {@code object.__new__(Plain)} allowed — {@code Plain} holds {@code object_new}
+     * itself, so the two creators are one — while {@code object.__new__(E)} of an {@code E(Exception)} is
+     * refused, and refuses under the name of the class the walk stopped at rather than of any of the ones
+     * the call could have named.
+     */
+    private static PyType staticBaseOf(PyType kind) {
+        for (PyType base = kind; base != null; base = base.parent()) {
+            if (!runsPythonNew(base)) {
+                return base;
+            }
+        }
+        // `object` files a creator written in C, so a class with a parent chain always reaches one.
+        throw Slots.runtimeError("no C creator behind '" + kind.name() + "'");
+    }
+
+    /**
+     * Whether {@code tp_new} for this class is {@code slot_tp_new}, which is what {@code update_one_slot}
+     * files whenever the {@code __new__} the order finds is not a creator's own wrapper.
+     *
+     * <p>The distinction is the entry rather than the name: {@code object} and {@code Exception} both
+     * file {@code __new__} and both leave the slot in C, because what their dictionaries hold is the
+     * {@code builtin_function_or_method} that wraps a creator. A Python function, a {@code staticmethod}
+     * or a {@code classmethod} in that position is the trampoline.
+     */
+    private static boolean runsPythonNew(PyType kind) {
+        if (!(kind instanceof PyClass)) {
+            return false;
+        }
+        for (PyType owner : kind.mro()) {
+            PyObject filed = owner.namespace().get(PyStr.interned("__new__"));
+            if (filed != null) {
+                return !(filed instanceof Member member && member.shape == Shape.RAW);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The class whose C creator {@code tp_new} holds for this type, which is how two siblings are compared.
+     *
+     * <p>A creator is shared more often than a name is: {@code BaseException_new} is the {@code tp_new} of
+     * every exception that declares no behaviour of its own, {@code OSError_new} that of the whole {@code
+     * OSError} subtree, and a class Python wrote that declares nothing keeps the pointer it was born with.
+     * That is what lets {@code Exception.__new__(ValueError, 'x')} answer while {@code
+     * BaseException.__new__(OSError)} refuses, in spite of an {@code OSError} being one of those too.
+     */
+    private static PyType creatorOf(PyType kind) {
+        if (kind.matches(ExceptionTypes.OS_ERROR)) {
+            return ExceptionTypes.OS_ERROR;
+        }
+        if (kind.matches(ExceptionTypes.BASE_EXCEPTION)) {
+            return ExceptionTypes.BASE_EXCEPTION;
+        }
+        if (kind instanceof PyClass) {
+            // An inherited pointer, which names the class it was copied from rather than this one.
+            return creatorOf(kind.parent());
+        }
+        return kind;
     }
 
     private static PyObject octetsNew(PyObject[] args, String[] kwNames, String qualified) {
@@ -1405,7 +1776,10 @@ final class TypeDict {
             return;
         }
         if (ownsNew(owner)) {
-            table.raw("__new__", NEW_DOC, TypeDict::exceptionNew);
+            table.raw(
+                    "__new__",
+                    NEW_DOC,
+                    (args, kwNames, qualified) -> exceptionNew(owner, args, kwNames));
         }
         table.value("__doc__", docValue(owner));
     }
@@ -1790,28 +2164,49 @@ final class TypeDict {
     /**
      * {@code object.__new__(cls)}: the one class a bare {@code object} creator is allowed to make.
      *
-     * <p>CPython's {@code tp_new_wrapper} compares the creator's own type with the {@code tp_new} the
-     * class being made actually has, so {@code object.__new__(int)} is refused — {@code int} builds its
-     * values a different way — and a class Python wrote with no {@code __new__} of its own is accepted,
-     * because its slot still belongs to {@code object}. {@code object} itself is the one class this
-     * runtime builds without a dictionary, which is what {@code object.__new__(object).__dict__} complains
-     * about.
+     * <p>Four gates, then {@code object_new}'s own fifth. The four are {@code tp_new_wrapper}'s and are the
+     * ones every other constructor in this file runs: {@code object} is refused for anything whose creator
+     * is not {@code object_new}, which is why {@code object.__new__(int)} complains that {@code int} builds
+     * its values a different way while a class Python wrote with no {@code __new__} of its own is accepted,
+     * and one with a {@code __new__} of its own is accepted too — {@code slot_tp_new} is stepped over on the
+     * way back, and what is left at the end of the chain is {@code object} itself.
+     *
+     * <p>The fifth is inside {@code object_new} and looks at the arguments. Extra ones are refused twice over,
+     * and the two refusals name different classes: a value type that reached here with its own creator says
+     * the sentence about {@code object.__new__} taking one argument, and a class whose {@code tp_init} is
+     * still {@code object_init} says {@code Plain() takes no arguments} in the name of the class being made.
+     * A class with an {@code __init__} of its own takes the extras and throws them away, which is what {@code
+     * object.__new__(C, 5)} is.
      */
     private static PyObject objectNew(PyObject[] args, String[] kwNames, String qualified) {
-        int given = Arguments.positional(args, kwNames);
-        if (given < 1) {
-            throw Slots.typeError("object.__new__(): not enough arguments");
-        }
-        if (!(args[0] instanceof PyType kind)) {
-            throw Slots.typeError(
-                    "object.__new__(X): X is not a type object (%s)", args[0].getType().name());
-        }
-        if (kind != PyType.OBJECT
-                && !(kind instanceof PyClass && Specials.lookUp(kind, "__new__") == null)) {
-            throw Slots.typeError(
-                    "object.__new__(%s) is not safe, use %s.__new__()", kind.name(), kind.name());
+        PyType kind = declaredClass(PyType.OBJECT, args, kwNames);
+        if (Arguments.positional(args, kwNames) > 1 || hasKeywords(kwNames)) {
+            if (runsPythonNew(kind)) {
+                throw Slots.typeError(
+                        "object.__new__() takes exactly one argument (the type to instantiate)");
+            }
+            if (inheritsObjectInit(kind)) {
+                throw Slots.typeError("%s() takes no arguments", kind.name());
+            }
         }
         return new PyInstance(kind);
+    }
+
+    /**
+     * Whether {@code tp_init} for this class is still {@code object_init}, which is what {@code object_new}
+     * asks when it decides whose arity complaint to make.
+     *
+     * <p>The answer is the first class in the order that files an {@code __init__} at all: a class Python
+     * wrote that names none is left with {@code object}'s, and one that names one has a pointer of its own
+     * in the slot even when what it says is only {@code pass}.
+     */
+    private static boolean inheritsObjectInit(PyType kind) {
+        for (PyType owner : kind.mro()) {
+            if (owner.namespace().get(PyStr.interned("__init__")) != null) {
+                return owner == PyType.OBJECT;
+            }
+        }
+        return true;
     }
 
     /**
@@ -2091,29 +2486,20 @@ final class TypeDict {
     /**
      * {@code BaseException_new}: a value of the class given, keeping the arguments as they were given.
      *
-     * <p>The three refusals are {@code type_new}'s shape in the exception family's words, and keyword
-     * arguments are read and thrown away — {@code Bare.__new__(Bare, flag=1)} makes a value with no
-     * arguments at all, which is what a static method whose table only names positionals does.
+     * <p>The refusals are {@code tp_new_wrapper}'s, in its order, and name the class whose dictionary the
+     * call was made through — {@code ValueError.__new__(KeyError, 'k')} says {@code KeyError} is not a
+     * subtype of {@code ValueError} rather than of {@code BaseException}. Keyword arguments are read and
+     * thrown away: {@code Bare.__new__(Bare, flag=1)} makes a value with no arguments at all, which is what
+     * a static method whose table only names positionals does.
      */
-    private static PyObject exceptionNew(PyObject[] args, String[] kwNames, String qualified) {
+    private static PyObject exceptionNew(
+            PyType declaring, PyObject[] args, String[] kwNames) {
         int given = Arguments.positional(args, kwNames);
-        if (given < 1) {
-            throw Slots.typeError("BaseException.__new__(): not enough arguments");
-        }
-        PyObject first = args[0];
-        if (!(first instanceof PyType kind)) {
-            throw Slots.typeError(
-                    "BaseException.__new__(X): X is not a type object (%s)",
-                    first.getType().name());
-        }
-        if (!kind.matches(ExceptionTypes.BASE_EXCEPTION)) {
-            throw Slots.typeError(
-                    "BaseException.__new__(%s): %s is not a subtype of BaseException",
-                    kind.name(), kind.name());
-        }
-        return kind.matches(ExceptionTypes.OS_ERROR)
-                ? PyOSError.create(kind, Arrays.copyOfRange(args, 1, given))
-                : new PyBaseException(kind, Arrays.copyOfRange(args, 1, given));
+        PyType kind = declaredClass(declaring, args, kwNames);
+        PyObject[] rest = Arrays.copyOfRange(args, 1, given);
+        return creatorOf(declaring) == ExceptionTypes.OS_ERROR
+                ? PyOSError.create(kind, rest)
+                : new PyBaseException(kind, rest);
     }
 
     /**
@@ -2603,7 +2989,9 @@ final class TypeDict {
      * everything and so refuses nothing, since every value is one of its own; {@code type} files the
      * metaclass slots, which a value cannot be asked for; and {@code bytes} and {@code str} each file the
      * seventeen sequence and number slots their structs fill in, which is where the phrase "requires a
-     * 'bytes' object" comes from.
+     * 'bytes' object" comes from. {@code int} files the whole of its number struct bar the in-place half,
+     * and the two coercions {@code __int__} and {@code __float__} sit in the middle of that block rather
+     * than at the end.
      */
     private static void wrapperCall(
             PyType declaring, String name, PyObject[] args, String[] kwNames) {
@@ -2632,13 +3020,27 @@ final class TypeDict {
      * argument list — {@code tp_init} and {@code tp_call} — are the ones it leaves uncounted. Every other
      * slot here is {@code PyObject_} something over the receiver plus one or two arguments; only
      * {@code tp_ass_subscript} is handed two, which is why a {@code list} that was told to set an item
-     * without a value counts to one and says so.
+     * without a value counts to one and says so. The seven that answer the receiver alone are the five
+     * unary number slots and the two coercions beside them: {@code wrap_unaryfunc} and {@code
+     * wrap_inquirypred} both call {@code check_num_args(args, 0)}.
      */
     private static int slotExtra(String name) {
         return switch (name) {
             case "__setattr__", "__setitem__" -> 2;
             case "__init__", "__call__" -> -1;
-            case "__repr__", "__str__", "__hash__", "__iter__", "__len__" -> 0;
+            case "__repr__",
+                    "__str__",
+                    "__hash__",
+                    "__iter__",
+                    "__len__",
+                    "__neg__",
+                    "__pos__",
+                    "__abs__",
+                    "__bool__",
+                    "__invert__",
+                    "__int__",
+                    "__float__",
+                    "__index__" -> 0;
             default -> 1;
         };
     }
@@ -2653,10 +3055,21 @@ final class TypeDict {
      * hands it {@code __buffer__}. Everything else, including the {@code __delattr__} and
      * {@code __getattribute__} that sit beside the first and the {@code __delitem__} beside the second,
      * passes no name and so prints none.
+     *
+     * <p>{@code __pow__} and {@code __rpow__} are the two that state a range rather than a number, because
+     * {@code check_pow_args} is written for a slot that may or may not be handed a modulus: {@code
+     * int.__pow__(2)} says {@code expected 1 or 2 arguments, got 0} where every other one-argument slot
+     * would say {@code expected 1 argument, got 0}.
      */
     private static void slotArity(String name, int need, int got) {
         if (got == need) {
             return;
+        }
+        if (name.equals("__pow__") || name.equals("__rpow__")) {
+            if (got >= 1 && got <= 2) {
+                return;
+            }
+            throw Slots.typeError("expected 1 or 2 arguments, got %d", got);
         }
         String plural = need == 1 ? "" : "s";
         if (name.equals("__setattr__")

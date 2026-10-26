@@ -70,16 +70,49 @@ public class PyType extends PyObject {
         TYPE.type = TYPE;
     }
 
+    /**
+     * The two sentences CPython's {@code long_doc} and {@code bool_doc} write for the number and its
+     * two values.
+     *
+     * <p>Each is a plain string in the type's own dictionary, and each says what the constructor accepts
+     * before it says anything else. The integer's is transcribed exactly, including its last line: 3.14.8
+     * breaks "integer literal" across a newline and loses the {@code l}, and the dictionary holds that
+     * text, so a program that prints {@code int.__doc__} reads the broken word here too. The bool's is the
+     * one type sentence here that says a class cannot be inherited from, and {@code bool} files no
+     * {@code __init__} and no {@code __hash__} of its own to go with it.
+     */
+    private static final String INT_DOC =
+            "int([x]) -> integer\n"
+                    + "int(x, base=10) -> integer\n"
+                    + "\n"
+                    + "Convert a number or string to an integer, or return 0 if no arguments\n"
+                    + "are given.  If x is a number, return x.__int__().  For floating-point\n"
+                    + "numbers, this truncates towards zero.\n"
+                    + "\n"
+                    + "If x is not a number or if base is given, then x must be a string,\n"
+                    + "bytes, or bytearray instance representing an integer literal in the\n"
+                    + "given base.  The literal can be preceded by '+' or '-' and be surrounded\n"
+                    + "by whitespace.  The base defaults to 10.  Valid bases are 0 and 2-36.\n"
+                    + "Base 0 means to interpret the base from the string as an integer\n"
+                    + "iteral.\n"
+                    + ">>> int('0b100', base=0)\n"
+                    + "4";
+
+    private static final String BOOL_DOC =
+            "Returns True when the argument is true, False otherwise.\n"
+                    + "The builtins True and False are the only two instances of the class bool.\n"
+                    + "The class bool is a subclass of the class int, and cannot be subclassed.";
+
     public static final PyType NONE = builtin("NoneType");
     public static final PyType NOTIMP = builtin("NotImplementedType");
     public static final PyType ELLIPSIS = builtin("ellipsis");
-    public static final PyType INT = builtin("int").flagged(MATCH_SELF);
+    public static final PyType INT = builtin("int").flagged(MATCH_SELF).documented(INT_DOC);
     /**
      * {@code bool} is a subtype of {@code int}, not merely compatible with it:
      * {@code isinstance(True, int)} is true, and that is what lets {@code sum([True, 1])} and
      * {@code {True: 1, 1: 2}} behave as ints that print as {@code True}.
      */
-    public static final PyType BOOL = subclass("bool", INT);
+    public static final PyType BOOL = subclass("bool", INT).documented(BOOL_DOC);
     public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF);
     public static final PyType COMPLEX = builtin("complex");
 
@@ -282,8 +315,8 @@ public class PyType extends PyObject {
      */
     private String filedName;
 
-    /** Whether calling this type is refused the way an empty {@code tp_new} is. */
-    private final boolean withoutInstances;
+    /** Whether calling this type is refused the way an empty {@code tp_new} is; see {@link #withoutNew}. */
+    private boolean withoutInstances;
 
     /** The bits above that this type declares for itself; see {@link #hasFeature}. */
     private int features;
@@ -342,14 +375,9 @@ public class PyType extends PyObject {
      * lets it exist is this constructor rather than a copy of the dispatch above it.
      */
     protected PyType(String name, PyType parent) {
-        this(name, parent, false);
-    }
-
-    private PyType(String name, PyType parent, boolean withoutInstances) {
         this.name = name;
         this.filedName = name;
         this.parent = parent;
-        this.withoutInstances = withoutInstances;
         MADE.add(this);
     }
 
@@ -387,7 +415,7 @@ public class PyType extends PyObject {
      * message about the type quotes the name in full — including in {@code <class 'sys.version_info'>}.
      */
     private static PyType namedSequence(String filedName) {
-        PyType type = new PyType(tailOf(filedName), TUPLE, true);
+        PyType type = new PyType(tailOf(filedName), TUPLE).withoutNew();
         type.filedName = filedName;
         type.type = TYPE;
         return type;
@@ -399,7 +427,7 @@ public class PyType extends PyObject {
         return dot < 0 ? filedName : filedName.substring(dot + 1);
     }
 
-    /** A class in the exception hierarchy, constructible by calling it. */
+    /** A built-in type named for its own parent, which is how an exception class and a dict view arrive. */
     static PyType declare(String name, PyType parent) {
         return subclass(name, parent);
     }
@@ -424,6 +452,19 @@ public class PyType extends PyObject {
      */
     PyType filedUnder(String dotted) {
         filedName = dotted;
+        return this;
+    }
+
+    /**
+     * {@code Py_TPFLAGS_DISALLOW_INSTANTIATION}: this type's {@code tp_new} is a null pointer.
+     *
+     * <p>A type declared this way exists only as what another class's work hands out — {@code
+     * sys.version_info} and the three windows a dict opens — and the refusal comes before any argument is
+     * read. Both routes to it answer the same sentence, which is how the {@code tp_new} safety gate and a
+     * plain call can say {@code cannot create 'dict_keys' instances} for the same reason.
+     */
+    PyType withoutNew() {
+        withoutInstances = true;
         return this;
     }
 

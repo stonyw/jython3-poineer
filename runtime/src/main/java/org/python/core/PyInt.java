@@ -84,27 +84,162 @@ public final class PyInt extends PyObject {
     /**
      * The attributes an {@code int} answers.
      *
-     * {@code real}, {@code imag}, {@code numerator} and {@code denominator} are the four properties
-     * that make an integer look like the rest of the tower to a generic numeric function; they are
-     * attributes rather than methods, so they cannot live in {@link #METHODS}.
+     * <p>Nothing here but the members' table: {@code real} and the other three properties are
+     * {@code getset_descriptor}s filed in {@code int}'s own dictionary, which the ordinary read reaches
+     * through {@link TypeDict}. An {@code int} has no dictionary of its own to write into, so no name here
+     * answers a store.
      */
     @Override
     public PyObject getAttr(String name) {
-        return switch (name) {
-            case "real", "numerator" -> this;
-            case "imag" -> ZERO;
-            case "denominator" -> ONE;
-            default -> Members.find(this, name);
-        };
+        return Members.find(this, name);
     }
 
+    /**
+     * {@code long_long}: the value itself when it already is an {@code int}, the number a bool stands for.
+     *
+     * <p>Identity is the whole of it, and it is observable: {@code (5).__int__() is 5} and {@code
+     * BIG.__floor__() is BIG} both say true because the C function returns a new reference to the object it
+     * was handed. That is also why the answer for a {@code bool} is the {@code int} beside it rather than
+     * the bool itself — {@code type(+True)} is {@code int} even though {@code +True == True}.
+     */
+    static PyObject longLong(PyObject self) {
+        return self instanceof PyInt exact ? exact : PyInt.of(Numbers.asInteger(self));
+    }
+
+    /** The sentences {@code long_methods} writes beside the twelve functions it lists. */
+    private static final String CONJUGATE_DOC = "Returns self, the complex conjugate of any int.";
+
+    private static final String BIT_LENGTH_DOC =
+            "Number of bits necessary to represent self in binary.\n\n>>> bin(37)\n'0b100101'\n>>>"
+                    + " (37).bit_length()\n6";
+
+    private static final String BIT_COUNT_DOC =
+            "Number of ones in the binary representation of the absolute value of self.\n\nAlso known as"
+                    + " the population count.\n\n>>> bin(13)\n'0b1101'\n>>> (13).bit_count()\n3";
+
+    private static final String TO_BYTES_DOC =
+            "Return an array of bytes representing an integer.\n\n  length\n    Length of bytes object to"
+                    + " use.  An OverflowError is raised if\n    the integer is not representable with the"
+                    + " given number of bytes.\n    Default is length 1.\n  byteorder\n    The byte order used"
+                    + " to represent the integer.  If byteorder is\n    'big', the most significant byte is at"
+                    + " the beginning of the byte\n    array.  If byteorder is 'little', the most significant"
+                    + " byte is at\n    the end of the byte array.  To request the native byte order of\n"
+                    + "    the host system, use sys.byteorder as the byte order value.\n    Default is to use"
+                    + " 'big'.\n  signed\n    Determines whether two's complement is used to represent the\n"
+                    + "    integer.  If signed is False and a negative integer is given,\n    an OverflowError"
+                    + " is raised.";
+
+    private static final String FROM_BYTES_DOC =
+            "Return the integer represented by the given array of bytes.\n\n  bytes\n    Holds the array of"
+                    + " bytes to convert.  The argument must either\n    support the buffer protocol or be an"
+                    + " iterable object producing\n    bytes.  Bytes and bytearray are examples of built-in"
+                    + " objects that\n    support the buffer protocol.\n  byteorder\n    The byte order used to"
+                    + " represent the integer.  If byteorder is\n    'big', the most significant byte is at the"
+                    + " beginning of the byte\n    array.  If byteorder is 'little', the most significant byte"
+                    + " is at\n    the end of the byte array.  To request the native byte order of\n    the host"
+                    + " system, use sys.byteorder as the byte order value.\n    Default is to use 'big'.\n "
+                    + " signed\n    Indicates whether two's complement is used to represent the\n    integer.";
+
+    private static final String RATIO_DOC =
+            "Return a pair of integers, whose ratio is equal to the original int.\n\nThe ratio is in lowest"
+                    + " terms and has a positive denominator.\n\n>>> (10).as_integer_ratio()\n(10, 1)\n>>>"
+                    + " (-10).as_integer_ratio()\n(-10, 1)\n>>> (0).as_integer_ratio()\n(0, 1)";
+
+    private static final String TRUNC_DOC = "Truncating an Integral returns itself.";
+    private static final String FLOOR_DOC = "Flooring an Integral returns itself.";
+    private static final String CEIL_DOC = "Ceiling of an Integral returns itself.";
+
+    private static final String ROUND_DOC =
+            "Rounding an Integral returns itself.\n\nRounding with an ndigits argument also returns an"
+                    + " integer.";
+
+    private static final String FORMAT_SPEC_DOC = "Convert to a string according to format_spec.";
+    private static final String VALUE_SIZEOF_DOC = "Returns size in memory, in bytes.";
+
+    private static final String IS_INTEGER_DOC =
+            "Returns True. Exists for duck type compatibility with float.is_integer.";
+
+    /**
+     * {@code long_methods}, in the order the reference interpreter lists it and therefore in the order
+     * {@code int.__dict__} shows it.
+     *
+     * <p>Five of these answer with the receiver itself — {@code conjugate} and the three ways of asking an
+     * integer what it rounds to, and {@code __int__} beside them, all {@code long_long} in C's spelling —
+     * and {@code as_integer_ratio} hands that same object out as the numerator of a ratio over one.
+     * {@code __getnewargs__} is the one that copies, so the tuple it returns holds a fresh value once the
+     * number is too big for the small-int cache, which is what pickle's round trip through {@code
+     * int(*args)} is written for.
+     */
     private static final Members METHODS = Members.of(PyType.INT)
-            .addNoArgument("bit_length", self -> PyInt.of(
-                    ((PyInt) self).value.abs().bitLength()))
-            .addNoArgument("conjugate", self -> self)
-            .addNoArgument("as_integer_ratio", self -> PyTuple.of((PyInt) self, ONE))
-            .add("to_bytes", PyInt::toBytes)
-            .addClassNamed("from_bytes", PyInt::fromBytes);
+            .addNoArgument("conjugate", CONJUGATE_DOC, PyInt::longLong)
+            .addNoArgument(
+                    "bit_length", BIT_LENGTH_DOC, self -> PyInt.of(((PyInt) self).value.abs().bitLength()))
+            .addNoArgument(
+                    "bit_count", BIT_COUNT_DOC, self -> PyInt.of(((PyInt) self).value.abs().bitCount()))
+            .add("to_bytes", TO_BYTES_DOC, PyInt::toBytes)
+            .addClassNamed("from_bytes", FROM_BYTES_DOC, PyInt::fromBytes)
+            .addNoArgument("as_integer_ratio", RATIO_DOC, self -> PyTuple.of(longLong(self), ONE))
+            .addNoArgument("__trunc__", TRUNC_DOC, PyInt::longLong)
+            .addNoArgument("__floor__", FLOOR_DOC, PyInt::longLong)
+            .addNoArgument("__ceil__", CEIL_DOC, PyInt::longLong)
+            .add("__round__", ROUND_DOC, PyInt::roundTo)
+            .addNoArgument("__getnewargs__", null, self -> PyTuple.of(PyInt.of(((PyInt) self).value)))
+            .addOne("__format__", FORMAT_SPEC_DOC, PyInt::formatted)
+            .addNoArgument("__sizeof__", VALUE_SIZEOF_DOC, PyInt::sizeInBytes)
+            .addNoArgument("is_integer", IS_INTEGER_DOC, self -> PyBool.TRUE);
+
+    // --- rounding, presenting and measuring -------------------------------------------------
+
+    /** {@code int.__round__}: self for no place asked or a place at or after the point, else a ten-power. */
+    private static PyObject roundTo(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("int.__round__()", kwNames);
+        Arguments.between("__round__", args, kwNames, 0, 1);
+        BigInteger value = ((PyInt) self).value;
+        // `int___round___impl` reads a `None` the way an omitted argument is read, before `_PyNumber_Index`.
+        if (args.length == 0 || args[0] == PyNone.INSTANCE) {
+            return PyInt.longLong(self);
+        }
+        BigInteger digits = Numbers.asInteger(args[0]);
+        if (digits == null) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer", args[0].getType().name());
+        }
+        if (digits.signum() >= 0) {
+            // Rounding to a place after the point asks for the whole number, however far that place is.
+            return PyInt.longLong(self);
+        }
+        BigInteger places = digits.negate();
+        if (!Numbers.fitsInt(places) || places.intValue() > decimalDigits(value)) {
+            return PyInt.ZERO;
+        }
+        // self - divmod_near(self, 10**-ndigits)[1], which is the nearest multiple of that power of ten.
+        return PyInt.of(Numeric.nearMultiple(value, BigInteger.TEN.pow(places.intValue())));
+    }
+
+    /** {@code int.__format__(x, spec)}: the spec arrives as text and nothing else. */
+    private static PyObject formatted(PyObject self, PyObject spec) {
+        if (!(spec instanceof PyStr text)) {
+            throw Slots.typeError(
+                    "__format__() argument must be str, not %s", Slots.argumentName(spec));
+        }
+        return PyStr.of(Formats.apply(self, text.getValue()));
+    }
+
+    /**
+     * {@code long.__sizeof__}: the header plus the digits the value needs, with room for one even for zero.
+     *
+     * <p>Thirty bits to a digit on a 64-bit build, which is why {@code 2**30} is four bytes bigger than
+     * {@code 2**30 - 1} while the sign adds nothing: {@code -(2**30)} is the same size as its positive.
+     */
+    private static PyObject sizeInBytes(PyObject self) {
+        int digits = Math.max(1, (((PyInt) self).value.abs().bitLength() + 29) / 30);
+        return PyInt.of(24 + 4L * digits);
+    }
+
+    /** How many decimal digits a value is written with, which is what a rounding power must clear. */
+    private static int decimalDigits(BigInteger value) {
+        return value.abs().toString().length();
+    }
 
     // --- the octet run a value is, and the value an octet run is ------------------------------
 

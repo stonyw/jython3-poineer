@@ -203,48 +203,118 @@ final class Constructors {
     private static PyObject booleanValue(PyObject[] args, String[] kwNames) {
         refuseKeywords("bool", kwNames);
         Arguments.atMost("bool", args, kwNames, 1);
-        return PyBool.of(Slots.truth(args.length == 0 ? PyNone.INSTANCE : args[0]));
+        return booleanOf(args.length == 0 ? null : args[0]);
     }
 
-    private static final String[] INT_NAMES = {"x", "base"};
+    /**
+     * {@code bool(x)}, and {@code False} when the call gave no x at all.
+     *
+     * <p>The two spellings of the creator share this: {@code bool([1])} runs it over the list, and
+     * {@code bool.__new__(bool, [1])} runs it over what its own parser found.
+     */
+    static PyObject booleanOf(PyObject value) {
+        return PyBool.of(Slots.truth(value == null ? PyNone.INSTANCE : value));
+    }
+
+    /**
+     * The names {@code int.__new__}'s parser answers to, the first of them position-only.
+     *
+     * <p>The empty slot is what CPython's {@code new_kwtuple} keeps for {@code x}: {@code int(x=1)} is
+     * therefore about a name the signature does not have rather than about the parameter behind it.
+     */
+    private static final String[] INT_NAMES = {"", "base"};
 
     /**
      * {@code int()}, {@code int(x)}, {@code int(x, base)}.
      *
-     * Whether the base was <em>given</em> matters more than what it holds: {@code int(2**70, 10)} is a
+     * <p>{@code long_vectorcall} answers a call that named nothing itself — zero, {@code PyNumber_Long}
+     * over one argument, the two-argument implementation over two — and only hands a call with a keyword to
+     * {@code _PyObject_MakeTpCall} and the clinic parser. That is why the same wrong count is complained
+     * about twice over: {@code int(2, 3, 4)} says {@code int expected at most 2 arguments, got 3} and
+     * {@code int(2, 3, x=4)} says {@code int() takes at most 2 arguments (3 given)}.
+     *
+     * <p>Whether the base was <em>given</em> matters more than what it holds: {@code int(2**70, 10)} is a
      * {@code TypeError} while {@code int(2**70)} is not, because naming a base commits the call to the
      * string form. That is also why {@code x} is read positionally and only {@code base} by name.
      */
     private static PyObject integer(PyObject[] args, String[] kwNames) {
-        Arguments.atMost("int", args, kwNames, 2);
-        acceptKeywordsOnly("int", kwNames, "base");
-        int positional = Arguments.positional(args, kwNames);
-        boolean baseGiven = positional > 1 || names(kwNames, "base");
-        PyObject base = baseGiven
-                ? (positional > 1 ? args[1] : keyword(kwNames, args, positional, "base"))
-                : null;
-        if (positional == 0 && !baseGiven) {
-            return PyInt.ZERO;
+        if (kwNames == null) {
+            return switch (args.length) {
+                case 0 -> PyInt.ZERO;
+                case 1 -> integerOf(args[0], null);
+                case 2 -> integerOf(args[0], args[1]);
+                default ->
+                        throw Slots.typeError("int expected at most 2 arguments, got %d", args.length);
+            };
         }
-        PyObject value = positional > 0 ? args[0] : PyInt.ZERO;
+        return parsedInteger(args, kwNames);
+    }
+
+    /**
+     * {@code long_new}'s own argument table: the two slots {@code int}'s signature names, either absent.
+     *
+     * <p>This is the parser a call through {@code int.__new__} reaches rather than the one {@code
+     * long_vectorcall} skips, so its refusals are the clinic ones — {@code int() takes at most 2 arguments
+     * (3 given)} where the fast path says {@code int expected at most 2 arguments, got 3}.
+     */
+    static PyObject parsedInteger(PyObject[] args, String[] kwNames) {
+        PyObject[] given = Arguments.unpackKeywords("int", args, kwNames, INT_NAMES, 0, 2);
+        return integerOf(given[0], given[1]);
+    }
+
+    /**
+     * {@code long_new} over the two arguments a parser found, either of which may be absent.
+     *
+     * <p>A null {@code value} is a call that gave nothing where x belongs, which is zero when no base was
+     * named and the complaint about a missing string when one was: the base is what commits the call to the
+     * literal form, so an x that never arrived is only missing in that case.
+     *
+     * <p>The base is read and range-checked <em>before</em> {@code x} is looked at, which is what puts the
+     * number a base should be ahead of the value it has nothing to do with: {@code int(5, 1)} is about the
+     * base being one, not about five not being a string, and {@code int('1', True)} complains about the
+     * same base although the value is exactly the literal that base would read.
+     */
+    static PyObject integerOf(PyObject value, PyObject base) {
+        if (value == null) {
+            if (base == null) {
+                return PyInt.ZERO;
+            }
+            throw Slots.typeError("int() missing string argument");
+        }
+        BigInteger radix = base == null ? null : readBase(base);
         String literal = textual(value);
         if (literal != null) {
-            return parseInteger(literal, base == null ? null : interpretedAsInteger(base), value);
+            return parseInteger(literal, radix, value);
         }
-        if (baseGiven) {
-            throw Slots.typeError(
-                    positional > 0
-                            ? "int() can't convert non-string with explicit base"
-                            : "int() missing string argument");
+        if (radix != null) {
+            throw Slots.typeError("int() can't convert non-string with explicit base");
         }
         return integerFromNumber(value);
+    }
+
+    /**
+     * {@code PyNumber_AsSsize_t} over the base and the range {@code long_new_impl} allows it.
+     *
+     * <p>Zero is legal although no literal is read in base zero, because zero asks for the prefix to say
+     * the base; every other legal value is a radix, and both ends of the refusal are measured.
+     */
+    private static BigInteger readBase(PyObject base) {
+        BigInteger radix = interpretedAsInteger(base);
+        if (!radix.equals(BigInteger.ZERO)
+                && (radix.compareTo(BigInteger.TWO) < 0 || radix.compareTo(THIRTY_SIX) > 0)) {
+            throw Slots.valueError("int() base must be >= 2 and <= 36, or 0");
+        }
+        return radix;
     }
 
     /** {@code int(x)} where {@code x} is neither text nor absent. */
     private static PyObject integerFromNumber(PyObject value) {
         BigInteger exact = Numbers.asInteger(value);
         if (exact != null) {
-            return PyInt.of(exact);
+            // PyNumber_Long hands the int it was given back rather than rebuilding it, which is
+            // what makes `int(x) is x` hold for a value too big for the small-int cache. A bool is not
+            // that int: it answers with the number it stands for.
+            return value instanceof PyInt i ? i : PyInt.of(exact);
         }
         if (value instanceof PyFloat f) {
             double number = f.getValue();
@@ -265,15 +335,14 @@ final class Constructors {
 
     private static final BigInteger THIRTY_SIX = BigInteger.valueOf(36);
 
+    /**
+     * {@code PyLong_FromUnicodeObject} over a literal whose base {@link #readBase} has already allowed.
+     *
+     * <p>A null base is the one case the call left out, which is ten and not zero: {@code int('0x12')} is
+     * about the {@code x} that no base ten has a digit for.
+     */
     private static PyObject parseInteger(String literal, BigInteger base, PyObject shown) {
-        int radix = 10;
-        if (base != null) {
-            if (!base.equals(BigInteger.ZERO)
-                    && (base.compareTo(BigInteger.TWO) < 0 || base.compareTo(THIRTY_SIX) > 0)) {
-                throw Slots.valueError("int() base must be >= 2 and <= 36, or 0");
-            }
-            radix = base.intValue();
-        }
+        int radix = base == null ? 10 : base.intValue();
         BigInteger value = decodeInteger(digitNormalised(literal.strip()), radix);
         if (value == null) {
             throw Slots.valueError(

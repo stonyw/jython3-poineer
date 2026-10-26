@@ -59,19 +59,14 @@ public final class PyBool extends PyObject {
     /**
      * The attributes a {@code bool} answers.
      *
-     * The four numeric properties are worth reading off the integer this bool stands for, and everything
-     * else — {@code bit_length} and the rest — is found by the walk of {@code bool}'s lookup order, which
-     * reaches {@code int}'s table. See {@link #adaptedFor}, which is what lets an {@code int} body run on
-     * a receiver that is a {@code bool} in Java.
+     * <p>Every one of them — {@code real} and the other three numeric properties included — is a row in
+     * {@code int}'s table that the lookup order reaches, so nothing here is special-cased. See {@link
+     * #adaptedFor}, which is what lets an {@code int} body run on a receiver that is a {@code bool} in
+     * Java.
      */
     @Override
     public PyObject getAttr(String name) {
-        return switch (name) {
-            case "real", "numerator" -> asInt();
-            case "imag" -> PyInt.ZERO;
-            case "denominator" -> PyInt.ONE;
-            default -> Members.find(this, name);
-        };
+        return Members.find(this, name);
     }
 
     /** An {@code int} method asked of a {@code bool} runs on the integer the bool is. */

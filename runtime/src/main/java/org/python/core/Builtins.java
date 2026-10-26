@@ -991,6 +991,18 @@ final class Builtins {
                     "unsupported operand type(s) for ** or pow(): '%s', '%s', '%s'",
                     base.getType().name(), exponent.getType().name(), modulus.getType().name());
         }
+        return modularPower(b, e, m);
+    }
+
+    /**
+     * {@code long_pow}'s modulus half, which the builtin and the slot share.
+     *
+     * <p>The three refusals are CPython's in its order: a modulus of zero is complained about before the
+     * exponent is looked at, and a base with no inverse is only discovered once the exponent is known to
+     * be negative. A negative modulus is not a refusal but a rule about the answer — the remainder keeps
+     * the divisor's sign, which is why {@code pow(7, 2, -5)} is {@code -1} and not {@code 4}.
+     */
+    static PyObject modularPower(BigInteger b, BigInteger e, BigInteger m) {
         if (m.signum() == 0) {
             throw Slots.valueError("pow() 3rd argument cannot be 0");
         }
@@ -1005,9 +1017,33 @@ final class Builtins {
         } else {
             answer = b.mod(m).modPow(e, m);
         }
-        return PyInt.of(floorRemainder && answer.signum() != 0
-                ? answer.subtract(m)
-                : answer);
+        return PyInt.of(floorRemainder && answer.signum() != 0 ? answer.subtract(m) : answer);
+    }
+
+    /**
+     * {@code long_pow} as {@code int} files it, with the declines the operator never shows.
+     *
+     * <p>{@code CHECK_BINOP} runs over the pair first and then {@code PyLong_Check} over the modulus, which
+     * is allowed to be {@code None} — {@code int.__pow__(2, 3, None)} is eight, and {@code int.__pow__(2,
+     * 3, 4.0)} declines although {@code pow(2, 3, 4.0)} reaches the float's own three-argument power. A
+     * negative exponent with no modulus hands the pair to the float slot, which is how {@code int.__pow__(2,
+     * -1)} is a half and {@code int.__pow__(0, -1)} is the error about zero.
+     */
+    static PyObject integerPower(PyObject base, PyObject exponent, PyObject modulus) {
+        BigInteger b = Numbers.asInteger(base);
+        BigInteger e = Numbers.asInteger(exponent);
+        if (b == null || e == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        boolean modulo = modulus != null && modulus != PyNone.INSTANCE;
+        BigInteger m = Numbers.asInteger(modulus);
+        if (modulo && m == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        if (!modulo) {
+            return Numeric.apply(BinaryOp.POW, PyInt.of(b), PyInt.of(e));
+        }
+        return modularPower(b, e, m);
     }
 
     private static boolean isNumber(PyObject value) {
@@ -1077,20 +1113,6 @@ final class Builtins {
 
     /** {@code round(int, -n)}, which is CPython's integer rounding to a power-of-ten place. */
     private static BigInteger roundInteger(BigInteger value, int places) {
-        if (places >= 0) {
-            return value;
-        }
-        BigInteger unit = BigInteger.TEN.pow(-places);
-        BigInteger[] parts = value.divideAndRemainder(unit);
-        BigInteger twice = parts[1].abs().shiftLeft(1);
-        int compare = twice.compareTo(unit);
-        if (compare < 0 || (compare == 0 && !parts[0].testBit(0))) {
-            return parts[0].multiply(unit);
-        }
-        // Away from zero, in whichever direction the value points: -1350 goes to -1400, not to -1200.
-        BigInteger neighbour = value.signum() < 0
-                ? parts[0].subtract(BigInteger.ONE)
-                : parts[0].add(BigInteger.ONE);
-        return neighbour.multiply(unit);
+        return places >= 0 ? value : Numeric.nearMultiple(value, BigInteger.TEN.pow(-places));
     }
 }

@@ -82,20 +82,72 @@ final class Numeric {
         };
     }
 
+    /** The widest shift this runtime will try to allocate, which is half a machine address space. */
+    private static final BigInteger MAX_SHIFT = BigInteger.valueOf(Integer.MAX_VALUE / 2L);
+
     /**
      * A shift count, which Python requires to be an integer no larger than memory can hold.
      *
-     * CPython lets the allocation fail and reports {@code MemoryError}; here the size is known before
-     * allocating, so the same error is raised on purpose rather than by running out.
+     * <p>The two refusals are made at two different widths. A count too wide for a machine word is refused
+     * by the read itself, in the {@code OverflowError} words {@code long_lshift} reserves for it; a count
+     * that fits a word but not an allocation is the case CPython only discovers when {@code malloc} fails,
+     * and here the size is known before anything is allocated, so the same {@code MemoryError} is raised on
+     * purpose rather than by running out.
      */
     private static int shiftCount(BigInteger by, BinaryOp op) {
         if (by.signum() < 0) {
             throw Slots.valueError("negative shift count");
         }
-        if (!Numbers.fitsInt(by) || by.intValue() > Integer.MAX_VALUE / 2) {
+        if (by.bitLength() > 63) {
+            throw Slots.overflowError("too many digits in integer");
+        }
+        if (by.compareTo(MAX_SHIFT) > 0) {
             throw Slots.memoryError();
         }
         return by.intValue();
+    }
+
+    /**
+     * {@code CHECK_BINOP} and then {@code long_<em>op</em>}, which is what an {@code int} files.
+     *
+     * <p>The gate is {@code PyLong_Check} on both operands and nothing looser: {@code int.__add__(5, 2.5)}
+     * declines although {@code 5 + 2.5} answers, because the operator promotes inside {@code nb_add} while
+     * the slot on its own reports only what it could not do. A {@code bool} passes the gate — {@code
+     * int.__lshift__(5, True)} is {@code 10} — and a float, a complex or anything else does not.
+     */
+    static PyObject integerSlot(BinaryOp op, PyObject a, PyObject b) {
+        BigInteger x = Numbers.asInteger(a);
+        BigInteger y = Numbers.asInteger(b);
+        if (x == null || y == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        return intOp(op, x, y);
+    }
+
+    /** {@code long_divmod}: the pair {@code nb_divmod} answers with, which no {@link BinaryOp} computes. */
+    static PyObject integerDivmod(PyObject a, PyObject b) {
+        BigInteger x = Numbers.asInteger(a);
+        BigInteger y = Numbers.asInteger(b);
+        if (x == null || y == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        BigInteger[] both = divmod(x, y);
+        return PyTuple.of(PyInt.of(both[0]), PyInt.of(both[1]));
+    }
+
+    /**
+     * {@code long_richcompare}: the same gate as the arithmetic slots, over integers only.
+     *
+     * <p>{@code int.__eq__(5, 5.0)} declines where {@code 5 == 5.0} is true, because the float's answer
+     * comes from the comparison the operator reaches after swapping the operands, not from this slot.
+     */
+    static PyObject integerCompare(CompareOp cmp, PyObject a, PyObject b) {
+        BigInteger x = Numbers.asInteger(a);
+        BigInteger y = Numbers.asInteger(b);
+        if (x == null || y == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        return PyObject.ordered(cmp, x.compareTo(y));
     }
 
     /** {@code x ** y} for two integers: exact while the exponent is positive, float once it is not. */
@@ -132,6 +184,24 @@ final class Numeric {
             both[1] = both[1].add(y);
         }
         return both;
+    }
+
+    /**
+     * {@code _PyLong_DivmodNear}'s other half: the multiple of {@code unit} nearest to {@code value}.
+     *
+     * <p>A tie goes to the even quotient. Java's division truncates toward zero, so rounding away from it
+     * reaches the neighbour one step further out: {@code -1350} goes to {@code -1400}, and {@code 15} and
+     * {@code 25} both go to {@code 20}.
+     */
+    static BigInteger nearMultiple(BigInteger value, BigInteger unit) {
+        BigInteger[] parts = value.divideAndRemainder(unit);
+        BigInteger twice = parts[1].abs().shiftLeft(1);
+        int compare = twice.compareTo(unit);
+        if (compare < 0 || (compare == 0 && !parts[0].testBit(0))) {
+            return parts[0].multiply(unit);
+        }
+        BigInteger neighbour = value.signum() < 0 ? parts[0].subtract(ONE) : parts[0].add(ONE);
+        return neighbour.multiply(unit);
     }
 
     /**
@@ -401,7 +471,10 @@ final class Numeric {
             // +x on an int is the same object; on a bool it is the int the bool stands for.
             case POSITIVE -> value instanceof PyInt i ? i : PyInt.of(integer);
             case INVERT -> PyInt.of(integer.not());
-            case ABSOLUTE -> PyInt.of(integer.abs());
+            // long_abs copies, and a copy of what is already non-negative is the value it was handed;
+            // the negative half is what long_neg builds anew. abs(True) is the int, not the bool.
+            case ABSOLUTE ->
+                    integer.signum() >= 0 && value instanceof PyInt i ? i : PyInt.of(integer.abs());
         };
     }
 
