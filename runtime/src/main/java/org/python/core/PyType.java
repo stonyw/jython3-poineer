@@ -103,6 +103,16 @@ public class PyType extends PyObject {
                     + "The builtins True and False are the only two instances of the class bool.\n"
                     + "The class bool is a subclass of the class int, and cannot be subclassed.";
 
+    /**
+     * The one sentence {@code float_doc} writes, which is all the type says about itself.
+     *
+     * <p>It is shorter than {@code int}'s for a reason: {@code float}'s constructor takes no base, so
+     * there is no literal grammar to describe, and the sentence names the two kinds it accepts rather than
+     * the number it returns.
+     */
+    private static final String FLOAT_DOC =
+            "Convert a string or number to a floating-point number, if possible.";
+
     public static final PyType NONE = builtin("NoneType");
     public static final PyType NOTIMP = builtin("NotImplementedType");
     public static final PyType ELLIPSIS = builtin("ellipsis");
@@ -113,7 +123,7 @@ public class PyType extends PyObject {
      * {@code {True: 1, 1: 2}} behave as ints that print as {@code True}.
      */
     public static final PyType BOOL = subclass("bool", INT).documented(BOOL_DOC);
-    public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF);
+    public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF).documented(FLOAT_DOC);
     public static final PyType COMPLEX = builtin("complex");
 
     /**

@@ -241,7 +241,10 @@ class Jy3LauncherTest {
                 "65_set_dictionary.py",
                 "66_frozenset_dictionary.py",
                 "67_int_dictionary.py",
-                "68_bool_dictionary.py");
+                "68_bool_dictionary.py",
+                "69_float_dictionary.py",
+                "70_float_slots.py",
+                "71_float_methods.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

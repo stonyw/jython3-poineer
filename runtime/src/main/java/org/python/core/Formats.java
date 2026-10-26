@@ -1,6 +1,9 @@
 package org.python.core;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.MathContext;
+import java.math.RoundingMode;
 
 /**
  * The format mini-language, as {@code FORMAT_WITH_SPEC} and {@code str.format} use it.
@@ -17,9 +20,36 @@ final class Formats {
 
     /** {@code format(value, spec)}. */
     static String apply(PyObject value, String spec) {
-        Spec parsed = Spec.parse(spec);
+        if (spec.isEmpty()) {
+            // Every advanced writer answers an absent specification with str(value), and reads
+            // nothing else of it.
+            return Slots.str(value);
+        }
+        int presented = presentation(value);
+        if (presented < 0) {
+            // object.__format__ never parses: a specification it has no presentation for is the error.
+            throw Slots.typeError(
+                    "unsupported format string passed to %s.__format__", value.getType().filedName());
+        }
+        Spec parsed = Spec.parse(value.getType().filedName(), (char) presented, spec);
         String body = convert(value, parsed);
         return parsed.align(body, counted(value));
+    }
+
+    /**
+     * The presentation type a family falls back to when the specification names none, which is the
+     * character its writer validates a grouping option against. A value with no family of its own
+     * answers -1.
+     */
+    private static int presentation(PyObject value) {
+        if (value instanceof PyStr) {
+            return 's';
+        }
+        if (value instanceof PyInt || value instanceof PyBool) {
+            return 'd';
+        }
+        // float's default is the character CPython spells '\0': no type at all, which is repr.
+        return value instanceof PyFloat ? '\0' : -1;
     }
 
     /**
@@ -38,30 +68,65 @@ final class Formats {
     /** {@code value} presented according to the type-specific half of its spec, before padding. */
     private static String convert(PyObject value, Spec spec) {
         if (value instanceof PyStr s) {
-            requireTextType(spec.type);
-            return spec.precision < 0
-                    ? s.getValue()
-                    : s.getValue().substring(0, s.getValue().offsetByCodePoints(
-                            0, Math.min(spec.precision, s.codePointLength())));
+            requireTextType(spec.type, spec.typeName);
+            requireTextSpec(spec);
+            if (spec.precision < 0 || spec.precision >= s.codePointLength()) {
+                return s.getValue();
+            }
+            return s.getValue()
+                    .substring(0, s.getValue().offsetByCodePoints(0, (int) spec.precision));
         }
         if (value instanceof PyInt || value instanceof PyBool) {
             return integer(value, spec);
         }
-        if (value instanceof PyFloat f) {
-            return floating(f.getValue(), spec);
-        }
-        // object.__format__ accepts an empty specification and nothing else.
-        if (spec.isEmpty()) {
-            return Slots.str(value);
-        }
-        throw Slots.typeError(
-                "unsupported format string passed to %s.__format__", value.getType().filedName());
+        return floating(((PyFloat) value).getValue(), spec);
     }
 
-    private static void requireTextType(String type) {
+    private static void requireTextType(String type, String typeName) {
         if (!type.isEmpty() && !"s".equals(type)) {
-            throw Slots.valueError("Unknown format code '%s' for object of type 'str'", type);
+            throw Slots.valueError(
+                    "Unknown format code '%s' for object of type '%s'", named(type.charAt(0)), typeName);
         }
+    }
+
+    /** The four things {@code format_string_internal} refuses a text value, in the order it refuses them. */
+    private static void requireTextSpec(Spec spec) {
+        if (!spec.sign.isEmpty()) {
+            throw Slots.valueError(
+                    " ".equals(spec.sign)
+                            ? "Space not allowed in string format specifier"
+                            : "Sign not allowed in string format specifier");
+        }
+        if (spec.noNegZero) {
+            throw Slots.valueError(
+                    "Negative zero coercion (z) not allowed in string format specifier");
+        }
+        if (!spec.alt.isEmpty()) {
+            throw Slots.valueError("Alternate form (#) not allowed in string format specifier");
+        }
+        if (spec.align == '=') {
+            throw Slots.valueError("'=' alignment not allowed in string format specifier");
+        }
+    }
+
+    /**
+     * The two things {@code format_long_internal} refuses a whole number, once its presentation type has
+     * already been accepted. A code that presents the number as a float never reaches either: the int
+     * writer hands that value to the float one, precision and all.
+     */
+    private static void requireIntegerSpec(Spec spec) {
+        if (spec.precision >= 0) {
+            throw Slots.valueError("Precision not allowed in integer format specifier");
+        }
+        if (spec.noNegZero) {
+            throw Slots.valueError(
+                    "Negative zero coercion (z) not allowed in integer format specifier");
+        }
+    }
+
+    /** How CPython names a presentation type too wide to print as a character. */
+    private static String named(char type) {
+        return type < 127 ? String.valueOf(type) : String.format("\\x%x", (int) type);
     }
 
     private static String integer(PyObject value, Spec spec) {
@@ -69,29 +134,45 @@ final class Formats {
                 ? i.getValue()
                 : BigInteger.valueOf(((PyBool) value).getValue() ? 1 : 0);
         String type = spec.type;
-        String digits;
-        if (type.isEmpty() || "d".equals(type) || "n".equals(type)) {
-            digits = group(n.abs().toString(), spec);
-        } else if ("b".equals(type)) {
-            digits = n.abs().toString(2);
-        } else if ("o".equals(type)) {
-            digits = n.abs().toString(8);
-        } else if ("x".equals(type) || "X".equals(type)) {
-            digits = n.abs().toString(16);
-            if ("X".equals(type)) {
-                digits = digits.toUpperCase();
+        if (!type.isEmpty() && "bcdoxnX".indexOf(type.charAt(0)) < 0) {
+            if ("eEfFgG%".indexOf(type.charAt(0)) >= 0) {
+                // `PyNumber_Float` of the value, which is the one place an integer's own size matters.
+                return floating(Numeric.asDouble(PyInt.of(n)), spec);
             }
-        } else if ("%".equals(type)) {
-            digits = group(n.abs().multiply(BigInteger.valueOf(100)).toString(), spec) + "%";
-        } else if ("c".equals(type)) {
-            int cp = n.intValueExact();
-            digits = String.valueOf((char) cp);
-        } else if ("eEfFgG".indexOf(type.charAt(0)) >= 0 && type.length() == 1) {
-            return floating(n.doubleValue(), spec);
-        } else {
             throw Slots.valueError(
-                    "Unknown format code '%s' for object of type 'int'", type);
+                    "Unknown format code '%s' for object of type '%s'",
+                    named(type.charAt(0)), spec.typeName);
         }
+        requireIntegerSpec(spec);
+        if ("c".equals(type)) {
+            if (!spec.sign.isEmpty()) {
+                throw Slots.valueError("Sign not allowed with integer format specifier 'c'");
+            }
+            if (!spec.alt.isEmpty()) {
+                throw Slots.valueError(
+                        "Alternate form (#) not allowed with integer format specifier 'c'");
+            }
+        }
+        String raw;
+        if (type.isEmpty() || "d".equals(type) || "n".equals(type)) {
+            raw = n.abs().toString();
+        } else if ("b".equals(type)) {
+            raw = n.abs().toString(2);
+        } else if ("o".equals(type)) {
+            raw = n.abs().toString(8);
+        } else if ("x".equals(type) || "X".equals(type)) {
+            raw = n.abs().toString(16);
+            if ("X".equals(type)) {
+                raw = raw.toUpperCase();
+            }
+        } else {
+            raw = new String(Character.toChars(ordinal(n)));
+        }
+        // Hex and octal digits are letters as often as not, so the whole run is grouped as written.
+        String digits = spec.grouping.isEmpty()
+                ? raw
+                : group(raw, spec.grouping.charAt(0), !type.isEmpty() && "boxX".indexOf(type) >= 0 ? 4 : 3,
+                        true);
         if ("#".equals(spec.alt) && !type.isEmpty() && !"d".equals(type)) {
             digits = switch (type) {
                 case "b" -> "0b" + digits;
@@ -103,87 +184,243 @@ final class Formats {
         return sign(n, spec) + digits;
     }
 
-    private static String floating(double value, Spec spec) {
-        String type = spec.type.isEmpty() ? "g" : spec.type;
-        int precision = spec.precision < 0 ? 6 : spec.precision;
-        if ("s".equals(type)) {
-            throw Slots.valueError("Unknown format code 's' for object of type 'float'");
+    /** {@code PyLong_AsLong} of the value, and the {@code %c} range check that follows the call. */
+    private static int ordinal(BigInteger n) {
+        if (n.bitLength() >= Long.SIZE) {
+            throw Slots.overflowError("Python int too large to convert to C long");
         }
-        String digits;
-        switch (type) {
-            case "f", "F" -> digits = fixed(value, precision, type);
-            case "e", "E" -> digits = exponent(value, precision, type);
-            case "g", "G" -> digits = general(value, precision, type);
-            case "n" -> digits = general(value, precision == 6 ? 12 : precision, type);
-            case "%" -> digits = fixed(value * 100, precision, "f") + "%";
-            default -> throw Slots.valueError(
-                    "Unknown format code '%s' for object of type 'float'", type);
+        long wide = n.longValue();
+        if (wide < 0 || wide > 0x10ffff) {
+            // The sentence is CPython's own, and its `%c` names the presentation type, not a slot.
+            throw Slots.overflowError("%%c arg not in range(0x110000)");
+        }
+        return (int) wide;
+    }
+
+    /**
+     * {@code format_float_internal}: {@code PyOS_double_to_string} and then the padding.
+     *
+     * <p>The omitted code is not {@code 'g'}: it is repr, and repr reads the fewest digits that still
+     * come back as the same double. The three other families ask the exact binary value for a number of
+     * significant digits or of places and round to nearest with ties to the even digit, which is what
+     * Java's own {@code %f} does not do — {@code format(2.5, '.0f')} is {@code '2'} here and {@code '3'}
+     * there, and {@code format(1e100, 'f')} is the 104 digits the value really holds.
+     */
+    private static String floating(double value, Spec spec) {
+        boolean omitted = spec.type.isEmpty();
+        char type = omitted ? 'r' : spec.type.charAt(0);
+        if (!omitted && "eEfFgGn%".indexOf(type) < 0) {
+            throw Slots.valueError(
+                    "Unknown format code '%s' for object of type '%s'",
+                    named(type), spec.typeName);
+        }
+        if (spec.precision > Integer.MAX_VALUE - 1024) {
+            // `DOUBLE_TO_STRING_PRECISION_MAX`, which is how far dtoa is willing to be asked for digits.
+            throw Slots.valueError("precision too big");
+        }
+        boolean upper = type == 'E' || type == 'F' || type == 'G';
+        type = Character.toLowerCase(type);
+        boolean addDotZero = omitted;
+        boolean percent = type == '%';
+        if (type == 'n') {
+            // The locale form is the general one, and this runtime has only the C locale to group with.
+            type = 'g';
+        }
+        if (percent) {
+            // The hundred is multiplied into the double itself, so `format(1e308, '%')` is an
+            // infinity and not a number with two more digits than the value has room for.
+            type = 'f';
+            value = value * 100;
+        }
+        int precision = (int) spec.precision;
+        if (precision < 0) {
+            precision = omitted ? 0 : 6;
+        } else if (type == 'r') {
+            // A precision is a general one asked of the omitted code, and it keeps repr's dot.
+            type = 'g';
         }
         if (Double.isNaN(value) || Double.isInfinite(value)) {
-            // A nan or an inf is still signed and still aligned, but never padded or grouped.
-            String name = Double.isNaN(value) ? "nan" : "inf";
-            return (value < 0 ? "-" : spec.sign) + name;
+            String name = Double.isNaN(value) ? (upper ? "NAN" : "nan") : (upper ? "INF" : "inf");
+            // A nan is the one value whose sign dtoa throws away before it writes the name.
+            return leading(!Double.isNaN(value) && negative(value), spec) + name + suffix(percent);
         }
-        return sign(value, spec) + group(digits, spec);
+        int mode = type == 'r' ? 0 : type == 'f' ? 3 : 2;
+        if (type == 'e') {
+            precision = precision + 1;
+        } else if (type == 'g' && precision == 0) {
+            precision = 1;
+        }
+        Digits digits = dtoa(value, mode, precision);
+        if (spec.noNegZero && isNothing(digits.digits())) {
+            // The `z` flag asks a value that rounds to nothing not to wear a minus for it.
+            digits = new Digits(false, digits.digits(), digits.point());
+        }
+        String body =
+                layOut(digits, type, precision, addDotZero, "#".equals(spec.alt), upper ? 'E' : 'e')
+                        + suffix(percent);
+        return leading(digits.negative(), spec) + grouped(body, spec);
     }
 
-    private static String fixed(double value, int precision, String type) {
-        String out = String.format(
-                java.util.Locale.ROOT, "%." + precision + "f", Math.abs(value));
-        return "F".equals(type) ? out.replace("e", "E") : out;
+    /** dtoa's digit run for a value that had no significant digit to give: one zero, or none. */
+    private static boolean isNothing(String digits) {
+        return digits.isEmpty() || digits.equals("0");
     }
 
-    private static String exponent(double value, int precision, String type) {
-        String out = String.format(java.util.Locale.ROOT, "%." + precision + (type), Math.abs(value));
-        // Java emits at least three exponent digits; Python uses two.
-        int at = out.indexOf('e');
-        if (at >= 0 && out.length() - at > 3) {
-            out = out.substring(0, at + 2) + out.substring(at + 3);
-        }
-        return "E".equals(type) ? out.toUpperCase() : out;
+    private static String suffix(boolean percent) {
+        return percent ? "%" : "";
     }
 
-    private static String general(double value, int precision, String type) {
-        String out = String.format(
-                java.util.Locale.ROOT, "%." + Math.max(precision, 1) + ("G".equals(type) ? "G" : "g"),
-                Math.abs(value));
-        if (out.startsWith("0.")) {
-            return trimZeros(out);
-        }
-        return out.contains("e") || out.contains("E") ? out : trimZeros(out);
+    /** The sign of a double as its bits tell it, which is the only way {@code -0.0} says so. */
+    private static boolean negative(double value) {
+        return Double.doubleToRawLongBits(value) < 0;
     }
 
-    /** {@code %g} drops the trailing zeros it was not asked to keep; Java keeps them. */
-    private static String trimZeros(String digits) {
-        int dot = digits.indexOf('.');
-        if (dot < 0 || digits.matches(".*[eE].*")) {
-            return digits;
+    /** {@code _Py_dg_dtoa} in the three modes the presentation types ask for. */
+    private static Digits dtoa(double value, int mode, int precision) {
+        boolean negative = negative(value);
+        BigDecimal exact = new BigDecimal(Math.abs(value));
+        if (mode == 0) {
+            int[] point = new int[1];
+            return new Digits(negative, PyFloat.shortestDigits(Math.abs(value), point), point[0]);
         }
-        String out = digits;
-        while (out.endsWith("0")) {
-            out = out.substring(0, out.length() - 1);
+        BigDecimal rounded = mode == 2
+                ? exact.round(new MathContext(precision, RoundingMode.HALF_EVEN))
+                : exact.setScale(precision, RoundingMode.HALF_EVEN);
+        String digits = rounded.unscaledValue().toString();
+        if (mode == 2) {
+            // Gay hands the general form its digits without the zeros it did not ask for; the
+            // exponential one pads them back out by the width of the field, not by these digits.
+            String stripped = digits.replaceAll("0+$", "");
+            digits = stripped.isEmpty() ? "0" : stripped;
         }
-        return out.endsWith(".") ? out.substring(0, out.length() - 1) : out;
+        return new Digits(negative, digits, rounded.precision() - rounded.scale());
+    }
+
+    /**
+     * {@code format_float_short}'s slice of the infinite run of zeros the digit string implies:
+     * {@code [<sign>]<zeros><digits><zeros>[<exponent>]}, with the decimal point somewhere in it.
+     */
+    private static String layOut(
+            Digits digits, char type, int precision, boolean addDotZero, boolean alt, char exponentChar) {
+        String run = digits.digits();
+        int point = digits.point();
+        boolean useExponent = false;
+        int end = run.length();
+        switch (type) {
+            case 'e' -> {
+                useExponent = true;
+                end = precision;
+            }
+            case 'f' -> end = point + precision;
+            case 'g' -> {
+                useExponent = point <= -4 || point > (addDotZero ? precision - 1 : precision);
+                if (alt) {
+                    end = precision;
+                }
+            }
+            default -> {
+                // 'r' leaves the exponential form to the two thresholds repr has always used.
+                useExponent = point <= -4 || point > 16;
+            }
+        }
+        int exponent = 0;
+        if (useExponent) {
+            exponent = point - 1;
+            point = 1;
+        }
+        int start = point <= 0 ? point - 1 : 0;
+        if (!useExponent && addDotZero) {
+            end = Math.max(end, point + 1);
+        } else {
+            end = Math.max(end, point);
+        }
+        StringBuilder out = new StringBuilder();
+        if (point <= 0) {
+            out.append(zeros(point - start)).append('.').append(zeros(-point));
+        } else {
+            out.append(zeros(-start));
+        }
+        if (point > 0 && point <= run.length()) {
+            out.append(run, 0, point).append('.').append(run.substring(point));
+        } else {
+            out.append(run);
+        }
+        if (run.length() < point) {
+            out.append(zeros(point - run.length())).append('.').append(zeros(end - point));
+        } else {
+            out.append(zeros(end - run.length()));
+        }
+        if (!alt && out.length() > 0 && out.charAt(out.length() - 1) == '.') {
+            out.setLength(out.length() - 1);
+        }
+        if (useExponent) {
+            int magnitude = Math.abs(exponent);
+            out.append(exponentChar)
+                    .append(exponent < 0 ? '-' : '+')
+                    .append(magnitude < 10 ? "0" + magnitude : String.valueOf(magnitude));
+        }
+        return out.toString();
+    }
+
+    private static String zeros(int count) {
+        return count <= 0 ? "" : "0".repeat(count);
+    }
+
+    /** The digits, where the decimal point falls among them, and whether the value was negative. */
+    private record Digits(boolean negative, String digits, int point) {}
+
+    /**
+     * The {@code _} or {@code ,} grouping option, put into the digits on each side of the point and
+     * nowhere else: {@code format(1e100, ',.2f')} groups the 104 digits it writes and leaves the {@code
+     * .2} alone, and an exponent or a {@code %} is not part of what gets grouped either. Only a
+     * separator written after the point — {@code '.4,f'} — groups the digits that follow it, and it
+     * counts those from the point outward, so their short run is the last one.
+     */
+    private static String grouped(String body, Spec spec) {
+        int head = 0;
+        while (head < body.length() && Character.isDigit(body.charAt(head))) {
+            head++;
+        }
+        String out = spec.grouping.isEmpty()
+                ? body.substring(0, head)
+                : group(body.substring(0, head), spec.grouping.charAt(0), 3, true);
+        if (head < body.length() && body.charAt(head) == '.' && !spec.fracGrouping.isEmpty()) {
+            int tail = head + 1;
+            while (tail < body.length() && Character.isDigit(body.charAt(tail))) {
+                tail++;
+            }
+            return out + "."
+                    + group(body.substring(head + 1, tail), spec.fracGrouping.charAt(0), 3, false)
+                    + body.substring(tail);
+        }
+        return out + body.substring(head);
+    }
+
+    /**
+     * The character in front of the digits: the minus the value carries, or the one the sign flag
+     * asks for. {@code '-'} is that flag's third answer and asks for nothing on a value that is not
+     * negative, which is why {@code format(1.5, '-08.1e')} is {@code '01.5e+00'} and not a number
+     * with a sign it never had.
+     */
+    private static String leading(boolean negative, Spec spec) {
+        return negative ? "-" : "-".equals(spec.sign) ? "" : spec.sign;
     }
 
     private static String sign(BigInteger value, Spec spec) {
-        return value.signum() < 0 ? "-" : spec.sign;
+        return leading(value.signum() < 0, spec);
     }
 
-    private static String sign(double value, Spec spec) {
-        return value < 0 ? "-" : spec.sign;
-    }
-
-    /** The {@code _} or {@code ,} grouping option, applied to the digits of a decimal number. */
-    private static String group(String digits, Spec spec) {
-        if (spec.grouping.isEmpty()) {
-            return digits;
-        }
-        char separator = spec.grouping.charAt(0);
+    /**
+     * The separator, stood between every {@code every} digits. Reading a whole number from its point
+     * outward leaves a short run at the front — {@code 1,234,567} — while reading a fraction from the
+     * point leaves the short run at the end, which is why {@code '.4,f'} answers {@code 1234.567,9}.
+     */
+    private static String group(String digits, char separator, int every, boolean shortRunFirst) {
         StringBuilder out = new StringBuilder();
-        int leading = digits.length() % 3 == 0 ? 3 : digits.length() % 3;
+        int remainder = digits.length() % every;
+        int leading = !shortRunFirst || remainder == 0 ? every : remainder;
         for (int i = 0; i < digits.length(); i++) {
-            if (i > 0 && (i - leading) % 3 == 0) {
+            if (i > 0 && (i - leading) % every == 0) {
                 out.append(separator);
             }
             out.append(digits.charAt(i));
@@ -198,73 +435,155 @@ final class Formats {
         char align = 0;
         String sign = "";
         String alt = "";
-        int width = -1;
-        int precision = -1;
+        long width = -1;
+        long precision = -1;
         String type = "";
         String grouping = "";
+        String fracGrouping = "";
         boolean zeroPad;
+        boolean noNegZero;
+        /** {@code Py_TYPE(obj)->tp_name}, which three of the sentences below print. */
+        String typeName = "";
 
-        boolean isEmpty() {
-            return fill.equals(" ") && align == 0 && sign.isEmpty() && alt.isEmpty()
-                    && width < 0 && precision < 0 && type.isEmpty() && grouping.isEmpty()
-                    && !zeroPad;
-        }
-
-        static Spec parse(String spec) {
+        /**
+         * {@code parse_internal_render_format_spec}, character by character, with the object's default
+         * presentation type in place of the one the grammar leaves out.
+         */
+        static Spec parse(String typeName, char defaultType, String spec) {
             Spec out = new Spec();
+            out.typeName = typeName;
             int at = 0;
-            if (spec.length() >= 3 && "<^>= ".indexOf(spec.charAt(2)) >= 0) {
-                out.fill = spec.substring(0, 1);
-                out.align = spec.charAt(2);
-                at = 3;
-            } else if (!spec.isEmpty() && "<^>= ".indexOf(spec.charAt(0)) >= 0) {
-                out.align = spec.charAt(0);
-                at = 1;
+            boolean fillGiven = false;
+            boolean alignGiven = false;
+            // Only the character that stands in front of an alignment is a fill. A space that opens
+            // the spec is instead the sign that asks a positive number to wear one.
+            if (spec.length() - at >= 2 && "<^>=".indexOf(spec.charAt(at + 1)) >= 0) {
+                out.fill = String.valueOf(spec.charAt(at));
+                out.align = spec.charAt(at + 1);
+                fillGiven = alignGiven = true;
+                at += 2;
+            } else if (at < spec.length() && "<^>=".indexOf(spec.charAt(at)) >= 0) {
+                out.align = spec.charAt(at);
+                alignGiven = true;
+                at++;
             }
             if (at < spec.length() && "+- ".indexOf(spec.charAt(at)) >= 0) {
                 out.sign = String.valueOf(spec.charAt(at));
+                at++;
+            }
+            if (at < spec.length() && spec.charAt(at) == 'z') {
+                out.noNegZero = true;
                 at++;
             }
             if (at < spec.length() && spec.charAt(at) == '#') {
                 out.alt = "#";
                 at++;
             }
-            if (at < spec.length() && spec.charAt(at) == '0') {
-                out.zeroPad = true;
-                if (out.align == 0) {
-                    // The fill is the digit for every type; only the alignment it stands for is the
-                    // number's, which is why format('12', '06') left-justifies inside zeroes.
-                    out.fill = "0";
+            if (!fillGiven && at < spec.length() && spec.charAt(at) == '0') {
+                // The digit is the fill for every type; the alignment it stands for is only a
+                // number's, and only where the spec did not already choose one.
+                out.fill = "0";
+                out.zeroPad = !alignGiven;
+                at++;
+            }
+            long[] held = new long[1];
+            int consumed = digits(spec, at, held);
+            at += consumed;
+            if (consumed > 0) {
+                out.width = held[0];
+            }
+            if (at < spec.length() && spec.charAt(at) == ',') {
+                out.grouping = ",";
+                at++;
+            }
+            if (at < spec.length() && spec.charAt(at) == '_') {
+                if (!out.grouping.isEmpty()) {
+                    throw Slots.valueError("Cannot specify both ',' and '_'.");
                 }
+                out.grouping = "_";
                 at++;
             }
-            int digitsStart = at;
-            while (at < spec.length() && Character.isDigit(spec.charAt(at))) {
-                at++;
-            }
-            if (at > digitsStart) {
-                out.width = Integer.parseInt(spec.substring(digitsStart, at));
-            }
-            if (at < spec.length() && (spec.charAt(at) == ',' || spec.charAt(at) == '_')) {
-                out.grouping = String.valueOf(spec.charAt(at));
-                at++;
+            if (at < spec.length() && spec.charAt(at) == ',' && out.grouping.equals("_")) {
+                throw Slots.valueError("Cannot specify both ',' and '_'.");
             }
             if (at < spec.length() && spec.charAt(at) == '.') {
                 at++;
-                int start = at;
-                while (at < spec.length() && Character.isDigit(spec.charAt(at))) {
+                consumed = digits(spec, at, held);
+                at += consumed;
+                out.precision = consumed > 0 ? held[0] : 0;
+                if (at < spec.length() && spec.charAt(at) == ',') {
+                    out.precision = consumed == 0 ? -1 : out.precision;
+                    out.fracGrouping = ",";
                     at++;
+                    consumed++;
                 }
-                out.precision = at > start ? Integer.parseInt(spec.substring(start, at)) : 0;
+                if (at < spec.length() && spec.charAt(at) == '_') {
+                    if (!out.fracGrouping.isEmpty()) {
+                        throw Slots.valueError("Cannot specify both ',' and '_'.");
+                    }
+                    out.precision = consumed == 0 ? -1 : out.precision;
+                    out.fracGrouping = "_";
+                    at++;
+                    consumed++;
+                }
+                if (at < spec.length() && spec.charAt(at) == ',' && out.fracGrouping.equals("_")) {
+                    throw Slots.valueError("Cannot specify both ',' and '_'.");
+                }
+                if (consumed == 0) {
+                    throw Slots.valueError("Format specifier missing precision");
+                }
             }
-            if (at < spec.length()) {
+            if (spec.length() - at > 1) {
+                throw Slots.valueError(
+                        "Invalid format specifier '%s' for object of type '%s'", spec, typeName);
+            }
+            if (spec.length() - at == 1) {
                 out.type = spec.substring(at);
-                at = spec.length();
             }
-            if (at != spec.length()) {
-                throw Slots.valueError("Invalid format specifier: '%s'", spec);
-            }
+            requireGrouping(out, defaultType);
             return out;
+        }
+
+        /**
+         * {@code get_integer}: how many decimal digits open {@code spec} at {@code from}, and what they
+         * add up to. A run too long for a {@code Py_ssize_t} is the sentence CPython raises for it,
+         * which Java would otherwise answer with a {@code NumberFormatException} of its own.
+         */
+        private static int digits(String spec, int from, long[] out) {
+            long accumulator = 0;
+            int count = 0;
+            while (from + count < spec.length() && Character.isDigit(spec.charAt(from + count))) {
+                int value = Character.digit(spec.charAt(from + count), 10);
+                if (accumulator > (Long.MAX_VALUE - value) / 10) {
+                    throw Slots.valueError("Too many decimal digits in format string");
+                }
+                accumulator = accumulator * 10 + value;
+                count++;
+            }
+            out[0] = accumulator;
+            return count;
+        }
+
+        /**
+         * The grouping option's own last look, which is the parser's, not the writer's: only a type
+         * with digits to group may ask for one, and bin, oct and hex take underscores alone — PEP 515
+         * groups those every four, because four of them is one nibble of nothing.
+         */
+        private static void requireGrouping(Spec out, char defaultType) {
+            char type = out.type.isEmpty() ? defaultType : out.type.charAt(0);
+            if (!out.grouping.isEmpty()) {
+                if ("deEfFgG%\0".indexOf(type) >= 0) {
+                    return;
+                }
+                if ("boxX".indexOf(type) >= 0 && out.grouping.equals("_")) {
+                    return;
+                }
+                throw Slots.valueError(
+                        "Cannot specify '%s' with '%s'.", out.grouping, named(type));
+            }
+            if (type == 'n' && !out.fracGrouping.isEmpty()) {
+                throw Slots.valueError("Cannot specify '%s' with 'n'.", out.fracGrouping);
+            }
         }
 
         /** Pad to the width CPython was asked for, on the side the alignment selects. */
@@ -273,7 +592,7 @@ final class Formats {
                 return body;
             }
             char pad = fill.length() == 1 ? fill.charAt(0) : ' ';
-            int missing = width - body.length();
+            int missing = Numbers.total(width - body.length());
             char alignment =
                     align != 0
                             ? align

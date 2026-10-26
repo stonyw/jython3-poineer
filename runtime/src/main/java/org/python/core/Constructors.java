@@ -443,7 +443,16 @@ final class Constructors {
         return exact;
     }
 
-    private static PyObject floating(PyObject[] args, String[] kwNames) {
+    /**
+     * {@code float_new}'s whole argument table, which the constructor and {@code float.__new__} share.
+     *
+     * <p>{@code float_vectorcall} and clinic's {@code float_new} parser are the same three lines — keywords,
+     * then count, then the value — so both spellings of an over-long call give the same legacy sentence,
+     * {@code float expected at most 1 argument, got 2}, and neither names a parameter. A float is
+     * {@code PyNumber_Float}'s one argument that needs no conversion at all: it is the value that comes
+     * back, because {@code nb_float} is {@code float_float} and hands the receiver out.
+     */
+    static PyObject floating(PyObject[] args, String[] kwNames) {
         refuseKeywords("float", kwNames);
         Arguments.atMost("float", args, kwNames, 1);
         if (args.length == 0) {
@@ -462,6 +471,9 @@ final class Constructors {
             throw Slots.typeError(
                     "float() argument must be a string or a real number, not '%s'",
                     args[0].getType().name());
+        }
+        if (args[0] instanceof PyFloat number) {
+            return number;
         }
         return PyFloat.of(Numeric.asDouble(args[0]));
     }

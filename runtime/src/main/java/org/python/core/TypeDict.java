@@ -550,6 +550,10 @@ final class TypeDict {
             boolTable(into);
             return;
         }
+        if (owner == PyType.FLOAT) {
+            floatTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -1166,6 +1170,126 @@ final class TypeDict {
         table.wrapper("__or__", OR_DOC, boolBit(BinaryOp.OR));
         table.wrapper("__ror__", ROR_DOC, reflectedBoolBit(BinaryOp.OR));
         table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code float}'s own dictionary: the forty-seven names a real number files.
+     *
+     * <p>Three groups again, in the order {@code type_ready} walks the struct: the constructor, then the
+     * thirty {@code PyFloatMethods} rows in the order {@code slotdefs.py} emits them, then the thirteen
+     * {@code float_methods} sentences and the two {@code float_getset}. There is no {@code __str__} and
+     * no {@code __init__}, for the two reasons {@link #intTable} gives, and there is no {@code
+     * __invert__}, {@code __lshift__} or {@code __and__} either: {@code floatobject.c} fills no bitwise slot
+     * at all, which is what makes {@code float.__and__(1.5, 3)} a name that is simply not there rather than
+     * one that is there and declines.
+     *
+     * <p>Two of the thirty are the identity cases. {@code nb_positive}, {@code tp_float}, {@code
+     * float.conjugate} and the {@code real} read are all the very same C function, {@code float_float}, and
+     * each hands back the value it was given rather than a copy — {@code +x is x} and {@code x.real is x}
+     * both say true — while {@code imag} is the one of the four that builds a fresh zero. {@code nb_int} is
+     * {@code float.__trunc__} and nothing else, which is why the wrapper truncates toward zero and refuses
+     * the two values that have no integer part.
+     *
+     * <p>The comparisons are {@code float_richcompare}, which opens with {@code CHECK_BINOP} like {@code
+     * long_richcompare} does, so {@code float.__eq__(1.5, 'x')} reports the decline; what that function does
+     * with an integer it cannot name is the four-test ladder in {@link Numeric#floatCompare}, and it is the
+     * reason {@code 9007199254740992.0 == 2**53 + 1} is false where the two are the same double.
+     */
+    private static void floatTable(PyDict into) {
+        PyType owner = PyType.FLOAT;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::floatsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, floatComparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, floatComparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, floatComparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, floatComparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, floatComparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, floatComparing(CompareOp.GE));
+        table.wrapper("__add__", ADD_DOC, floatOperating(BinaryOp.ADD));
+        table.wrapper("__radd__", RADD_DOC, reflectedFloatOperating(BinaryOp.ADD));
+        table.wrapper("__sub__", SUB_DOC, floatOperating(BinaryOp.SUB));
+        table.wrapper("__rsub__", RSUB_DOC, reflectedFloatOperating(BinaryOp.SUB));
+        table.wrapper("__mul__", MUL_DOC, floatOperating(BinaryOp.MUL));
+        table.wrapper("__rmul__", RMUL_DOC, reflectedFloatOperating(BinaryOp.MUL));
+        table.wrapper("__mod__", MOD_DOC, floatOperating(BinaryOp.MOD));
+        table.wrapper("__rmod__", RMOD_DOC, reflectedFloatOperating(BinaryOp.MOD));
+        table.wrapper("__divmod__", DIVMOD_DOC, TypeDict::floatDividing);
+        table.wrapper("__rdivmod__", RDIVMOD_DOC, TypeDict::reflectedFloatDividing);
+        table.wrapper("__pow__", POW_DOC, TypeDict::floatRaising);
+        table.wrapper("__rpow__", RPOW_DOC, TypeDict::reflectedFloatRaising);
+        table.wrapper("__neg__", NEG_DOC, args -> Numeric.unary(UnaryOp.NEGATIVE, args[0]));
+        table.wrapper("__pos__", POS_DOC, args -> Numeric.unary(UnaryOp.POSITIVE, args[0]));
+        table.wrapper("__abs__", ABS_DOC, args -> Numeric.unary(UnaryOp.ABSOLUTE, args[0]));
+        table.wrapper("__bool__", TRUTH_DOC, args -> args[0].truth());
+        table.wrapper(
+                "__int__",
+                TO_INT_DOC,
+                args -> Numeric.longFromDouble(((PyFloat) args[0]).getValue()));
+        table.wrapper("__float__", TO_FLOAT_DOC, args -> Numeric.floatFloat(args[0]));
+        table.wrapper("__floordiv__", FLOORDIV_DOC, floatOperating(BinaryOp.FLOORDIV));
+        table.wrapper("__rfloordiv__", RFLOORDIV_DOC, reflectedFloatOperating(BinaryOp.FLOORDIV));
+        table.wrapper("__truediv__", TRUEDIV_DOC, floatOperating(BinaryOp.TRUEDIV));
+        table.wrapper("__rtruediv__", RTRUEDIV_DOC, reflectedFloatOperating(BinaryOp.TRUEDIV));
+        table.named(
+                "from_number",
+                "conjugate",
+                "__trunc__",
+                "__floor__",
+                "__ceil__",
+                "__round__",
+                "as_integer_ratio",
+                "fromhex",
+                "hex",
+                "is_integer",
+                "__getnewargs__",
+                "__getformat__",
+                "__format__");
+        table.getset("real", REAL_DOC, Numeric::floatFloat, null);
+        table.getset("imag", IMAG_DOC, self -> PyFloat.of(0.0), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code float_richcompare}: the gate is {@code CHECK_BINOP}, so a non-number is declined. */
+    private static Method floatComparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> Numeric.floatCompare(cmp, args[0], args[1]);
+    }
+
+    /** {@code float_add} and its seven siblings: the two-operand slot of the receiver, decline included. */
+    private static Method floatOperating(BinaryOp op) {
+        return (args, kwNames, qualified) -> Numeric.floatSlot(op, args[0], args[1]);
+    }
+
+    /** {@code RBINSLOT}'s swap: the same C function with the operands the other way round. */
+    private static Method reflectedFloatOperating(BinaryOp op) {
+        return (args, kwNames, qualified) -> Numeric.floatSlot(op, args[1], args[0]);
+    }
+
+    /** {@code float_divmod}: the pair, which no {@link BinaryOp} computes. */
+    private static PyObject floatDividing(PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.floatDivmod(args[0], args[1]);
+    }
+
+    private static PyObject reflectedFloatDividing(
+            PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.floatDivmod(args[1], args[0]);
+    }
+
+    /** {@code float_pow}: the third argument may only be the absence it defaults to. */
+    private static PyObject floatRaising(PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.floatPower(args[0], args[1], modulus(args));
+    }
+
+    private static PyObject reflectedFloatRaising(
+            PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.floatPower(args[1], args[0], modulus(args));
+    }
+
+    /** {@code float_new} over a {@code tp_new} reached through the dictionary: the class gates first. */
+    private static PyObject floatsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.FLOAT, args, kwNames);
+        return Constructors.floating(tail(args, kwNames), kwNames);
     }
 
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */

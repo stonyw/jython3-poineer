@@ -354,6 +354,175 @@ final class Numeric {
         return Math.floor(Math.abs(v) % 2.0) == 1.0;
     }
 
+    /** {@code float_methods}' four coercions and the whole of its number struct run on this. */
+    private static final int DBL_MAX_EXP = 1024;
+
+    /**
+     * {@code CONVERT_TO_DOUBLE}: the double a float or an integer carries, and null for anything else.
+     *
+     * <p>A refusal and a failure are different things here. A complex, a string or a Java object makes every
+     * slot of {@code floatobject.c} decline, which is what lets {@code 1.5 + 1j} be answered by the
+     * complex's own slot; an integer with no double form is a number the slot can read and cannot name, so
+     * the {@code OverflowError} comes out of the read itself — {@code float.__add__(1.5, 10**400)} refuses
+     * where {@code float.__add__(1.5, 'x')} declines.
+     */
+    static Double doubleOf(PyObject value) {
+        if (value instanceof PyFloat f) {
+            return f.getValue();
+        }
+        BigInteger integer = Numbers.asInteger(value);
+        return integer == null ? null : integerAsDouble(integer);
+    }
+
+    /** {@code PyLong_AsDouble}, whose one refusal is the number being too large for a double. */
+    private static double integerAsDouble(BigInteger integer) {
+        double asDouble = integer.doubleValue();
+        if (Double.isInfinite(asDouble) && integer.signum() != 0) {
+            throw Slots.overflowError("int too large to convert to float");
+        }
+        return asDouble;
+    }
+
+    /**
+     * {@code float_add} and its eight siblings, over the two operands a call named.
+     *
+     * <p>Each is the same three lines — read both, decline if either is neither a float nor an integer, and
+     * compute in doubles. The {@code __r…} half of every pair is the very same C function with the operands
+     * swapped, so {@code float.__radd__(1.5, 2)} is the addition of {@code 2 + 1.5} rather than of anything
+     * else, and it is the order in which the two refusals come out that the swap changes.
+     */
+    static PyObject floatSlot(BinaryOp op, PyObject left, PyObject right) {
+        Double x = doubleOf(left);
+        Double y = doubleOf(right);
+        if (x == null || y == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        return floatOp(op, x, y);
+    }
+
+    /** {@code float_divmod}: the pair, which no {@link BinaryOp} computes. */
+    static PyObject floatDivmod(PyObject left, PyObject right) {
+        Double x = doubleOf(left);
+        Double y = doubleOf(right);
+        if (x == null || y == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        double[] both = divmodFloat(x, y);
+        return PyTuple.of(PyFloat.of(both[0]), PyFloat.of(both[1]));
+    }
+
+    /**
+     * {@code float_pow}: the ladder of {@link #floatPow}, behind the one rule its three-argument form adds.
+     *
+     * <p>The modulus is refused before either operand is read, so {@code float.__pow__(2.0, 3, 'x')}
+     * complains about a third argument and not about the string, and {@code None} is the value that means
+     * "no modulus given" — which is what lets the wrapper answer {@code __pow__(2, 3)} and {@code
+     * __pow__(2, 3, None)} with the same eight.
+     */
+    static PyObject floatPower(PyObject base, PyObject exponent, PyObject modulus) {
+        if (modulus != PyNone.INSTANCE) {
+            throw Slots.typeError("pow() 3rd argument not allowed unless all arguments are integers");
+        }
+        return floatSlot(BinaryOp.POW, base, exponent);
+    }
+
+    /**
+     * {@code float_float}: the coercion every float answers with itself.
+     *
+     * <p>Four names reach this one C function — {@code +x}, {@code float(x)}, {@code x.__float__()} and the
+     * {@code real} read — and each hands back the very object it was given rather than a copy of it, which
+     * is observable through {@code is}. The copy half of {@code float_float} is written for a value that is
+     * a float <em>subclass</em>, and no class under this runtime builds one.
+     */
+    static PyObject floatFloat(PyObject value) {
+        return value;
+    }
+
+    /**
+     * {@code PyLong_FromDouble}: the part of a double before the point, as an integer.
+     *
+     * <p>{@code __trunc__}, {@code __floor__} and {@code __ceil__} all answer with this, and so does
+     * {@code int(x)} for a float — the three that floor or ceil have already rounded the double before it
+     * gets here. Truncation is toward zero, so {@code int(-1.5)} is {@code -1} and {@code -0.0} is the
+     * integer zero rather than a negative one. The two refusals are the conversion's own and name no
+     * caller: a number with no integer part at all is not a size.
+     */
+    static PyObject longFromDouble(double value) {
+        if (Double.isNaN(value)) {
+            throw Slots.valueError("cannot convert float NaN to integer");
+        }
+        if (Double.isInfinite(value)) {
+            throw Slots.overflowError("cannot convert float infinity to integer");
+        }
+        return PyInt.of(new BigDecimal(value).toBigInteger());
+    }
+
+    /**
+     * {@code float_richcompare}: an ordering between a float and one other value, exact in both directions.
+     *
+     * <p>Rounding the integer would be wrong ({@code 9007199254740992.0 == 2**53 + 1} is false, and as
+     * doubles they are equal) and rounding the float would be wrong the other way, so the C function walks
+     * four tests before it compares anything: unlike signs settle it on their own, an integer of more than
+     * {@value #DBL_MAX_EXP} bits is larger than any finite float, an integer of 48 bits or fewer converts
+     * exactly, and only a pair with the same number of bits before the point is compared as integers — at
+     * which point a float with a fraction has its operator rewritten, because {@code 2.5 <= 3} and {@code
+     * 2.5 < 3} are the same question.
+     *
+     * <p>An infinity and a NaN are the two exceptions: neither is compared with the integer at all, and both
+     * are measured against zero instead, which is why {@code -inf < 10**400} is true and every ordering a
+     * NaN is asked for is false while {@code !=} is true.
+     */
+    static PyObject floatCompare(CompareOp cmp, PyObject floatSide, PyObject other) {
+        double i = ((PyFloat) floatSide).getValue();
+        if (other instanceof PyFloat f) {
+            return compareDoubles(cmp, i, f.getValue());
+        }
+        BigInteger w = Numbers.asInteger(other);
+        if (w == null) {
+            return PyNotImplemented.INSTANCE;
+        }
+        if (!Double.isFinite(i)) {
+            return compareDoubles(cmp, i, 0.0);
+        }
+        int vsign = i == 0.0 ? 0 : i < 0.0 ? -1 : 1;
+        int wsign = w.signum();
+        if (vsign != wsign) {
+            return compareDoubles(cmp, vsign, wsign);
+        }
+        int nbits = w.abs().bitLength();
+        if (nbits > DBL_MAX_EXP) {
+            return compareDoubles(cmp, vsign, 2 * wsign);
+        }
+        if (nbits <= 48) {
+            return compareDoubles(cmp, i, integerAsDouble(w));
+        }
+        // The frexp exponent is the number of bits before the point; a subnormal's is over-stated here by
+        // design, and can only be read as "smaller than any integer this branch has reached".
+        int exponent = Math.getExponent(i) + 1;
+        if (exponent < nbits) {
+            return compareDoubles(cmp, 0.0, i);
+        }
+        if (exponent > nbits) {
+            return compareDoubles(cmp, i, 0.0);
+        }
+        double intpart = Math.copySign(Math.floor(Math.abs(i)), i);
+        if (i - intpart != 0.0) {
+            // A float with a fraction is never the integer it sits inside, and the strict form of the
+            // ordering says the same thing the rewritten one does.
+            if (cmp == CompareOp.EQ) {
+                return PyBool.FALSE;
+            }
+            if (cmp == CompareOp.NE) {
+                return PyBool.TRUE;
+            }
+            cmp = switch (cmp) {
+                case LT, LE -> vsign > 0 ? CompareOp.LT : CompareOp.LE;
+                default -> vsign > 0 ? CompareOp.GE : CompareOp.GT;
+            };
+        }
+        return PyObject.ordered(cmp, new BigDecimal(intpart).toBigInteger().compareTo(w));
+    }
+
     // --- complex ---------------------------------------------------------------------------
 
     private static PyObject complexOp(BinaryOp op, PyComplex a, PyComplex b) {
@@ -457,7 +626,9 @@ final class Numeric {
             double v = f.getValue();
             return switch (op) {
                 case NEGATIVE -> PyFloat.of(-v);
-                case POSITIVE -> PyFloat.of(v);
+                // `nb_positive` is `float_float`, which is the receiver rather than a copy of it — the same
+                // object rule `float(x) is x` and `x.__float__() is x` answer by.
+                case POSITIVE -> floatFloat(f);
                 case ABSOLUTE -> PyFloat.of(Math.abs(v));
                 case INVERT -> PyNotImplemented.INSTANCE;
             };
@@ -513,15 +684,14 @@ final class Numeric {
             return PyObject.ordered(cmp, left.compareTo(right));
         }
         // Mixed int and float, compared exactly. Converting the integer would round it, and
-        // 2**53 + 1 does have a float neighbour worth getting right.
-        BigInteger exact = left != null ? left : right;
-        double other = (left != null ? b : a) instanceof PyFloat f
-                ? f.getValue()
-                : asDouble(left != null ? b : a);
-        if (Double.isNaN(other)) {
-            return equalityOnly(cmp, false);
-        }
-        return PyObject.ordered(cmp, new BigDecimal(exact).compareTo(new BigDecimal(other)));
+        // 2**53 + 1 does have a float neighbour worth getting right. The float's slot is what answers the
+        // operator in either order, so an integer written on the left asks the reflected question —
+        // `2 < 1.5` is `float.__gt__(1.5, 2)`, which is the same two tests the other way round.
+        boolean integerOnLeft = left != null;
+        return floatCompare(
+                integerOnLeft ? cmp.reflected() : cmp,
+                integerOnLeft ? b : a,
+                integerOnLeft ? a : b);
     }
 
     /**
@@ -540,14 +710,6 @@ final class Numeric {
         };
     }
 
-    private static PyObject equalityOnly(CompareOp cmp, boolean equal) {
-        return switch (cmp) {
-            case EQ -> PyBool.of(equal);
-            case NE -> PyBool.of(!equal);
-            default -> PyBool.FALSE;
-        };
-    }
-
     // --- conversions -----------------------------------------------------------------------
 
     /**
@@ -559,12 +721,7 @@ final class Numeric {
         if (value instanceof PyFloat f) {
             return f.getValue();
         }
-        BigInteger integer = Numbers.asInteger(value);
-        double asDouble = integer.doubleValue();
-        if (Double.isInfinite(asDouble) && integer.signum() != 0) {
-            throw Slots.overflowError("int too large to convert to float");
-        }
-        return asDouble;
+        return integerAsDouble(Numbers.asInteger(value));
     }
 
     static PyComplex asComplex(PyObject value) {

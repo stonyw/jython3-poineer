@@ -1056,63 +1056,38 @@ final class Builtins {
     /**
      * {@code round(number, ndigits=None)}.
      *
-     * Halfway values go to the even neighbour, which is IEEE's default and CPython's rule, and is why
-     * {@code round(2.5)} is 2 while {@code round(3.5)} is 4. The rounding is done on the double's exact
-     * binary value rather than on its shortest decimal spelling, because that is the difference between
-     * {@code round(2.675, 2)} being 2.67 as Python says and 2.68 as a naive decimal would give.
+     * <p>One question, asked the way {@code builtin_round_impl} asks it: {@code __round__} on the value's
+     * <em>own type</em>, and then the place as the only argument when one was named and no argument at all
+     * when it was {@code None}. The runtime does not know or care which built-in type the value has —
+     * {@code round(1.5)} reaches the same {@code float.__round__} that {@code dir(float)} files, and a class
+     * Python writes is asked through the very same door, so the three answers a {@code float} gives are the
+     * three its method table gives.
      *
-     * <p>Without {@code ndigits} the answer is an {@code int}, with it a float — even at
-     * {@code ndigits=0}, where {@code round(1.5, 0)} is 2.0. An {@code ndigits} too large for the value
-     * to have that many places is clipped, which is what makes {@code round(1, 2**70)} answer 1 instead
-     * of building a power of ten no machine has.
+     * <p>Two shapes fall out of that one lookup. It walks the type only, never the instance dictionary, so
+     * a value that files a {@code __round__} of its own under the name is still rounded by its class. And a
+     * name that is present but useless is not a missing name: {@code __round__ = None} is <em>called</em>,
+     * and the complaint is that {@code 'NoneType' object is not callable} — the sentence about a type that
+     * "doesn't define {@code __round__}" is reserved for a lookup that found nothing at all, and names the
+     * type as its {@code tp_name} spells it, cut at a hundred characters because that is what the
+     * formatter is told to do with it.
+     *
+     * <p>The receiver is asked before the place is read, so {@code round('x', 'y')} complains about the
+     * string having no {@code __round__} and never gets as far as the place it was handed.
      */
     private static PyObject round(PyObject[] args, String[] kwNames) {
         Arguments.atMostQualified("round", args, kwNames, 2);
         PyObject[] given = Arguments.fill("round", args, kwNames, ROUND_NAMES, ROUND_DEFAULTS);
         Arguments.required("round", ROUND_NAMES, given, 0);
         PyObject value = given[0];
-        boolean place = given[1] != null && given[1] != PyNone.INSTANCE;
-        int at = place ? places(integerOrRefusal(given[1])) : 0;
-        if (value instanceof PyInt i) {
-            return place && at < 0 ? PyInt.of(roundInteger(i.getValue(), at)) : i;
+        PyObject place = given[1];
+        PyType owner = value.getType();
+        PyObject declared = Specials.member(owner, "__round__");
+        if (declared == null) {
+            throw Slots.typeError("type %.100s doesn't define __round__ method", owner.name());
         }
-        if (value instanceof PyBool b) {
-            return b.getValue() ? PyInt.ONE : PyInt.ZERO;
-        }
-        if (value instanceof PyFloat f) {
-            double number = f.getValue();
-            if (!Double.isFinite(number)) {
-                if (place) {
-                    return f;
-                }
-                if (Double.isNaN(number)) {
-                    throw Slots.valueError("cannot convert float NaN to integer");
-                }
-                throw Slots.overflowError("cannot convert float infinity to integer");
-            }
-            java.math.BigDecimal exact = new java.math.BigDecimal(number);
-            if (place) {
-                return PyFloat.of(
-                        exact.setScale(at, java.math.RoundingMode.HALF_EVEN).doubleValue());
-            }
-            return PyInt.of(exact.setScale(0, java.math.RoundingMode.HALF_EVEN).toBigInteger());
-        }
-        throw Slots.typeError(
-                "type %s doesn't define __round__ method", value.getType().name());
-    }
-
-    private static final int PLACE_CLIP = 10000;
-
-    /** {@code ndigits} as an {@code int}, with the answers that cannot differ folded together. */
-    private static int places(BigInteger ndigits) {
-        if (ndigits.abs().compareTo(BigInteger.valueOf(PLACE_CLIP)) <= 0) {
-            return ndigits.intValue();
-        }
-        return ndigits.signum() < 0 ? -PLACE_CLIP : PLACE_CLIP;
-    }
-
-    /** {@code round(int, -n)}, which is CPython's integer rounding to a power-of-ten place. */
-    private static BigInteger roundInteger(BigInteger value, int places) {
-        return places >= 0 ? value : Numeric.nearMultiple(value, BigInteger.TEN.pow(-places));
+        PyObject method = Descriptors.get(declared, value, owner);
+        return place == null || place == PyNone.INSTANCE
+                ? Slots.call(method, new PyObject[0], null)
+                : Slots.call(method, new PyObject[] {place}, null);
     }
 }
