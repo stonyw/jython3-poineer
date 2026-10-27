@@ -31,11 +31,9 @@ import java.util.Map;
  * OSError(True, "m")} becomes a {@code PermissionError} over the dictionary's equal key of {@code 1} and
  * {@code OSError("1", "m")} stays an {@code OSError} with a text in its number field.
  *
- * <p>Two rules of CPython's are not modelled. Arg parsing is done in {@code __new__} here and never
- * deferred to {@code __init__}, so a class that declares an {@code __init__} of its own keeps the fields
- * the one call filled ({@code oserror_use_init} is the switch that empties them there). And {@code
- * PyNumber_Check} and {@code PyLong_Check} are answered for the four numeric builtins, so a value with
- * {@code __index__} or {@code __add__} of its own is not the count or the number CPython would read.
+ * <p>One rule of CPython's is not modelled. {@code PyNumber_Check} and {@code PyLong_Check} are answered
+ * for the four numeric builtins, so a value with {@code __index__} or {@code __add__} of its own is not the
+ * count or the number CPython would read.
  */
 public final class PyOSError extends PyBaseException {
 
@@ -103,19 +101,17 @@ public final class PyOSError extends PyBaseException {
      * was taken out of them.
      */
     static PyBaseException create(PyType kind, PyObject[] given) {
-        PyObject number = null;
-        PyObject text = null;
-        PyObject firstName = null;
-        PyObject secondName = null;
-        // The fourth of the five is winerror, which is parsed everywhere and stored only on Windows.
-        if (given.length >= 2 && given.length <= 5) {
-            number = given[0];
-            text = given[1];
-            firstName = given.length > 2 ? given[2] : null;
-            secondName = given.length > 4 ? given[4] : null;
+        // `oserror_use_init` guards the whole of `OSError_new`'s own work — the unpacking, the error number
+        // looked up in the map and all — so a class that declares an `__init__` and no `__new__` is made
+        // empty here and left for that initialiser to fill, and is not promoted whatever it was called with.
+        if (defersToInit(kind)) {
+            return new PyOSError(kind, new PyObject[0]);
         }
+        // The unpacking window is what decides whether there is an error number to look up at all: a
+        // one-argument call parses to nothing, and `PyLong_Check(NULL)` never reaches the map.
+        BigInteger asked =
+                given.length >= 2 && given.length <= 5 ? Numbers.asInteger(given[0]) : null;
         PyType chosen = kind;
-        BigInteger asked = number == null ? null : Numbers.asInteger(number);
         if (kind == ExceptionTypes.OS_ERROR && asked != null) {
             // PyDict_GetItemWithError: the field as a dictionary key, so a bool is read as its number.
             PyType mapped = ERRNO_MAP.get(asked);
@@ -124,20 +120,68 @@ public final class PyOSError extends PyBaseException {
             }
         }
         PyOSError made = new PyOSError(chosen, given);
+        made.initialize(given);
+        return made;
+    }
+
+    /**
+     * {@code oserror_parse_args} and {@code oserror_init} together, over the arguments of the call.
+     *
+     * <p>Both halves of CPython run this way: {@code OSError_new} for a class that does not parse for
+     * itself, and {@code OSError_init} for one that defers — {@link #defersToInit} is the switch between
+     * them. Neither promotes the value to a narrower class, which is {@code OSError_new}'s alone to do,
+     * and neither fills {@code written} unless the class is exactly {@code BlockingIOError}.
+     *
+     * <p>The fourth of the five is {@code winerror}, which is parsed everywhere and stored only on Windows;
+     * on this platform it is read and thrown away, and the third and fifth are kept only when they are
+     * there <em>and</em> not {@code None} — which is what lets {@code OSError(1, "a", "f", 5, None)} display
+     * one file and {@code e.filename2 = None} display two.
+     *
+     * <p>The arguments are taken over whatever else happens, and cut to the first two only where a file
+     * name was taken out of them — so {@code super().__init__()} of an {@code OSError} empties {@code args}
+     * as surely as it empties the number, and a {@code BlockingIOError} that was handed a count keeps all
+     * three.
+     */
+    void initialize(PyObject[] given) {
+        PyObject[] arguments = given;
+        PyObject number = null;
+        PyObject text = null;
+        PyObject firstName = null;
+        PyObject secondName = null;
+        if (given.length >= 2 && given.length <= 5) {
+            number = given[0];
+            text = given[1];
+            firstName = given.length > 2 ? given[2] : null;
+            secondName = given.length > 4 ? given[4] : null;
+        }
         if (firstName != null && firstName != PyNone.INSTANCE) {
-            if (chosen == ExceptionTypes.BLOCKING_IO_ERROR && counted(firstName)) {
-                made.written = Numbers.count(firstName);
+            if (getType() == ExceptionTypes.BLOCKING_IO_ERROR && counted(firstName)) {
+                written = Numbers.count(firstName);
             } else {
-                made.firstName = firstName;
+                this.firstName = firstName;
                 if (secondName != null && secondName != PyNone.INSTANCE) {
-                    made.secondName = secondName;
+                    this.secondName = secondName;
                 }
-                made.setArguments(new PyObject[] {given[0], given[1]});
+                arguments = new PyObject[] {given[0], given[1]};
             }
         }
-        made.number = number;
-        made.text = text;
-        return made;
+        setArguments(arguments);
+        this.number = number;
+        this.text = text;
+    }
+
+    /**
+     * {@code oserror_use_init}: whether the class leaves this work to {@code __init__}.
+     *
+     * <p>The two slots CPython compares are {@code tp_init} and {@code tp_new}, and a heap type fills both
+     * from its base unless the class body declares the name — so in this runtime the same question is
+     * whether the order files an {@code __init__} of its own and no {@code __new__}. A class that declares
+     * both parses in the creator it wrote, and one that declares neither is made whole by {@code
+     * OSError_new} and then refuses to be initialised again.
+     */
+    static boolean defersToInit(PyType kind) {
+        return Specials.lookUp(kind, "__init__") != null
+                && Specials.lookUp(kind, "__new__") == null;
     }
 
     /** {@code PyNumber_Check} for the builtins this runtime has: a number, however it is spelled. */
@@ -163,6 +207,18 @@ public final class PyOSError extends PyBaseException {
         if (declared != null) {
             return display(declared, "__str__");
         }
+        return errorText();
+    }
+
+    /**
+     * {@code OSError_str} itself, without the {@code __str__} question first.
+     *
+     * <p>The half the {@code wrapper_descriptor} this class files calls, and the reason {@code
+     * BaseException.__str__(e)} of an {@code OSError} answers over the arguments while {@code
+     * OSError.__str__(e)} answers over the fields: CPython hands a slot wrapper the function of the type
+     * that filed it, not the one the value's own class would have run.
+     */
+    String errorText() {
         if (firstName != null) {
             if (secondName != null) {
                 return "[Errno " + orNone(number).str() + "] " + orNone(text).str() + ": "
@@ -183,137 +239,90 @@ public final class PyOSError extends PyBaseException {
     }
 
     /**
-     * {@code e.errno} and its three siblings, then {@code e.characters_written}.
+     * {@code PyMember_GetOne} over one of the four {@code _Py_T_OBJECT} offsets.
      *
-     * <p>Four of the five answer {@code None} for a field that was never filled; the getset has no such
-     * answer — it refuses by name, which is the only message of CPython's here that is a bare attribute.
+     * <p>An offset that was never filled reads as {@code None} — {@code OR_NONE}, the same macro the
+     * display uses — which is what makes {@code del e.errno} and {@code OSError("only").errno} answer alike
+     * while {@code str(e)} still tells them apart.
      *
      * <p>The field is only what the lookup order reaches when nothing nearer does: {@code _PyType_Lookup}
      * walks the order once, so a class under {@code OSError} that files a value or a property under one of
-     * these five names is asked for it first, and {@code class Filed(OSError): errno = 42} reads {@code 42}
-     * where {@code Filed(1, "m")} still displays {@code [Errno 1] m}.
+     * these names is asked for it first, and {@code class Filed(OSError): errno = 42} reads {@code 42} where
+     * {@code Filed(1, "m")} still displays {@code [Errno 1] m}.
      */
-    @Override
-    public PyObject getAttr(String name) {
-        if (!holds(name) || claimed(name)) {
-            return super.getAttr(name);
-        }
-        return switch (name) {
-            case "errno" -> orNone(number);
-            case "strerror" -> orNone(text);
-            case "filename" -> orNone(firstName);
-            case "filename2" -> orNone(secondName);
-            default -> read();
-        };
+    PyObject memberField(String name) {
+        return orNone(
+                switch (name) {
+                    case "errno" -> number;
+                    case "strerror" -> text;
+                    case "filename" -> firstName;
+                    default -> secondName;
+                });
     }
 
-    private PyObject read() {
+    /**
+     * {@code PyMember_SetOne} over the same four, with {@code null} standing for {@code del}.
+     *
+     * <p>Any value arrives, and {@code None} is one of them, which is what puts {@code None} into the text
+     * rather than taking the field out; a delete writes the null pointer, which is the one thing the read
+     * cannot tell apart from a field that was never filled.
+     */
+    void writeMemberField(String name, PyObject value) {
+        switch (name) {
+            case "errno" -> number = value;
+            case "strerror" -> text = value;
+            case "filename" -> firstName = value;
+            default -> secondName = value;
+        }
+    }
+
+    /**
+     * {@code OSError_written_get}: the C word, or the name it refuses by.
+     *
+     * <p>The only bare {@code AttributeError} in this family, because the getter has no sentence of its own
+     * to choose and no {@code OR_NONE} to fall back on — {@code written} is a {@code ssize_t}, and -1 in it
+     * means the count was never given.
+     */
+    PyObject charactersWritten() {
         if (written == UNSET) {
             throw Slots.attributeError("characters_written");
         }
         return PyInt.of(written);
     }
 
-    /** Whether {@code name} is one of the five the class keeps beside its arguments. */
-    private static boolean holds(String name) {
-        return switch (name) {
-            case "errno", "strerror", "filename", "filename2", "characters_written" -> true;
-            default -> false;
-        };
+    /** {@code OSError_written_set}: {@code PyNumber_AsSsize_t} over the value, and {@code del} as -1. */
+    void writeCharactersWritten(PyObject value) {
+        if (value == null) {
+            if (written == UNSET) {
+                throw Slots.attributeError("characters_written");
+            }
+            written = UNSET;
+            return;
+        }
+        // Only a delete is handed the null pointer; None here is the object, and is converted.
+        written = Numbers.count(value);
     }
 
     /**
-     * Whether the lookup order names {@code name} before it reaches the field, which is how a member
-     * descriptor is found: CPython walks the order once and only asks the descriptor it lands on, so
-     * whatever a written class holds under the same name — a plain number, a property, a slot — owns the
-     * read, the write and the delete alike.
-     */
-    private boolean claimed(String name) {
-        return Specials.member(exceptionType(), name) != null;
-    }
-
-    /**
-     * {@code e.errno = value} for the four members — any value, and {@code None} is one of them, which is
-     * what puts {@code None} into the text rather than taking the field out — and {@code
-     * e.characters_written = value}, which converts.
+     * {@code OSError_reduce}'s first half: the arguments, with the file names put back in.
      *
-     * <p>A class that declares either hook is asked before the field is, exactly as {@code
-     * PyObject_GenericSetAttr} asks it of every other name, and a class that files its own value under the
-     * name takes the write into its dictionary rather than into the field.
+     * <p>{@code self->args} is only the first two real arguments when a file name was given, so the value
+     * reports the call that would make it again. The test is of the {@code filename} <em>pointer</em>,
+     * which is why a {@code filename} written as {@code None} still rebuilds the tuple — with a {@code
+     * None} in it this time — and why a {@code filename2} alone rebuilds nothing. The five-place form
+     * leaves the fourth as {@code None}, because that is the only way {@code OSError(*args)} can be handed
+     * a second file name on a platform that stores no {@code winerror}.
      */
     @Override
-    public PyObject setAttr(String name, PyObject value) {
-        if (!holds(name) || claimed(name) || Specials.lookUp(exceptionType(), "__setattr__") != null) {
-            return super.setAttr(name, value);
+    PyObject reducedArguments() {
+        PyTuple kept = args();
+        if (kept.size() == 2 && firstName != null) {
+            if (secondName != null) {
+                return PyTuple.of(
+                        kept.at(0), kept.at(1), firstName, PyNone.INSTANCE, secondName);
+            }
+            return PyTuple.of(kept.at(0), kept.at(1), firstName);
         }
-        switch (name) {
-            case "errno" -> {
-                number = value;
-                return PyNone.INSTANCE;
-            }
-            case "strerror" -> {
-                text = value;
-                return PyNone.INSTANCE;
-            }
-            case "filename" -> {
-                firstName = value;
-                return PyNone.INSTANCE;
-            }
-            case "filename2" -> {
-                secondName = value;
-                return PyNone.INSTANCE;
-            }
-            case "characters_written" -> {
-                // Only a delete is given the null pointer; None here is the object, and is converted.
-                written = Numbers.count(value);
-                return PyNone.INSTANCE;
-            }
-            default -> {
-            }
-        }
-        return super.setAttr(name, value);
-    }
-
-    /**
-     * {@code del} for the five: the members take their field away and read back as {@code None}, and the
-     * getset refuses when there was nothing to take.
-     *
-     * <p>Only where the lookup order actually lands on the field. A class that files its own value under
-     * the name is deleted out of its dictionary, and so complains the ordinary way when the dictionary has
-     * nothing to take.
-     */
-    @Override
-    public PyObject delAttr(String name) {
-        if (!holds(name) || claimed(name) || Specials.lookUp(exceptionType(), "__delattr__") != null) {
-            return super.delAttr(name);
-        }
-        switch (name) {
-            case "errno" -> {
-                number = null;
-                return PyNone.INSTANCE;
-            }
-            case "strerror" -> {
-                text = null;
-                return PyNone.INSTANCE;
-            }
-            case "filename" -> {
-                firstName = null;
-                return PyNone.INSTANCE;
-            }
-            case "filename2" -> {
-                secondName = null;
-                return PyNone.INSTANCE;
-            }
-            case "characters_written" -> {
-                if (written == UNSET) {
-                    throw Slots.attributeError("characters_written");
-                }
-                written = UNSET;
-                return PyNone.INSTANCE;
-            }
-            default -> {
-            }
-        }
-        return super.delAttr(name);
+        return kept;
     }
 }

@@ -1,6 +1,7 @@
 package org.python.core;
 
 import java.math.BigInteger;
+import java.util.Map;
 
 /**
  * A raised Python exception, as a value.
@@ -253,7 +254,7 @@ public class PyBaseException extends PyObject {
         if (declared != null) {
             return display(declared, "__str__");
         }
-        return described();
+        return exceptionType.matches(ExceptionTypes.KEY_ERROR) ? keyErrorText() : described();
     }
 
     /**
@@ -261,12 +262,11 @@ public class PyBaseException extends PyObject {
      *
      * <p>Split out because {@link PyOSError} replaces this half and keeps the half above it: a class under
      * {@code OSError} that declares a {@code __str__} is asked for it, and one that does not gets the
-     * error number and the file names rather than these rules.
+     * error number and the file names rather than these rules. The rules are the argument count's alone —
+     * which is what {@code BaseException.__str__(KeyError('k'))} reads as {@code 'k'} without quotes while
+     * {@code str()} of the same value quotes it, {@link #keyErrorText} being a different function.
      */
     String described() {
-        if (args.length == 1 && exceptionType.matches(ExceptionTypes.KEY_ERROR)) {
-            return args[0].repr();
-        }
         if (args.length == 0) {
             return "";
         }
@@ -274,6 +274,21 @@ public class PyBaseException extends PyObject {
             return args[0].str();
         }
         return PyTuple.of(args).repr();
+    }
+
+    /**
+     * {@code KeyError_str}: the one argument as a {@code repr}, and {@code BaseException_str} for every
+     * other count.
+     *
+     * <p>Nine classes of the family write a {@code tp_str} of their own — {@code BaseException} and {@code
+     * BaseExceptionGroup}, {@code OSError}, {@code ImportError}, {@code SyntaxError}, {@code KeyError} and
+     * the three Unicode errors — and this runtime has filed the first three of those that exist here. The
+     * quotes are CPython's deliberate trade: {@code {}['']} reports {@code KeyError: ''} rather than a bare
+     * {@code KeyError}, and an explanatory sentence handed to a {@code KeyError} is put in quotes along
+     * with it.
+     */
+    String keyErrorText() {
+        return args.length == 1 ? args[0].repr() : described();
     }
 
     /**
@@ -292,10 +307,74 @@ public class PyBaseException extends PyObject {
         if (declared != null) {
             return display(declared, "__repr__");
         }
+        return represented();
+    }
+
+    /**
+     * {@code BaseException_repr} itself, without the {@code __repr__} question first.
+     *
+     * <p>The half the {@code wrapper_descriptor} {@code BaseException} files calls directly, which is why
+     * {@code BaseException.__repr__(e)} of an {@code OSError} says {@code OSError(...)} over the arguments
+     * the value was made with and not whatever the narrower class has to say for itself.
+     */
+    String represented() {
         if (args.length == 1) {
             return exceptionType.name() + "(" + args[0].repr() + ")";
         }
         return exceptionType.name() + PyTuple.of(args).repr();
+    }
+
+    /**
+     * {@code BaseException.__reduce__}: the class, the arguments, and the dictionary only where the value
+     * already has one.
+     *
+     * <p>{@code self->args && self->dict} is a test of two pointers rather than of two contents, so what
+     * decides the two-tuple from the three-tuple is whether anything has been written to the value — and
+     * therefore whether {@code e.__dict__} has ever been asked for. Reading it is not a look: {@code
+     * PyObject_GenericGetDict} fills the field on the way out, so the next {@code __reduce__} of a value
+     * that was never touched reports the empty dictionary that read left behind.
+     */
+    PyObject reduced() {
+        PyDict kept = dictionary;
+        PyObject arguments = reducedArguments();
+        return kept == null
+                ? PyTuple.of(exceptionType, arguments)
+                : PyTuple.of(exceptionType, arguments, kept);
+    }
+
+    /** {@code self->args} as the reduction reports it, which is the half {@code OSError} rewrites. */
+    PyObject reducedArguments() {
+        return arguments;
+    }
+
+    /**
+     * {@code BaseException.__setstate__}: the entries of the state, each written as an attribute.
+     *
+     * <p>{@code None} says there is nothing to restore and does no work at all; anything that is neither
+     * {@code None} nor a dictionary is refused before the first key is looked at. After that the write is
+     * {@code PyObject_SetAttr}, so a name that is not text is complained about in the attribute setter's
+     * own words, and a name the class files a descriptor for — {@code args}, {@code __class__}, one of an
+     * {@code OSError}'s five — goes through that descriptor rather than landing beside it. The entries are
+     * taken in the order the dictionary holds them, which is the order they were written.
+     */
+    void restored(PyObject state) {
+        if (state == PyNone.INSTANCE) {
+            return;
+        }
+        if (!(state instanceof PyDict given)) {
+            throw Slots.typeError("state is not a dictionary");
+        }
+        for (Map.Entry<PyObject, PyObject> entry : given.getItems().entrySet()) {
+            Slots.setAttr(this, namedAttribute(entry.getKey()), entry.getValue());
+        }
+    }
+
+    /** The key of a state, in the words {@code PyObject_SetAttr} chooses for one that is not text. */
+    private static String namedAttribute(PyObject key) {
+        if (key instanceof PyStr text) {
+            return text.getValue();
+        }
+        throw Slots.typeError("attribute name must be string, not '%s'", key.getType().name());
     }
 
     /** What the class's own method named {@code name} answers, or null when it declares none. */
@@ -421,7 +500,10 @@ public class PyBaseException extends PyObject {
         if (member != null && Descriptors.writes(member)) {
             return Descriptors.get(member, this, exceptionType);
         }
-        PyObject kept = held().get(PyStr.interned(name));
+        // `_PyObject_GetDictPtr`, not `PyObject_GenericGetDict`: a read of an attribute never makes the
+        // dictionary, which is what lets `__reduce__` still tell a value nothing wrote to from one that has
+        // a `__dict__` someone only looked at.
+        PyObject kept = dictionary == null ? null : dictionary.get(PyStr.interned(name));
         if (kept != null) {
             return kept;
         }

@@ -418,6 +418,42 @@ final class TypeDict {
                     TypeDict::addNote);
 
     /**
+     * {@code BaseException.__reduce__}: the value as the call that would rebuild it.
+     *
+     * <p>The one member of the family that answers with a {@code method_descriptor} and has nothing to say
+     * about itself: CPython's clinic block for it names no sentence, so {@code __doc__} is {@code None}
+     * where every neighbour of it has a line.
+     */
+    static final Member EXCEPTION_REDUCE =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION,
+                    "__reduce__",
+                    Shape.METHOD,
+                    null,
+                    null,
+                    TypeDict::exceptionReduce);
+
+    /** {@code BaseException.__setstate__}: the entries of a pickled state, written back as attributes. */
+    static final Member EXCEPTION_SETSTATE =
+            new Member(
+                    ExceptionTypes.BASE_EXCEPTION,
+                    "__setstate__",
+                    Shape.METHOD,
+                    null,
+                    null,
+                    TypeDict::exceptionSetstate);
+
+    /** {@code OSError.__reduce__}: the same two or three places, with the file names put back. */
+    static final Member OS_ERROR_REDUCE =
+            new Member(
+                    ExceptionTypes.OS_ERROR,
+                    "__reduce__",
+                    Shape.METHOD,
+                    null,
+                    null,
+                    TypeDict::oSErrorReduce);
+
+    /**
      * {@code BaseExceptionGroup.__new__(cls, message, exceptions)}: the creator both group classes and
      * any subclass of them inherit.
      *
@@ -1823,14 +1859,14 @@ final class TypeDict {
     /**
      * The dictionary one class of the exception family files.
      *
-     * <p>Only the names this runtime answers are published: {@code BaseException}'s own ten — the four
-     * that make and shape a value, the {@code T_BOOL} chain flag, and the five C fields whose getsets
-     * {@link PyBaseException} writes — plus each class's {@code __new__} where the reference interpreter
-     * declares one and {@code __doc__} for every one of them. The rest of what CPython files there is the
-     * other half of {@code BaseException}'s table, which is behaviour this runtime has but not as names of
-     * its own: {@code __repr__} and {@code __str__} and {@code __reduce__} are answered from the value
-     * class rather than published, and the fields a {@code SyntaxError}, an {@code ImportError} or a {@code
-     * StopIteration} keeps are named in the plan rather than faked.
+     * <p>The order is CPython's {@code type_ready_fill_dict}: {@code add_operators} first and so the slot
+     * wrappers ahead of everything else, {@code tp_new}'s wrapper over the class before them, then {@code
+     * tp_methods}, {@code tp_members}, {@code tp_getset}, and the sentence last. {@code BaseException}'s
+     * fifteen names, {@code KeyError}'s two and {@code OSError}'s ten are all of that; every other class of
+     * the family files what it inherits and its own {@code __doc__}, except the ones that keep fields of
+     * their own — {@code AttributeError} and {@code NameError}, {@code StopIteration} and {@code
+     * SystemExit}, {@code ImportError}, {@code SyntaxError} and the three Unicode errors — whose rows are
+     * the work the plan has left standing.
      */
     private static void exceptionTable(PyType owner, PyDict into) {
         Table table = new Table(owner, into);
@@ -1845,13 +1881,18 @@ final class TypeDict {
         }
         if (owner == ExceptionTypes.BASE_EXCEPTION) {
             table.put("__new__", EXCEPTION_NEW);
+            table.wrapper(
+                    "__repr__", REPR_DOC, args -> PyStr.of(((PyBaseException) args[0]).represented()));
+            table.wrapper(
+                    "__str__", STR_DOC, args -> PyStr.of(((PyBaseException) args[0]).described()));
             table.put("__init__", EXCEPTION_INIT);
+            table.put("__reduce__", EXCEPTION_REDUCE);
+            table.put("__setstate__", EXCEPTION_SETSTATE);
             table.put("with_traceback", WITH_TRACEBACK);
             table.put("add_note", ADD_NOTE);
             // The five fields CPython keeps in `PyBaseExceptionObject`, filed in the order its tables put
-            // them: `BaseException_members` before `BaseException_getset`, and `__dict__` first inside the
-            // getsets because `PyObject_GenericGetDict` is the one entry of that table with no sentence
-            // beside it and no sibling ahead of it.
+            // them: `BaseException_members` before `BaseException_getset`, and inside the getsets
+            // `__dict__` first because that is where the `PyGetSetDef` writes it.
             table.member(
                     "__suppress_context__",
                     self -> ((PyBaseException) self).suppressContext(),
@@ -1884,6 +1925,55 @@ final class TypeDict {
                     null,
                     self -> ((PyBaseException) self).cause(),
                     (self, value) -> ((PyBaseException) self).writeCause(value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.KEY_ERROR) {
+            // A class of the family that writes a `tp_str` of its own, so the wrapper it files is a row
+            // here rather than the base one it would otherwise inherit. `add_operators` puts that row
+            // ahead of everything the class declares itself, and `KeyError` declares nothing else — which
+            // is why `__str__` is the only name here besides the sentence.
+            table.wrapper("__str__", STR_DOC, args -> PyStr.of(((PyBaseException) args[0]).keyErrorText()));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.OS_ERROR) {
+            table.raw(
+                    "__new__",
+                    NEW_DOC,
+                    (args, kwNames, qualified) -> exceptionNew(owner, args, kwNames));
+            table.wrapper(
+                    "__str__", STR_DOC, args -> PyStr.of(((PyOSError) args[0]).errorText()));
+            table.wrapper("__init__", INIT_DOC, TypeDict::oSErrorInit);
+            table.put("__reduce__", OS_ERROR_REDUCE);
+            // The four offsets and the one getset, in the order the two tables put them: `OSError_members`
+            // before `OSError_getset`, and the members in the order `PyOSErrorObject` declares its fields.
+            // The getset carries no sentence, as CPython's `PyGetSetDef` writes none for it.
+            table.member(
+                    "errno",
+                    "POSIX exception code",
+                    self -> ((PyOSError) self).memberField("errno"),
+                    (self, value) -> ((PyOSError) self).writeMemberField("errno", value));
+            table.member(
+                    "strerror",
+                    "exception strerror",
+                    self -> ((PyOSError) self).memberField("strerror"),
+                    (self, value) -> ((PyOSError) self).writeMemberField("strerror", value));
+            table.member(
+                    "filename",
+                    "exception filename",
+                    self -> ((PyOSError) self).memberField("filename"),
+                    (self, value) -> ((PyOSError) self).writeMemberField("filename", value));
+            table.member(
+                    "filename2",
+                    "second exception filename",
+                    self -> ((PyOSError) self).memberField("filename2"),
+                    (self, value) -> ((PyOSError) self).writeMemberField("filename2", value));
+            table.getset(
+                    "characters_written",
+                    null,
+                    self -> ((PyOSError) self).charactersWritten(),
+                    (self, value) -> ((PyOSError) self).writeCharactersWritten(value));
             table.value("__doc__", docValue(owner));
             return;
         }
@@ -2612,18 +2702,26 @@ final class TypeDict {
      *
      * <p>The refusals are {@code tp_new_wrapper}'s, in its order, and name the class whose dictionary the
      * call was made through — {@code ValueError.__new__(KeyError, 'k')} says {@code KeyError} is not a
-     * subtype of {@code ValueError} rather than of {@code BaseException}. Keyword arguments are read and
-     * thrown away: {@code Bare.__new__(Bare, flag=1)} makes a value with no arguments at all, which is what
-     * a static method whose table only names positionals does.
+     * subtype of {@code ValueError} rather than of {@code BaseException}. Keywords are thrown away by
+     * {@code BaseException_new}, which has no table to read them against: {@code Bare.__new__(Bare, flag=1)}
+     * makes a value with no arguments at all. {@code OSError_new} is the exception that has one, so the
+     * same call through the {@code OSError} row refuses — under the name of the class it was handed, which
+     * is why {@code OSError.__new__(Sub, 1, "a", flag=2)} says {@code Sub()} — and refuses only when the
+     * class parses here: the one that defers to its own {@code __init__} is past every question {@code
+     * OSError_new} asks, and comes back empty.
      */
     private static PyObject exceptionNew(
             PyType declaring, PyObject[] args, String[] kwNames) {
         int given = Arguments.positional(args, kwNames);
         PyType kind = declaredClass(declaring, args, kwNames);
         PyObject[] rest = Arrays.copyOfRange(args, 1, given);
-        return creatorOf(declaring) == ExceptionTypes.OS_ERROR
-                ? PyOSError.create(kind, rest)
-                : new PyBaseException(kind, rest);
+        if (creatorOf(declaring) != ExceptionTypes.OS_ERROR) {
+            return new PyBaseException(kind, rest);
+        }
+        if (hasKeywords(kwNames) && !PyOSError.defersToInit(kind)) {
+            throw Slots.typeError("%s() takes no keyword arguments", kind.name());
+        }
+        return PyOSError.create(kind, rest);
     }
 
     /**
@@ -2702,6 +2800,78 @@ final class TypeDict {
         }
         notes.add(note);
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code BaseException_reduce}: the class, the arguments, and the dictionary only where there is one.
+     *
+     * <p>Two shapes and no third, because the test CPython makes is of two pointers rather than of two
+     * contents: a value nothing has ever been written to reduces to a pair, and one that has — or whose
+     * {@code __dict__} has only ever been <em>read</em>, which is enough to fill the field — to a triple.
+     * {@code OSError} rewrites the middle of the pair and leaves this rule to stand.
+     */
+    private static PyObject exceptionReduce(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        methodReceiver("__reduce__", ExceptionTypes.BASE_EXCEPTION, args, kwNames);
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return self.reduced();
+    }
+
+    /**
+     * {@code BaseException_setstate}: the state, written back one entry at a time.
+     *
+     * <p>The refusal of a state that is neither {@code None} nor a dictionary is the method's own and comes
+     * before anything is looked at; after that each entry is an ordinary assignment, so every name the
+     * class files a descriptor for — {@code args}, {@code __class__}, one of an {@code OSError}'s five —
+     * is written through it and never lands in the dictionary beside it. That is also how a state key that
+     * is not text is found out about, in the words the attribute setter keeps for the name rather than in
+     * this method's.
+     */
+    private static PyObject exceptionSetstate(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        methodReceiver("__setstate__", ExceptionTypes.BASE_EXCEPTION, args, kwNames);
+        PyObject[] rest = tail(args, kwNames);
+        Arguments.exactlyOne(qualified + "()", rest, kwNames);
+        self.restored(rest[0]);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code OSError_init}: the arguments, but only for a class that left them to be parsed here.
+     *
+     * <p>{@code oserror_use_init} is the whole of the method for everything else — {@code OSError} itself
+     * and every one of the classes under it included, since a value of one of those was made whole by
+     * {@code OSError_new}. So {@code e.__init__(2, "b")} of a plain {@code OSError} answers {@code None}
+     * and changes nothing at all, and only a class that declares an {@code __init__} of its own and no
+     * {@code __new__} has the call re-read the arguments and re-fill the five fields.
+     */
+    private static PyObject oSErrorInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyOSError self =
+                (PyOSError) exceptionReceiver("__init__", ExceptionTypes.OS_ERROR, args, kwNames);
+        if (!PyOSError.defersToInit(self.getType())) {
+            return PyNone.INSTANCE;
+        }
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("%s() takes no keyword arguments", self.getType().name());
+        }
+        self.initialize(tail(args, kwNames));
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code OSError_reduce}: the same pair or triple, over the arguments the class was really called with.
+     *
+     * <p>Filed under {@code OSError} rather than inherited, which is what makes the refusal of a value of
+     * another family name {@code OSError} and the qualified name of the row {@code OSError.__reduce__} even
+     * for a {@code FileNotFoundError}.
+     */
+    private static PyObject oSErrorReduce(PyObject[] args, String[] kwNames, String qualified) {
+        PyOSError self =
+                (PyOSError) methodReceiver("__reduce__", ExceptionTypes.OS_ERROR, args, kwNames);
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return self.reduced();
     }
 
     /**
@@ -3305,7 +3475,7 @@ final class TypeDict {
         }
 
         void member(String name, PyMemberDescriptor.Reader read) {
-            member(name, read, null);
+            member(name, null, read, null);
         }
 
         /**
@@ -3317,7 +3487,19 @@ final class TypeDict {
                 String name,
                 PyMemberDescriptor.Reader read,
                 PyMemberDescriptor.Writer write) {
-            put(name, new PyMemberDescriptor(owner, name, null, read, write));
+            member(name, null, read, write);
+        }
+
+        /**
+         * The same offset with the sentence its {@code PyMemberDef} carries: the four of {@code OSError}
+         * each say what they are, and {@code BaseException.__suppress_context__} says nothing.
+         */
+        void member(
+                String name,
+                String doc,
+                PyMemberDescriptor.Reader read,
+                PyMemberDescriptor.Writer write) {
+            put(name, new PyMemberDescriptor(owner, name, doc, read, write));
         }
     }
 
@@ -3439,9 +3621,14 @@ final class TypeDict {
                 case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
                 case "__self__" -> shape == Shape.RAW ? declaring : PyNotImplemented.INSTANCE;
                 case "__objclass__" -> shape == Shape.RAW ? PyNotImplemented.INSTANCE : declaring;
+                // A `builtin_function_or_method` is not a descriptor at all — `__new__` has no `__get__` to
+                // ask — while each of the three descriptor kinds files one, which is what `hasattr` reads.
                 case "__get__" ->
-                        new PyNativeFunction(
-                                "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
+                        shape == Shape.RAW
+                                ? PyNotImplemented.INSTANCE
+                                : new PyNativeFunction(
+                                        "__get__",
+                                        (args, kwNames) -> Descriptors.called(this, args, kwNames));
                 default -> PyNotImplemented.INSTANCE;
             };
         }

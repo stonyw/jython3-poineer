@@ -10,7 +10,9 @@ package org.python.core;
  */
 public final class ExceptionTypes {
 
-    public static final PyType BASE_EXCEPTION = PyType.declare("BaseException", PyType.OBJECT);
+    public static final PyType BASE_EXCEPTION =
+            PyType.declare("BaseException", PyType.OBJECT)
+                    .documented("Common base class for all exceptions");
     public static final PyType EXCEPTION = child("Exception", BASE_EXCEPTION);
     public static final PyType ARITHMETIC_ERROR = child("ArithmeticError", EXCEPTION);
     public static final PyType LOOKUP_ERROR = child("LookupError", EXCEPTION);
@@ -30,7 +32,8 @@ public final class ExceptionTypes {
     public static final PyType UNBOUND_LOCAL_ERROR = child("UnboundLocalError", NAME_ERROR);
     public static final PyType ATTRIBUTE_ERROR = child("AttributeError", EXCEPTION);
     public static final PyType INDEX_ERROR = child("IndexError", LOOKUP_ERROR);
-    public static final PyType KEY_ERROR = child("KeyError", LOOKUP_ERROR);
+    public static final PyType KEY_ERROR =
+            child("KeyError", LOOKUP_ERROR).documented("Mapping key not found.");
     public static final PyType STOP_ITERATION = child("StopIteration", EXCEPTION);
 
     /**
@@ -81,7 +84,8 @@ public final class ExceptionTypes {
      * ConnectionError} is the only intermediate: four of the leaves are under it, and {@code TimeoutError}
      * is not, since 3.10 folded the socket's own timeout into the {@code OSError} family.
      */
-    public static final PyType OS_ERROR = child("OSError", EXCEPTION);
+    public static final PyType OS_ERROR =
+            child("OSError", EXCEPTION).documented("Base class for I/O related errors.");
 
     public static final PyType BLOCKING_IO_ERROR = child("BlockingIOError", OS_ERROR);
     public static final PyType CHILD_PROCESS_ERROR = child("ChildProcessError", OS_ERROR);

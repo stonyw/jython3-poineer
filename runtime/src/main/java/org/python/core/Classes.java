@@ -803,9 +803,15 @@ final class Classes {
         }
         if (kind.matches(ExceptionTypes.BASE_EXCEPTION)) {
             // CPython's exception subclasses inherit `BaseException`'s creator rather than `object`'s,
-            // which keeps the arguments on the value: `Bare("x").args` is `("x",)` even when the class
-            // declares no `__init__` at all, and that is what makes a written exception raisable.
-            if (kwNames != null && kwNames.size() > 0) {
+            // which keeps the arguments on the value: `Bare("x")` is a value and `Bare("x") == 1` is
+            // not an arity complaint about a class that declares nothing.
+            // And the sentence that refuses a named argument belongs to whichever initialiser runs: the
+            // inherited `BaseException_init` says it in the name of the class, but a class that declares
+            // an `__init__` of its own is initialised by `slot_tp_init`, which names the method instead —
+            // `Named(1, "a", flag=2)` of an `OSError` whose body wrote `__init__` says
+            // `Named.__init__() got an unexpected keyword argument`, because `oserror_use_init` let
+            // `OSError_new` past the keywords and the function is the one that cannot bind them.
+            if (kwNames != null && kwNames.size() > 0 && !Specials.defines(kind, "__init__")) {
                 throw Slots.typeError("%s() takes no keyword arguments", kind.name());
             }
             return kind.matches(ExceptionTypes.OS_ERROR)
