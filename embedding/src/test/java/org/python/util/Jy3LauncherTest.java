@@ -246,7 +246,12 @@ class Jy3LauncherTest {
                 "70_float_slots.py",
                 "71_float_methods.py",
                 "72_exception_dictionary.py",
-                "73_oserror_dictionary.py");
+                "73_oserror_dictionary.py",
+                "74_attributeerror_dictionary.py",
+                "75_nameerror_dictionary.py",
+                "76_stopiteration_dictionary.py",
+                "77_systemexit_dictionary.py",
+                "78_importerror_dictionary.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

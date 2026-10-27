@@ -28,13 +28,25 @@ public final class ExceptionTypes {
     public static final PyType UNICODE_TRANSLATE_ERROR =
             child("UnicodeTranslateError", UNICODE_ERROR);
     public static final PyType TYPE_ERROR = child("TypeError", EXCEPTION);
-    public static final PyType NAME_ERROR = child("NameError", EXCEPTION);
-    public static final PyType UNBOUND_LOCAL_ERROR = child("UnboundLocalError", NAME_ERROR);
-    public static final PyType ATTRIBUTE_ERROR = child("AttributeError", EXCEPTION);
+
+    // The sentences the five dictionaries below this one file as their own `__doc__` row, and the two the
+    // classes under them file for themselves while inheriting every other row. They are the only part of
+    // `tp_doc` that reaches a dictionary: a class with nothing to say files a row that reads `None`.
+    public static final PyType NAME_ERROR =
+            child("NameError", EXCEPTION).documented("Name not found globally.");
+
+    public static final PyType UNBOUND_LOCAL_ERROR =
+            child("UnboundLocalError", NAME_ERROR)
+                    .documented("Local name referenced but not bound to a value.");
+
+    public static final PyType ATTRIBUTE_ERROR =
+            child("AttributeError", EXCEPTION).documented("Attribute not found.");
+
     public static final PyType INDEX_ERROR = child("IndexError", LOOKUP_ERROR);
     public static final PyType KEY_ERROR =
             child("KeyError", LOOKUP_ERROR).documented("Mapping key not found.");
-    public static final PyType STOP_ITERATION = child("StopIteration", EXCEPTION);
+    public static final PyType STOP_ITERATION =
+            child("StopIteration", EXCEPTION).documented("Signal the end from iterator.__next__().");
 
     /**
      * {@code StopAsyncIteration}: what {@code anext()} and {@code async for} are left holding, which is
@@ -53,8 +65,12 @@ public final class ExceptionTypes {
     /** {@code ReferenceError}, which {@code weakref} raises for a dead proxy and nothing else does. */
     public static final PyType REFERENCE_ERROR = child("ReferenceError", EXCEPTION);
 
-    public static final PyType IMPORT_ERROR = child("ImportError", EXCEPTION);
-    public static final PyType MODULE_NOT_FOUND_ERROR = child("ModuleNotFoundError", IMPORT_ERROR);
+    public static final PyType IMPORT_ERROR =
+            child("ImportError", EXCEPTION)
+                    .documented("Import can't find module, or can't find name in module.");
+
+    public static final PyType MODULE_NOT_FOUND_ERROR =
+            child("ModuleNotFoundError", IMPORT_ERROR).documented("Module not found.");
     public static final PyType SYNTAX_ERROR = child("SyntaxError", EXCEPTION);
 
     /**
@@ -130,7 +146,9 @@ public final class ExceptionTypes {
     public static final PyType SYNTAX_WARNING = child("SyntaxWarning", WARNING);
     public static final PyType UNICODE_WARNING = child("UnicodeWarning", WARNING);
     public static final PyType USER_WARNING = child("UserWarning", WARNING);
-    public static final PyType SYSTEM_EXIT = child("SystemExit", BASE_EXCEPTION);
+    public static final PyType SYSTEM_EXIT =
+            child("SystemExit", BASE_EXCEPTION)
+                    .documented("Request to exit from the interpreter.");
     public static final PyType KEYBOARD_INTERRUPT = child("KeyboardInterrupt", BASE_EXCEPTION);
     /**
      * What {@code gen.close()} throws into the frame, and the one exception a generator is not allowed

@@ -748,7 +748,7 @@ final class Classes {
         if (!made.matches(kind)) {
             return self;
         }
-        PyObject declared = Specials.lookUp(made, "__init__");
+        PyObject declared = Specials.member(made, "__init__");
         if (declared == null) {
             return self;
         }
@@ -803,20 +803,24 @@ final class Classes {
         }
         if (kind.matches(ExceptionTypes.BASE_EXCEPTION)) {
             // CPython's exception subclasses inherit `BaseException`'s creator rather than `object`'s,
-            // which keeps the arguments on the value: `Bare("x")` is a value and `Bare("x") == 1` is
-            // not an arity complaint about a class that declares nothing.
-            // And the sentence that refuses a named argument belongs to whichever initialiser runs: the
-            // inherited `BaseException_init` says it in the name of the class, but a class that declares
-            // an `__init__` of its own is initialised by `slot_tp_init`, which names the method instead —
-            // `Named(1, "a", flag=2)` of an `OSError` whose body wrote `__init__` says
+            // which keeps the positionals and throws the names away without reading them: `Bare("x")` is a
+            // value and `Bare("x") == 1` is not an arity complaint about a class that declares nothing.
+            // Every refusal of a named argument therefore comes from the initialiser the order answers
+            // with, and `Classes.construct` reaches that row through the order — the inherited
+            // `BaseException_init` says it in the name of the class the value was made as, and a class that
+            // declares an `__init__` of its own is initialised by `slot_tp_init`, which names the method
+            // instead: `Named(1, "a", flag=2)` of an `OSError` whose body wrote `__init__` says
             // `Named.__init__() got an unexpected keyword argument`, because `oserror_use_init` let
             // `OSError_new` past the keywords and the function is the one that cannot bind them.
-            if (kwNames != null && kwNames.size() > 0 && !Specials.defines(kind, "__init__")) {
+            if (kind.matches(ExceptionTypes.OS_ERROR)
+                    && kwNames != null
+                    && kwNames.size() > 0
+                    && !Specials.defines(kind, "__init__")) {
                 throw Slots.typeError("%s() takes no keyword arguments", kind.name());
             }
             return kind.matches(ExceptionTypes.OS_ERROR)
-                    ? PyOSError.create(kind, args)
-                    : new PyBaseException(kind, args);
+                    ? PyOSError.create(kind, Arguments.positionals(args, names))
+                    : new PyBaseException(kind, Arguments.positionals(args, names));
         }
         if (excess(args, kwNames) && !Specials.defines(kind, "__init__")) {
             throw Slots.typeError("%s() takes no arguments", kind.name());

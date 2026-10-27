@@ -295,6 +295,28 @@ final class Arguments {
         return values;
     }
 
+    /**
+     * {@code PyArg_ParseTupleAndKeywords} over an <em>empty</em> tuple and a {@code |$OO} table: the
+     * keyword-only parse the three exception initialisers that name their fields use.
+     *
+     * <p>CPython hands the parser a tuple it has just made empty, so a positional is not among the
+     * arguments the table counts and cannot be refused by it: {@code AttributeError('a', 1, name='n')}
+     * binds, and the sentence that says {@code takes at most 2 keyword arguments (3 given)} counts only the
+     * names. That is what {@link #unpackKeywords} with no room for a positional answers, and each of its
+     * slots is the value the call named or null — which an exception field reads as {@code None} but does
+     * not treat as {@code None}, because {@code Py_XSETREF} stores the pointer the parser left.
+     */
+    static PyObject[] keywordOnly(
+            String name, PyObject[] args, String[] kwNames, String[] names) {
+        return unpackKeywords(
+                name,
+                Arrays.copyOfRange(args, positional(args, kwNames), args.length),
+                kwNames,
+                names,
+                0,
+                0);
+    }
+
     /** {@code find_keyword}: the value stacked behind that name, or null when the call gave none. */
     private static PyObject behind(PyObject[] args, int positional, String[] kwNames, String name) {
         for (int i = 0; i < kwNames.length; i++) {

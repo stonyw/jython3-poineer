@@ -225,7 +225,8 @@ class OSErrorFieldsTest {
                 "TypeError: Warning() takes no keyword arguments",
                 () ->
                         ExceptionTypes.WARNING.call(
-                                new PyObject[0], PyBoundMethod.keywordTuple(new String[] {"category"})));
+                                new PyObject[] {PyStr.of("m")},
+                                PyBoundMethod.keywordTuple(new String[] {"category"})));
 
         assertThat(ExceptionTypes.STOP_ASYNC_ITERATION.parent())
                 .isSameAs(ExceptionTypes.EXCEPTION)

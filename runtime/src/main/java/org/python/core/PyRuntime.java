@@ -447,12 +447,18 @@ public final class PyRuntime {
         return (VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | (VERSION_MICRO << 8) | 0xF0;
     }
 
-    /** {@code sys.exit(n)}, whose whole meaning is the exception the launcher catches. */
+    /**
+     * {@code sys.exit(n)}, whose whole meaning is the exception the launcher catches.
+     *
+     * <p>The value is made by calling the class rather than by building one, because that is what {@code
+     * PyErr_SetObject} does — {@code _PyErr_CreateExc} runs {@code SystemExit}'s creator and then its
+     * initialiser, and the initialiser is the only thing that fills {@code e.code}. No argument and {@code
+     * None} are the same exit and both hand the class nothing, which is why a call of {@code sys.exit(None)}
+     * has empty arguments while {@code sys.exit((1, 2))} keeps the pair as one.
+     */
     private static PyObject systemExit(PyObject[] args, String[] kwNames) {
         Arguments.atMost("exit", args, kwNames, 1);
-        if (args.length == 0) {
-            throw PyRaise.of(new PyBaseException(ExceptionTypes.SYSTEM_EXIT, new PyObject[0]));
-        }
-        throw PyRaise.of(new PyBaseException(ExceptionTypes.SYSTEM_EXIT, args));
+        PyObject[] given = args.length == 0 || args[0] == PyNone.INSTANCE ? new PyObject[0] : args;
+        throw PyRaise.of((PyBaseException) Slots.call(ExceptionTypes.SYSTEM_EXIT, given, null));
     }
 }

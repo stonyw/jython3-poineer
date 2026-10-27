@@ -52,10 +52,11 @@ public class PyBaseException extends PyObject {
      * None} — on every other value, and why deleting it is allowed and reads back as {@code None} rather
      * than complaining.
      *
-     * <p>Deviation, and the only way to reach it: CPython fills this in {@code StopIteration_init}, so
-     * {@code StopIteration.__new__(StopIteration, 1).value} is {@code None} there and {@code 1} here, and a
-     * subclass whose {@code __init__} skips {@code super().__init__} loses the value in CPython but keeps it
-     * here. The runtime builds an exception's arguments and its value in the one step.
+     * <p>It is filled by {@code StopIteration_init} rather than by the creator, which is what makes {@code
+     * StopIteration.__new__(StopIteration, 1).value} {@code None} and a subclass whose {@code __init__}
+     * skips {@code super().__init__} lose the value: the field belongs to the initialiser, exactly as the
+     * offset does. The runtime reads a bare one as {@code None} anyway, which is {@code
+     * _PyGen_FetchStopIterationValue} doing the same.
      */
     private PyObject stopIterationValue;
 
@@ -86,38 +87,64 @@ public class PyBaseException extends PyObject {
     private PyObject failureObject;
 
     /**
-     * An exception raised as {@code exceptionType} with {@code args}.
+     * {@code SystemExit.code}: the one argument of the call, all of them when the call gave more than one,
+     * and nothing when it gave none.
+     *
+     * <p>{@code SystemExit_init} is the only initialiser of the family that leaves the field alone rather
+     * than filling it — {@code SystemExit().code} and {@code e.__init__()} on a value that had a code both
+     * keep what was there, while {@code StopIteration_init} clears its field to {@code None} in the same
+     * circumstances. The status the process ends with is read off {@code e.args} rather than from here, so
+     * a code written onto the field by hand is a name the value reports and not a decision the interpreter
+     * makes; the two only come apart that way, since {@code SystemExit_init} writes both.
+     */
+    private PyObject exitCode;
+
+    /**
+     * {@code ImportError}'s four offsets, in the order its {@code PyMemberDef} table files them.
+     *
+     * <p>The {@code name} of an {@code ImportError} is a different field from the {@code name} that {@code
+     * NameError} and {@code AttributeError} keep: the three classes are siblings, CPython gives each its own
+     * struct, and one value is only ever asked through the offset its own class derives from — which is why
+     * {@code ImportError('m', name='mod').name} is the module and {@code NameError('m', name='var').name}
+     * the variable. A class cannot hold both layouts: {@code class Both(NameError, ImportError)} is refused
+     * for an instance lay-out conflict before its body has run, and {@code type} refuses the same pair from
+     * either side.
+     */
+    private PyObject importMessage;
+
+    private PyObject importedName;
+    private PyObject importPath;
+    private PyObject importedFrom;
+
+    /**
+     * An exception raised as {@code exceptionType} with {@code args}: {@code BaseException_new}, which
+     * keeps what it was handed and fills no field of its own.
      *
      * <p>Protected rather than package-private because the class system is not the only subclass this
      * needs: a Java failure crossing the boundary arrives as an exception whose attributes are read off
      * the {@code Throwable}, which is a subclass of this one and lives in the interop module.
+     *
+     * <p>The five fields below this one belong to the initialiser, not here: {@code StopIteration(1)} gets
+     * its {@code value} from {@code StopIteration_init}, and a value made by the creator alone — {@code
+     * StopIteration.__new__(StopIteration, 1)} — has none. A call of a class runs the two in CPython's
+     * order, which is {@link Constructors#exception} for a built-in one and {@link Classes#construct} for
+     * a class a person wrote.
      */
     protected PyBaseException(PyType exceptionType, PyObject[] args) {
         super(exceptionType);
         this.exceptionType = exceptionType;
         setArguments(args);
-        if (carriesValue()) {
-            stopIterationValue = args.length > 0 ? args[0] : PyNone.INSTANCE;
-        }
-    }
-
-    /** Whether this class has the {@code value} member: {@code StopIteration} and what derives from it. */
-    private boolean carriesValue() {
-        return exceptionType.matches(ExceptionTypes.STOP_ITERATION);
     }
 
     /**
-     * Whether this class has the {@code name} member: the two classes that report a missed name and
-     * everything under them, which is where {@code UnboundLocalError} joins it through {@code NameError}.
+     * Whether the {@code name} this value keeps is {@code ImportError}'s, which is a different offset from
+     * the one {@code NameError} and {@code AttributeError} keep even though all three are read by that name.
+     *
+     * <p>The three families cannot be combined into one class, so the class the value was made as answers
+     * the question the descriptor's declaring class would otherwise have to answer.
      */
-    private boolean carriesName() {
-        return exceptionType.matches(ExceptionTypes.NAME_ERROR)
-                || exceptionType.matches(ExceptionTypes.ATTRIBUTE_ERROR);
-    }
-
-    /** Whether this class has the {@code obj} member: {@code AttributeError} and what derives from it. */
-    private boolean carriesObject() {
-        return exceptionType.matches(ExceptionTypes.ATTRIBUTE_ERROR);
+    private boolean takesImportFields() {
+        return exceptionType.matches(ExceptionTypes.IMPORT_ERROR);
     }
 
     /**
@@ -145,6 +172,68 @@ public class PyBaseException extends PyObject {
     /** The object a failed member read was reading off, or null where there was none. */
     PyObject failureObject() {
         return failureObject;
+    }
+
+    /**
+     * {@code PyMember_GetOne} over one of the family's {@code _Py_T_OBJECT} offsets.
+     *
+     * <p>A field that was never filled and a field that was deleted both read as {@code None} — the member
+     * has no {@code Py_T_OBJECT_EX} in it, so the null pointer is turned into the singleton on the way
+     * out — which is what makes {@code SystemExit().code} an answer rather than the complaint a missing
+     * attribute is. The two are still not the same to the value, and {@link #memberPointer} is what tells
+     * them apart.
+     */
+    PyObject memberField(String which) {
+        return orNone(memberPointer(which));
+    }
+
+    /**
+     * {@code self->X} as the pointer it is: null where nothing ever filled the field, {@code None} — a
+     * value — where {@code None} was written or {@code e.name = None} assigned.
+     *
+     * <p>The two {@code __getstate__}s of the family test the pointer rather than the value it answers with,
+     * which is what puts {@code 'name': None} in the state of {@code AttributeError('a', name=None)} and
+     * leaves the state of the same value with the name never named empty. A deleted field is the same as an
+     * unfilled one to them.
+     */
+    PyObject memberPointer(String which) {
+        return switch (which) {
+            case "value" -> stopIterationValue;
+            case "name" -> takesImportFields() ? importedName : failureName;
+            case "obj" -> failureObject;
+            case "code" -> exitCode;
+            case "msg" -> importMessage;
+            case "path" -> importPath;
+            case "name_from" -> importedFrom;
+            default ->
+                    throw Slots.runtimeError("the exception family files no member named '" + which + "'");
+        };
+    }
+
+    /** {@code PyMember_SetOne} over the same offsets, with {@code null} standing for {@code del}. */
+    void writeMemberField(String which, PyObject value) {
+        switch (which) {
+            case "value" -> stopIterationValue = value;
+            case "name" -> {
+                if (takesImportFields()) {
+                    importedName = value;
+                } else {
+                    failureName = value;
+                }
+            }
+            case "obj" -> failureObject = value;
+            case "code" -> exitCode = value;
+            case "msg" -> importMessage = value;
+            case "path" -> importPath = value;
+            case "name_from" -> importedFrom = value;
+            default ->
+                    throw Slots.runtimeError("the exception family files no member named '" + which + "'");
+        }
+    }
+
+    /** {@code OR_NONE}, the macro that lets a field no one filled read as {@code None}. */
+    private static PyObject orNone(PyObject field) {
+        return field == null ? PyNone.INSTANCE : field;
     }
 
     /**
@@ -254,7 +343,12 @@ public class PyBaseException extends PyObject {
         if (declared != null) {
             return display(declared, "__str__");
         }
-        return exceptionType.matches(ExceptionTypes.KEY_ERROR) ? keyErrorText() : described();
+        if (exceptionType.matches(ExceptionTypes.KEY_ERROR)) {
+            return keyErrorText();
+        }
+        return exceptionType.matches(ExceptionTypes.IMPORT_ERROR)
+                ? importErrorText()
+                : described();
     }
 
     /**
@@ -282,13 +376,28 @@ public class PyBaseException extends PyObject {
      *
      * <p>Nine classes of the family write a {@code tp_str} of their own — {@code BaseException} and {@code
      * BaseExceptionGroup}, {@code OSError}, {@code ImportError}, {@code SyntaxError}, {@code KeyError} and
-     * the three Unicode errors — and this runtime has filed the first three of those that exist here. The
-     * quotes are CPython's deliberate trade: {@code {}['']} reports {@code KeyError: ''} rather than a bare
+     * the three Unicode errors — and this runtime has filed the four of those that exist here. The quotes
+     * are CPython's deliberate trade: {@code {}['']} reports {@code KeyError: ''} rather than a bare
      * {@code KeyError}, and an explanatory sentence handed to a {@code KeyError} is put in quotes along
      * with it.
      */
     String keyErrorText() {
         return args.length == 1 ? args[0].repr() : described();
+    }
+
+    /**
+     * {@code ImportError_str}: the message the class keeps in its first field, and {@code
+     * BaseException_str} for everything the field does not hold.
+     *
+     * <p>The check is {@code PyUnicode_CheckExact} rather than a plain read, so a {@code msg} written by
+     * hand as a number or a list is not converted but walked past: {@code str(ImportError('a', 'b'))} is
+     * {@code "('a', 'b')}, because the two-argument call left the field empty, and {@code e.msg = ['x']}
+     * afterwards is the same sentence about the arguments rather than the list. Deleting the field puts the
+     * value back on that route, which is how {@code del e.msg} changes {@code str(e)} without changing
+     * {@code e.args}.
+     */
+    String importErrorText() {
+        return importMessage instanceof PyStr text ? text.getValue() : described();
     }
 
     /**
@@ -345,6 +454,72 @@ public class PyBaseException extends PyObject {
     /** {@code self->args} as the reduction reports it, which is the half {@code OSError} rewrites. */
     PyObject reducedArguments() {
         return arguments;
+    }
+
+    /**
+     * {@code AttributeError_getstate}: the name the value keeps and the arguments it was called with, hung
+     * on a copy of whatever dictionary it has.
+     *
+     * <p>The test CPython makes is of two pointers, and {@code self->args} is never one of them: {@code
+     * BaseException_new} gives every value a tuple, however few arguments the call gave, so the state of an
+     * {@code AttributeError} is always a dictionary and always carries {@code args}. Only the name is
+     * offered conditionally, which is what leaves {@code AttributeError('a', name=None)} a state with
+     * {@code 'name': None} in it and the same value with the name never named a state without the key at
+     * all. The {@code obj} field is deliberately not in the state: CPython says there is no telling whether
+     * the object a failed read looked the name up on can be pickled.
+     */
+    PyObject attributeState() {
+        PyDict state = dictionary == null ? PyDict.empty() : dictionary.copy();
+        if (failureName != null) {
+            state.put(PyStr.interned("name"), failureName);
+        }
+        state.put(PyStr.interned("args"), arguments);
+        return state;
+    }
+
+    /** {@code AttributeError_reduce}: three places every time, because the state never comes back empty. */
+    PyObject attributeReduced() {
+        return PyTuple.of(exceptionType, arguments, attributeState());
+    }
+
+    /**
+     * {@code ImportError_getstate}: the three fields a failed import names, and never the message.
+     *
+     * <p>{@code msg} is what {@code str(e)} reads and is not in the state — the arguments carry it, since
+     * the field is only ever filled from a one-argument call. Where none of the three is set the answer is
+     * the value's own dictionary as it stands, {@code Py_NewRef} rather than a copy, so {@code
+     * e.__reduce__()[2] is e.__dict__} holds; where one of them is, the state is a copy and the fields are
+     * added to it in the order the class files its four.
+     */
+    PyObject importState() {
+        if (importedName == null && importPath == null && importedFrom == null) {
+            return dictionary == null ? PyNone.INSTANCE : dictionary;
+        }
+        PyDict state = dictionary == null ? PyDict.empty() : dictionary.copy();
+        if (importedName != null) {
+            state.put(PyStr.interned("name"), importedName);
+        }
+        if (importPath != null) {
+            state.put(PyStr.interned("path"), importPath);
+        }
+        if (importedFrom != null) {
+            state.put(PyStr.interned("name_from"), importedFrom);
+        }
+        return state;
+    }
+
+    /**
+     * {@code ImportError_reduce}: the pair when there is no state to restore, the triple when there is.
+     *
+     * <p>A third place is added by {@code state != Py_None} rather than by the state being empty, which is
+     * how this class differs from {@code BaseException}'s rule of two pointers: an {@code ImportError}
+     * whose only field was deleted reduces to a pair even after its dictionary has been read.
+     */
+    PyObject importReduced() {
+        PyObject state = importState();
+        return state == PyNone.INSTANCE
+                ? PyTuple.of(exceptionType, arguments)
+                : PyTuple.of(exceptionType, arguments, state);
     }
 
     /**
@@ -459,40 +634,28 @@ public class PyBaseException extends PyObject {
     }
 
     /**
-     * {@code e.name}: the fields this runtime answers from a slot, then what CPython's generic read finds.
+     * {@code e.name}: what CPython's generic read finds, and nothing before it.
      *
-     * <p>Only three names are taken before the class is asked, and they are the three whose storage has no
-     * descriptor to read it through — {@code StopIteration.value} and {@code NameError.name} and {@code
-     * AttributeError.obj}, which CPython files as members of the leaf classes and this runtime keeps as
-     * slots. Everything else is {@link #owned}, which is CPython's {@code _PyType_Lookup} order: the first
-     * class in the method resolution order that names the attribute decides, so {@code class Q(Exception):
-     * args = 5} answers {@code 5} where the base's getset would have answered the tuple, and a property
-     * filed under {@code args} is asked before the field is read at all. The six names {@code BaseException}
-     * itself files — {@code args}, the chain, {@code __suppress_context__} and {@code __dict__} — are
-     * descriptors like any other, and a value holds them only as long as nothing in front of the base
-     * claims the name. The four-step order {@link #owned} answers by is every other value's: a member that
-     * can write outranks the dictionary, the dictionary outranks a member that only reads, and {@code
-     * __module__} is in that last group — which is why a class Python wrote answers it from its own
-     * dictionary while {@code ValueError('x').__module__} is an {@code AttributeError}, a built-in type
-     * keeping its module on the type rather than in a dictionary an instance can walk.
+     * <p>{@link #owned} is CPython's {@code _PyType_Lookup} order: the first class in the method resolution
+     * order that names the attribute decides, so {@code class Q(Exception): args = 5} answers {@code 5}
+     * where the base's getset would have answered the tuple, and a property filed under {@code args} is
+     * asked before the field is read at all. The six names {@code BaseException} itself files — {@code
+     * args}, the chain, {@code __suppress_context__} and {@code __dict__} — are descriptors like any other,
+     * and so are the nine the five classes under it file for their own offsets: {@code StopIteration.value},
+     * {@code NameError.name}, {@code SystemExit.code}, {@code AttributeError}'s two and {@code
+     * ImportError}'s four. Each of those is a {@code _Py_T_OBJECT} offset whose read turns a field nobody
+     * filled into {@code None}, which is what makes {@code SystemExit().code} an answer where {@code
+     * NameError('x').code} — a name the class files nothing under — is the complaint. A class that files a
+     * value over one of them is asked instead, because the member is found by the lookup and not by the
+     * struct. The four-step order {@link #owned} answers by is every other value's: a member that can write
+     * outranks the dictionary, the dictionary outranks a member that only reads, and {@code __module__} is in
+     * that last group — which is why a class Python wrote answers it from its own dictionary while {@code
+     * ValueError('x').__module__} is an {@code AttributeError}, a built-in type keeping its module on the
+     * type rather than in a dictionary an instance can walk.
      */
     @Override
     public PyObject getAttr(String name) {
-        return switch (name) {
-            case "value" ->
-                    carriesValue()
-                            ? (stopIterationValue == null ? PyNone.INSTANCE : stopIterationValue)
-                            : owned(name);
-            case "name" ->
-                    carriesName()
-                            ? (failureName == null ? PyNone.INSTANCE : failureName)
-                            : owned(name);
-            case "obj" ->
-                    carriesObject()
-                            ? (failureObject == null ? PyNone.INSTANCE : failureObject)
-                            : owned(name);
-            default -> owned(name);
-        };
+        return owned(name);
     }
 
     private PyObject owned(String name) {
@@ -614,39 +777,20 @@ public class PyBaseException extends PyObject {
     /**
      * {@code e.name = value}, with the same order as the read and {@code __setattr__} above all of it.
      *
-     * <p>The six names {@code BaseException} files as descriptors are written by those descriptors, which
-     * is where CPython's checks live — see {@link #writeArguments} and its siblings — and the walk that
-     * finds them is {@link GenericAttributes}, the same {@code _PyType_Lookup} the read walks, so {@code
-     * class Q(Exception): args = 5} leaves the assignment to the instance dictionary rather than to the
-     * field. What is left in this method is the three fields that have no descriptor filed for them yet.
+     * <p>The names {@code BaseException} files as descriptors, and the nine the five classes under it file
+     * for their own offsets, are written by those descriptors, which is where CPython's checks live — see
+     * {@link #writeArguments} and its siblings for the first group and {@link PyMemberDescriptor} for the
+     * second — and the walk that finds them is {@link GenericAttributes}, the same {@code _PyType_Lookup}
+     * the read walks, so {@code class Q(Exception): args = 5} leaves the assignment to the instance
+     * dictionary rather than to the field. A {@code _Py_T_OBJECT} offset takes any value and writes the
+     * pointer, which is why {@code e.name = 5} keeps the {@code 5} rather than refusing it the way {@code
+     * __suppress_context__} does.
      */
     @Override
     public PyObject setAttr(String name, PyObject value) {
         PyObject hook = Specials.lookUp(exceptionType, "__setattr__");
         if (hook instanceof PyFunction function) {
             return function.call(new PyObject[] {this, PyStr.of(name), value}, null);
-        }
-        switch (name) {
-            case "value" -> {
-                if (carriesValue()) {
-                    stopIterationValue = value;
-                    return PyNone.INSTANCE;
-                }
-            }
-            case "name" -> {
-                if (carriesName()) {
-                    failureName = value;
-                    return PyNone.INSTANCE;
-                }
-            }
-            case "obj" -> {
-                if (carriesObject()) {
-                    failureObject = value;
-                    return PyNone.INSTANCE;
-                }
-            }
-            default -> {
-            }
         }
         GenericAttributes.write(this, name, value);
         return PyNone.INSTANCE;
@@ -733,28 +877,16 @@ public class PyBaseException extends PyObject {
      * is asked rather than refused, so {@code Guarded} gets its {@code AttributeError: property 'errno' of
      * 'Guarded' object has no deleter} instead of a complaint about the instance dictionary.
      *
-     * <p>{@code StopIteration.value} is the one name this class empties itself, because a member of {@code
-     * _Py_T_OBJECT} type deletes by writing null to the field: {@code del si.value} is silent, reading it
-     * afterwards gives {@code None}, and deleting it a second time is still silent. The three fields it
-     * stands for are answered but not yet filed, so nothing above them would reach them.
+     * <p>{@code StopIteration.value} and its eight siblings empty the offset by writing null to the
+     * pointer: {@code del si.value} is silent, reading it afterwards gives {@code None}, and deleting it a
+     * second time is still silent, because the member has no {@code Py_T_OBJECT_EX} in it and so has no
+     * second sentence for "already gone".
      */
     @Override
     public PyObject delAttr(String name) {
         PyObject hook = Specials.lookUp(exceptionType, "__delattr__");
         if (hook instanceof PyFunction function) {
             return function.call(new PyObject[] {this, PyStr.of(name)}, null);
-        }
-        if (name.equals("value") && carriesValue()) {
-            stopIterationValue = null;
-            return PyNone.INSTANCE;
-        }
-        if (name.equals("name") && carriesName()) {
-            failureName = null;
-            return PyNone.INSTANCE;
-        }
-        if (name.equals("obj") && carriesObject()) {
-            failureObject = null;
-            return PyNone.INSTANCE;
         }
         GenericAttributes.delete(this, name);
         return PyNone.INSTANCE;

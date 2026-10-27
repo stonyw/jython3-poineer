@@ -1977,6 +1977,97 @@ final class TypeDict {
             table.value("__doc__", docValue(owner));
             return;
         }
+        if (owner == ExceptionTypes.ATTRIBUTE_ERROR) {
+            // The two fields the class keeps, the state that carries one of them, and an initialiser that
+            // reads its names out of a table no positional can reach — the three things that make {@code
+            // AttributeError('a', name='n')} and {@code NameError('a', name='n')} the same call in two
+            // different classes, and the reason this is the one leaf of the family with a `__getstate__`
+            // of its own filed beside it.
+            table.wrapper("__init__", INIT_DOC, TypeDict::attributeErrorInit);
+            table.method("__getstate__", null, TypeDict::attributeGetstate);
+            table.method("__reduce__", null, TypeDict::attributeReduce);
+            table.member(
+                    "name",
+                    "attribute name",
+                    self -> ((PyBaseException) self).memberField("name"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("name", value));
+            table.member(
+                    "obj",
+                    "object",
+                    self -> ((PyBaseException) self).memberField("obj"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("obj", value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.NAME_ERROR) {
+            // `UnboundLocalError` derives from here and declares nothing, so it runs this initialiser and
+            // files no row of its own — which is why a bad name handed to one of the two is complained
+            // about in the words of `NameError()`, the C function behind the row, and not of the class.
+            table.wrapper("__init__", INIT_DOC, TypeDict::nameErrorInit);
+            table.member(
+                    "name",
+                    "name",
+                    self -> ((PyBaseException) self).memberField("name"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("name", value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.STOP_ITERATION) {
+            // The value a generator's `return` hands out, and the initialiser that fills it: this class is
+            // the one of the five whose field is set from the first positional rather than named, and the
+            // one that clears it back to `None` when a call gives nothing.
+            table.wrapper("__init__", INIT_DOC, TypeDict::stopIterationInit);
+            table.member(
+                    "value",
+                    "generator return value",
+                    self -> ((PyBaseException) self).memberField("value"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("value", value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.SYSTEM_EXIT) {
+            // `code`, and the only initialiser of the family that leaves its field alone rather than
+            // filling it — `SystemExit()` clears nothing, and `e.__init__()` of a value that had a code
+            // keeps it.
+            table.wrapper("__init__", INIT_DOC, TypeDict::systemExitInit);
+            table.member(
+                    "code",
+                    "exception code",
+                    self -> ((PyBaseException) self).memberField("code"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("code", value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.IMPORT_ERROR) {
+            // The one class of the family whose `str` reads a field rather than the arguments, and the one
+            // whose reduction adds three of them to the state — `ModuleNotFoundError` runs this
+            // initialiser, files no row of its own, and is named in none of its refusals.
+            table.wrapper("__str__", STR_DOC, args -> PyStr.of(((PyBaseException) args[0]).importErrorText()));
+            table.wrapper("__init__", INIT_DOC, TypeDict::importErrorInit);
+            table.method("__reduce__", null, TypeDict::importErrorReduce);
+            table.member(
+                    "msg",
+                    "exception message",
+                    self -> ((PyBaseException) self).memberField("msg"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("msg", value));
+            table.member(
+                    "name",
+                    "module name",
+                    self -> ((PyBaseException) self).memberField("name"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("name", value));
+            table.member(
+                    "path",
+                    "module path",
+                    self -> ((PyBaseException) self).memberField("path"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("path", value));
+            table.member(
+                    "name_from",
+                    "name imported from module",
+                    self -> ((PyBaseException) self).memberField("name_from"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("name_from", value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
         if (owner == ExceptionTypes.EXCEPTION_GROUP) {
             // The one built-in of the exception family with a weak reference list of its own, in spite of
             // the fact that nothing under {@code BaseException} has one — which is why a class under {@code
@@ -2872,6 +2963,166 @@ final class TypeDict {
                 (PyOSError) methodReceiver("__reduce__", ExceptionTypes.OS_ERROR, args, kwNames);
         Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
         return self.reduced();
+    }
+
+    /**
+     * {@code AttributeError_init}: the arguments taken over, then the two fields the call may name.
+     *
+     * <p>CPython reads the names against a tuple it has just made empty, so the positionals reach {@code
+     * e.args} and nothing else — {@code AttributeError('a', 1, name='n')} is a value with two arguments and
+     * a name — and the sentence that refuses a name the table does not have is the C function's, not the
+     * class's: a {@code class Sub(AttributeError)} called with {@code bad=1} is refused as {@code
+     * AttributeError()}, the way {@code UnboundLocalError} is refused as {@code NameError()}. Both fields
+     * are written from the parse either way, which is what makes {@code e.__init__('z')} clear a name the
+     * value had rather than leave it standing.
+     */
+    private static PyObject attributeErrorInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver("__init__", ExceptionTypes.ATTRIBUTE_ERROR, args, kwNames);
+        self.setArguments(positionalsAfterReceiver(args, kwNames));
+        PyObject[] fields =
+                Arguments.keywordOnly("AttributeError", args, kwNames, new String[] {"name", "obj"});
+        self.writeMemberField("name", fields[0]);
+        self.writeMemberField("obj", fields[1]);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code NameError_init}: the arguments taken over, and the one name a call may hand with them. */
+    private static PyObject nameErrorInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver("__init__", ExceptionTypes.NAME_ERROR, args, kwNames);
+        self.setArguments(positionalsAfterReceiver(args, kwNames));
+        PyObject[] fields =
+                Arguments.keywordOnly("NameError", args, kwNames, new String[] {"name"});
+        self.writeMemberField("name", fields[0]);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code StopIteration_init}: the arguments, and the value the first of them is.
+     *
+     * <p>Two things separate this from {@code SystemExit_init}, which reads the same arguments: the field
+     * is cleared to {@code None} when the call gives nothing, so {@code e.__init__()} on a value that had a
+     * value loses it, and {@code StopIteration(1, 2).value} is the one argument and not a tuple of both.
+     * Keywords are refused here rather than parsed, because {@code BaseException_init} is handed the call's
+     * own keyword dictionary and answers it with {@code _PyArg_NoKeywords} — under the class the value was
+     * made as, which is how a subclass gets its own name in the sentence.
+     */
+    private static PyObject stopIterationInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver("__init__", ExceptionTypes.STOP_ITERATION, args, kwNames);
+        PyObject[] values = positionalsAfterReceiver(args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("%s() takes no keyword arguments", self.getType().name());
+        }
+        self.setArguments(values);
+        self.writeMemberField("value", values.length == 0 ? PyNone.INSTANCE : values[0]);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code SystemExit_init}: the arguments, and the code they add up to.
+     *
+     * <p>One argument is the code, more than one are the code as a tuple, and none is the case that leaves
+     * the field exactly as it was — {@code SystemExit('a').__init__()} keeps {@code 'a'} where the same
+     * call on a {@code StopIteration} empties it. The exit status the launcher ends with is read from the
+     * arguments rather than from this field, so the two only come apart when a code is written by hand.
+     */
+    private static PyObject systemExitInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver("__init__", ExceptionTypes.SYSTEM_EXIT, args, kwNames);
+        PyObject[] values = positionalsAfterReceiver(args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("%s() takes no keyword arguments", self.getType().name());
+        }
+        self.setArguments(values);
+        if (values.length == 1) {
+            self.writeMemberField("code", values[0]);
+        } else if (values.length > 1) {
+            self.writeMemberField("code", PyTuple.of(values));
+        }
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code ImportError_init}: the arguments, the three names, and the message a one-argument call is.
+     *
+     * <p>{@code msg} is the only field of the family filled from the arguments rather than from a name,
+     * and the only one filled by an {@code if} on the count: two arguments leave it empty, which is what
+     * puts {@code str(ImportError('a', 'b'))} back on {@code BaseException_str} and out of the field the
+     * class files for it. The three names all take any value — the parse is {@code |$OOO}, and no
+     * converter looks at what arrives — so {@code ImportError('m', name=1)} keeps the {@code 1}.
+     */
+    private static PyObject importErrorInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver("__init__", ExceptionTypes.IMPORT_ERROR, args, kwNames);
+        PyObject[] values = positionalsAfterReceiver(args, kwNames);
+        self.setArguments(values);
+        PyObject[] fields =
+                Arguments.keywordOnly(
+                        "ImportError", args, kwNames, new String[] {"name", "path", "name_from"});
+        self.writeMemberField("name", fields[0]);
+        self.writeMemberField("path", fields[1]);
+        self.writeMemberField("name_from", fields[2]);
+        self.writeMemberField("msg", values.length == 1 ? values[0] : null);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code AttributeError_getstate}: the fields beside the dictionary, in a copy of it.
+     *
+     * <p>The one {@code __getstate__} the family files for itself; every other class answers with {@code
+     * object}'s, which looks at nothing but the dictionary. Reading it makes no dictionary — CPython reads
+     * {@code self->dict} rather than asking for the attribute — and the state is a copy of what is there,
+     * so {@code e.__getstate__() is e.__dict__} is false whichever way the value was made.
+     */
+    private static PyObject attributeGetstate(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        methodReceiver("__getstate__", ExceptionTypes.ATTRIBUTE_ERROR, args, kwNames);
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return self.attributeState();
+    }
+
+    /**
+     * {@code AttributeError_reduce}: always three places, because the state always has the arguments in it.
+     *
+     * <p>{@code BaseException}'s rule of two pointers cannot be this class's: {@code self->args} is a
+     * tuple even for a call that gave no arguments, so the third place is never missing and the pair is
+     * never the answer.
+     */
+    private static PyObject attributeReduce(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        methodReceiver("__reduce__", ExceptionTypes.ATTRIBUTE_ERROR, args, kwNames);
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return self.attributeReduced();
+    }
+
+    /**
+     * {@code ImportError_reduce}: the pair when no field is set and there is nothing to restore.
+     *
+     * <p>The state this class hands the third place is {@code ImportError_getstate}'s answer, which {@code
+     * object}'s {@code __getstate__} is not: {@code msg} never counts, and {@code name}, {@code path} and
+     * {@code name_from} count only as pointers — so deleting the name the call gave takes the third place
+     * away again, and a value whose dictionary was only ever read still reduces to a pair.
+     */
+    private static PyObject importErrorReduce(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        methodReceiver("__reduce__", ExceptionTypes.IMPORT_ERROR, args, kwNames);
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return self.importReduced();
+    }
+
+    /** The arguments of a call to one of the family's methods, with the receiver stripped off. */
+    private static PyObject[] positionalsAfterReceiver(PyObject[] args, String[] kwNames) {
+        return Arrays.copyOfRange(args, 1, Arguments.positional(args, kwNames));
     }
 
     /**

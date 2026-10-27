@@ -38,7 +38,7 @@ final class Constructors {
     static PyObject instantiate(PyType type, PyObject[] args, PyTuple kwNames) {
         String[] keywordNames = PyBoundMethod.keywordNames(kwNames);
         if (type.matches(ExceptionTypes.BASE_EXCEPTION)) {
-            return exception(type, args, keywordNames);
+            return exception(type, args, kwNames);
         }
         if (type instanceof PyClass kind) {
             return Classes.construct(kind, args, kwNames);
@@ -174,28 +174,51 @@ final class Constructors {
      * An exception keeps its arguments as given because {@code str(e)} and {@code e.args} are both
      * derived from them, and neither is cooked here.
      *
+     * <p>A call of a class of the family is two steps and not one, because CPython's {@code type_call}
+     * runs {@code tp_new} and then {@code tp_init}: the creator takes the positionals and no notice of the
+     * names, and the initialiser is the method that fills a field from a name, keeps a value made by the
+     * creator alone, or refuses. {@code Constructors} is where a built-in class takes both steps; a class
+     * Python wrote takes them in {@link Classes#construct}, which reaches the same two rows through the
+     * method resolution order.
+     *
      * <p>A group is the one exception family whose creator reads only two of the arguments and then
      * refuses the rest itself, so the call is handed to {@link PyBaseExceptionGroup} whole: the
      * positional prefix because that is what its {@code PyArg_ParseTuple} table sees, and the fact that
      * anything was named separately because the refusal for that is made afterwards, by {@code __init__},
      * under the class the value was made as.
      */
-    private static PyObject exception(PyType type, PyObject[] args, String[] kwNames) {
+    private static PyObject exception(PyType type, PyObject[] args, PyTuple keywords) {
+        String[] kwNames = PyBoundMethod.keywordNames(keywords);
         if (type.matches(ExceptionTypes.BASE_EXCEPTION_GROUP)) {
             return PyBaseExceptionGroup.create(
                     type,
                     Arguments.positionals(args, kwNames),
                     kwNames != null && kwNames.length > 0);
         }
-        if (kwNames != null) {
-            throw Slots.typeError("%s() takes no keyword arguments", type.name());
-        }
         if (type.matches(ExceptionTypes.OS_ERROR)) {
             // The one family whose creator reads its arguments rather than keeping them, and whose value
-            // may be of a narrower class than the one that was called.
+            // may be of a narrower class than the one that was called. `OSError_new` has a keyword table
+            // and is the only creator of the family that refuses from it, before a value is made.
+            if (kwNames != null) {
+                throw Slots.typeError("%s() takes no keyword arguments", type.name());
+            }
             return PyOSError.create(type, args);
         }
-        return new PyBaseException(type, args);
+        // CPython's two steps, in its order: `BaseException_new` keeps the positionals and throws the
+        // names away without looking at them, and the `__init__` the order answers with is the method that
+        // has something to say about a named argument. That is the whole of the difference between
+        // `NameError('m', name='n')`, which fills a field, and `ValueError('m', name='n')`, which refuses
+        // in `BaseException_init` under the class the value was made as.
+        PyBaseException made = new PyBaseException(type, Arguments.positionals(args, kwNames));
+        PyObject declared = Specials.member(type, "__init__");
+        if (declared == null) {
+            return made;
+        }
+        PyObject[] withReceiver = new PyObject[args.length + 1];
+        withReceiver[0] = made;
+        System.arraycopy(args, 0, withReceiver, 1, args.length);
+        Slots.call(declared, withReceiver, keywords);
+        return made;
     }
 
     // --- scalars ---------------------------------------------------------------------------
