@@ -251,7 +251,13 @@ class Jy3LauncherTest {
                 "75_nameerror_dictionary.py",
                 "76_stopiteration_dictionary.py",
                 "77_systemexit_dictionary.py",
-                "78_importerror_dictionary.py");
+                "78_importerror_dictionary.py",
+                "79_syntaxerror_dictionary.py",
+                "80_syntaxerror_fields.py",
+                "81_syntaxerror_display.py",
+                "82_unicode_dictionary.py",
+                "83_unicode_initialisers.py",
+                "84_codec_sentence.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

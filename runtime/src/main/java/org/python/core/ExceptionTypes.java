@@ -22,11 +22,20 @@ public final class ExceptionTypes {
     /** {@code FloatingPointError}, the one arithmetic leaf no arithmetic here raises: it needs a FPU. */
     public static final PyType FLOATING_POINT_ERROR = child("FloatingPointError", ARITHMETIC_ERROR);
     public static final PyType VALUE_ERROR = child("ValueError", EXCEPTION);
-    public static final PyType UNICODE_ERROR = child("UnicodeError", VALUE_ERROR);
-    public static final PyType UNICODE_ENCODE_ERROR = child("UnicodeEncodeError", UNICODE_ERROR);
-    public static final PyType UNICODE_DECODE_ERROR = child("UnicodeDecodeError", UNICODE_ERROR);
+    // The four classes the three Unicode leaves and the three indentation errors are made of: the base
+    // declares nothing but its sentence, so its dictionary is a `__new__` and a `__doc__`, and each leaf
+    // files the five offsets its `PyMemberDef` table names beside its own initialiser and display.
+    public static final PyType UNICODE_ERROR =
+            child("UnicodeError", VALUE_ERROR).documented("Unicode related error.");
+
+    public static final PyType UNICODE_ENCODE_ERROR =
+            child("UnicodeEncodeError", UNICODE_ERROR).documented("Unicode encoding error.");
+
+    public static final PyType UNICODE_DECODE_ERROR =
+            child("UnicodeDecodeError", UNICODE_ERROR).documented("Unicode decoding error.");
+
     public static final PyType UNICODE_TRANSLATE_ERROR =
-            child("UnicodeTranslateError", UNICODE_ERROR);
+            child("UnicodeTranslateError", UNICODE_ERROR).documented("Unicode translation error.");
     public static final PyType TYPE_ERROR = child("TypeError", EXCEPTION);
 
     // The sentences the five dictionaries below this one file as their own `__doc__` row, and the two the
@@ -71,17 +80,28 @@ public final class ExceptionTypes {
 
     public static final PyType MODULE_NOT_FOUND_ERROR =
             child("ModuleNotFoundError", IMPORT_ERROR).documented("Module not found.");
-    public static final PyType SYNTAX_ERROR = child("SyntaxError", EXCEPTION);
+
+    // The nine offsets {@code SyntaxError_members} files, and the display that reads two of them. The class
+    // is the only one of the family whose {@code tp_new} is left to {@code BaseException} — it declares a
+    // {@code tp_init} and so files no {@code __new__} row of its own.
+    public static final PyType SYNTAX_ERROR =
+            child("SyntaxError", EXCEPTION).documented("Invalid syntax.");
 
     /**
      * The two classes that say <em>where</em> the text was wrong rather than that it is, and the private
      * one the incremental parser answers an unfinished statement with. All three keep {@code
-     * SyntaxError}'s arguments and therefore its display, which is why they are declared beside it.
+     * SyntaxError}'s arguments, its initialiser and therefore its display, which is why they are declared
+     * beside it and file nothing themselves but the sentence.
      */
-    public static final PyType INDENTATION_ERROR = child("IndentationError", SYNTAX_ERROR);
+    public static final PyType INDENTATION_ERROR =
+            child("IndentationError", SYNTAX_ERROR).documented("Improper indentation.");
 
-    public static final PyType TAB_ERROR = child("TabError", INDENTATION_ERROR);
-    public static final PyType INCOMPLETE_INPUT_ERROR = child("_IncompleteInputError", SYNTAX_ERROR);
+    public static final PyType TAB_ERROR =
+            child("TabError", INDENTATION_ERROR)
+                    .documented("Improper mixture of spaces and tabs.");
+
+    public static final PyType INCOMPLETE_INPUT_ERROR =
+            child("_IncompleteInputError", SYNTAX_ERROR).documented("incomplete input.");
     public static final PyType MEMORY_ERROR = child("MemoryError", EXCEPTION);
     public static final PyType ASSERTION_ERROR = child("AssertionError", EXCEPTION);
 

@@ -317,6 +317,47 @@ final class Arguments {
                 0);
     }
 
+    /**
+     * {@code PyArg_ParseTuple} over a format with no name after the colon: the arity refusals {@code
+     * SyntaxError_init} and the three Unicode initialisers answer with.
+     *
+     * <p>The function is called {@code function} because {@code seterror} has nothing better to call it —
+     * the format string named no function and the C code never hands one over — and it is written without
+     * the parentheses a named one gets. Which bound the sentence quotes is the one the call broke: a short
+     * call names the minimum, a long call the maximum, and a format with no optional half says {@code
+     * exactly} whichever way it went. Only positionals count, because the tuple being parsed has no names in
+     * it: {@code UnicodeEncodeError(encoding='utf-8')} is refused by {@code BaseException_init} long before
+     * this parser sees anything.
+     */
+    static void parsed(int given, int required, int allowed) {
+        if (given >= required && given <= allowed) {
+            return;
+        }
+        int bound = given < required ? required : allowed;
+        throw Slots.typeError(
+                "function takes %s %d argument%s (%d given)",
+                required == allowed ? "exactly" : given < required ? "at least" : "at most",
+                bound,
+                bound == 1 ? "" : "s",
+                given);
+    }
+
+    /**
+     * The {@code 'U'} converter, naming the position of the argument it cannot take.
+     *
+     * <p>Nothing quotes the type that arrived: this is {@code converterr}'s sentence, {@code argument 1 must
+     * be str, not bytes}, and not the buffer protocol's {@code a bytes-like object is required, not 'str'}
+     * beside it. A subclass of {@code str} passes, as {@code PyUnicode_Check} lets it, and {@code None} is
+     * named as {@code None} rather than as its type, which is the rule {@code converterr} writes at every
+     * one of its three sites.
+     */
+    static PyObject text(int at, PyObject value) {
+        if (!(value instanceof PyStr)) {
+            throw Slots.typeError("argument %d must be str, not %s", at, Slots.argumentName(value));
+        }
+        return value;
+    }
+
     /** {@code find_keyword}: the value stacked behind that name, or null when the call gave none. */
     private static PyObject behind(PyObject[] args, int positional, String[] kwNames, String name) {
         for (int i = 0; i < kwNames.length; i++) {

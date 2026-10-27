@@ -67,9 +67,10 @@ public final class PyBytes extends PyObject {
     /**
      * {@code s.encode(encoding, errors)}.
      *
-     * The position CPython reports is a code-point index while a Java string is a UTF-16 array, so the
-     * {@code ascii} test walks code points and counts them. The substitution handlers are M4: an
-     * encoding this runtime has but a mode it does not is refused rather than silently made strict.
+     * The position a codec error reports is a code-point index while a Java string is a UTF-16 array, so
+     * the {@code ascii} and {@code latin-1} tests walk code points and count them. The substitution
+     * handlers are M4: an encoding this runtime has but a mode it does not is refused rather than
+     * silently made strict.
      */
     public static PyBytes encodeText(String text, String encoding, String errors) {
         String name = codec(encoding);
@@ -79,25 +80,21 @@ public final class PyBytes extends PyObject {
             case "utf8sig" -> PyBytes.wrap(concat(
                     new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF}, PyHash.encodeUtf8(text)));
             case "ascii" -> {
-                int at = firstNonAscii(text);
-                if (at >= 0) {
+                int[] run = unencodable(text, 0x7f);
+                if (run != null) {
                     throw Slots.unicodeEncode(
-                            "'ascii' codec can't encode character "
-                                    + describe(text.codePointAt(at))
-                                    + " in position " + text.codePointCount(0, at)
-                                    + ": ordinal not in range(128)");
+                            "ascii", text, run[0], run[1], "ordinal not in range(128)");
                 }
                 yield PyBytes.of(text.getBytes(StandardCharsets.US_ASCII));
             }
             case "latin1" -> {
+                int[] run = unencodable(text, 0xff);
+                if (run != null) {
+                    throw Slots.unicodeEncode(
+                            "latin-1", text, run[0], run[1], "ordinal not in range(256)");
+                }
                 byte[] out = new byte[text.length()];
                 for (int i = 0; i < out.length; i++) {
-                    if (text.charAt(i) > 0xff) {
-                        throw Slots.unicodeEncode(
-                                "'latin-1' codec can't encode character "
-                                        + describe(text.charAt(i))
-                                        + " in position " + i + ": ordinal not in range(256)");
-                    }
                     out[i] = (byte) text.charAt(i);
                 }
                 yield PyBytes.wrap(out);
@@ -123,9 +120,7 @@ public final class PyBytes extends PyObject {
                 for (int i = 0; i < value.length; i++) {
                     if ((value[i] & 0xff) > 0x7f) {
                         throw Slots.unicodeDecode(
-                                "'ascii' codec can't decode byte 0x"
-                                        + String.format("%02x", value[i] & 0xff)
-                                        + " in position " + i + ": ordinal not in range(128)");
+                                "ascii", value, i, i + 1, "ordinal not in range(128)");
                     }
                 }
                 yield new String(value, StandardCharsets.US_ASCII);
@@ -159,25 +154,32 @@ public final class PyBytes extends PyObject {
         }
     }
 
-    private static int firstNonAscii(String text) {
+    /**
+     * {@code charmap_encode}'s run: {@code [start, end)} over the code points a codec cannot write, counted
+     * in code points because that is what the exception carries and what its sentence prints.
+     *
+     * <p>The run closes at the first character the codec can write, which is why {@code 'aéé'} is one error
+     * over {@code 1-3} rather than two over {@code 1} and {@code 2}, while {@code 'éab'} is {@code 0-1} and
+     * never reaches the character two places later.
+     */
+    private static int[] unencodable(String text, int limit) {
+        int start = -1;
+        int end = 0;
+        int at = 0;
         for (int i = 0; i < text.length(); ) {
-            int cp = text.codePointAt(i);
-            if (cp > 0x7f) {
-                return i;
+            int codePoint = text.codePointAt(i);
+            if (codePoint > limit) {
+                if (start < 0) {
+                    start = at;
+                }
+                end = at + 1;
+            } else if (start >= 0) {
+                break;
             }
-            i += Character.charCount(cp);
+            at++;
+            i += Character.charCount(codePoint);
         }
-        return -1;
-    }
-
-    /** How CPython names a character in a codec error: {@code '\xe9'} in the BMP, {@code U+1f600} above. */
-    private static String describe(int codePoint) {
-        if (codePoint < 0x100) {
-            return String.format("'\\x%02x'", codePoint);
-        }
-        return codePoint <= 0xffff
-                ? String.format("'\\u%04x'", codePoint)
-                : String.format("U+%04x", codePoint);
+        return start < 0 ? null : new int[] {start, end};
     }
 
     private static byte[] concat(byte[] head, byte[] body) {

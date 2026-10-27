@@ -538,19 +538,35 @@ public final class Slots {
     }
 
     /**
-     * {@code UnicodeEncodeError} and {@code UnicodeDecodeError}.
+     * {@code make_encode_exception} ({@code Objects/unicodeobject.c:7279}): the leaf called with the range a
+     * codec gave up on.
      *
-     * CPython builds these from five arguments — encoding, object, start, end, reason — and joins them
-     * in {@code __str__}. The five-argument form needs the codec to report a range, which belongs to
-     * the codec registry at M4; until then the codec itself formats the sentence, which is what a
-     * script reads either way. The class is right, so {@code except UnicodeEncodeError} works.
+     * <p>Five fields, not one sentence: {@code UnicodeEncodeError_str} writes the message out of the
+     * encoding, the object and the range, so a value that carries only a message reads back the empty
+     * string. {@code start} and {@code end} count code points, and a run of consecutive characters the
+     * codec cannot write is one range rather than the first character of it.
      */
-    public static PyRaise unicodeEncode(String message) {
-        return PyRaise.raise(ExceptionTypes.UNICODE_ENCODE_ERROR, message);
+    public static PyRaise unicodeEncode(
+            String encoding, String text, long start, long end, String reason) {
+        return PyBaseException.unicodeError(
+                ExceptionTypes.UNICODE_ENCODE_ERROR,
+                PyStr.of(encoding),
+                PyStr.of(text),
+                start,
+                end,
+                PyStr.of(reason));
     }
 
-    public static PyRaise unicodeDecode(String message) {
-        return PyRaise.raise(ExceptionTypes.UNICODE_DECODE_ERROR, message);
+    /** {@code PyUnicodeDecodeError_Create}: the same five fields, with the octets in place of the text. */
+    public static PyRaise unicodeDecode(
+            String encoding, byte[] octets, long start, long end, String reason) {
+        return PyBaseException.unicodeError(
+                ExceptionTypes.UNICODE_DECODE_ERROR,
+                PyStr.of(encoding),
+                PyBytes.of(octets),
+                start,
+                end,
+                PyStr.of(reason));
     }
 
     public static PyRaise zeroDivision(String message) {

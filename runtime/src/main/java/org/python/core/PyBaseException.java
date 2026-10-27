@@ -117,6 +117,53 @@ public class PyBaseException extends PyObject {
     private PyObject importedFrom;
 
     /**
+     * {@code SyntaxError}'s nine offsets, in the order {@code SyntaxError_members} files them.
+     *
+     * <p>Eight of the nine are plain {@code _Py_T_OBJECT} fields, and {@code lineno} is one of them rather
+     * than a number: {@code SyntaxError_init} stores whatever the second argument's tuple handed over, so
+     * {@code SyntaxError('m', ('f', True, 1, 't')).lineno} is {@code True} — and it is only the display
+     * that asks whether the value is exactly an int, because {@code SyntaxError_str} reads the field with
+     * {@code PyLong_CheckExact} and prints no line for a bool. {@code print_file_and_line} is the field
+     * nothing in the interpreter writes any more, which is why it reads {@code None} however the value was
+     * made; {@code _metadata} is the one name the class files that a call cannot reach by position — it is
+     * the seventh item of the tuple, and the only one of the nine named with an underscore.
+     *
+     * <p>The class shares {@code msg} with {@code ImportError} in name only: the two are siblings, each
+     * with its own struct, and one value is asked through the offset its own class derives from.
+     */
+    private PyObject syntaxMessage;
+
+    private PyObject syntaxFilename;
+    private PyObject syntaxLineno;
+    private PyObject syntaxOffset;
+    private PyObject syntaxText;
+    private PyObject syntaxEndLineno;
+    private PyObject syntaxEndOffset;
+    private PyObject syntaxPrintFileAndLine;
+    private PyObject syntaxMetadata;
+
+    /**
+     * {@code UnicodeError}'s five offsets, which its three leaves file and the base does not.
+     *
+     * <p>{@code start} and {@code end} are the family's only {@code Py_T_PYSSIZET} members besides {@code
+     * OSError}'s {@code characters_written}: they always read a number, they refuse {@code del} in the
+     * words about a numeric attribute, and they refuse anything that is not an int with {@code an integer
+     * is required} — {@code PyLong_AsSsize_t} rather than the index protocol. A value made by {@code
+     * __new__} alone holds {@code 0} for both, because the allocator zeroes the struct and the {@code -1}
+     * an initialiser would have written is never reached.
+     *
+     * <p>{@code encoding} is the field {@code UnicodeTranslateError} does not have, and does not miss: the
+     * leaf files all five names because the {@code PyMemberDef} table is shared, which is why {@code
+     * UTE('a', 0, 1, 'r').encoding} is {@code None} and its display says nothing about a codec.
+     */
+    private PyObject unicodeEncoding;
+
+    private PyObject unicodeObject;
+    private PyObject unicodeReason;
+    private long unicodeStart;
+    private long unicodeEnd;
+
+    /**
      * An exception raised as {@code exceptionType} with {@code args}: {@code BaseException_new}, which
      * keeps what it was handed and fills no field of its own.
      *
@@ -145,6 +192,14 @@ public class PyBaseException extends PyObject {
      */
     private boolean takesImportFields() {
         return exceptionType.matches(ExceptionTypes.IMPORT_ERROR);
+    }
+
+    /**
+     * Whether the {@code msg} this value keeps is {@code SyntaxError}'s, which the three classes under it
+     * inherit and {@code ImportError} has its own copy of under the same name.
+     */
+    private boolean takesSyntaxFields() {
+        return exceptionType.matches(ExceptionTypes.SYNTAX_ERROR);
     }
 
     /**
@@ -202,9 +257,20 @@ public class PyBaseException extends PyObject {
             case "name" -> takesImportFields() ? importedName : failureName;
             case "obj" -> failureObject;
             case "code" -> exitCode;
-            case "msg" -> importMessage;
+            case "msg" -> takesSyntaxFields() ? syntaxMessage : importMessage;
             case "path" -> importPath;
             case "name_from" -> importedFrom;
+            case "filename" -> syntaxFilename;
+            case "lineno" -> syntaxLineno;
+            case "offset" -> syntaxOffset;
+            case "text" -> syntaxText;
+            case "end_lineno" -> syntaxEndLineno;
+            case "end_offset" -> syntaxEndOffset;
+            case "print_file_and_line" -> syntaxPrintFileAndLine;
+            case "_metadata" -> syntaxMetadata;
+            case "encoding" -> unicodeEncoding;
+            case "object" -> unicodeObject;
+            case "reason" -> unicodeReason;
             default ->
                     throw Slots.runtimeError("the exception family files no member named '" + which + "'");
         };
@@ -223,12 +289,94 @@ public class PyBaseException extends PyObject {
             }
             case "obj" -> failureObject = value;
             case "code" -> exitCode = value;
-            case "msg" -> importMessage = value;
+            case "msg" -> {
+                if (takesSyntaxFields()) {
+                    syntaxMessage = value;
+                } else {
+                    importMessage = value;
+                }
+            }
             case "path" -> importPath = value;
             case "name_from" -> importedFrom = value;
+            case "filename" -> syntaxFilename = value;
+            case "lineno" -> syntaxLineno = value;
+            case "offset" -> syntaxOffset = value;
+            case "text" -> syntaxText = value;
+            case "end_lineno" -> syntaxEndLineno = value;
+            case "end_offset" -> syntaxEndOffset = value;
+            case "print_file_and_line" -> syntaxPrintFileAndLine = value;
+            case "_metadata" -> syntaxMetadata = value;
+            case "encoding" -> unicodeEncoding = value;
+            case "object" -> unicodeObject = value;
+            case "reason" -> unicodeReason = value;
             default ->
                     throw Slots.runtimeError("the exception family files no member named '" + which + "'");
         }
+    }
+
+    /**
+     * {@code PyMember_GetOne} over one of the two {@code Py_T_PYSSIZET} offsets a Unicode error keeps.
+     *
+     * <p>Always a number, because the field is a {@code Py_ssize_t} and not a pointer: a value made by the
+     * creator alone reads {@code 0}, which is the allocator's zero rather than the {@code -1} an
+     * initialiser would have written.
+     */
+    long memberNumber(String which) {
+        return which.equals("start") ? unicodeStart : unicodeEnd;
+    }
+
+    /**
+     * {@code PyMember_SetOne} over {@code Py_T_PYSSIZET}: {@code PyLong_AsSsize_t} rather than the index
+     * protocol, and {@code del} refused before the field is looked at.
+     *
+     * <p>The two refusals are the member's own and differ from the {@code 'n'} converter the same class's
+     * {@code __init__} uses: a value that is not an int is {@code an integer is required} here and
+     * {@code 'float' object cannot be interpreted as an integer} there, and only this one accepts a bool
+     * while refusing every other type.
+     */
+    void writeMemberNumber(String which, PyObject value) {
+        if (value == null) {
+            throw Slots.typeError("can't delete numeric/char attribute");
+        }
+        BigInteger number = Numbers.asInteger(value);
+        if (number == null) {
+            throw Slots.typeError("an integer is required");
+        }
+        if (number.bitLength() > 63) {
+            throw Slots.overflowError("Python int too large to convert to C ssize_t");
+        }
+        if (which.equals("start")) {
+            unicodeStart = number.longValue();
+        } else {
+            unicodeEnd = number.longValue();
+        }
+    }
+
+    /** {@code exc->start} and {@code exc->end}, which the three leaves' initialisers fill from the parse. */
+    void writeUnicodeRange(long start, long end) {
+        unicodeStart = start;
+        unicodeEnd = end;
+    }
+
+    /**
+     * The value a codec makes when it gives up on part of a text.
+     *
+     * <p>{@code make_encode_exception} ({@code Objects/unicodeobject.c:7279}) calls the leaf with {@code
+     * "sOnns"} and {@code PyUnicodeDecodeError_Create} ({@code Objects/exceptions.c:3859}) calls it with {@code
+     * "sy#nns"}: both doors are {@code type_call}, so a codec's failure runs the same five-argument initialiser
+     * a hand-written one does and the five arguments are both the {@code args} of the value and its five fields.
+     * Filling only a message would leave {@code object} a {@code NULL} pointer, and the leaf's own {@code
+     * tp_str} answers the empty string for such a value — the sentence a person reads is written by the fields.
+     */
+    static PyRaise unicodeError(
+            PyType leaf, PyObject encoding, PyObject object, long start, long end, PyObject reason) {
+        PyObject[] five = {encoding, object, PyInt.of(start), PyInt.of(end), reason};
+        PyBaseException value = new PyBaseException(leaf, five);
+        value.writeMemberField("encoding", encoding);
+        value.writeMemberField("object", object);
+        value.writeUnicodeRange(start, end);
+        value.writeMemberField("reason", reason);
+        return PyRaise.of(value);
     }
 
     /** {@code OR_NONE}, the macro that lets a field no one filled read as {@code None}. */
@@ -346,9 +494,28 @@ public class PyBaseException extends PyObject {
         if (exceptionType.matches(ExceptionTypes.KEY_ERROR)) {
             return keyErrorText();
         }
+        if (exceptionType.matches(ExceptionTypes.SYNTAX_ERROR)) {
+            return syntaxErrorText();
+        }
+        if (isUnicodeLeaf()) {
+            return unicodeErrorText();
+        }
         return exceptionType.matches(ExceptionTypes.IMPORT_ERROR)
                 ? importErrorText()
                 : described();
+    }
+
+    /**
+     * Whether this value's class is one of the three leaves that read their own fields for a sentence.
+     *
+     * <p>{@code UnicodeError} itself is not one of them: it declares no {@code tp_str} and so keeps
+     * {@code BaseException_str}, which is why {@code str(UnicodeError('a'))} is {@code 'a'} and the same
+     * five arguments handed to {@code UnicodeDecodeError} are a codec's complaint about them.
+     */
+    private boolean isUnicodeLeaf() {
+        return exceptionType.matches(ExceptionTypes.UNICODE_ENCODE_ERROR)
+                || exceptionType.matches(ExceptionTypes.UNICODE_DECODE_ERROR)
+                || exceptionType.matches(ExceptionTypes.UNICODE_TRANSLATE_ERROR);
     }
 
     /**
@@ -374,9 +541,10 @@ public class PyBaseException extends PyObject {
      * {@code KeyError_str}: the one argument as a {@code repr}, and {@code BaseException_str} for every
      * other count.
      *
-     * <p>Nine classes of the family write a {@code tp_str} of their own — {@code BaseException} and {@code
-     * BaseExceptionGroup}, {@code OSError}, {@code ImportError}, {@code SyntaxError}, {@code KeyError} and
-     * the three Unicode errors — and this runtime has filed the four of those that exist here. The quotes
+     * <p>Nine classes of the family write a {@code tp_str} of their own — {@code BaseException} and
+     * {@code BaseExceptionGroup}, {@code OSError}, {@code ImportError}, {@code SyntaxError}, {@code
+     * KeyError} and the three Unicode errors — and this runtime files all of them, which is why {@code
+     * str()} is a route of tests rather than one fallback. The quotes
      * are CPython's deliberate trade: {@code {}['']} reports {@code KeyError: ''} rather than a bare
      * {@code KeyError}, and an explanatory sentence handed to a {@code KeyError} is put in quotes along
      * with it.
@@ -398,6 +566,145 @@ public class PyBaseException extends PyObject {
      */
     String importErrorText() {
         return importMessage instanceof PyStr text ? text.getValue() : described();
+    }
+
+    /**
+     * {@code SyntaxError_str}: the message, and beside it the file and the line the value keeps.
+     *
+     * <p>Three formats and not one, chosen by which of the two fields is there. {@code filename} counts
+     * only when it is text — {@code e.filename = 99} is walked past, and the display falls back to the line
+     * alone — and it is cut at the last separator before it is printed, which is what makes {@code
+     * SyntaxError('m', ('/a/b/f.py', 3, …))} say {@code f.py} rather than the path. {@code lineno} counts
+     * only when it is <em>exactly</em> an int, so a bool written into the field by hand earns no line: the
+     * test is {@code PyLong_CheckExact} and {@code True} is a subclass, not the number itself. A line too
+     * wide for a C {@code long} is printed as {@code -1} rather than complained about, because the
+     * conversion is the overflow-reporting one and the format ignores what it reports.
+     *
+     * <p>With neither field the message is simply {@code str}’d, which is how an unfilled one reads {@code
+     * None} rather than the empty string every other class of the family answers with.
+     */
+    String syntaxErrorText() {
+        String file = syntaxFilename instanceof PyStr name ? afterLastSeparator(name.getValue()) : null;
+        boolean hasLine = syntaxLineno instanceof PyInt;
+        String message = orNone(syntaxMessage).str();
+        if (file == null && !hasLine) {
+            return message;
+        }
+        if (file != null && hasLine) {
+            return message + " (" + file + ", line " + asLong(syntaxLineno) + ")";
+        }
+        return file != null
+                ? message + " (" + file + ")"
+                : message + " (line " + asLong(syntaxLineno) + ")";
+    }
+
+    /** {@code my_basename}: the text after the last separator, and the whole name when there is none. */
+    private static String afterLastSeparator(String name) {
+        int here = name.lastIndexOf('/');
+        return here < 0 ? name : name.substring(here + 1);
+    }
+
+    /** {@code PyLong_AsLongAndOverflow}: the number, or {@code -1} where it does not fit a C long. */
+    private static long asLong(PyObject number) {
+        BigInteger value = Numbers.asInteger(number);
+        return value != null && value.bitLength() <= 63 ? value.longValue() : -1;
+    }
+
+    /**
+     * {@code UnicodeEncodeError_str}, {@code UnicodeDecodeError_str} and {@code
+     * UnicodeTranslateError_str}: the one sentence a range of a value is worth.
+     *
+     * <p>The three share everything but the words. A range of exactly one item names that item — the
+     * character as a backslash-x, backslash-u or backslash-U escape for the two that read text, the octet
+     * as {@code 0x..} for the one that reads bytes — and every other range names both ends, the second one
+     * exclusive in the fields and inclusive in the sentence, so {@code end} of {@code 1} prints as {@code
+     * 0-0}. The gate is that arithmetic rather than a bound check alone: {@code start} inside the value,
+     * {@code end} one past it, and neither of them negative.
+     *
+     * <p>{@code encoding} and {@code reason} are {@code str}’d on the way out because a person may have
+     * written anything into either field, and the object is checked <em>after</em> those two have been
+     * asked: a value whose {@code object} was replaced with the wrong kind of sequence is refused with the
+     * class named as {@code UnicodeError}, the base that owns the check, and not as the leaf the value is.
+     * An object that was never filled — a value made by {@code __new__} alone, or one whose field was
+     * deleted — answers with the empty string before any of that is asked.
+     */
+    String unicodeErrorText() {
+        if (unicodeObject == null) {
+            return "";
+        }
+        boolean decode = exceptionType.matches(ExceptionTypes.UNICODE_DECODE_ERROR);
+        boolean translate = exceptionType.matches(ExceptionTypes.UNICODE_TRANSLATE_ERROR);
+        String reason = shown(unicodeReason);
+        // The encoding is asked of the value before its object is checked, and the translate sentence
+        // names no codec at all, so it never asks.
+        String codec =
+                translate ? null : "'" + shown(unicodeEncoding) + "' codec can't " + (decode ? "decode " : "encode ");
+        long length = lengthOfObject(decode);
+        String single = inRange(unicodeStart, unicodeEnd, length) ? itemAt(decode) : null;
+        long last = unicodeEnd - 1;
+        if (translate) {
+            return single == null
+                    ? "can't translate characters in position " + unicodeStart + "-" + last + ": " + reason
+                    : "can't translate character '" + single + "' in position " + unicodeStart + ": " + reason;
+        }
+        if (decode) {
+            return single == null
+                    ? codec + "bytes in position " + unicodeStart + "-" + last + ": " + reason
+                    : codec + "byte " + single + " in position " + unicodeStart + ": " + reason;
+        }
+        return single == null
+                ? codec + "characters in position " + unicodeStart + "-" + last + ": " + reason
+                : codec + "character '" + single + "' in position " + unicodeStart + ": " + reason;
+    }
+
+    /**
+     * The length the gate measures against, after the check the three C sentences make of the object
+     * themselves: a bytes where a decode reads text is refused as {@code UnicodeError}, the base that owns
+     * the check, and not as the leaf the value is.
+     */
+    private long lengthOfObject(boolean decode) {
+        if (decode) {
+            if (!(unicodeObject instanceof PyBytes bytes)) {
+                throw Slots.typeError("UnicodeError 'object' attribute must be a bytes");
+            }
+            return bytes.getValue().length;
+        }
+        if (!(unicodeObject instanceof PyStr text)) {
+            throw Slots.typeError("UnicodeError 'object' attribute must be a string");
+        }
+        return text.codePointLength();
+    }
+
+    /** The item a one-long range names: an octet as {@code 0x..}, a character as one of the three escapes. */
+    private String itemAt(boolean decode) {
+        if (decode) {
+            return escapedOctet(((PyBytes) unicodeObject).getValue()[(int) unicodeStart]);
+        }
+        return escapedCodePoint(((PyStr) unicodeObject).codePointAt((int) unicodeStart));
+    }
+
+    /** {@code (start >= 0 && start < len) && (end >= 0 && end <= len) && end == start + 1}. */
+    private static boolean inRange(long start, long end, long length) {
+        return start >= 0 && start < length && end >= 0 && end <= length && end == start + 1;
+    }
+
+    /** The three widths {@code UnicodeEncodeError_str} and its siblings choose an escape by. */
+    private static String escapedCodePoint(int codePoint) {
+        if (codePoint <= 0xff) {
+            return String.format("\\x%02x", codePoint);
+        }
+        return codePoint <= 0xffff
+                ? String.format("\\u%04x", codePoint)
+                : String.format("\\U%08x", codePoint);
+    }
+
+    private static String escapedOctet(byte octet) {
+        return String.format("0x%02x", octet & 0xff);
+    }
+
+    /** {@code PyObject_Str} over a field that may never have been filled, which is worth {@code <NULL>}. */
+    private static String shown(PyObject field) {
+        return field == null ? "<NULL>" : field.str();
     }
 
     /**

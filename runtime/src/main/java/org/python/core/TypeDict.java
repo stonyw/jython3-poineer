@@ -2068,6 +2068,111 @@ final class TypeDict {
             table.value("__doc__", docValue(owner));
             return;
         }
+        if (owner == ExceptionTypes.SYNTAX_ERROR) {
+            // The nine offsets, the display that reads two of them and the initialiser that fills eight, in
+            // the order the two tables merge. There is no `__new__` row here: the class declares a `tp_init`
+            // of its own, so `BaseException_new` is not copied into its table and `SyntaxError.__new__` is
+            // the base's, reached through the method resolution order rather than filed beside it.
+            table.wrapper(
+                    "__str__", STR_DOC, args -> PyStr.of(((PyBaseException) args[0]).syntaxErrorText()));
+            table.wrapper("__init__", INIT_DOC, TypeDict::syntaxErrorInit);
+            table.member(
+                    "msg",
+                    "exception msg",
+                    self -> ((PyBaseException) self).memberField("msg"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("msg", value));
+            table.member(
+                    "filename",
+                    "exception filename",
+                    self -> ((PyBaseException) self).memberField("filename"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("filename", value));
+            table.member(
+                    "lineno",
+                    "exception lineno",
+                    self -> ((PyBaseException) self).memberField("lineno"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("lineno", value));
+            table.member(
+                    "offset",
+                    "exception offset",
+                    self -> ((PyBaseException) self).memberField("offset"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("offset", value));
+            table.member(
+                    "text",
+                    "exception text",
+                    self -> ((PyBaseException) self).memberField("text"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("text", value));
+            table.member(
+                    "end_lineno",
+                    "exception end lineno",
+                    self -> ((PyBaseException) self).memberField("end_lineno"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("end_lineno", value));
+            table.member(
+                    "end_offset",
+                    "exception end offset",
+                    self -> ((PyBaseException) self).memberField("end_offset"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("end_offset", value));
+            table.member(
+                    "print_file_and_line",
+                    "exception print_file_and_line",
+                    self -> ((PyBaseException) self).memberField("print_file_and_line"),
+                    (self, value) ->
+                            ((PyBaseException) self).writeMemberField("print_file_and_line", value));
+            table.member(
+                    "_metadata",
+                    "exception private metadata",
+                    self -> ((PyBaseException) self).memberField("_metadata"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("_metadata", value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
+        if (owner == ExceptionTypes.UNICODE_ENCODE_ERROR
+                || owner == ExceptionTypes.UNICODE_DECODE_ERROR
+                || owner == ExceptionTypes.UNICODE_TRANSLATE_ERROR) {
+            // One `PyMemberDef` table shared by the three leaves, which is why `UnicodeTranslateError` —
+            // the class with no encoding to speak of — files `encoding` all the same and reads `None` from
+            // it. The two sizes are the only `Py_T_PYSSIZET` offsets the family has besides {@code
+            // OSError.characters_written}, and the creator is here because the three leaves declare a
+            // `tp_new` of their own in C: `BaseException_new`, the same function the base keeps.
+            table.raw(
+                    "__new__",
+                    NEW_DOC,
+                    (args, kwNames, qualified) -> exceptionNew(owner, args, kwNames));
+            table.wrapper(
+                    "__str__",
+                    STR_DOC,
+                    args -> PyStr.of(((PyBaseException) args[0]).unicodeErrorText()));
+            table.wrapper(
+                    "__init__",
+                    INIT_DOC,
+                    (args, kwNames, qualified) -> unicodeErrorInit(owner, args, kwNames));
+            table.member(
+                    "encoding",
+                    "exception encoding",
+                    self -> ((PyBaseException) self).memberField("encoding"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("encoding", value));
+            table.member(
+                    "object",
+                    "exception object",
+                    self -> ((PyBaseException) self).memberField("object"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("object", value));
+            table.member(
+                    "start",
+                    "exception start",
+                    self -> PyInt.of(((PyBaseException) self).memberNumber("start")),
+                    (self, value) -> ((PyBaseException) self).writeMemberNumber("start", value));
+            table.member(
+                    "end",
+                    "exception end",
+                    self -> PyInt.of(((PyBaseException) self).memberNumber("end")),
+                    (self, value) -> ((PyBaseException) self).writeMemberNumber("end", value));
+            table.member(
+                    "reason",
+                    "exception reason",
+                    self -> ((PyBaseException) self).memberField("reason"),
+                    (self, value) -> ((PyBaseException) self).writeMemberField("reason", value));
+            table.value("__doc__", docValue(owner));
+            return;
+        }
         if (owner == ExceptionTypes.EXCEPTION_GROUP) {
             // The one built-in of the exception family with a weak reference list of its own, in spite of
             // the fact that nothing under {@code BaseException} has one — which is why a class under {@code
@@ -3071,6 +3176,116 @@ final class TypeDict {
         self.writeMemberField("name_from", fields[2]);
         self.writeMemberField("msg", values.length == 1 ? values[0] : null);
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code SyntaxError_init}: the message the first argument is, and the seven the second one iterates to.
+     *
+     * <p>The second argument is not read as a tuple of fields but <em>as a sequence</em> — {@code
+     * PySequence_Tuple} runs first, which is why {@code SyntaxError('m', "abcd")} names {@code 'a'} as its
+     * file and why {@code SyntaxError('m', 42)} is the complaint about an int not being iterable rather than
+     * about a field it cannot fill. The parse that follows is {@code OOOO|OOO} with no name after the colon,
+     * so its two refusals say {@code function}, and no converter looks at a value: a {@code lineno} of
+     * {@code 'x'} is kept, and only the display decides that it is not a line.
+     *
+     * <p>Three of the seven slots are written whether the call reached them or not, which is what makes
+     * {@code e.__init__('m', ('f', 1, 2, 't'))} clear an {@code end_lineno} the value had. The rule about
+     * {@code end_offset} is asked after all seven are written, so a call that names the end line and no end
+     * offset leaves the value holding both — and then refuses the call.
+     */
+    private static PyObject syntaxErrorInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyBaseException self =
+                (PyBaseException)
+                        exceptionReceiver("__init__", ExceptionTypes.SYNTAX_ERROR, args, kwNames);
+        PyObject[] values = positionalsAfterReceiver(args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("%s() takes no keyword arguments", self.getType().name());
+        }
+        self.setArguments(values);
+        if (values.length >= 1) {
+            self.writeMemberField("msg", values[0]);
+        }
+        if (values.length == 2) {
+            PyObject[] info = Constructors.materialise(values[1]).toArray(new PyObject[0]);
+            Arguments.parsed(info.length, 4, 7);
+            self.writeMemberField("filename", info[0]);
+            self.writeMemberField("lineno", info[1]);
+            self.writeMemberField("offset", info[2]);
+            self.writeMemberField("text", info[3]);
+            self.writeMemberField("end_lineno", info.length > 4 ? info[4] : null);
+            self.writeMemberField("end_offset", info.length > 5 ? info[5] : null);
+            self.writeMemberField("_metadata", info.length > 6 ? info[6] : null);
+            if (info.length == 5) {
+                throw Slots.typeError(
+                        "end_offset must be provided when end_lineno is provided");
+            }
+        }
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code UnicodeEncodeError_init}, {@code UnicodeDecodeError_init} and {@code
+     * UnicodeTranslateError_init}: five names in three orders.
+     *
+     * <p>The parse is the legacy kind, so it counts only what arrived positionally and refuses by the
+     * converter that broke — {@code argument 1 must be str, not bytes} for the {@code 'U'} of a call that
+     * handed over octets, {@code 'float' object cannot be interpreted as an integer} for the {@code 'n'} of
+     * a call that handed over a half. {@code UnicodeTranslateError} has four arguments and no encoding at
+     * all, which is why this takes the class rather than reading one table: the leaf fills four of the five
+     * offsets its {@code PyMemberDef} shares, and leaves {@code encoding} exactly as it found it.
+     *
+     * <p>{@code BaseException_init} runs first, as it does for every class of the family, so the arguments
+     * of a refused call are still the value's own — and the object a decode was handed is converted
+     * <em>after</em> the five have been read, which is why a float in the {@code start} of a call whose
+     * object is a string is complained about as an index rather than as a buffer.
+     */
+    private static PyObject unicodeErrorInit(
+            PyType owner, PyObject[] args, String[] kwNames) {
+        PyBaseException self = (PyBaseException) exceptionReceiver("__init__", owner, args, kwNames);
+        PyObject[] values = positionalsAfterReceiver(args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("%s() takes no keyword arguments", self.getType().name());
+        }
+        self.setArguments(values);
+        boolean translate = owner == ExceptionTypes.UNICODE_TRANSLATE_ERROR;
+        Arguments.parsed(values.length, translate ? 4 : 5, translate ? 4 : 5);
+        PyObject encoding = null;
+        PyObject object;
+        long start;
+        long end;
+        PyObject reason;
+        if (translate) {
+            object = Arguments.text(1, values[0]);
+            start = Numbers.size(values[1]);
+            end = Numbers.size(values[2]);
+            reason = Arguments.text(4, values[3]);
+        } else {
+            boolean decode = owner == ExceptionTypes.UNICODE_DECODE_ERROR;
+            encoding = Arguments.text(1, values[0]);
+            object = decode ? values[1] : Arguments.text(2, values[1]);
+            start = Numbers.size(values[2]);
+            end = Numbers.size(values[3]);
+            reason = Arguments.text(5, values[4]);
+            if (decode) {
+                object = octets(object);
+            }
+        }
+        if (!translate) {
+            self.writeMemberField("encoding", encoding);
+        }
+        self.writeMemberField("object", object);
+        self.writeUnicodeRange(start, end);
+        self.writeMemberField("reason", reason);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code PyBytes_Check} and then {@code PyObject_GetBuffer}: the object a decode keeps. */
+    private static PyObject octets(PyObject object) {
+        if (object instanceof PyBytes) {
+            return object;
+        }
+        throw Slots.typeError(
+                "a bytes-like object is required, not '%s'", object.getType().name());
     }
 
     /**
