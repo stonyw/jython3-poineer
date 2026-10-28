@@ -443,7 +443,6 @@ public final class PyStr extends PyObject {
             // and so says nought. `__getnewargs__` hands pickle the one argument a string is rebuilt from.
             .add(
                     "__format__",
-                    "Return a formatted version of the string as described by format_spec.",
                     (self, args, kwNames) -> {
                         Arguments.exactlyOne("str.__format__()", args, kwNames);
                         if (!(args[0] instanceof PyStr spec)) {
@@ -457,7 +456,6 @@ public final class PyStr extends PyObject {
                     })
             .add(
                     "__sizeof__",
-                    "Return the size of the string in memory, in bytes.",
                     (self, args, kwNames) -> {
                         Arguments.none("str.__sizeof__()", args, kwNames);
                         return PyInt.of(0);
@@ -465,7 +463,476 @@ public final class PyStr extends PyObject {
             .add("__getnewargs__", (self, args, kwNames) -> {
                 Arguments.none("str.__getnewargs__()", args, kwNames);
                 return PyTuple.of(self);
-            });
+            })
+            // The sentences clinic files beside `unicode_methods`, transcribed from
+            // `Objects/clinic/unicodeobject.c.h` and, for the two hand-written ones, from
+            // `Objects/unicodeobject.c`. Each is the whole `ml_doc`: the row's own name, its argument
+            // table, the `--` knife, and the prose. `__getnewargs__` is the one row of the nine files
+            // without a sentence of its own, so CPython builds its table from the METH_NOARGS flag;
+            // that table is a flag's work rather than a text's, and is not invented here.
+            .document(
+                    "__format__",
+                    "__format__($self, format_spec, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a formatted version of the string as described by format_spec.")
+            .document(
+                    "__sizeof__",
+                    "__sizeof__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the size of the string in memory, in bytes.")
+            .document(
+                    "capitalize",
+                    "capitalize($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a capitalized version of the string.\n"
+                            + "\n"
+                            + "More specifically, make the first character have upper case and the\n"
+                            + "rest lower case.")
+            .document(
+                    "casefold",
+                    "casefold($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a version of the string suitable for caseless comparisons.")
+            .document(
+                    "center",
+                    "center($self, width, fillchar=' ', /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a centered string of length width.\n"
+                            + "\n"
+                            + "Padding is done using the specified fill character (default is\n"
+                            + "a space).")
+            .document(
+                    "count",
+                    "count($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the number of non-overlapping occurrences of substring sub in string S[start:end].\n"
+                            + "\n"
+                            + "Optional arguments start and end are interpreted as in slice\n"
+                            + "notation.")
+            .document(
+                    "encode",
+                    "encode($self, /, encoding='utf-8', errors='strict')\n"
+                            + "--\n"
+                            + "\n"
+                            + "Encode the string using the codec registered for encoding.\n"
+                            + "\n"
+                            + "  encoding\n"
+                            + "    The encoding in which to encode the string.\n"
+                            + "  errors\n"
+                            + "    The error handling scheme to use for encoding errors.\n"
+                            + "    The default is 'strict' meaning that encoding errors raise a\n"
+                            + "    UnicodeEncodeError.  Other possible values are 'ignore', 'replace'\n"
+                            + "    and 'xmlcharrefreplace' as well as any other name registered with\n"
+                            + "    codecs.register_error that can handle UnicodeEncodeErrors.")
+            .document(
+                    "endswith",
+                    "endswith($self, suffix[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string ends with the specified suffix, False otherwise.\n"
+                            + "\n"
+                            + "  suffix\n"
+                            + "    A string or a tuple of strings to try.\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the string.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the string.")
+            .document(
+                    "expandtabs",
+                    "expandtabs($self, /, tabsize=8)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy where all tab characters are expanded using spaces.\n"
+                            + "\n"
+                            + "If tabsize is not given, a tab size of 8 characters is assumed.")
+            .document(
+                    "find",
+                    "find($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the lowest index in S where substring sub is found, such that sub is contained within S[start:end].\n"
+                            + "\n"
+                            + "Optional arguments start and end are interpreted as in slice\n"
+                            + "notation.  Return -1 on failure.")
+            .document(
+                    "format",
+                    "format($self, /, *args, **kwargs)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a formatted version of the string, using substitutions from args and kwargs.\n"
+                            + "The substitutions are identified by braces ('{' and '}').")
+            .document(
+                    "format_map",
+                    "format_map($self, mapping, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a formatted version of the string, using substitutions from mapping.\n"
+                            + "The substitutions are identified by braces ('{' and '}').")
+            .document(
+                    "index",
+                    "index($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the lowest index in S where substring sub is found, such that sub is contained within S[start:end].\n"
+                            + "\n"
+                            + "Optional arguments start and end are interpreted as in slice\n"
+                            + "notation.  Raises ValueError when the substring is not found.")
+            .document(
+                    "isalnum",
+                    "isalnum($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is an alpha-numeric string, False otherwise.\n"
+                            + "\n"
+                            + "A string is alpha-numeric if all characters in the string are\n"
+                            + "alpha-numeric and there is at least one character in the string.")
+            .document(
+                    "isalpha",
+                    "isalpha($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is an alphabetic string, False otherwise.\n"
+                            + "\n"
+                            + "A string is alphabetic if all characters in the string are\n"
+                            + "alphabetic and there is at least one character in the string.")
+            .document(
+                    "isascii",
+                    "isascii($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if all characters in the string are ASCII, False otherwise.\n"
+                            + "\n"
+                            + "ASCII characters have code points in the range U+0000-U+007F.\n"
+                            + "Empty string is ASCII too.")
+            .document(
+                    "isdecimal",
+                    "isdecimal($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is a decimal string, False otherwise.\n"
+                            + "\n"
+                            + "A string is a decimal string if all characters in the string are\n"
+                            + "decimal and there is at least one character in the string.")
+            .document(
+                    "isdigit",
+                    "isdigit($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is a digit string, False otherwise.\n"
+                            + "\n"
+                            + "A string is a digit string if all characters in the string are\n"
+                            + "digits and there is at least one character in the string.")
+            .document(
+                    "isidentifier",
+                    "isidentifier($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is a valid Python identifier, False otherwise.\n"
+                            + "\n"
+                            + "Call keyword.iskeyword(s) to test whether string s is a reserved\n"
+                            + "identifier, such as \"def\" or \"class\".")
+            .document(
+                    "islower",
+                    "islower($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is a lowercase string, False otherwise.\n"
+                            + "\n"
+                            + "A string is lowercase if all cased characters in the string are\n"
+                            + "lowercase and there is at least one cased character in the string.")
+            .document(
+                    "isnumeric",
+                    "isnumeric($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is a numeric string, False otherwise.\n"
+                            + "\n"
+                            + "A string is numeric if all characters in the string are numeric and\n"
+                            + "there is at least one character in the string.")
+            .document(
+                    "isprintable",
+                    "isprintable($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if all characters in the string are printable, False otherwise.\n"
+                            + "\n"
+                            + "A character is printable if repr() may use it in its output.")
+            .document(
+                    "isspace",
+                    "isspace($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is a whitespace string, False otherwise.\n"
+                            + "\n"
+                            + "A string is whitespace if all characters in the string are\n"
+                            + "whitespace and there is at least one character in the string.")
+            .document(
+                    "istitle",
+                    "istitle($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is a title-cased string, False otherwise.\n"
+                            + "\n"
+                            + "In a title-cased string, upper- and title-case characters may only\n"
+                            + "follow uncased characters and lowercase characters only cased ones.")
+            .document(
+                    "isupper",
+                    "isupper($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string is an uppercase string, False otherwise.\n"
+                            + "\n"
+                            + "A string is uppercase if all cased characters in the string are\n"
+                            + "uppercase and there is at least one cased character in the string.")
+            .document(
+                    "join",
+                    "join($self, iterable, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Concatenate any number of strings.\n"
+                            + "\n"
+                            + "The string whose method is called is inserted in between each given\n"
+                            + "string.  The result is returned as a new string.\n"
+                            + "\n"
+                            + "Example: '.'.join(['ab', 'pq', 'rs']) -> 'ab.pq.rs'")
+            .document(
+                    "ljust",
+                    "ljust($self, width, fillchar=' ', /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a left-justified string of length width.\n"
+                            + "\n"
+                            + "Padding is done using the specified fill character (default is\n"
+                            + "a space).")
+            .document(
+                    "lower",
+                    "lower($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy of the string converted to lowercase.")
+            .document(
+                    "lstrip",
+                    "lstrip($self, chars=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy of the string with leading whitespace removed.\n"
+                            + "\n"
+                            + "If chars is given and not None, remove characters in chars instead.")
+            .document(
+                    "partition",
+                    "partition($self, sep, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Partition the string into three parts using the given separator.\n"
+                            + "\n"
+                            + "This will search for the separator in the string.  If the separator\n"
+                            + "is found, returns a 3-tuple containing the part before the\n"
+                            + "separator, the separator itself, and the part after it.\n"
+                            + "\n"
+                            + "If the separator is not found, returns a 3-tuple containing\n"
+                            + "the original string and two empty strings.")
+            .document(
+                    "removeprefix",
+                    "removeprefix($self, prefix, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a str with the given prefix string removed if present.\n"
+                            + "\n"
+                            + "If the string starts with the prefix string, return\n"
+                            + "string[len(prefix):].  Otherwise, return a copy of the original\n"
+                            + "string.")
+            .document(
+                    "removesuffix",
+                    "removesuffix($self, suffix, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a str with the given suffix string removed if present.\n"
+                            + "\n"
+                            + "If the string ends with the suffix string and that suffix is not\n"
+                            + "empty, return string[:-len(suffix)].  Otherwise, return a copy of\n"
+                            + "the original string.")
+            .document(
+                    "replace",
+                    "replace($self, old, new, /, count=-1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy with all occurrences of substring old replaced by new.\n"
+                            + "\n"
+                            + "  count\n"
+                            + "    Maximum number of occurrences to replace.\n"
+                            + "    -1 (the default value) means replace all occurrences.\n"
+                            + "\n"
+                            + "If the optional argument count is given, only the first count occurrences are\n"
+                            + "replaced.")
+            .document(
+                    "rfind",
+                    "rfind($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the highest index in S where substring sub is found, such that sub is contained within S[start:end].\n"
+                            + "\n"
+                            + "Optional arguments start and end are interpreted as in slice\n"
+                            + "notation.  Return -1 on failure.")
+            .document(
+                    "rindex",
+                    "rindex($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the highest index in S where substring sub is found, such that sub is contained within S[start:end].\n"
+                            + "\n"
+                            + "Optional arguments start and end are interpreted as in slice\n"
+                            + "notation.  Raises ValueError when the substring is not found.")
+            .document(
+                    "rjust",
+                    "rjust($self, width, fillchar=' ', /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a right-justified string of length width.\n"
+                            + "\n"
+                            + "Padding is done using the specified fill character (default is\n"
+                            + "a space).")
+            .document(
+                    "rpartition",
+                    "rpartition($self, sep, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Partition the string into three parts using the given separator.\n"
+                            + "\n"
+                            + "This will search for the separator in the string, starting at the\n"
+                            + "end.  If the separator is found, returns a 3-tuple containing the\n"
+                            + "part before the separator, the separator itself, and the part after\n"
+                            + "it.\n"
+                            + "\n"
+                            + "If the separator is not found, returns a 3-tuple containing two\n"
+                            + "empty strings and the original string.")
+            .document(
+                    "rsplit",
+                    "rsplit($self, /, sep=None, maxsplit=-1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the substrings in the string, using sep as the separator string.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    The separator used to split the string.\n"
+                            + "\n"
+                            + "    When set to None (the default value), will split on any\n"
+                            + "    whitespace character (including \\n \\r \\t \\f and spaces) and\n"
+                            + "    will discard empty strings from the result.\n"
+                            + "  maxsplit\n"
+                            + "    Maximum number of splits.\n"
+                            + "    -1 (the default value) means no limit.\n"
+                            + "\n"
+                            + "Splitting starts at the end of the string and works to the front.")
+            .document(
+                    "rstrip",
+                    "rstrip($self, chars=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy of the string with trailing whitespace removed.\n"
+                            + "\n"
+                            + "If chars is given and not None, remove characters in chars instead.")
+            .document(
+                    "split",
+                    "split($self, /, sep=None, maxsplit=-1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the substrings in the string, using sep as the separator string.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    The separator used to split the string.\n"
+                            + "\n"
+                            + "    When set to None (the default value), will split on any\n"
+                            + "    whitespace character (including \\n \\r \\t \\f and spaces) and\n"
+                            + "    will discard empty strings from the result.\n"
+                            + "  maxsplit\n"
+                            + "    Maximum number of splits.\n"
+                            + "    -1 (the default value) means no limit.\n"
+                            + "\n"
+                            + "Splitting starts at the front of the string and works to the end.\n"
+                            + "\n"
+                            + "Note, str.split() is mainly useful for data that has been\n"
+                            + "intentionally delimited.  With natural text that includes\n"
+                            + "punctuation, consider using the regular expression module.")
+            .document(
+                    "splitlines",
+                    "splitlines($self, /, keepends=False)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the lines in the string, breaking at line boundaries.\n"
+                            + "\n"
+                            + "Line breaks are not included in the resulting list unless keepends\n"
+                            + "is given and true.")
+            .document(
+                    "startswith",
+                    "startswith($self, prefix[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the string starts with the specified prefix, False otherwise.\n"
+                            + "\n"
+                            + "  prefix\n"
+                            + "    A string or a tuple of strings to try.\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the string.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the string.")
+            .document(
+                    "strip",
+                    "strip($self, chars=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy of the string with leading and trailing whitespace removed.\n"
+                            + "\n"
+                            + "If chars is given and not None, remove characters in chars instead.")
+            .document(
+                    "swapcase",
+                    "swapcase($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Convert uppercase characters to lowercase and lowercase characters to uppercase.")
+            .document(
+                    "title",
+                    "title($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a version of the string where each word is titlecased.\n"
+                            + "\n"
+                            + "More specifically, words start with uppercased characters and all\n"
+                            + "remaining cased characters have lower case.")
+            .document(
+                    "translate",
+                    "translate($self, table, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Replace each character in the string using the given translation table.\n"
+                            + "\n"
+                            + "  table\n"
+                            + "    Translation table, which must be a mapping of Unicode ordinals\n"
+                            + "    to Unicode ordinals, strings, or None.\n"
+                            + "\n"
+                            + "The table must implement lookup/indexing via __getitem__, for\n"
+                            + "instance a dictionary or list.  If this operation raises\n"
+                            + "LookupError, the character is left untouched.  Characters mapped to\n"
+                            + "None are deleted.")
+            .document(
+                    "upper",
+                    "upper($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy of the string converted to uppercase.")
+            .document(
+                    "zfill",
+                    "zfill($self, width, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Pad a numeric string with zeros on the left, to fill a field of the given width.\n"
+                            + "\n"
+                            + "The string is never truncated.");
 
     private static String text(PyObject self) {
         return ((PyStr) self).value;
