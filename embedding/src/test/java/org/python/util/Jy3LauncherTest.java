@@ -266,7 +266,8 @@ class Jy3LauncherTest {
                 "90_builtin_docs.py",
                 "91_bytes_docs.py",
                 "92_typedict_tables.py",
-                "93_str_tables.py");
+                "93_str_tables.py",
+                "94_set_tables.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

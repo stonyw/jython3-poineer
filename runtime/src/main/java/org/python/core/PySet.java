@@ -601,35 +601,23 @@ public class PySet extends PyObject {
             methods
                     .addOne(
                             "add",
-                            "Add an element to a set.\n"
-                                    + "\n"
-                                    + "This has no effect if the element is already present.",
                             (self, element) -> {
                                 ((PySet) self).add(element);
                                 return PyNone.INSTANCE;
                             })
                     .addNoArgument(
                             "clear",
-                            "Remove all elements from this set.",
                             self -> {
                                 ((PySet) self).items.clear();
                                 return PyNone.INSTANCE;
                             });
         }
         methods
-                .addOne(
-                        "__contains__",
-                        "x.__contains__(y) <==> y in x.",
-                        (self, element) -> self.contains(element))
-                .addNoArgument(
-                        "copy", "Return a shallow copy of a set.", self -> ((PySet) self).copy());
+                .addOne("__contains__", (self, element) -> self.contains(element))
+                .addNoArgument("copy", self -> ((PySet) self).copy());
         if (mutable) {
             methods.addOne(
                     "discard",
-                    "Remove an element from a set if it is a member.\n"
-                            + "\n"
-                            + "Unlike set.remove(), the discard() method does not raise\n"
-                            + "an exception when an element is missing from the set.",
                     (self, element) -> {
                         ((PySet) self).discard(element);
                         return PyNone.INSTANCE;
@@ -638,7 +626,6 @@ public class PySet extends PyObject {
         methods
                 .add(
                         "difference",
-                        "Return a new set with elements in the set that are not in the others.",
                         varargs(
                                 who + ".difference()",
                                 (self, others) -> {
@@ -650,7 +637,6 @@ public class PySet extends PyObject {
                                 }))
                 .add(
                         "intersection",
-                        "Return a new set with elements common to the set and all others.",
                         varargs(
                                 who + ".intersection()",
                                 (self, others) -> {
@@ -660,48 +646,24 @@ public class PySet extends PyObject {
                                     }
                                     return out;
                                 }))
-                .addOne(
-                        "isdisjoint",
-                        "Return True if two sets have a null intersection.",
-                        (self, other) -> ((PySet) self).isDisjoint(other))
-                .addOne(
-                        "issubset",
-                        "Report whether another set contains this set.",
-                        (self, other) -> ((PySet) self).isSubset(other))
-                .addOne(
-                        "issuperset",
-                        "Report whether this set contains another set.",
-                        (self, other) -> ((PySet) self).isSuperset(other));
-        methods.addNoArgument(
-                "__reduce__",
-                "Return state information for pickling.",
-                self -> ((PySet) self).reduced());
+                .addOne("isdisjoint", (self, other) -> ((PySet) self).isDisjoint(other))
+                .addOne("issubset", (self, other) -> ((PySet) self).isSubset(other))
+                .addOne("issuperset", (self, other) -> ((PySet) self).isSuperset(other));
+        methods.addNoArgument("__reduce__", self -> ((PySet) self).reduced());
         if (mutable) {
             methods
-                    .addNoArgument(
-                            "pop",
-                            "Remove and return an arbitrary set element.\n"
-                                    + "\n"
-                                    + "Raises KeyError if the set is empty.",
-                            self -> ((PySet) self).popped())
+                    .addNoArgument("pop", self -> ((PySet) self).popped())
                     .addOne(
                             "remove",
-                            "Remove an element from a set; it must be a member.\n"
-                                    + "\n"
-                                    + "If the element is not a member, raise a KeyError.",
                             (self, element) -> {
                                 ((PySet) self).removed(element);
                                 return PyNone.INSTANCE;
                             });
         }
-        methods.addNoArgument(
-                "__sizeof__",
-                "S.__sizeof__() -> size of S in memory, in bytes.",
-                self -> PyInt.of(0));
+        methods.addNoArgument("__sizeof__", self -> PyInt.of(0));
         if (mutable) {
             methods.addOne(
                     "symmetric_difference_update",
-                    "Update the set, keeping only elements found in either set, but not in both.",
                     (self, other) -> {
                         ((PySet) self).symmetricDifferenceUpdate(other);
                         return PyNone.INSTANCE;
@@ -710,12 +672,10 @@ public class PySet extends PyObject {
         methods
                 .addOne(
                         "symmetric_difference",
-                        "Return a new set with elements in either the set or other but not both.",
                         (self, other) ->
                                 ((PySet) self).detached().symmetricDifferenceUpdate(other))
                 .add(
                         "union",
-                        "Return a new set with elements from the set and all others.",
                         varargs(
                                 who + ".union()",
                                 (self, others) -> {
@@ -729,7 +689,6 @@ public class PySet extends PyObject {
             methods
                     .add(
                             "update",
-                            "Update the set, adding elements from all others.",
                             varargs(
                                     who + ".update()",
                                     (self, others) -> {
@@ -740,7 +699,6 @@ public class PySet extends PyObject {
                                     }))
                     .add(
                             "difference_update",
-                            "Update the set, removing elements found in others.",
                             varargs(
                                     who + ".difference_update()",
                                     (self, others) -> {
@@ -751,7 +709,6 @@ public class PySet extends PyObject {
                                     }))
                     .add(
                             "intersection_update",
-                            "Update the set, keeping only elements found in it and all others.",
                             varargs(
                                     who + ".intersection_update()",
                                     (self, others) -> {
@@ -760,6 +717,148 @@ public class PySet extends PyObject {
                                         }
                                         return PyNone.INSTANCE;
                                     }));
+        }
+        // The twenty sentences clinic files beside the two tables, each the whole `ml_doc`: the row's own
+        // name, its argument table, the `--` knife, and the prose. Eleven of them belong to a row that both
+        // books file — the same `SET_*_METHODDEF` macro stands in `set_methods` and in `frozenset_methods` —
+        // and the nine others to a row only `set` files. Two names are written twice over in C, once as
+        // `set___contains__` and once as `frozenset___contains__`, and the two texts are one sentence:
+        // clinic copied `copy`'s docstring rather than the type's, so a frozenset's `copy` still says "a
+        // set". `__class_getitem__` is the twenty-first row of each table and the one clinic never wrote:
+        // CPython files it with a sentence but no table, and reads its `($type, object, /)` out of the
+        // METH_O|METH_CLASS flags, which this runtime does not model.
+        methods
+                .document(
+                        "__contains__",
+                        "__contains__($self, object, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "x.__contains__(y) <==> y in x.")
+                .document(
+                        "copy",
+                        "copy($self, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a shallow copy of a set.")
+                .document(
+                        "difference",
+                        "difference($self, /, *others)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a new set with elements in the set that are not in the others.")
+                .document(
+                        "intersection",
+                        "intersection($self, /, *others)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a new set with elements common to the set and all others.")
+                .document(
+                        "isdisjoint",
+                        "isdisjoint($self, other, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return True if two sets have a null intersection.")
+                .document(
+                        "issubset",
+                        "issubset($self, other, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Report whether another set contains this set.")
+                .document(
+                        "issuperset",
+                        "issuperset($self, other, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Report whether this set contains another set.")
+                .document(
+                        "__reduce__",
+                        "__reduce__($self, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return state information for pickling.")
+                .document(
+                        "__sizeof__",
+                        "__sizeof__($self, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "S.__sizeof__() -> size of S in memory, in bytes.")
+                .document(
+                        "symmetric_difference",
+                        "symmetric_difference($self, other, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a new set with elements in either the set or other but not both.")
+                .document(
+                        "union",
+                        "union($self, /, *others)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a new set with elements from the set and all others.");
+        if (mutable) {
+            methods
+                    .document(
+                            "add",
+                            "add($self, object, /)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Add an element to a set.\n"
+                                    + "\n"
+                                    + "This has no effect if the element is already present.")
+                    .document(
+                            "clear",
+                            "clear($self, /)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Remove all elements from this set.")
+                    .document(
+                            "discard",
+                            "discard($self, object, /)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Remove an element from a set if it is a member.\n"
+                                    + "\n"
+                                    + "Unlike set.remove(), the discard() method does not raise\n"
+                                    + "an exception when an element is missing from the set.")
+                    .document(
+                            "difference_update",
+                            "difference_update($self, /, *others)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Update the set, removing elements found in others.")
+                    .document(
+                            "intersection_update",
+                            "intersection_update($self, /, *others)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Update the set, keeping only elements found in it and all others.")
+                    .document(
+                            "pop",
+                            "pop($self, /)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Remove and return an arbitrary set element.\n"
+                                    + "\n"
+                                    + "Raises KeyError if the set is empty.")
+                    .document(
+                            "remove",
+                            "remove($self, object, /)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Remove an element from a set; it must be a member.\n"
+                                    + "\n"
+                                    + "If the element is not a member, raise a KeyError.")
+                    .document(
+                            "symmetric_difference_update",
+                            "symmetric_difference_update($self, other, /)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Update the set, keeping only elements found in either set, but not in both.")
+                    .document(
+                            "update",
+                            "update($self, /, *others)\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "Update the set, adding elements from all others.");
         }
         return methods;
     }
