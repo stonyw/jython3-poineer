@@ -409,35 +409,30 @@ public final class PyDict extends PyObject {
     private static final Members METHODS = Members.of(PyType.DICT)
             .add(
                     "__getitem__",
-                    "Return self[key].",
                     (self, args, kwNames) -> {
                         Arguments.exactlyOne("dict.__getitem__()", args, kwNames);
                         return self.getItem(args[0]);
                     })
             .add(
                     "__contains__",
-                    "True if the dictionary has the specified key, else False.",
                     (self, args, kwNames) -> {
                         Arguments.exactlyOne("dict.__contains__()", args, kwNames);
                         return self.contains(args[0]);
                     })
             .add(
                     "__sizeof__",
-                    "Return the size of the dict in memory, in bytes.",
                     (self, args, kwNames) -> {
                         Arguments.none("dict.__sizeof__()", args, kwNames);
                         return PyInt.of(0);
                     })
             .add(
                     "__reversed__",
-                    "Return a reverse iterator over the dict keys.",
                     (self, args, kwNames) -> {
                         Arguments.none("dict.__reversed__()", args, kwNames);
                         return ((PyDict) self).reverseKeyIterator();
                     })
             .add(
                     "get",
-                    "Return the value for key if key is in the dictionary, else default.",
                     (self, args, kwNames) -> {
                         noKeywords("dict.get()", kwNames);
                         Arguments.between("get", args, kwNames, 1, 2);
@@ -446,20 +441,10 @@ public final class PyDict extends PyObject {
                                 ? found
                                 : args.length > 1 ? args[1] : PyNone.INSTANCE;
                     })
-            .addNoArgument(
-                    "items",
-                    "Return a set-like object providing a view on the dict's items.",
-                    self -> DictViews.items((PyDict) self))
-            .addNoArgument(
-                    "keys",
-                    "Return a set-like object providing a view on the dict's keys.",
-                    self -> DictViews.keys((PyDict) self))
+            .addNoArgument("items", self -> DictViews.items((PyDict) self))
+            .addNoArgument("keys", self -> DictViews.keys((PyDict) self))
             .add(
                     "pop",
-                    "D.pop(k[,d]) -> v, remove specified key and return the corresponding value.\n"
-                            + "\n"
-                            + "If the key is not found, return the default if given; otherwise,\n"
-                            + "raise a KeyError.",
                     (self, args, kwNames) -> {
                         noKeywords("dict.pop()", kwNames);
                         Arguments.between("pop", args, kwNames, 1, 2);
@@ -484,10 +469,6 @@ public final class PyDict extends PyObject {
                     })
             .addNoArgument(
                     "popitem",
-                    "Remove and return a (key, value) pair as a 2-tuple.\n"
-                            + "\n"
-                            + "Pairs are returned in LIFO (last-in, first-out) order.\n"
-                            + "Raises KeyError if the dict is empty.",
                     self -> {
                         PyDict dict = (PyDict) self;
                         if (dict.items.isEmpty()) {
@@ -499,9 +480,6 @@ public final class PyDict extends PyObject {
                     })
             .add(
                     "setdefault",
-                    "Insert key with a value of default if key is not in the dictionary.\n"
-                            + "\n"
-                            + "Return the value for key if key is in the dictionary, else default.",
                     (self, args, kwNames) -> {
                         noKeywords("dict.setdefault()", kwNames);
                         Arguments.between("setdefault", args, kwNames, 1, 2);
@@ -516,23 +494,13 @@ public final class PyDict extends PyObject {
                     })
             .add(
                     "update",
-                    "D.update([E, ]**F) -> None.  Update D from mapping/iterable E and F.\n"
-                            + "If E is present and has a .keys() method, then does:"
-                            + "  for k in E.keys(): D[k] = E[k]\n"
-                            + "If E is present and lacks a .keys() method, then does:"
-                            + "  for k, v in E: D[k] = v\n"
-                            + "In either case, this is followed by: for k in F:  D[k] = F[k]",
                     (self, args, kwNames) -> {
                         ((PyDict) self).mergeFrom(args, kwNames, "update");
                         return PyNone.INSTANCE;
                     })
-            .addNoArgument(
-                    "values",
-                    "Return an object providing a view on the dict's values.",
-                    self -> DictViews.values((PyDict) self))
+            .addNoArgument("values", self -> DictViews.values((PyDict) self))
             .addClassNamed(
                     "fromkeys",
-                    "Create a new dictionary with keys from iterable and values set to value.",
                     (kind, args, kwNames) -> {
                         noKeywords("dict.fromkeys()", kwNames);
                         Arguments.between("fromkeys", args, kwNames, 1, 2);
@@ -549,13 +517,112 @@ public final class PyDict extends PyObject {
                     })
             .addNoArgument(
                     "clear",
-                    "Remove all items from the dict.",
                     self -> {
                         ((PyDict) self).items.clear();
                         return PyNone.INSTANCE;
                     })
-            .addNoArgument(
+            .addNoArgument("copy", self -> ((PyDict) self).copy())
+            // The fifteen sentences `mapp_methods` files (Objects/dictobject.c:4812), each the whole
+            // `ml_doc`: thirteen read from `Objects/clinic/dictobject.c.h` through the `*_METHODDEF` macro
+            // the table names, and two written by hand under their own `PyDoc_STRVAR` — `getitem__doc__`
+            // with a table like clinic's, `update__doc__` without one. `update` is therefore the row this
+            // runtime and the reference agree on for a different reason than any other: its text carries no
+            // table, `find_signature` never starts, so `__doc__` keeps the whole sentence and
+            // `__text_signature__` reads `None`. `fromkeys` is the table's one `$type` row, and `pop`'s
+            // default is the second `<unrepresentable>` this family has had to transcribe.
+            .document(
+                    "__contains__",
+                    "__contains__($self, key, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "True if the dictionary has the specified key, else False.")
+            .document(
+                    "__getitem__",
+                    "__getitem__($self, key, /)\n--\n\nReturn self[key].")
+            .document(
+                    "__sizeof__",
+                    "__sizeof__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the size of the dict in memory, in bytes.")
+            .document(
+                    "get",
+                    "get($self, key, default=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the value for key if key is in the dictionary, else default.")
+            .document(
+                    "setdefault",
+                    "setdefault($self, key, default=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Insert key with a value of default if key is not in the dictionary.\n"
+                            + "\n"
+                            + "Return the value for key if key is in the dictionary, else default.")
+            .document(
+                    "pop",
+                    "pop($self, key, default=<unrepresentable>, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "D.pop(k[,d]) -> v, remove specified key and return the corresponding value.\n"
+                            + "\n"
+                            + "If the key is not found, return the default if given; otherwise,\n"
+                            + "raise a KeyError.")
+            .document(
+                    "popitem",
+                    "popitem($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove and return a (key, value) pair as a 2-tuple.\n"
+                            + "\n"
+                            + "Pairs are returned in LIFO (last-in, first-out) order.\n"
+                            + "Raises KeyError if the dict is empty.")
+            .document(
+                    "keys",
+                    "keys($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a set-like object providing a view on the dict's keys.")
+            .document(
+                    "items",
+                    "items($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a set-like object providing a view on the dict's items.")
+            .document(
+                    "values",
+                    "values($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return an object providing a view on the dict's values.")
+            .document(
+                    "update",
+                    "D.update([E, ]**F) -> None.  Update D from mapping/iterable E and F.\n"
+                            + "If E is present and has a .keys() method, then does:  for k in E.keys(): D[k] = E[k]\n"
+                            + "If E is present and lacks a .keys() method, then does:  for k, v in E: D[k] = v\n"
+                            + "In either case, this is followed by: for k in F:  D[k] = F[k]")
+            .document(
+                    "fromkeys",
+                    "fromkeys($type, iterable, value=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Create a new dictionary with keys from iterable and values set to value.")
+            .document(
+                    "clear",
+                    "clear($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove all items from the dict.")
+            .document(
                     "copy",
-                    "Return a shallow copy of the dict.",
-                    self -> ((PyDict) self).copy());
+                    "copy($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a shallow copy of the dict.")
+            .document(
+                    "__reversed__",
+                    "__reversed__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a reverse iterator over the dict keys.");
 }
