@@ -8,7 +8,7 @@ package org.python.core;
  * vectorcall arguments and answer with a value or a Python exception, which is why {@code CALL} has a
  * single implementation of argument count and keyword handling rather than one per kind of callee.
  */
-public final class PyNativeFunction extends PyObject implements Descriptors.Protocol {
+public final class PyNativeFunction extends PyObject implements Descriptors.Protocol, FunctionFields {
 
     /**
      * A native body.
@@ -36,10 +36,15 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     private final PyObject receiver;
 
     /**
-     * CPython's {@code ml_doc}, or null where the built-in has none and {@code __doc__} reads {@code None}.
+     * CPython's {@code ml_doc}, kept exactly as the C source writes it, or null where the built-in says
+     * nothing and {@code __doc__} reads {@code None}.
      *
-     * <p>A handful of the module-level builtins carry a sentence of their own — {@code sys.excepthook}
-     * among them — and a person reading it off the function is reading the same text the docs print.
+     * <p>That includes the argument table {@code __text_signature__} reads itself out of: {@code all}'s
+     * first line is {@code all($module, iterable, /)} and its {@code __doc__} is everything below the
+     * {@code --} rule, because both names are cut from this one text by the same two helpers CPython
+     * uses — {@code find_signature} and {@code skip_signature}. A handful of the builtins carry a
+     * sentence of their own — {@code sys.excepthook} among them — and a person reading it off the
+     * function is reading the same text the docs print.
      */
     private final String doc;
 
@@ -51,7 +56,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * {@code None}. The name alone is not enough to print that, and the receiver is not the answer,
      * because a receiver would also be prepended to the arguments.
      */
-    private final String declaredBy;
+    private final PyType declaredBy;
 
     /**
      * Whether the first argument of this body is the class it was reached through: {@code METH_CLASS}.
@@ -75,6 +80,23 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      */
     private final PyType declaring;
 
+    /**
+     * The module whose dictionary holds this function, or {@code null} for a member of a type.
+     *
+     * <p>CPython's {@code PyModule_AddFunctions} makes the module {@code m_self}, and a {@code METH_O}
+     * body is handed that argument only to ignore it, so it shows through in three reads and nowhere in
+     * the call: {@code __self__} answers the module, {@code __qualname__} stays the bare name a module's
+     * function has, and {@code __reduce__} answers the name alone instead of a {@code getattr}. It is not
+     * the {@link #receiver}, which the call puts in front of its arguments.
+     */
+    private PyObject home;
+
+    /**
+     * CPython's {@code m_module}: the one of this function's names that is storage rather than a read,
+     * because {@code methodobject.c} files it as a {@code PyMemberDef} over the field.
+     */
+    private PyObject module;
+
     public PyNativeFunction(String name, Body body) {
         this(name, body, null, null, null, false, null);
     }
@@ -84,7 +106,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
             Body body,
             PyObject receiver,
             String doc,
-            String declaredBy,
+            PyType declaredBy,
             boolean onType,
             PyType declaring) {
         super(
@@ -117,18 +139,44 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * b''.maketrans} true, and it answers {@code __self__} with {@code None} rather than with the type
      * that names it.
      */
-    static PyNativeFunction declaredBy(String owner, String name, Body body) {
+    static PyNativeFunction declaredBy(PyType owner, String name, Body body) {
         return new PyNativeFunction(name, body, null, null, owner, false, null);
     }
 
     /** This method read through {@code owner}, with the receiver already attached to it. */
     PyNativeFunction withReceiver(PyObject owner) {
-        return new PyNativeFunction(name, body, owner, doc, declaredBy, onType, declaring);
+        return keeping(new PyNativeFunction(name, body, owner, doc, declaredBy, onType, declaring));
     }
 
     /** This function answering {@code __doc__} with {@code text} rather than with {@code None}. */
     PyNativeFunction documented(String text) {
-        return new PyNativeFunction(name, body, receiver, text, declaredBy, onType, declaring);
+        return keeping(new PyNativeFunction(name, body, receiver, text, declaredBy, onType, declaring));
+    }
+
+    /**
+     * The two fields a module's table writes, moved onto a copy of the function they were written on.
+     *
+     * <p>{@link #withReceiver} and {@link #documented} each change one thing about a function, and the
+     * module it belongs to is not that thing — so a copy made after {@link #belongingTo} has run still
+     * reads the same {@code __self__} and the same {@code __module__} as the entry the dictionary holds.
+     */
+    private PyNativeFunction keeping(PyNativeFunction copy) {
+        copy.home = home;
+        copy.module = module;
+        return copy;
+    }
+
+    /**
+     * {@code PyModule_AddFunctions}: the module a function is entered in becomes its {@code m_self} and
+     * its name becomes its {@code m_module}.
+     *
+     * <p>Written here rather than in the constructor because this runtime builds the built-in namespace
+     * first and the module that owns it afterwards, which is the same order CPython's module table is
+     * filled in — {@code m_methods} is read once the {@code PyModuleDef} has a dictionary to put it in.
+     */
+    void belongingTo(PyModule owner) {
+        home = owner;
+        module = PyStr.of(owner.name());
     }
 
     /**
@@ -179,7 +227,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
         if (declaring != null) {
             return declaring.name() + "." + name;
         }
-        return declaredBy == null ? name : declaredBy + "." + name;
+        return declaredBy == null ? name : declaredBy.name() + "." + name;
     }
 
     /** A body that takes positionals only; a keyword argument reaching it is an error, as in Python. */
@@ -238,10 +286,16 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
         return switch (attribute) {
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> PyStr.of(qualifiedName());
-            case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
+            // Both of these are cut out of `ml_doc` by the same two walks `typeobject.c` uses for every
+            // built-in's sentence, so the table's `__doc__` and its `__text_signature__` agree whatever
+            // sentence was transcribed and whichever half of it a person asks for.
+            case "__doc__" -> docOf(name, doc);
+            case "__text_signature__" -> signatureOf(name, doc);
             case "__self__" -> receiver != null
                     ? receiver
-                    : declaredBy == null ? PyNotImplemented.INSTANCE : PyNone.INSTANCE;
+                    : declaredBy != null
+                            ? PyNone.INSTANCE
+                            : home != null ? home : PyNotImplemented.INSTANCE;
             // Only the dictionary's own entry has an owner to name; the method a read makes has none.
             case "__objclass__" -> declaring != null && receiver == null
                     ? declaring
@@ -254,6 +308,132 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
                     : PyNotImplemented.INSTANCE;
             default -> PyNotImplemented.INSTANCE;
         };
+    }
+
+    @Override
+    public PyObject functionSelf() {
+        // `m_self`, in the three shapes `methodobject.c` lets a module's table and a type's take.
+        return receiver != null ? receiver : declaredBy != null ? declaredBy : home;
+    }
+
+    @Override
+    public Object functionDefinition() {
+        return body;
+    }
+
+    @Override
+    public PyObject moduleValue() {
+        return module;
+    }
+
+    @Override
+    public void writeModule(PyObject value) {
+        module = value;
+    }
+
+    @Override
+    public boolean eq(PyObject other) {
+        // `meth_richcompare`: the receiver and the `PyMethodDef`, both by identity. Two reads of one
+        // method of one class are therefore equal, `bytes.fromhex == bytes.fromhex`, while two objects
+        // over two classes are not — which is what the identity below would get wrong for the copies a
+        // read makes rather than the entries a dictionary keeps.
+        return other instanceof PyNativeFunction one
+                && one.body == body
+                && one.functionSelf() == functionSelf();
+    }
+
+    @Override
+    public long hash() {
+        // `meth_hash`: the generic hash of the receiver, crossed with the address of the method.
+        PyObject self = functionSelf();
+        long crossed = (self == null ? 0 : System.identityHashCode(self))
+                ^ System.identityHashCode(body);
+        return PyHash.avoidMinusOne(crossed);
+    }
+
+    /**
+     * {@code _PyType_GetDocFromInternalDoc}: the sentence with its argument table cut off, or {@code
+     * None} where there was nothing to say.
+     *
+     * <p>The cut only happens when the text both starts with the function's own name and carries the
+     * {@code )\n--\n\n} rule after its table — {@code find_signature} and {@code skip_signature} in
+     * {@code typeobject.c}. A sentence written without a table is kept whole, which is the case for every
+     * built-in here whose text was transcribed rather than generated.
+     */
+    static PyObject docOf(String name, String internal) {
+        int rule = table(name, internal);
+        String text = rule < 0 ? internal : internal.substring(rule + SIGNATURE_END.length());
+        return text == null || text.isEmpty() ? PyNone.INSTANCE : PyStr.of(text);
+    }
+
+    /**
+     * {@code _PyType_GetTextSignatureFromInternalDoc}: the argument table on the first line, with the rule
+     * under it cut away, or {@code None} where the text carries none.
+     *
+     * <p>CPython has a second way of answering this — {@code signature_from_flags} makes a table out of
+     * the {@code METH_NOARGS} or {@code METH_O} a built-in was registered with, and that is how {@code
+     * bytes.upper} reads {@code ($self, /)} — and this runtime keeps no flags, only bodies. Every table
+     * that was transcribed with its sentence is answered from the text; one that was not reads {@code
+     * None} where the reference interpreter would have invented the short form.
+     */
+    static PyObject signatureOf(String name, String internal) {
+        int rule = table(name, internal);
+        if (rule < 0) {
+            return PyNone.INSTANCE;
+        }
+        return PyStr.of(internal.substring(signatureStart(name, internal), rule + 1));
+    }
+
+    /** The rule {@code skip_signature} looks for: a bracket, then a {@code --}, then a blank line. */
+    private static final String SIGNATURE_END = ")\n--\n\n";
+
+    /**
+     * Where a text's table ends, or -1 where it has none: {@code find_signature} and {@code
+     * skip_signature} run in CPython's order, and the answer is the index of the bracket that closes it.
+     */
+    private static int table(String name, String internal) {
+        int start = signatureStart(name, internal);
+        if (start < 0) {
+            return -1;
+        }
+        int rule = internal.indexOf(SIGNATURE_END, start);
+        if (rule < 0) {
+            return -1;
+        }
+        int blank = blankLine(internal, start);
+        return blank >= 0 && blank < rule ? -1 : rule;
+    }
+
+    /**
+     * {@code find_signature}: where the table begins, counted from the name, or -1 for a text that is not
+     * one.
+     *
+     * <p>Only the last component of a dotted name counts — a doc written for {@code bytes.upper} is looked
+     * for as {@code upper} — and the name must be followed straight by the opening bracket.
+     */
+    private static int signatureStart(String name, String internal) {
+        if (internal == null) {
+            return -1;
+        }
+        int dot = name.lastIndexOf('.');
+        String last = dot < 0 ? name : name.substring(dot + 1);
+        return internal.startsWith(last) && internal.length() > last.length()
+                        && internal.charAt(last.length()) == '('
+                ? last.length()
+                : -1;
+    }
+
+    /**
+     * The first blank line at or after {@code start}, which is where {@code skip_signature} gives up: a
+     * table that has not reached its rule by then was never a table.
+     */
+    private static int blankLine(String internal, int start) {
+        for (int at = start; at + 1 < internal.length(); at++) {
+            if (internal.charAt(at) == '\n' && internal.charAt(at + 1) == '\n') {
+                return at;
+            }
+        }
+        return -1;
     }
 
     @Override

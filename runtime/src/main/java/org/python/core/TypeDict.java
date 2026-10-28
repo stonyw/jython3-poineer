@@ -562,6 +562,10 @@ final class TypeDict {
             proxyTable(into);
             return;
         }
+        if (owner == PyType.BUILTIN_FUNCTION) {
+            functionTable(into);
+            return;
+        }
         if (owner == PyType.BYTES) {
             bytesTable(into);
             return;
@@ -758,6 +762,99 @@ final class TypeDict {
                 "__class_getitem__", PROXY_CLASS_GETITEM_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
         table.method("__reversed__", REVERSED_DOC, args -> reversedKeys(window(args[0])));
         table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code builtin_function_or_method}'s own dictionary, as {@code methodobject.c} files it: sixteen
+     * names.
+     *
+     * <p>Nine are slot wrappers — {@code tp_repr}, {@code tp_hash}, {@code tp_call} and the six halves of
+     * {@code tp_richcompare} — and they are where {@code all.__repr__()} gets its answer and
+     * {@code all.__repr__(all)} its complaint, because a wrapper hands the receiver as the first argument
+     * and checks the count before calling anything. The four orderings decline the way
+     * {@code method_richcompare} does: the six rows share one C function that answers only {@code ==} and
+     * {@code !=}, so {@code all < any} is {@code NotImplemented} out of the wrapper even though the
+     * operator itself has nowhere to go afterwards and raises.
+     *
+     * <p>{@code __reduce__} is the one {@code PyMethodDef} of the record and {@code __module__} the one
+     * {@code PyMemberDef}, and that difference is the whole of why only one of the eleven can be written:
+     * a member is storage over a field of the object, while every other name here is a read. The last five
+     * are {@code PyGetSetDef}s over the same three fields, each answering what the value's own attribute
+     * read answers, so the descriptor a dictionary lookup hands out and the string a person prints are cut
+     * from one text.
+     */
+    private static void functionTable(PyDict into) {
+        PyType owner = PyType.BUILTIN_FUNCTION;
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper(
+                "__call__",
+                "Call self as a function.",
+                (args, kwNames, qualified) ->
+                        args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
+        table.wrapper("__lt__", LT_DOC, functionCompare(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, functionCompare(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, functionCompare(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, functionCompare(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, functionCompare(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, functionCompare(CompareOp.GE));
+        table.method("__reduce__", null, args -> functionReduce(args[0]));
+        table.member("__module__", null, TypeDict::moduleRead, TypeDict::moduleWrite);
+        table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
+        table.getset("__name__", null, self -> self.getAttr("__name__"), null);
+        table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+        table.getset("__self__", null, self -> self.getAttr("__self__"), null);
+        table.getset("__text_signature__", null, self -> self.getAttr("__text_signature__"), null);
+    }
+
+    /**
+     * {@code method_richcompare} behind the six ordering wrappers: two answers, and only between two of
+     * this very type.
+     *
+     * <p>The four orderings the record has no way of ranking — no {@code ml_meth} sorts before another —
+     * decline whatever they are asked, which is why {@code all.__lt__(any)} reads {@code NotImplemented}
+     * out of the wrapper while {@code all < any} reaches past the decline and complains about {@code >}.
+     * {@code ==} and {@code !=} answer the identity of the body and of the owner the body was reached
+     * through, and hand the question back unanswered for an operand that is not a built-in function at
+     * all, so {@code all.__eq__(1)} is {@code NotImplemented} where {@code all == 1} is {@code False}.
+     */
+    private static Method functionCompare(CompareOp cmp) {
+        boolean deciding = cmp == CompareOp.EQ || cmp == CompareOp.NE;
+        return (args, kwNames, qualified) ->
+                deciding && args[1].getType() == PyType.BUILTIN_FUNCTION
+                        ? args[0].richCompare(cmp, args[1])
+                        : PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * {@code meth_reduce}: the name alone for a function whose owner is a module, and a {@code getattr}
+     * for one whose owner is a class or a value.
+     *
+     * <p>{@code all} pickles as the string {@code 'all'} because the module underneath it is already the
+     * place a name is looked up, while {@code int.mro} pickles as {@code getattr(int, 'mro')} and
+     * {@code b''.upper} as {@code getattr(b'', 'upper')} — the receiver the method was read through is
+     * what has to be named for the call to be rebuilt.
+     */
+    private static PyObject functionReduce(PyObject self) {
+        PyObject name = self.getAttr("__name__");
+        PyObject owner = ((FunctionFields) self).functionSelf();
+        if (owner == null || owner instanceof PyModule) {
+            return name;
+        }
+        PyObject getattr = PyRuntime.builtins().get(PyStr.interned("getattr"));
+        return PyTuple.of(getattr, PyTuple.of(owner, name));
+    }
+
+    /** {@code m_module}: the field a member descriptor reads, where {@code NULL} reads as {@code None}. */
+    private static PyObject moduleRead(PyObject self) {
+        PyObject stored = ((FunctionFields) self).moduleValue();
+        return stored == null ? PyNone.INSTANCE : stored;
+    }
+
+    /** {@code PyMember_SetOne} over that field, with null for the delete that empties it. */
+    private static void moduleWrite(PyObject self, PyObject value) {
+        ((FunctionFields) self).writeModule(value);
     }
 
     /**
@@ -4048,7 +4145,8 @@ final class TypeDict {
      * <p>Reading it is the only work {@link #asAttribute} does: everything the runtime asks of these
      * names is either this object itself or a {@link Bound} copy of it with a class attached.
      */
-    private static final class Member extends PyObject implements Descriptors.Protocol {
+    private static final class Member
+            extends PyObject implements Descriptors.Protocol, FunctionFields {
 
         private final PyType declaring;
         private final String name;
@@ -4056,6 +4154,9 @@ final class TypeDict {
         private final String qualified;
         private final String doc;
         private final Method body;
+
+        /** {@code m_module}, which the one writable name of this type's dictionary reads and writes. */
+        private PyObject module;
 
         Member(PyType declaring, String name, Shape shape, Method body) {
             this(declaring, name, shape, null, null, body);
@@ -4123,6 +4224,10 @@ final class TypeDict {
                 case "__name__" -> PyStr.of(name);
                 case "__qualname__" -> PyStr.of(qualified);
                 case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
+                // The table this runtime keeps for a member is its sentence, not the argument table on the
+                // line above it, so the name CPython cuts out of the internal text has nothing here to be
+                // cut from — every one of these reads None where the reference synthesises a short form.
+                case "__text_signature__" -> PyNone.INSTANCE;
                 case "__self__" -> shape == Shape.RAW ? declaring : PyNotImplemented.INSTANCE;
                 case "__objclass__" -> shape == Shape.RAW ? PyNotImplemented.INSTANCE : declaring;
                 // A `builtin_function_or_method` is not a descriptor at all — `__new__` has no `__get__` to
@@ -4135,6 +4240,28 @@ final class TypeDict {
                                         (args, kwNames) -> Descriptors.called(this, args, kwNames));
                 default -> PyNotImplemented.INSTANCE;
             };
+        }
+
+        @Override
+        public PyObject functionSelf() {
+            // Only `__new__` is a builtin_function_or_method at all; the three descriptor shapes keep
+            // their own names for the declaring class and answer none of this dictionary's rows.
+            return shape == Shape.RAW ? declaring : null;
+        }
+
+        @Override
+        public Object functionDefinition() {
+            return body;
+        }
+
+        @Override
+        public PyObject moduleValue() {
+            return module;
+        }
+
+        @Override
+        public void writeModule(PyObject value) {
+            module = value;
         }
 
         @Override
@@ -4169,7 +4296,7 @@ final class TypeDict {
      * is false, and the argument the class supplies at the call is the receiver the body would otherwise
      * have been given by hand.
      */
-    private static final class Bound extends PyObject {
+    private static final class Bound extends PyObject implements FunctionFields {
 
         private final PyType declaring;
         private final String name;
@@ -4177,6 +4304,9 @@ final class TypeDict {
         private final Method body;
         private final PyObject receiver;
         private final String doc;
+
+        /** {@code m_module}, writable through this type's dictionary and nothing else. */
+        private PyObject module;
 
         /** Whether the method form of {@code LOAD_ATTR} is the one holding this copy. */
         private final boolean leftUnbound;
@@ -4270,6 +4400,7 @@ final class TypeDict {
                 case "__qualname__" -> PyStr.of(qualifiedName());
                 case "__self__" -> receiver;
                 case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
+                case "__text_signature__" -> PyNone.INSTANCE;
                 // Only a bound slot wrapper keeps the type that declared its slot: CPython reads the class
                 // out of the wrapper record a method-wrapper still points at, and a built-in method bound
                 // to a value — `b''.upper`, `bytes.fromhex` — has no such record to read.
@@ -4277,6 +4408,26 @@ final class TypeDict {
                         shape == Shape.WRAPPER ? declaring : PyNotImplemented.INSTANCE;
                 default -> PyNotImplemented.INSTANCE;
             };
+        }
+
+        @Override
+        public PyObject functionSelf() {
+            return receiver;
+        }
+
+        @Override
+        public Object functionDefinition() {
+            return body;
+        }
+
+        @Override
+        public PyObject moduleValue() {
+            return module;
+        }
+
+        @Override
+        public void writeModule(PyObject value) {
+            module = value;
         }
 
         @Override

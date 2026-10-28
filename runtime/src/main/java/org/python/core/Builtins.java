@@ -175,13 +175,23 @@ final class Builtins {
         commonAll =
                 unary("all", Builtins::all)
                         .documented(
-                                "Return True if bool(x) is True for all values x in the iterable.\n\n"
+                                "all($module, iterable, /)\n"
+                                        + "--\n"
+                                        + "\n"
+                                        + "Return True if bool(x) is True for all values x in the"
+                                        + " iterable.\n"
+                                        + "\n"
                                         + "If the iterable is empty, return True.");
         put(out, "all", commonAll);
         commonAny =
                 unary("any", Builtins::any)
                         .documented(
-                                "Return True if bool(x) is True for any x in the iterable.\n\n"
+                                "any($module, iterable, /)\n"
+                                        + "--\n"
+                                        + "\n"
+                                        + "Return True if bool(x) is True for any x in the"
+                                        + " iterable.\n"
+                                        + "\n"
                                         + "If the iterable is empty, return False.");
         put(out, "any", commonAny);
         put(out, "ord", unary("ord", Builtins::ordinal));

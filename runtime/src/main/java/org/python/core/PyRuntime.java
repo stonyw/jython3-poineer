@@ -94,8 +94,29 @@ public final class PyRuntime {
 
         builtins = Builtins.namespace();
         sysModule = buildSys();
+        PyModule home = new PyModule("builtins", builtins);
         modules.put("sys", sysModule);
-        modules.put("builtins", new PyModule("builtins", builtins));
+        modules.put("builtins", home);
+        belongTo(home);
+        belongTo(sysModule);
+    }
+
+    /**
+     * {@code PyModule_AddFunctions}: the module a function's dictionary is becomes the function's owner,
+     * and its name the value {@code __module__} reads.
+     *
+     * <p>Run here rather than as each function was registered, because this runtime writes the built-in
+     * table before the dictionary it lives in is wrapped in the module that owns it. Both fields show
+     * through reads and nowhere through a call: {@code all.__self__} is the module and {@code all.__module__}
+     * is {@code 'builtins'}, while {@code all}'s one-argument body never sees either, which is what
+     * {@code ($module, iterable, /)} of its own argument table is recording.
+     */
+    private static void belongTo(PyModule home) {
+        for (PyObject entry : home.dictionary().getItems().values()) {
+            if (entry instanceof PyNativeFunction function) {
+                function.belongingTo(home);
+            }
+        }
     }
 
     /** The dictionary a module frame falls back to for a name it does not define. */
@@ -384,7 +405,11 @@ public final class PyRuntime {
         PyObject excepthook =
                 new PyNativeFunction("excepthook", PyRuntime::excepthook)
                         .documented(
-                                "Handle an exception by displaying it with a traceback on sys.stderr.");
+                                "excepthook($module, exctype, value, traceback, /)\n"
+                                        + "--\n"
+                                        + "\n"
+                                        + "Handle an exception by displaying it with a traceback on"
+                                        + " sys.stderr.");
         sys.set("excepthook", excepthook);
         sys.set("__excepthook__", excepthook);
         return sys;

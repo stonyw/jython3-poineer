@@ -316,7 +316,7 @@ final class Members {
      * {@code __qualname__} or {@code __module__}, exactly as {@code str.__dict__['maketrans']} is silent.
      */
     Members addStatic(String name, PyNativeFunction.Body body) {
-        PyNativeFunction function = PyNativeFunction.declaredBy(owner.name(), name, body);
+        PyNativeFunction function = PyNativeFunction.declaredBy(owner, name, body);
         statics.put(name, function);
         published.put(name, PyStaticMethod.filed(function));
         return this;
