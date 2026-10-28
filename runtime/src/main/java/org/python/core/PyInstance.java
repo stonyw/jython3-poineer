@@ -304,15 +304,8 @@ public final class PyInstance extends PyObject {
 
     // --- container protocol --------------------------------------------------------------
 
-    @Override
-    public PyObject length() {
-        return Specials.invoke(this, "__len__");
-    }
-
-    @Override
-    public PyObject truth() {
-        return Specials.invoke(this, "__bool__");
-    }
+    // `__len__` and `__bool__` are asked of the namespace by `PyObject`, which is what makes a class that
+    // files `None` under either name refuse the same way whichever of its values is asked.
 
     @Override
     public PyObject getItem(PyObject key) {

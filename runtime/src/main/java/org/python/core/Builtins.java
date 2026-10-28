@@ -152,6 +152,18 @@ final class Builtins {
         put(out, "IOError", ExceptionTypes.OS_ERROR);
     }
 
+    /**
+     * The two functions {@code LOAD_COMMON_CONSTANT} names at 3 and 4, as the namespace filed them.
+     *
+     * <p>{@code all(x for x in y)} is not a call: the compiler puts an identity check on these two objects
+     * in front of an inlined loop, and CPython keeps the objects in {@code interp->common_consts}, written
+     * once at startup. Reading them out of the live namespace instead would let a program that rebinds
+     * {@code builtins.all} keep the inlined loop, which CPython would not.
+     */
+    static PyObject commonAll;
+
+    static PyObject commonAny;
+
     private static void addFunctions(PyDict out) {
         put(out, "print", new PyNativeFunction("print", Builtins::print));
         put(out, "len", unary("len", value -> Slots.length(value)));
@@ -160,6 +172,18 @@ final class Builtins {
         put(out, "hash", unary("hash", value -> PyInt.of(value.hash())));
         put(out, "id", unary("id", value -> PyInt.of(System.identityHashCode(value))));
         put(out, "callable", unary("callable", value -> PyBool.of(Slots.isCallable(value))));
+        commonAll =
+                unary("all", Builtins::all)
+                        .documented(
+                                "Return True if bool(x) is True for all values x in the iterable.\n\n"
+                                        + "If the iterable is empty, return True.");
+        put(out, "all", commonAll);
+        commonAny =
+                unary("any", Builtins::any)
+                        .documented(
+                                "Return True if bool(x) is True for any x in the iterable.\n\n"
+                                        + "If the iterable is empty, return False.");
+        put(out, "any", commonAny);
         put(out, "ord", unary("ord", Builtins::ordinal));
         put(out, "chr", unary("chr", Builtins::character));
         put(out, "bin", unary("bin", value -> PyStr.of(radix(value, 2, "0b"))));
@@ -705,6 +729,34 @@ final class Builtins {
         return key == null || key == PyNone.INSTANCE
                 ? value
                 : Slots.call(key, new PyObject[] {value}, null);
+    }
+
+    /**
+     * {@code all(iterable)}: the walk that answers false at the first item that is not true.
+     *
+     * <p>The iterator is driven here rather than materialised first, because {@code builtin_all} breaks out
+     * of its {@code for} as soon as {@code PyObject_IsTrue} has answered false — and an item whose truth
+     * refuses is a refusal of the whole call, not one the walk recovers from.
+     */
+    private static PyObject all(PyObject iterable) {
+        PyIterator iterator = Slots.iterator(iterable);
+        for (PyObject item = iterator.nextOrNull(); item != null; item = iterator.nextOrNull()) {
+            if (!Slots.truth(item)) {
+                return PyBool.FALSE;
+            }
+        }
+        return PyBool.TRUE;
+    }
+
+    /** {@code any(iterable)}: the same walk, answering true at the first item that is. */
+    private static PyObject any(PyObject iterable) {
+        PyIterator iterator = Slots.iterator(iterable);
+        for (PyObject item = iterator.nextOrNull(); item != null; item = iterator.nextOrNull()) {
+            if (Slots.truth(item)) {
+                return PyBool.TRUE;
+            }
+        }
+        return PyBool.FALSE;
     }
 
     private static PyObject sum(PyObject[] args, String[] kwNames) {

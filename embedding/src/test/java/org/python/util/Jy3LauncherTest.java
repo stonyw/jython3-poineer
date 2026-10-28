@@ -259,7 +259,9 @@ class Jy3LauncherTest {
                 "83_unicode_initialisers.py",
                 "84_codec_sentence.py",
                 "85_group_dictionary.py",
-                "86_group_fields.py");
+                "86_group_fields.py",
+                "87_all_any.py",
+                "88_inlined_walk.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

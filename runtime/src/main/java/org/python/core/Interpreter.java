@@ -1066,12 +1066,24 @@ public final class Interpreter {
         frame.push(second);
     }
 
-    /** The three exceptions {@code LOAD_COMMON_CONSTANT} can name, by {@code opcode}'s numbering. */
+    /**
+     * The five objects {@code LOAD_COMMON_CONSTANT} can name, by 3.14's {@code _common_constants}.
+     *
+     * <p>3.13's table was three exceptions; 3.14 replaced the last of them with {@code tuple} and added the
+     * two builtins that a call with a generator argument is inlined for — {@code all(x for x in y)} compiles
+     * to a {@code COPY}/{@code IS_OP} identity check against entry 3, and the loop that follows only runs if
+     * the callable really is that object. The two entries therefore have to be the very functions the
+     * namespace filed, frozen when it was built: rebinding {@code builtins.all} makes the check fail and the
+     * call travel the {@code CALL} path instead, which is what it does in CPython, where {@code
+     * interp->common_consts} is written once at startup.
+     */
     private static PyObject commonConstant(int arg) {
         return switch (arg) {
             case 0 -> ExceptionTypes.ASSERTION_ERROR;
             case 1 -> ExceptionTypes.NOT_IMPLEMENTED_ERROR;
-            case 2 -> ExceptionTypes.SYSTEM_ERROR;
+            case 2 -> PyType.TUPLE;
+            case 3 -> Builtins.commonAll;
+            case 4 -> Builtins.commonAny;
             default -> throw Slots.notImplemented("common constant " + arg);
         };
     }

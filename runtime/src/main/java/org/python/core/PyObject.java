@@ -113,14 +113,35 @@ public abstract class PyObject {
 
     // --- slots: container protocol -----------------------------------------------------
 
-    /** {@code len(self)}; a refusal means the value has no length. */
+    /**
+     * {@code len(self)}; a refusal means the value has no length.
+     *
+     * <p>For a value whose class was written in Python this is {@code slot_sq_length} asking the namespace:
+     * a class that files {@code None} under the name is not asking the question to go unanswered, because
+     * {@code maybe_call_special_no_args} calls what it found and the call machinery refuses — so {@code
+     * __len__ = None} says {@code 'NoneType' object is not callable} rather than {@code has no len()}.
+     */
     public PyObject length() {
-        return PyNotImplemented.INSTANCE;
+        if (Specials.lookUp(getType(), "__len__") == PyNone.INSTANCE) {
+            return Slots.call(PyNone.INSTANCE, new PyObject[0], null);
+        }
+        return Specials.invoke(this, "__len__");
     }
 
-    /** {@code bool(self)}: a refusal lets {@link Slots} fall back to {@link #length()}. */
+    /**
+     * {@code bool(self)}: a refusal lets {@link Slots} fall back to {@link #length()}.
+     *
+     * <p>{@code slot_nb_bool} asks the same namespace, but with somewhere to record that the name was found
+     * and was {@code None}, and refuses by naming the class when it did. A filed {@code None} is therefore a
+     * third answer besides the two a {@code __bool__} usually gives, and is not the same as declaring
+     * nothing.
+     */
     public PyObject truth() {
-        return PyNotImplemented.INSTANCE;
+        if (Specials.lookUp(getType(), "__bool__") == PyNone.INSTANCE) {
+            throw Slots.typeError(
+                    "'%s' cannot be interpreted as a boolean", getType().filedName());
+        }
+        return Specials.invoke(this, "__bool__");
     }
 
     /** {@code self[key]}, including slices. */
