@@ -33,10 +33,11 @@ import java.util.function.Predicate;
  * itself. The metadata a part inherits — traceback, context, cause and a copy of the notes — is copied
  * as CPython copies it, which leaves {@code __suppress_context__} alone rather than re-deciding it.
  *
- * <p>Two of CPython's own are not modelled. There is no recursion guard on the walk of a group tree, so
- * a group that contains itself overflows the Java stack where CPython raises {@code RecursionError}; and
- * reading {@code message} or {@code exceptions} from the <em>type</em> gives nothing, as it already does
- * for {@code BaseException.args}, where CPython gives the {@code member_descriptor} kept there.
+ * <p>One of CPython's own is not modelled: there is no recursion guard on the walk of a group tree, so a
+ * group that contains itself overflows the Java stack where CPython raises {@code RecursionError}. The two
+ * fields a person reads are read through the type, as {@code BaseExceptionGroup_members} files them — a
+ * read-only {@code _Py_T_OBJECT} each, so {@code BaseExceptionGroup.message} is the member and a write or
+ * a delete of the field on a value is refused before the value's own dictionary is looked at.
  */
 public class PyBaseExceptionGroup extends PyBaseException {
 
@@ -135,86 +136,39 @@ public class PyBaseExceptionGroup extends PyBaseException {
         return items;
     }
 
+    /** {@code e.message} for Java, which is what {@code derive} rebuilds the group from. */
+    PyStr groupMessage() {
+        return message;
+    }
+
     /** {@code e.exceptions} for Java, which is what the report walks to build a group tree. */
     PyTuple children() {
         return exceptions;
     }
 
     /**
-     * {@code e.message} and {@code e.exceptions}, ahead of the value's own dictionary as CPython's
-     * read-only members are, and {@code ExceptionGroup}'s {@code __module__} with them.
+     * {@code BaseExceptionGroup_str}: the message and how many exceptions it carries, singular below two.
      *
-     * <p>{@code __module__} is the one answer here that follows from how CPython declares the two
-     * classes: {@code ExceptionGroup} is made by {@code PyErr_NewException}, which files the name in the
-     * type's dictionary where an instance can find it, while {@code BaseExceptionGroup} is a static type
-     * that keeps no {@code __module__} an instance can read. So a group that was promoted answers
-     * {@code 'builtins'} and one holding a {@code KeyboardInterrupt} refuses.
+     * <p>This counts {@code self->excs} rather than {@code args}, which is why a later change to the list
+     * the call was given leaves this reading what the group holds. It is the half the group's own {@code
+     * __str__} row calls, so {@code BaseExceptionGroup.__str__(g)} says the same thing that {@code str(g)}
+     * does once a subclass has written no {@code __str__} of its own.
      */
     @Override
-    public PyObject getAttr(String name) {
-        return switch (name) {
-            case "message" -> message;
-            case "exceptions" -> exceptions;
-            case "__module__" ->
-                    exceptionType() == ExceptionTypes.EXCEPTION_GROUP
-                            ? PyStr.of("builtins")
-                            : super.getAttr(name);
-            default -> super.getAttr(name);
-        };
-    }
-
-    /** {@code e.message = value} and {@code e.exceptions = value}: both refused, as CPython's are. */
-    @Override
-    public PyObject setAttr(String name, PyObject value) {
-        if (refusesMember(name, "__setattr__")) {
-            throw Slots.attributeError("readonly attribute");
-        }
-        return super.setAttr(name, value);
-    }
-
-    @Override
-    public PyObject delAttr(String name) {
-        if (refusesMember(name, "__delattr__")) {
-            throw Slots.attributeError("readonly attribute");
-        }
-        return super.delAttr(name);
-    }
-
-    /**
-     * Whether {@code name} is one of the two read-only members, which is decided before the class has
-     * been asked anything only when it declares no hook of its own for this assignment.
-     *
-     * <p>A {@code __setattr__} or {@code __delattr__} written in Python replaces the whole lookup, as
-     * CPython's does, and takes the step that the member would have refused.
-     */
-    private boolean refusesMember(String name, String hook) {
-        return (name.equals("message") || name.equals("exceptions"))
-                && !(Specials.lookUp(exceptionType(), hook) instanceof PyFunction);
-    }
-
-    /**
-     * {@code str(g)}: the message and how many exceptions it carries, singular below two.
-     *
-     * <p>{@code BaseExceptionGroup_str} counts {@code self->excs} rather than {@code args}, which is why
-     * a later change to the list the call was given leaves this reading what the group holds.
-     */
-    @Override
-    public String str() {
-        PyObject declared = displayed("__str__");
-        if (declared != null) {
-            return display(declared, "__str__");
-        }
+    String described() {
         int count = exceptions.size();
         return message.str() + " (" + count + " sub-exception" + (count > 1 ? "s" : "") + ")";
     }
 
-    /** {@code repr(g)}: the message and the children, in whichever of the three shapes CPython uses. */
+    /**
+     * {@code BaseExceptionGroup_repr}: the message and the children, in whichever of the three shapes CPython
+     * uses.
+     *
+     * <p>{@code tp_repr} is the one slot of the family that {@code BaseExceptionGroup} writes besides {@code
+     * tp_str}, which is why this class files two {@code wrapper_descriptor}s where its siblings file one.
+     */
     @Override
-    public String repr() {
-        PyObject declared = displayed("__repr__");
-        if (declared != null) {
-            return display(declared, "__repr__");
-        }
+    String represented() {
         return exceptionType().name() + "(" + message.repr() + ", " + shown() + ")";
     }
 

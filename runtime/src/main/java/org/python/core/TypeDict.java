@@ -285,6 +285,18 @@ final class TypeDict {
     private static final String FROZENSET_CLASS_GETITEM_DOC =
             "frozensets are generic over the type of their elements";
 
+    /**
+     * {@code BaseExceptionGroup_methods}'s {@code __class_getitem__} (exceptions.c:1762), the one generic
+     * subscript of the exception family.
+     *
+     * <p>Like the five the collections file it is {@code METH_O|METH_CLASS} over {@code Py_GenericAlias}, so
+     * the difference is only the capital: they describe themselves in the lower case of a note about the
+     * type's own name, and this row runs as a sentence because {@code Exception groups} is a subject rather
+     * than a name.
+     */
+    private static final String GROUP_CLASS_GETITEM_DOC =
+            "Exception groups are generic over the type of their contained exceptions";
+
     /** {@code type.__new__(mcs, name, bases, dict)}: the metaclass idiom, and no descriptor at all. */
     static final Member NEW =
             new Member(PyType.TYPE, "__new__", Shape.RAW, null, NEW_DOC, TypeDict::newMember);
@@ -1860,22 +1872,44 @@ final class TypeDict {
      * The dictionary one class of the exception family files.
      *
      * <p>The order is CPython's {@code type_ready_fill_dict}: {@code add_operators} first and so the slot
-     * wrappers ahead of everything else, {@code tp_new}'s wrapper over the class before them, then {@code
+     * wrappers ahead of everything else, {@code tp_new}'s row over the class before them, then {@code
      * tp_methods}, {@code tp_members}, {@code tp_getset}, and the sentence last. {@code BaseException}'s
      * fifteen names, {@code KeyError}'s two and {@code OSError}'s ten are all of that; every other class of
      * the family files what it inherits and its own {@code __doc__}, except the ones that keep fields of
      * their own — {@code AttributeError} and {@code NameError}, {@code StopIteration} and {@code
-     * SystemExit}, {@code ImportError}, {@code SyntaxError} and the three Unicode errors — whose rows are
-     * the work the plan has left standing.
+     * SystemExit}, {@code ImportError}, {@code SyntaxError} and the three Unicode errors — and except the
+     * two groups, which are the family's odd pair: {@code BaseExceptionGroup} writes {@code tp_repr} as
+     * well as {@code tp_str} and so files two {@code wrapper_descriptor}s where its siblings file one, and
+     * {@code ExceptionGroup} is the only class of the family made by {@code PyErr_NewException} rather than
+     * declared as a static struct, which is why it is the only one whose dictionary holds a
+     * {@code __module__} of its own.
      */
     private static void exceptionTable(PyType owner, PyDict into) {
         Table table = new Table(owner, into);
         if (owner == ExceptionTypes.BASE_EXCEPTION_GROUP) {
             table.put("__new__", GROUP_NEW);
+            table.wrapper(
+                    "__repr__", REPR_DOC, args -> PyStr.of(((PyBaseException) args[0]).represented()));
+            table.wrapper(
+                    "__str__", STR_DOC, args -> PyStr.of(((PyBaseException) args[0]).described()));
             table.put("__init__", GROUP_INIT);
+            table.classMethod(
+                    "__class_getitem__",
+                    GROUP_CLASS_GETITEM_DOC,
+                    (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
             table.put("derive", GROUP_DERIVE);
             table.put("split", GROUP_SPLIT);
             table.put("subgroup", GROUP_SUBGROUP);
+            table.member(
+                    "message",
+                    "exception message",
+                    self -> ((PyBaseExceptionGroup) self).groupMessage(),
+                    null);
+            table.member(
+                    "exceptions",
+                    "nested exceptions",
+                    self -> ((PyBaseExceptionGroup) self).children(),
+                    null);
             table.value("__doc__", docValue(owner));
             return;
         }
@@ -2174,6 +2208,10 @@ final class TypeDict {
             return;
         }
         if (owner == ExceptionTypes.EXCEPTION_GROUP) {
+            // The one class of the family that is not a static struct: `create_exception_group_class` hands
+            // `builtins.ExceptionGroup` to `PyErr_NewException`, which writes the half before the dot into
+            // the dictionary as `__module__` (errors.c:1321-1331) and then calls `type()` with the rest.
+            table.value("__module__", PyStr.of("builtins"));
             // The one built-in of the exception family with a weak reference list of its own, in spite of
             // the fact that nothing under {@code BaseException} has one — which is why a class under {@code
             // ExceptionGroup} files neither name, taking both from here.

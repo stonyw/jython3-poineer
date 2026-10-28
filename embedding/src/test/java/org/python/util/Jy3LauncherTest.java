@@ -257,7 +257,9 @@ class Jy3LauncherTest {
                 "81_syntaxerror_display.py",
                 "82_unicode_dictionary.py",
                 "83_unicode_initialisers.py",
-                "84_codec_sentence.py");
+                "84_codec_sentence.py",
+                "85_group_dictionary.py",
+                "86_group_fields.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

@@ -86,11 +86,27 @@ public final class PyGenericAlias extends PyObject {
             if (i > 0) {
                 out.append(", ");
             }
-            out.append(displayed(arguments[i]));
+            // A list argument is the ParamSpec's shape of the same thing: the brackets stay and every item
+            // is written by `_Py_typing_type_repr`, so `list[[int]]` names the class inside rather than
+            // repr-ing the list that holds it.
+            out.append(
+                    arguments[i] instanceof PyList items ? shown(items) : displayed(arguments[i]));
         }
         if (arguments.length == 0) {
             // `list[()]` keeps the empty parentheses rather than printing `list[]`.
             out.append("()");
+        }
+        return out.append(']').toString();
+    }
+
+    /** {@code ga_repr_items_list}: the items of a list argument, each written as an argument is. */
+    private static String shown(PyList items) {
+        StringBuilder out = new StringBuilder("[");
+        for (int i = 0; i < items.size(); i++) {
+            if (i > 0) {
+                out.append(", ");
+            }
+            out.append(displayed(items.at(i)));
         }
         return out.append(']').toString();
     }
