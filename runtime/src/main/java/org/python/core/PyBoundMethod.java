@@ -114,7 +114,7 @@ public final class PyBoundMethod extends PyObject {
                     : PyStr.of(target.getType().name() + "." + name);
             case "__doc__" -> function != null
                     ? function.getAttr("__doc__")
-                    : doc == null ? PyNone.INSTANCE : PyStr.of(doc);
+                    : PyNativeFunction.docOf(name, doc);
             default -> PyNotImplemented.INSTANCE;
         };
     }

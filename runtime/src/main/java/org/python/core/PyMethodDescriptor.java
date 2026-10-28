@@ -81,8 +81,12 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
             case "__objclass__" -> owner;
             // The sentence is the table's, so a descriptor answers with it and a method bound from the same
             // entry answers with the same text; where the table declares none this is the None CPython
-            // leaves NULL beside the function pointer.
-            case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
+            // leaves NULL beside the function pointer. Both names are read out of the one text the same way
+            // a builtin function reads them, because `descr_get_doc` and `descr_get_text_signature` call
+            // the same two functions `methodobject.c` does — with the method's own name, not its qualified
+            // one, as the prefix to look for.
+            case "__doc__" -> PyNativeFunction.docOf(name, doc);
+            case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc);
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> PyNotImplemented.INSTANCE;

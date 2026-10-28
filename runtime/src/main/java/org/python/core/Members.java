@@ -304,6 +304,32 @@ final class Members {
     }
 
     /**
+     * The sentence CPython's {@code PyMethodDef} files beside a name this table already holds.
+     *
+     * <p>Filed apart from the registration calls because the text is the clinic's and runs to ten lines a
+     * name, which would bury the table it belongs to; {@code bytes_methods} keeps the two in one row and
+     * this keeps them in two. Whichever shape the name has, the sentence goes where CPython reads it from:
+     * on the function itself for a class method or a static one, whose {@code ml_doc} is that field, and in
+     * this table's own sentences for a method the descriptor and every method bound from it read.
+     */
+    Members document(String name, String text) {
+        PyNativeFunction noReceiver = statics.get(name);
+        if (noReceiver != null) {
+            PyNativeFunction withText = noReceiver.documented(text);
+            statics.put(name, withText);
+            published.put(name, PyStaticMethod.filed(withText));
+            return this;
+        }
+        PyNativeFunction onType = classMethods.get(name);
+        if (onType != null) {
+            classMethods.put(name, onType.documented(text));
+            return this;
+        }
+        docs.put(name, text);
+        return this;
+    }
+
+    /**
      * A method that takes no receiver: {@code bytes.maketrans}.
      *
      * <p>The one function in {@link #statics} answers for the type and for every value of it, because

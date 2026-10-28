@@ -419,7 +419,465 @@ public final class PyBytes extends PyObject {
                     (self, args, kwNames) -> {
                         Arguments.none("bytes.__bytes__()", args, kwNames);
                         return self;
-                    });
+                    })
+            // The sentence clinic writes beside each of the forty-two rows `bytes_methods` files.
+            // Two names are read out of that one text, and the cutting is the same
+            // `find_signature`/`skip_signature` pair a built-in function's rows go through.
+            .document(
+                    "capitalize",
+                    "capitalize($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.capitalize() -> copy of B\n"
+                            + "\n"
+                            + "Return a copy of B with only its first character capitalized (ASCII)\n"
+                            + "and the rest lower-cased.")
+            .document(
+                    "center",
+                    "center($self, width, fillchar=b' ', /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a centered string of length width.\n"
+                            + "\n"
+                            + "Padding is done using the specified fill character.")
+            .document(
+                    "count",
+                    "count($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the number of non-overlapping occurrences of subsection 'sub' in bytes B[start:end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.")
+            .document(
+                    "decode",
+                    "decode($self, /, encoding='utf-8', errors='strict')\n"
+                            + "--\n"
+                            + "\n"
+                            + "Decode the bytes using the codec registered for encoding.\n"
+                            + "\n"
+                            + "  encoding\n"
+                            + "    The encoding with which to decode the bytes.\n"
+                            + "  errors\n"
+                            + "    The error handling scheme to use for the handling of decoding\n"
+                            + "    errors.  The default is 'strict' meaning that decoding errors\n"
+                            + "    raise a UnicodeDecodeError.  Other possible values are 'ignore'\n"
+                            + "    and 'replace' as well as any other name registered with\n"
+                            + "    codecs.register_error that can handle UnicodeDecodeErrors.")
+            .document(
+                    "endswith",
+                    "endswith($self, suffix[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the bytes ends with the specified suffix, False otherwise.\n"
+                            + "\n"
+                            + "  suffix\n"
+                            + "    A bytes or a tuple of bytes to try.\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.")
+            .document(
+                    "expandtabs",
+                    "expandtabs($self, /, tabsize=8)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy where all tab characters are expanded using spaces.\n"
+                            + "\n"
+                            + "If tabsize is not given, a tab size of 8 characters is assumed.")
+            .document(
+                    "find",
+                    "find($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Return -1 on failure.")
+            .document(
+                    "fromhex",
+                    "fromhex($type, string, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Create a bytes object from a string of hexadecimal numbers.\n"
+                            + "\n"
+                            + "Spaces between two numbers are accepted.\n"
+                            + "Example: bytes.fromhex('B9 01EF') -> b'\\\\xb9\\\\x01\\\\xef'.")
+            .document(
+                    "hex",
+                    "hex($self, /, sep=<unrepresentable>, bytes_per_sep=1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Create a string of hexadecimal numbers from a bytes object.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    An optional single character or byte to separate hex bytes.\n"
+                            + "  bytes_per_sep\n"
+                            + "    How many bytes between separators.  Positive values count from\n"
+                            + "    the right, negative values count from the left.\n"
+                            + "\n"
+                            + "Example:\n"
+                            + ">>> value = b'\\xb9\\x01\\xef'\n"
+                            + ">>> value.hex()\n"
+                            + "'b901ef'\n"
+                            + ">>> value.hex(':')\n"
+                            + "'b9:01:ef'\n"
+                            + ">>> value.hex(':', 2)\n"
+                            + "'b9:01ef'\n"
+                            + ">>> value.hex(':', -2)\n"
+                            + "'b901:ef'")
+            .document(
+                    "index",
+                    "index($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Raise ValueError if the subsection is not found.")
+            .document(
+                    "isalnum",
+                    "isalnum($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.isalnum() -> bool\n"
+                            + "\n"
+                            + "Return True if all characters in B are alphanumeric\n"
+                            + "and there is at least one character in B, False otherwise.")
+            .document(
+                    "isalpha",
+                    "isalpha($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.isalpha() -> bool\n"
+                            + "\n"
+                            + "Return True if all characters in B are alphabetic\n"
+                            + "and there is at least one character in B, False otherwise.")
+            .document(
+                    "isascii",
+                    "isascii($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.isascii() -> bool\n"
+                            + "\n"
+                            + "Return True if B is empty or all characters in B are ASCII,\n"
+                            + "False otherwise.")
+            .document(
+                    "isdigit",
+                    "isdigit($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.isdigit() -> bool\n"
+                            + "\n"
+                            + "Return True if all characters in B are digits\n"
+                            + "and there is at least one character in B, False otherwise.")
+            .document(
+                    "islower",
+                    "islower($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.islower() -> bool\n"
+                            + "\n"
+                            + "Return True if all cased characters in B are lowercase and there is\n"
+                            + "at least one cased character in B, False otherwise.")
+            .document(
+                    "isspace",
+                    "isspace($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.isspace() -> bool\n"
+                            + "\n"
+                            + "Return True if all characters in B are whitespace\n"
+                            + "and there is at least one character in B, False otherwise.")
+            .document(
+                    "istitle",
+                    "istitle($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.istitle() -> bool\n"
+                            + "\n"
+                            + "Return True if B is a titlecased string and there is at least one\n"
+                            + "character in B, i.e. uppercase characters may only follow uncased\n"
+                            + "characters and lowercase characters only cased ones. Return False\n"
+                            + "otherwise.")
+            .document(
+                    "isupper",
+                    "isupper($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.isupper() -> bool\n"
+                            + "\n"
+                            + "Return True if all cased characters in B are uppercase and there is\n"
+                            + "at least one cased character in B, False otherwise.")
+            .document(
+                    "join",
+                    "join($self, iterable_of_bytes, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Concatenate any number of bytes objects.\n"
+                            + "\n"
+                            + "The bytes whose method is called is inserted in between each pair.\n"
+                            + "\n"
+                            + "The result is returned as a new bytes object.\n"
+                            + "\n"
+                            + "Example: b'.'.join([b'ab', b'pq', b'rs']) -> b'ab.pq.rs'.")
+            .document(
+                    "ljust",
+                    "ljust($self, width, fillchar=b' ', /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a left-justified string of length width.\n"
+                            + "\n"
+                            + "Padding is done using the specified fill character.")
+            .document(
+                    "lower",
+                    "lower($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.lower() -> copy of B\n"
+                            + "\n"
+                            + "Return a copy of B with all ASCII characters converted to lowercase.")
+            .document(
+                    "lstrip",
+                    "lstrip($self, bytes=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Strip leading bytes contained in the argument.\n"
+                            + "\n"
+                            + "If the argument is omitted or None, strip leading  ASCII whitespace.")
+            .document(
+                    "maketrans",
+                    "maketrans(frm, to, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a translation table usable for the bytes or bytearray translate method.\n"
+                            + "\n"
+                            + "The returned table will be one where each byte in frm is mapped to\n"
+                            + "the byte at the same position in to.\n"
+                            + "\n"
+                            + "The bytes objects frm and to must be of the same length.")
+            .document(
+                    "partition",
+                    "partition($self, sep, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Partition the bytes into three parts using the given separator.\n"
+                            + "\n"
+                            + "This will search for the separator sep in the bytes.  If the\n"
+                            + "separator is found, returns a 3-tuple containing the part before the\n"
+                            + "separator, the separator itself, and the part after it.\n"
+                            + "\n"
+                            + "If the separator is not found, returns a 3-tuple containing the\n"
+                            + "original bytes object and two empty bytes objects.")
+            .document(
+                    "removeprefix",
+                    "removeprefix($self, prefix, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a bytes object with the given prefix string removed if present.\n"
+                            + "\n"
+                            + "If the bytes starts with the prefix string, return\n"
+                            + "bytes[len(prefix):].  Otherwise, return a copy of the original\n"
+                            + "bytes.")
+            .document(
+                    "removesuffix",
+                    "removesuffix($self, suffix, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a bytes object with the given suffix string removed if present.\n"
+                            + "\n"
+                            + "If the bytes ends with the suffix string and that suffix is not\n"
+                            + "empty, return bytes[:-len(prefix)].  Otherwise, return a copy of the\n"
+                            + "original bytes.")
+            .document(
+                    "replace",
+                    "replace($self, old, new, count=-1, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy with all occurrences of substring old replaced by new.\n"
+                            + "\n"
+                            + "  count\n"
+                            + "    Maximum number of occurrences to replace.\n"
+                            + "    -1 (the default value) means replace all occurrences.\n"
+                            + "\n"
+                            + "If the optional argument count is given, only the first count occurrences are\n"
+                            + "replaced.")
+            .document(
+                    "rfind",
+                    "rfind($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Return -1 on failure.")
+            .document(
+                    "rindex",
+                    "rindex($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start,end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Raise ValueError if the subsection is not found.")
+            .document(
+                    "rjust",
+                    "rjust($self, width, fillchar=b' ', /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a right-justified string of length width.\n"
+                            + "\n"
+                            + "Padding is done using the specified fill character.")
+            .document(
+                    "rpartition",
+                    "rpartition($self, sep, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Partition the bytes into three parts using the given separator.\n"
+                            + "\n"
+                            + "This will search for the separator sep in the bytes, starting at the\n"
+                            + "end.  If the separator is found, returns a 3-tuple containing the\n"
+                            + "part before the separator, the separator itself, and the part after\n"
+                            + "it.\n"
+                            + "\n"
+                            + "If the separator is not found, returns a 3-tuple containing two\n"
+                            + "empty bytes objects and the original bytes object.")
+            .document(
+                    "rsplit",
+                    "rsplit($self, /, sep=None, maxsplit=-1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the sections in the bytes, using sep as the delimiter.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    The delimiter according which to split the bytes.\n"
+                            + "    None (the default value) means split on ASCII whitespace\n"
+                            + "    characters (space, tab, return, newline, formfeed, vertical tab).\n"
+                            + "  maxsplit\n"
+                            + "    Maximum number of splits to do.\n"
+                            + "    -1 (the default value) means no limit.\n"
+                            + "\n"
+                            + "Splitting is done starting at the end of the bytes and working to\n"
+                            + "the front.")
+            .document(
+                    "rstrip",
+                    "rstrip($self, bytes=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Strip trailing bytes contained in the argument.\n"
+                            + "\n"
+                            + "If the argument is omitted or None, strip trailing ASCII whitespace.")
+            .document(
+                    "split",
+                    "split($self, /, sep=None, maxsplit=-1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the sections in the bytes, using sep as the delimiter.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    The delimiter according which to split the bytes.\n"
+                            + "    None (the default value) means split on ASCII whitespace\n"
+                            + "    characters (space, tab, return, newline, formfeed, vertical tab).\n"
+                            + "  maxsplit\n"
+                            + "    Maximum number of splits to do.\n"
+                            + "    -1 (the default value) means no limit.")
+            .document(
+                    "splitlines",
+                    "splitlines($self, /, keepends=False)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the lines in the bytes, breaking at line boundaries.\n"
+                            + "\n"
+                            + "Line breaks are not included in the resulting list unless keepends\n"
+                            + "is given and true.")
+            .document(
+                    "startswith",
+                    "startswith($self, prefix[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the bytes starts with the specified prefix, False otherwise.\n"
+                            + "\n"
+                            + "  prefix\n"
+                            + "    A bytes or a tuple of bytes to try.\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.")
+            .document(
+                    "strip",
+                    "strip($self, bytes=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Strip leading and trailing bytes contained in the argument.\n"
+                            + "\n"
+                            + "If the argument is omitted or None, strip leading and trailing ASCII\n"
+                            + "whitespace.")
+            .document(
+                    "swapcase",
+                    "swapcase($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.swapcase() -> copy of B\n"
+                            + "\n"
+                            + "Return a copy of B with uppercase ASCII characters converted\n"
+                            + "to lowercase ASCII and vice versa.")
+            .document(
+                    "title",
+                    "title($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.title() -> copy of B\n"
+                            + "\n"
+                            + "Return a titlecased version of B, i.e. ASCII words start with\n"
+                            + "uppercase characters, all remaining cased characters have lowercase.")
+            .document(
+                    "translate",
+                    "translate($self, table, /, delete=b'')\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy with each character mapped by the given translation table.\n"
+                            + "\n"
+                            + "  table\n"
+                            + "    Translation table, which must be a bytes object of length 256.\n"
+                            + "\n"
+                            + "All characters occurring in the optional argument delete are\n"
+                            + "removed.  The remaining characters are mapped through the given\n"
+                            + "translation table.")
+            .document(
+                    "upper",
+                    "upper($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.upper() -> copy of B\n"
+                            + "\n"
+                            + "Return a copy of B with all ASCII characters converted to uppercase.")
+            .document(
+                    "zfill",
+                    "zfill($self, width, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Pad a numeric string with zeros on the left, to fill a field of the given width.\n"
+                            + "\n"
+                            + "The original string is never truncated.");
+
 
     // --- argument helpers ------------------------------------------------------------------
 
