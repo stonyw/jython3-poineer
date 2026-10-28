@@ -164,14 +164,86 @@ final class Builtins {
 
     static PyObject commonAny;
 
+    /**
+     * The forty rows {@code bltinmodule.c}'s method table files, each with the {@code ml_doc} its table
+     * row carries.
+     *
+     * <p>Twenty-seven of these texts are the clinic's, and so read as two halves: {@code find_signature} and
+     * {@code skip_signature} cut the signature out of the front of the sentence and hand it to
+     * {@code __text_signature__}, leaving the rest to {@code __doc__}. Eight were written by hand —
+     * {@code dir}, {@code getattr}, {@code iter}, {@code max}, {@code min}, {@code next}, {@code vars} and
+     * {@code __build_class__} — and their first line carries no {@code --} rule, so the whole text stays in
+     * {@code __doc__} and {@code __text_signature__} reads {@code None}. The five this runtime files as
+     * functions while CPython files them as types ({@code enumerate}, {@code filter}, {@code map},
+     * {@code reversed} and {@code zip}) carry the text CPython reads as that type's {@code tp_doc}, which
+     * is why their signature names the row itself — {@code (function, iterable, /)} — rather than opening
+     * with {@code $module} like the clinic's module-level rows do.
+     */
     private static void addFunctions(PyDict out) {
-        put(out, "print", new PyNativeFunction("print", Builtins::print));
-        put(out, "len", unary("len", value -> Slots.length(value)));
-        put(out, "repr", unary("repr", value -> PyStr.of(value.repr())));
-        put(out, "abs", unary("abs", value -> Slots.absolute(value)));
-        put(out, "hash", unary("hash", value -> PyInt.of(value.hash())));
-        put(out, "id", unary("id", value -> PyInt.of(System.identityHashCode(value))));
-        put(out, "callable", unary("callable", value -> PyBool.of(Slots.isCallable(value))));
+        put(out, "print", new PyNativeFunction("print", Builtins::print)
+                .documented(
+                        "print($module, /, *args, sep=' ', end='\\n', file=None, flush=False)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Prints the values to a stream, or to sys.stdout by default.\n"
+                                + "\n"
+                                + "  sep\n"
+                                + "    string inserted between values, default a space.\n"
+                                + "  end\n"
+                                + "    string appended after the last value, default a newline.\n"
+                                + "  file\n"
+                                + "    a file-like object (stream); defaults to the current sys.stdout.\n"
+                                + "  flush\n"
+                                + "    whether to forcibly flush the stream."));
+        put(out, "len", unary("len", value -> Slots.length(value))
+                .documented(
+                        "len($module, obj, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the number of items in a container."));
+        put(out, "repr", unary("repr", value -> PyStr.of(value.repr()))
+                .documented(
+                        "repr($module, obj, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the canonical string representation of the object.\n"
+                                + "\n"
+                                + "For many object types, including most builtins, eval(repr(obj)) == obj."));
+        put(out, "abs", unary("abs", value -> Slots.absolute(value))
+                .documented(
+                        "abs($module, x, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the absolute value of the argument."));
+        put(out, "hash", unary("hash", value -> PyInt.of(value.hash()))
+                .documented(
+                        "hash($module, obj, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the integer hash value for the given object.\n"
+                                + "\n"
+                                + "Two objects that compare equal must also have the same hash value, but\n"
+                                + "the reverse is not necessarily true.  Hash values may differ between\n"
+                                + "Python processes.  Not all objects are hashable; calling hash() on an\n"
+                                + "unhashable object raises TypeError."));
+        put(out, "id", unary("id", value -> PyInt.of(System.identityHashCode(value)))
+                .documented(
+                        "id($module, obj, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the identity of an object.\n"
+                                + "\n"
+                                + "This is guaranteed to be unique among simultaneously existing objects.\n"
+                                + "(CPython uses the object's memory address.)"));
+        put(out, "callable", unary("callable", value -> PyBool.of(Slots.isCallable(value)))
+                .documented(
+                        "callable($module, obj, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return whether the object is callable (i.e., some kind of function).\n"
+                                + "\n"
+                                + "Note that classes are callable, as are instances of classes with a\n"
+                                + "__call__() method."));
         commonAll =
                 unary("all", Builtins::all)
                         .documented(
@@ -194,38 +266,294 @@ final class Builtins {
                                         + "\n"
                                         + "If the iterable is empty, return False.");
         put(out, "any", commonAny);
-        put(out, "ord", unary("ord", Builtins::ordinal));
-        put(out, "chr", unary("chr", Builtins::character));
-        put(out, "bin", unary("bin", value -> PyStr.of(radix(value, 2, "0b"))));
-        put(out, "hex", unary("hex", value -> PyStr.of(radix(value, 16, "0x"))));
-        put(out, "oct", unary("oct", value -> PyStr.of(radix(value, 8, "0o"))));
-        put(out, "format", new PyNativeFunction("format", Builtins::format));
-        put(out, "min", new PyNativeFunction("min", (args, kw) -> extreme(args, kw, false)));
-        put(out, "max", new PyNativeFunction("max", (args, kw) -> extreme(args, kw, true)));
-        put(out, "sum", new PyNativeFunction("sum", Builtins::sum));
-        put(out, "sorted", new PyNativeFunction("sorted", Builtins::sorted));
-        put(out, "reversed", unary("reversed", Builtins::reversed));
-        put(out, "enumerate", new PyNativeFunction("enumerate", Builtins::enumerate));
-        put(out, "zip", new PyNativeFunction("zip", Builtins::zip));
-        put(out, "map", new PyNativeFunction("map", Builtins::map));
-        put(out, "filter", new PyNativeFunction("filter", Builtins::filter));
-        put(out, "iter", new PyNativeFunction("iter", Builtins::iter));
-        put(out, "next", new PyNativeFunction("next", Builtins::next));
-        put(out, "isinstance", twoArgument("isinstance", Builtins::isInstanceOf));
-        put(out, "issubclass", twoArgument("issubclass", Builtins::isSubclass));
+        put(out, "ord", unary("ord", Builtins::ordinal)
+                .documented(
+                        "ord($module, character, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the ordinal value of a character.\n"
+                                + "\n"
+                                + "If the argument is a one-character string, return the Unicode code\n"
+                                + "point of that character.\n"
+                                + "\n"
+                                + "If the argument is a bytes or bytearray object of length 1, return its\n"
+                                + "single byte value."));
+        put(out, "chr", unary("chr", Builtins::character)
+                .documented(
+                        "chr($module, i, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a Unicode string of one character with ordinal i; 0 <= i <= 0x10ffff."));
+        put(out, "bin", unary("bin", value -> PyStr.of(radix(value, 2, "0b")))
+                .documented(
+                        "bin($module, number, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the binary representation of an integer.\n"
+                                + "\n"
+                                + "   >>> bin(2796202)\n"
+                                + "   '0b1010101010101010101010'"));
+        put(out, "hex", unary("hex", value -> PyStr.of(radix(value, 16, "0x")))
+                .documented(
+                        "hex($module, number, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the hexadecimal representation of an integer.\n"
+                                + "\n"
+                                + "   >>> hex(12648430)\n"
+                                + "   '0xc0ffee'"));
+        put(out, "oct", unary("oct", value -> PyStr.of(radix(value, 8, "0o")))
+                .documented(
+                        "oct($module, number, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the octal representation of an integer.\n"
+                                + "\n"
+                                + "   >>> oct(342391)\n"
+                                + "   '0o1234567'"));
+        put(out, "format", new PyNativeFunction("format", Builtins::format)
+                .documented(
+                        "format($module, value, format_spec='', /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return type(value).__format__(value, format_spec)\n"
+                                + "\n"
+                                + "Many built-in types implement format_spec according to the\n"
+                                + "Format Specification Mini-language. See help('FORMATTING').\n"
+                                + "\n"
+                                + "If type(value) does not supply a method named __format__\n"
+                                + "and format_spec is empty, then str(value) is returned.\n"
+                                + "See also help('SPECIALMETHODS')."));
+        put(out, "min", new PyNativeFunction("min", (args, kw) -> extreme(args, kw, false))
+                .documented(
+                        "min(iterable, *[, default=obj, key=func]) -> value\n"
+                                + "min(arg1, arg2, *args, *[, key=func]) -> value\n"
+                                + "\n"
+                                + "With a single iterable argument, return its smallest item. The\n"
+                                + "default keyword-only argument specifies an object to return if\n"
+                                + "the provided iterable is empty.\n"
+                                + "With two or more positional arguments, return the smallest argument."));
+        put(out, "max", new PyNativeFunction("max", (args, kw) -> extreme(args, kw, true))
+                .documented(
+                        "max(iterable, *[, default=obj, key=func]) -> value\n"
+                                + "max(arg1, arg2, *args, *[, key=func]) -> value\n"
+                                + "\n"
+                                + "With a single iterable argument, return its biggest item. The\n"
+                                + "default keyword-only argument specifies an object to return if\n"
+                                + "the provided iterable is empty.\n"
+                                + "With two or more positional arguments, return the largest argument."));
+        put(out, "sum", new PyNativeFunction("sum", Builtins::sum)
+                .documented(
+                        "sum($module, iterable, /, start=0)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the sum of a 'start' value (default: 0) plus an iterable of numbers\n"
+                                + "\n"
+                                + "When the iterable is empty, return the start value.\n"
+                                + "This function is intended specifically for use with numeric values and\n"
+                                + "may reject non-numeric types."));
+        put(out, "sorted", new PyNativeFunction("sorted", Builtins::sorted)
+                .documented(
+                        "sorted($module, iterable, /, *, key=None, reverse=False)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a new list containing all items from the iterable in ascending order.\n"
+                                + "\n"
+                                + "A custom key function can be supplied to customize the sort order, and the\n"
+                                + "reverse flag can be set to request the result in descending order."));
+        put(out, "reversed", unary("reversed", Builtins::reversed)
+                .documented(
+                        "reversed(sequence, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a reverse iterator over the values of the given sequence."));
+        put(out, "enumerate", new PyNativeFunction("enumerate", Builtins::enumerate)
+                .documented(
+                        "enumerate(iterable, start=0)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return an enumerate object.\n"
+                                + "\n"
+                                + "  iterable\n"
+                                + "    an object supporting iteration\n"
+                                + "\n"
+                                + "The enumerate object yields pairs containing a count (from start, which\n"
+                                + "defaults to zero) and a value yielded by the iterable argument.\n"
+                                + "\n"
+                                + "enumerate is useful for obtaining an indexed list:\n"
+                                + "    (0, seq[0]), (1, seq[1]), (2, seq[2]), ..."));
+        put(out, "zip", new PyNativeFunction("zip", Builtins::zip)
+                .documented(
+                        "zip(*iterables, strict=False)\n"
+                                + "--\n"
+                                + "\n"
+                                + "The zip object yields n-length tuples, where n is the number of\n"
+                                + "iterables passed as positional arguments to zip().  The i-th element\n"
+                                + "in every tuple comes from the i-th iterable argument to zip().  This\n"
+                                + "continues until the shortest argument is exhausted.\n"
+                                + "\n"
+                                + "If strict is true and one of the arguments is exhausted before the\n"
+                                + "others, raise a ValueError.\n"
+                                + "\n"
+                                + "   >>> list(zip('abcdefg', range(3), range(4)))\n"
+                                + "   [('a', 0, 0), ('b', 1, 1), ('c', 2, 2)]"));
+        put(out, "map", new PyNativeFunction("map", Builtins::map)
+                .documented(
+                        "map(function, iterable, /, *iterables, strict=False)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Make an iterator that computes the function using arguments from\n"
+                                + "each of the iterables.  Stops when the shortest iterable is exhausted.\n"
+                                + "\n"
+                                + "If strict is true and one of the arguments is exhausted before the\n"
+                                + "others, raise a ValueError."));
+        put(out, "filter", new PyNativeFunction("filter", Builtins::filter)
+                .documented(
+                        "filter(function, iterable, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return an iterator yielding those items of iterable for which\n"
+                                + "function(item) is true.  If function is None, return the items that\n"
+                                + "are true."));
+        put(out, "iter", new PyNativeFunction("iter", Builtins::iter)
+                .documented(
+                        "iter(iterable) -> iterator\n"
+                                + "iter(callable, sentinel) -> iterator\n"
+                                + "\n"
+                                + "Get an iterator from an object.  In the first form, the argument must\n"
+                                + "supply its own iterator, or be a sequence.\n"
+                                + "In the second form, the callable is called until it returns the\n"
+                                + "sentinel."));
+        put(out, "next", new PyNativeFunction("next", Builtins::next)
+                .documented(
+                        "next(iterator[, default])\n"
+                                + "\n"
+                                + "Return the next item from the iterator.  If default is given and the\n"
+                                + "iterator is exhausted, it is returned instead of raising StopIteration."));
+        put(out, "isinstance", twoArgument("isinstance", Builtins::isInstanceOf)
+                .documented(
+                        "isinstance($module, obj, class_or_tuple, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return whether an object is an instance of a class or of a subclass thereof.\n"
+                                + "\n"
+                                + "A tuple, as in ``isinstance(x, (A, B, ...))``, may be given as the\n"
+                                + "target to check against.  This is equivalent to ``isinstance(x, A) or\n"
+                                + "isinstance(x, B) or ...`` etc."));
+        put(out, "issubclass", twoArgument("issubclass", Builtins::isSubclass)
+                .documented(
+                        "issubclass($module, cls, class_or_tuple, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return whether 'cls' is derived from another class or is the same class.\n"
+                                + "\n"
+                                + "A tuple, as in ``issubclass(x, (A, B, ...))``, may be given as the\n"
+                                + "target to check against.  This is equivalent to ``issubclass(x, A) or\n"
+                                + "issubclass(x, B) or ...``."));
         put(out, "divmod", twoArgument("divmod", (a, b) -> PyTuple.of(
-                Slots.binary(BinaryOp.FLOORDIV, a, b), Slots.binary(BinaryOp.MOD, a, b))));
-        put(out, "pow", new PyNativeFunction("pow", Builtins::power));
-        put(out, "round", new PyNativeFunction("round", Builtins::round));
-        put(out, "getattr", new PyNativeFunction("getattr", Builtins::getAttribute));
-        put(out, "hasattr", new PyNativeFunction("hasattr", Builtins::hasAttribute));
-        put(out, "setattr", new PyNativeFunction("setattr", Builtins::setAttribute));
-        put(out, "delattr", new PyNativeFunction("delattr", Builtins::deleteAttribute));
-        put(out, "locals", new PyNativeFunction("locals", Builtins::localNames));
-        put(out, "globals", new PyNativeFunction("globals", Builtins::globalNames));
-        put(out, "vars", new PyNativeFunction("vars", Builtins::variables));
-        put(out, "dir", new PyNativeFunction("dir", Builtins::directory));
-        put(out, "__build_class__", new PyNativeFunction("__build_class__", Classes::buildClass));
+                Slots.binary(BinaryOp.FLOORDIV, a, b), Slots.binary(BinaryOp.MOD, a, b)))
+                .documented(
+                        "divmod($module, x, y, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the tuple (x//y, x%y).  Invariant: div*y + mod == x."));
+        put(out, "pow", new PyNativeFunction("pow", Builtins::power)
+                .documented(
+                        "pow($module, /, base, exp, mod=None)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Equivalent to base**exp with 2 arguments or base**exp % mod with 3 arguments\n"
+                                + "\n"
+                                + "Some types, such as ints, are able to use a more efficient algorithm\n"
+                                + "when invoked using the three argument form."));
+        put(out, "round", new PyNativeFunction("round", Builtins::round)
+                .documented(
+                        "round($module, /, number, ndigits=None)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Round a number to a given precision in decimal digits.\n"
+                                + "\n"
+                                + "The return value is an integer if ndigits is omitted or None.\n"
+                                + "Otherwise the return value has the same type as the number.  ndigits\n"
+                                + "may be negative."));
+        put(out, "getattr", new PyNativeFunction("getattr", Builtins::getAttribute)
+                .documented(
+                        "getattr(object, name[, default]) -> value\n"
+                                + "\n"
+                                + "Get a named attribute from an object.\n"
+                                + "\n"
+                                + "getattr(x, 'y') is equivalent to x.y.\n"
+                                + "When a default argument is given, it is returned when the attribute\n"
+                                + "doesn't exist; without it, an exception is raised in that case."));
+        put(out, "hasattr", new PyNativeFunction("hasattr", Builtins::hasAttribute)
+                .documented(
+                        "hasattr($module, obj, name, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return whether the object has an attribute with the given name.\n"
+                                + "\n"
+                                + "This is done by calling getattr(obj, name) and catching AttributeError."));
+        put(out, "setattr", new PyNativeFunction("setattr", Builtins::setAttribute)
+                .documented(
+                        "setattr($module, obj, name, value, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Sets the named attribute on the given object to the specified value.\n"
+                                + "\n"
+                                + "setattr(x, 'y', v) is equivalent to ``x.y = v``"));
+        put(out, "delattr", new PyNativeFunction("delattr", Builtins::deleteAttribute)
+                .documented(
+                        "delattr($module, obj, name, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Deletes the named attribute from the given object.\n"
+                                + "\n"
+                                + "delattr(x, 'y') is equivalent to ``del x.y``"));
+        put(out, "locals", new PyNativeFunction("locals", Builtins::localNames)
+                .documented(
+                        "locals($module, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return a dictionary containing the current scope's local variables.\n"
+                                + "\n"
+                                + "NOTE: Whether or not updates to this dictionary will affect name\n"
+                                + "lookups in the local scope and vice-versa is *implementation\n"
+                                + "dependent* and not covered by any backwards compatibility\n"
+                                + "guarantees."));
+        put(out, "globals", new PyNativeFunction("globals", Builtins::globalNames)
+                .documented(
+                        "globals($module, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the dictionary containing the current scope's global variables.\n"
+                                + "\n"
+                                + "NOTE: Updates to this dictionary *will* affect name lookups in the\n"
+                                + "current global scope and vice-versa."));
+        put(out, "vars", new PyNativeFunction("vars", Builtins::variables)
+                .documented(
+                        "vars([object]) -> dictionary\n"
+                                + "\n"
+                                + "Without arguments, equivalent to locals().\n"
+                                + "With an argument, equivalent to object.__dict__."));
+        put(out, "dir", new PyNativeFunction("dir", Builtins::directory)
+                .documented(
+                        "dir([object]) -> list of strings\n"
+                                + "\n"
+                                + "If called without an argument, return the names in the current scope.\n"
+                                + "Else, return an alphabetized list of names comprising (some of) the\n"
+                                + "attributes of the given object, and of attributes reachable from it.\n"
+                                + "If the object supplies a method named __dir__, it will be used;\n"
+                                + "otherwise the default dir() logic is used and returns:\n"
+                                + "  for a module object: the module's attributes.\n"
+                                + "  for a class object:  its attributes, and recursively the attributes\n"
+                                + "    of its bases.\n"
+                                + "  for any other object: its attributes, its class's attributes, and\n"
+                                + "    recursively the attributes of its class's base classes."));
+        put(out, "__build_class__", new PyNativeFunction("__build_class__", Classes::buildClass)
+                .documented(
+                        "__build_class__(func, name, /, *bases, [metaclass], **kwds) -> class\n"
+                                + "\n"
+                                + "Internal helper function used by the class statement."));
     }
 
     // --- one argument ----------------------------------------------------------------------

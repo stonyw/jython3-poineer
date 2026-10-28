@@ -262,7 +262,8 @@ class Jy3LauncherTest {
                 "86_group_fields.py",
                 "87_all_any.py",
                 "88_inlined_walk.py",
-                "89_function_rows.py");
+                "89_function_rows.py",
+                "90_builtin_docs.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
