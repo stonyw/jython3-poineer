@@ -264,7 +264,8 @@ class Jy3LauncherTest {
                 "88_inlined_walk.py",
                 "89_function_rows.py",
                 "90_builtin_docs.py",
-                "91_bytes_docs.py");
+                "91_bytes_docs.py",
+                "92_typedict_tables.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

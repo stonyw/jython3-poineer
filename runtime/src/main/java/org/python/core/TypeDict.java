@@ -44,12 +44,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * function object sitting in the dictionary, which is what makes {@code Meta.__new__ is type.__new__}
  * hold while {@code Meta.mro is type.mro} does not.
  *
- * <p>Three details of CPython's own are not modelled. There is no {@code tp_new_wrapper} check that a
+ * <p>Four details of CPython's own are not modelled. There is no {@code tp_new_wrapper} check that a
  * subtype's {@code __new__} slot still belongs to the type it derives from, so {@code type.__new__} of
  * an odd metatype is accepted rather than refused as "not safe"; {@code object} keeps only {@code
  * __init_subclass__} here, so a class that declares no {@code __new__} or {@code __init__} reads the
- * metatype's rather than {@code object}'s; and a bound wrapper prints the type's own name where CPython
- * prints the address of the object it bound to.
+ * metatype's rather than {@code object}'s; a bound wrapper prints the type's own name where CPython
+ * prints the address of the object it bound to; and the fourteen rows registered as {@code METH_NOARGS}
+ * or {@code METH_O|METH_CLASS} — the two hooks of {@code object}, the six of {@code
+ * mappingproxy_methods} and the six {@code __class_getitem__}s — read no {@code __text_signature__},
+ * because CPython builds those tables out of a flag this runtime does not keep.
  */
 final class TypeDict {
 
@@ -61,12 +64,18 @@ final class TypeDict {
      * {@code BaseExceptionGroup.__new__.__doc__} is the first of these two and
      * {@code BaseExceptionGroup.__init__.__doc__} the second — the class the read came from never
      * changes the text, only which class {@code __qualname__} names.
+     * <p>Each carries the argument table clinic wrote under the builtin's own name, and the two tables
+     * disagree about what that first argument is: {@code __new__} is handed the class, so it names it
+     * {@code $type}, while {@code __init__} is handed the value it is filling in — and so names it
+     * {@code $self} and closes the positional arguments with a {@code /} that {@code __new__} lacks.
      */
     private static final String NEW_DOC =
-            "Create and return a new object.  See help(type) for accurate signature.";
+            "__new__($type, *args, **kwargs)\n--\n\nCreate and return a new object.  See help(type) for"
+                    + " accurate signature.";
 
     private static final String INIT_DOC =
-            "Initialize self.  See help(type(self)) for accurate signature.";
+            "__init__($self, /, *args, **kwargs)\n--\n\nInitialize self.  See help(type(self)) for"
+                    + " accurate signature.";
 
     /**
      * The sentences CPython's {@code object.c} and {@code type.c} write next to the methods they declare.
@@ -75,6 +84,12 @@ final class TypeDict {
      * the same however the method is reached — bound to a class, bound to a value, or called unbound
      * through {@code X.__dict__['name']}. {@link #SUBCLASS_HOOK_DOC} is the one that runs to a paragraph
      * because {@code __subclasshook__} is a protocol a written class is meant to implement.
+     *
+     * <p>Most open with the argument table clinic wrote above the sentence, because most of these rows
+     * are {@code PyMethodDef}s clinic generated from a signature. The two reads run opposite ways over the
+     * {@code )\n--\n\n} rule under that table: {@code __doc__} is what the rule leaves below it and
+     * {@code __text_signature__} the bracketed arguments on the line above it, which is the same pair of
+     * knives the builtins of {@code builtins.c} are read with.
      */
     private static final String SUBCLASS_HOOK_DOC =
             "Abstract classes can override this to customize issubclass().\n\nThis is invoked early on by"
@@ -83,24 +98,55 @@ final class TypeDict {
                     + "overrides the normal algorithm (and the outcome is cached).\n";
 
     private static final String FORMAT_DOC =
-            "Default object formatter.\n\nReturn str(self) if format_spec is empty. Raise TypeError"
-                    + " otherwise.";
+            "__format__($self, format_spec, /)\n--\n\nDefault object formatter.\n\nReturn str(self) if"
+                    + " format_spec is empty. Raise TypeError otherwise.";
 
-    private static final String SIZEOF_DOC = "Size of object in memory, in bytes.";
+    private static final String SIZEOF_DOC =
+            "__sizeof__($self, /)\n--\n\nSize of object in memory, in bytes.";
 
-    private static final String SUBCLASSES_DOC = "Return a list of immediate subclasses.";
+    private static final String SUBCLASSES_DOC =
+            "__subclasses__($self, /)\n--\n\nReturn a list of immediate subclasses.";
 
-    private static final String DIR_DOC = "Default dir() implementation.";
+    private static final String DIR_DOC = "__dir__($self, /)\n--\n\nDefault dir() implementation.";
 
-    private static final String TYPE_DIR_DOC = "Specialized __dir__ implementation for types.";
+    private static final String TYPE_DIR_DOC =
+            "__dir__($self, /)\n--\n\nSpecialized __dir__ implementation for types.";
 
-    private static final String TYPE_SIZEOF_DOC = "Return memory consumption of the type object.";
+    private static final String TYPE_SIZEOF_DOC =
+            "__sizeof__($self, /)\n--\n\nReturn memory consumption of the type object.";
 
-    private static final String PICKLE_DOC = "Helper for pickle.";
+    /**
+     * The three pickle helpers {@code object.c} files, which say the same thing about all three.
+     *
+     * <p>One sentence shared by three rows is why this family is three constants and not one: each row
+     * carries its own table, and {@code __reduce_ex__} is the only one of the three that is handed a
+     * protocol to answer for.
+     */
+    private static final String REDUCE_EX_DOC =
+            "__reduce_ex__($self, protocol, /)\n--\n\nHelper for pickle.";
 
-    /** The four sentences {@code mappingproxy_methods} writes over the mapping underneath a window. */
+    private static final String REDUCE_DOC = "__reduce__($self, /)\n--\n\nHelper for pickle.";
+
+    private static final String GETSTATE_DOC = "__getstate__($self, /)\n--\n\nHelper for pickle.";
+
+    /** {@code type.__call__} and the row {@code builtin_function_or_method} files over the same slot. */
+    private static final String CALL_DOC =
+            "__call__($self, /, *args, **kwargs)\n--\n\nCall self as a function.";
+
+    /**
+     * The four sentences {@code mappingproxy_methods} writes over the mapping underneath a window.
+     *
+     * <p>Only {@link #GET_DOC} carries a table: it is the one row of the file clinic generated, and the
+     * other four are hand-written docstrings that name themselves in the body of the sentence — {@code
+     * D.keys() ->} is what a person reads, where a clinic text would have said the same above a
+     * {@code ($self, /)} rule. Those four, and {@link #PROXY_CLASS_GETITEM_DOC} filed beside them, read
+     * an invented table in the reference interpreter because {@code descrobject.c} registers them with
+     * {@code METH_NOARGS} or {@code METH_O|METH_CLASS}; this runtime keeps bodies rather than flags, and
+     * so reads {@code None} for their signatures.
+     */
     private static final String GET_DOC =
-            "Return the value for key if key is in the mapping, else default.";
+            "get($self, key, default=None, /)\n--\n\nReturn the value for key if key is in the mapping,"
+                    + " else default.";
 
     private static final String KEYS_DOC =
             "D.keys() -> a set-like object providing a view on D's keys";
@@ -122,27 +168,38 @@ final class TypeDict {
     /** {@code object.__class__}'s own sentence, which is the only {@code PyGetSetDef} doc here. */
     private static final String CLASS_DOC = "the object's class";
 
-    /** The slot wrappers' one-line docs, which {@code object.c} and {@code type.c} share verbatim. */
-    private static final String REPR_DOC = "Return repr(self).";
+    /**
+     * The slot wrappers' one-line docs, which {@code object.c} and {@code type.c} share verbatim.
+     *
+     * <p>Each is the {@code docstring} of one row of {@code slotdefs}, which {@code
+     * Tools/build/generate_slots.py} generates with the table above the sentence already glued to it — so
+     * the whole of the class system's operator documentation is fifty-odd lines of one shape, {@code
+     * __op__($self, value, /)} and a sentence about what the operator answers.
+     */
+    private static final String REPR_DOC = "__repr__($self, /)\n--\n\nReturn repr(self).";
 
-    private static final String HASH_DOC = "Return hash(self).";
-    private static final String STR_DOC = "Return str(self).";
-    private static final String GETATTR_DOC = "Return getattr(self, name).";
-    private static final String SETATTR_DOC = "Implement setattr(self, name, value).";
-    private static final String DELATTR_DOC = "Implement delattr(self, name).";
-    private static final String ITER_DOC = "Implement iter(self).";
-    private static final String LEN_DOC = "Return len(self).";
-    private static final String GETITEM_DOC = "Return self[key].";
-    private static final String CONTAINS_DOC = "Return bool(key in self).";
-    private static final String LT_DOC = "Return self<value.";
-    private static final String LE_DOC = "Return self<=value.";
-    private static final String EQ_DOC = "Return self==value.";
-    private static final String NE_DOC = "Return self!=value.";
-    private static final String GT_DOC = "Return self>value.";
-    private static final String GE_DOC = "Return self>=value.";
-    private static final String OR_DOC = "Return self|value.";
-    private static final String ROR_DOC = "Return value|self.";
-    private static final String IOR_DOC = "Return self|=value.";
+    private static final String HASH_DOC = "__hash__($self, /)\n--\n\nReturn hash(self).";
+    private static final String STR_DOC = "__str__($self, /)\n--\n\nReturn str(self).";
+    private static final String GETATTR_DOC =
+            "__getattribute__($self, name, /)\n--\n\nReturn getattr(self, name).";
+    private static final String SETATTR_DOC =
+            "__setattr__($self, name, value, /)\n--\n\nImplement setattr(self, name, value).";
+    private static final String DELATTR_DOC =
+            "__delattr__($self, name, /)\n--\n\nImplement delattr(self, name).";
+    private static final String ITER_DOC = "__iter__($self, /)\n--\n\nImplement iter(self).";
+    private static final String LEN_DOC = "__len__($self, /)\n--\n\nReturn len(self).";
+    private static final String GETITEM_DOC = "__getitem__($self, key, /)\n--\n\nReturn self[key].";
+    private static final String CONTAINS_DOC =
+            "__contains__($self, key, /)\n--\n\nReturn bool(key in self).";
+    private static final String LT_DOC = "__lt__($self, value, /)\n--\n\nReturn self<value.";
+    private static final String LE_DOC = "__le__($self, value, /)\n--\n\nReturn self<=value.";
+    private static final String EQ_DOC = "__eq__($self, value, /)\n--\n\nReturn self==value.";
+    private static final String NE_DOC = "__ne__($self, value, /)\n--\n\nReturn self!=value.";
+    private static final String GT_DOC = "__gt__($self, value, /)\n--\n\nReturn self>value.";
+    private static final String GE_DOC = "__ge__($self, value, /)\n--\n\nReturn self>=value.";
+    private static final String OR_DOC = "__or__($self, value, /)\n--\n\nReturn self|value.";
+    private static final String ROR_DOC = "__ror__($self, value, /)\n--\n\nReturn value|self.";
+    private static final String IOR_DOC = "__ior__($self, value, /)\n--\n\nReturn self|=value.";
 
     /**
      * The six sentences the {@code PyNumberMethods} half of a set's struct carries.
@@ -153,17 +210,20 @@ final class TypeDict {
      * in-place slots say {@code Return} where {@code list}'s {@code __iadd__} says {@code Implement}: the
      * sentence comes from the slot's own row in {@code slotdefs}, and only the sequence protocol's
      * {@code sq_inplace_*} rows were worded that way.
+     *
+     * <p>The tables are the same for all ten, including the four reflected ones: {@code __rand__} is a
+     * slot of the value on the left of the operator even though its sentence puts that value on the right.
      */
-    private static final String SUB_DOC = "Return self-value.";
+    private static final String SUB_DOC = "__sub__($self, value, /)\n--\n\nReturn self-value.";
 
-    private static final String RSUB_DOC = "Return value-self.";
-    private static final String AND_DOC = "Return self&value.";
-    private static final String RAND_DOC = "Return value&self.";
-    private static final String XOR_DOC = "Return self^value.";
-    private static final String RXOR_DOC = "Return value^self.";
-    private static final String ISUB_DOC = "Return self-=value.";
-    private static final String IAND_DOC = "Return self&=value.";
-    private static final String IXOR_DOC = "Return self^=value.";
+    private static final String RSUB_DOC = "__rsub__($self, value, /)\n--\n\nReturn value-self.";
+    private static final String AND_DOC = "__and__($self, value, /)\n--\n\nReturn self&value.";
+    private static final String RAND_DOC = "__rand__($self, value, /)\n--\n\nReturn value&self.";
+    private static final String XOR_DOC = "__xor__($self, value, /)\n--\n\nReturn self^value.";
+    private static final String RXOR_DOC = "__rxor__($self, value, /)\n--\n\nReturn value^self.";
+    private static final String ISUB_DOC = "__isub__($self, value, /)\n--\n\nReturn self-=value.";
+    private static final String IAND_DOC = "__iand__($self, value, /)\n--\n\nReturn self&=value.";
+    private static final String IXOR_DOC = "__ixor__($self, value, /)\n--\n\nReturn self^=value.";
 
     /**
      * The sentences a value type's own slots carry, which {@code object} has none of.
@@ -175,15 +235,16 @@ final class TypeDict {
      * str.__sizeof__} — are not here: they belong to the table of the type that declares the method, and
      * are written beside its body in {@link PyBytes} and {@link PyStr}.
      */
-    private static final String MOD_DOC = "Return self%value.";
+    private static final String MOD_DOC = "__mod__($self, value, /)\n--\n\nReturn self%value.";
 
-    private static final String RMOD_DOC = "Return value%self.";
-    private static final String ADD_DOC = "Return self+value.";
-    private static final String MUL_DOC = "Return self*value.";
-    private static final String RMUL_DOC = "Return value*self.";
+    private static final String RMOD_DOC = "__rmod__($self, value, /)\n--\n\nReturn value%self.";
+    private static final String ADD_DOC = "__add__($self, value, /)\n--\n\nReturn self+value.";
+    private static final String MUL_DOC = "__mul__($self, value, /)\n--\n\nReturn self*value.";
+    private static final String RMUL_DOC = "__rmul__($self, value, /)\n--\n\nReturn value*self.";
 
     private static final String BUFFER_DOC =
-            "Return a buffer object that exposes the underlying memory of the object.";
+            "__buffer__($self, flags, /)\n--\n\nReturn a buffer object that exposes the underlying"
+                    + " memory of the object.";
 
     /**
      * The twenty-five sentences {@code longobject.c}'s {@code PyNumberMethods} carries.
@@ -199,31 +260,43 @@ final class TypeDict {
      * describes a promise rather than a call: the slot says what it is fit for, which is why {@code
      * int.__dict__['__index__'].__doc__} reads like documentation and {@code __float__}'s reads like a
      * signature.
+     *
+     * <p>{@code slotdefs.py} writes the table above every one of these sentences out of the slot's own C
+     * signature, so the five unary rows and the four that convert a value carry a table of {@code $self}
+     * and nothing else, and {@code __pow__} is the one row of the file whose table has a default in it —
+     * {@code (self, value, mod=None)}, which is the three-argument form {@code pow} takes.
      */
-    private static final String RADD_DOC = "Return value+self.";
+    private static final String RADD_DOC = "__radd__($self, value, /)\n--\n\nReturn value+self.";
 
-    private static final String DIVMOD_DOC = "Return divmod(self, value).";
-    private static final String RDIVMOD_DOC = "Return divmod(value, self).";
-    private static final String POW_DOC = "Return pow(self, value, mod).";
-    private static final String RPOW_DOC = "Return pow(value, self, mod).";
-    private static final String NEG_DOC = "-self";
-    private static final String POS_DOC = "+self";
-    private static final String ABS_DOC = "abs(self)";
-    private static final String TRUTH_DOC = "True if self else False";
-    private static final String INVERT_DOC = "~self";
-    private static final String LSHIFT_DOC = "Return self<<value.";
-    private static final String RLSHIFT_DOC = "Return value<<self.";
-    private static final String RSHIFT_DOC = "Return self>>value.";
-    private static final String RRSHIFT_DOC = "Return value>>self.";
-    private static final String TO_INT_DOC = "int(self)";
-    private static final String TO_FLOAT_DOC = "float(self)";
-    private static final String FLOORDIV_DOC = "Return self//value.";
-    private static final String RFLOORDIV_DOC = "Return value//self.";
-    private static final String TRUEDIV_DOC = "Return self/value.";
-    private static final String RTRUEDIV_DOC = "Return value/self.";
+    private static final String DIVMOD_DOC =
+            "__divmod__($self, value, /)\n--\n\nReturn divmod(self, value).";
+    private static final String RDIVMOD_DOC =
+            "__rdivmod__($self, value, /)\n--\n\nReturn divmod(value, self).";
+    private static final String POW_DOC =
+            "__pow__($self, value, mod=None, /)\n--\n\nReturn pow(self, value, mod).";
+    private static final String RPOW_DOC =
+            "__rpow__($self, value, mod=None, /)\n--\n\nReturn pow(value, self, mod).";
+    private static final String NEG_DOC = "__neg__($self, /)\n--\n\n-self";
+    private static final String POS_DOC = "__pos__($self, /)\n--\n\n+self";
+    private static final String ABS_DOC = "__abs__($self, /)\n--\n\nabs(self)";
+    private static final String TRUTH_DOC = "__bool__($self, /)\n--\n\nTrue if self else False";
+    private static final String INVERT_DOC = "__invert__($self, /)\n--\n\n~self";
+    private static final String LSHIFT_DOC = "__lshift__($self, value, /)\n--\n\nReturn self<<value.";
+    private static final String RLSHIFT_DOC = "__rlshift__($self, value, /)\n--\n\nReturn value<<self.";
+    private static final String RSHIFT_DOC = "__rshift__($self, value, /)\n--\n\nReturn self>>value.";
+    private static final String RRSHIFT_DOC = "__rrshift__($self, value, /)\n--\n\nReturn value>>self.";
+    private static final String TO_INT_DOC = "__int__($self, /)\n--\n\nint(self)";
+    private static final String TO_FLOAT_DOC = "__float__($self, /)\n--\n\nfloat(self)";
+    private static final String FLOORDIV_DOC = "__floordiv__($self, value, /)\n--\n\nReturn self//value.";
+    private static final String RFLOORDIV_DOC =
+            "__rfloordiv__($self, value, /)\n--\n\nReturn value//self.";
+    private static final String TRUEDIV_DOC = "__truediv__($self, value, /)\n--\n\nReturn self/value.";
+    private static final String RTRUEDIV_DOC =
+            "__rtruediv__($self, value, /)\n--\n\nReturn value/self.";
 
     private static final String INDEX_DOC =
-            "Return self converted to an integer, if self is suitable for use as an index into a list.";
+            "__index__($self, /)\n--\n\nReturn self converted to an integer, if self is suitable for use"
+                    + " as an index into a list.";
 
     /**
      * The four sentences {@code long_getseters} writes over the parts of a number.
@@ -247,12 +320,16 @@ final class TypeDict {
      * with an argument to put in it, and {@code sq_inplace_concat} and {@code sq_inplace_repeat} are the
      * two that change the receiver and hand it back — which is why their sentences say {@code Implement}
      * rather than {@code Return}: the answer is the same list, not a new one.
+     *
+     * <p>{@code __setitem__} is the only table here that names three arguments, because the sequence
+     * protocol's {@code sq_ass_item} is the one slot of the four that is handed something to put in.
      */
-    private static final String SETITEM_DOC = "Set self[key] to value.";
+    private static final String SETITEM_DOC =
+            "__setitem__($self, key, value, /)\n--\n\nSet self[key] to value.";
 
-    private static final String DELITEM_DOC = "Delete self[key].";
-    private static final String IADD_DOC = "Implement self+=value.";
-    private static final String IMUL_DOC = "Implement self*=value.";
+    private static final String DELITEM_DOC = "__delitem__($self, key, /)\n--\n\nDelete self[key].";
+    private static final String IADD_DOC = "__iadd__($self, value, /)\n--\n\nImplement self+=value.";
+    private static final String IMUL_DOC = "__imul__($self, value, /)\n--\n\nImplement self*=value.";
 
     /**
      * The five sentences the collection types write over {@code __class_getitem__}.
@@ -263,6 +340,11 @@ final class TypeDict {
      * to one line each, and {@code dict}'s is the only one of them that counts — a mapping is generic over
      * two types because it has two places for a value to sit. The two sets spell the same thing out in the
      * plural, because a set holds any number of elements of one type rather than one element per position.
+     *
+     * <p>None of the five carries a table, which is why this group is the one that reads {@code None}
+     * where the reference interpreter reads {@code ($type, object, /)}: a row registered as {@code
+     * METH_O|METH_CLASS} over {@code Py_GenericAlias} has no clinic text to cut, and the reference
+     * invents the table out of the flags it was registered with.
      */
     private static final String LIST_CLASS_GETITEM_DOC =
             "lists are generic over the type of their contents";
@@ -313,7 +395,7 @@ final class TypeDict {
                     "__call__",
                     Shape.WRAPPER,
                     null,
-                    "Call self as a function.",
+                    CALL_DOC,
                     TypeDict::callMember);
 
     /** {@code cls.mro()}: the lookup order as a list. */
@@ -323,7 +405,7 @@ final class TypeDict {
                     "mro",
                     Shape.METHOD,
                     null,
-                    "Return a type's method resolution order.",
+                    "mro($self, /)\n--\n\nReturn a type's method resolution order.",
                     TypeDict::mroMember);
 
     /** {@code type.__prepare__(mcs, name, bases, **kwds)}: always a plain dict, whatever it is asked. */
@@ -333,7 +415,8 @@ final class TypeDict {
                     "__prepare__",
                     Shape.CLASSMETHOD,
                     null,
-                    "Create the namespace for the class statement",
+                    "__prepare__($cls, name, bases, /, **kwds)\n--\n\n"
+                            + "Create the namespace for the class statement",
                     TypeDict::prepare);
 
     /** {@code type.__instancecheck__(cls, inst)}: the test {@code isinstance} makes without a hook. */
@@ -343,7 +426,7 @@ final class TypeDict {
                     "__instancecheck__",
                     Shape.METHOD,
                     null,
-                    "Check if an object is an instance.",
+                    "__instancecheck__($self, instance, /)\n--\n\nCheck if an object is an instance.",
                     TypeDict::instanceCheck);
 
     /** {@code type.__subclasscheck__(cls, sub)}: the test {@code issubclass} makes without a hook. */
@@ -353,7 +436,7 @@ final class TypeDict {
                     "__subclasscheck__",
                     Shape.METHOD,
                     null,
-                    "Check if a class is a subclass.",
+                    "__subclasscheck__($self, subclass, /)\n--\n\nCheck if a class is a subclass.",
                     TypeDict::subclassCheck);
 
     /** {@code object.__init_subclass__(cls, **kwds)}: the hook that refuses what it was not asked for. */
@@ -409,7 +492,7 @@ final class TypeDict {
                     "with_traceback",
                     Shape.METHOD,
                     null,
-                    "Set self.__traceback__ to tb and return self.",
+                    "with_traceback($self, tb, /)\n--\n\nSet self.__traceback__ to tb and return self.",
                     TypeDict::withTraceback);
 
     /**
@@ -426,7 +509,7 @@ final class TypeDict {
                     "add_note",
                     Shape.METHOD,
                     null,
-                    "Add a note to the exception",
+                    "add_note($self, note, /)\n--\n\nAdd a note to the exception",
                     TypeDict::addNote);
 
     /**
@@ -434,7 +517,8 @@ final class TypeDict {
      *
      * <p>The one member of the family that answers with a {@code method_descriptor} and has nothing to say
      * about itself: CPython's clinic block for it names no sentence, so {@code __doc__} is {@code None}
-     * where every neighbour of it has a line.
+     * where every neighbour of it has a line. What the block does name is the table, which is why this
+     * row's text is a table with nothing under the rule.
      */
     static final Member EXCEPTION_REDUCE =
             new Member(
@@ -442,7 +526,7 @@ final class TypeDict {
                     "__reduce__",
                     Shape.METHOD,
                     null,
-                    null,
+                    "__reduce__($self, /)\n--\n\n",
                     TypeDict::exceptionReduce);
 
     /** {@code BaseException.__setstate__}: the entries of a pickled state, written back as attributes. */
@@ -452,7 +536,7 @@ final class TypeDict {
                     "__setstate__",
                     Shape.METHOD,
                     null,
-                    null,
+                    "__setstate__($self, state, /)\n--\n\n",
                     TypeDict::exceptionSetstate);
 
     /** {@code OSError.__reduce__}: the same two or three places, with the file names put back. */
@@ -462,7 +546,7 @@ final class TypeDict {
                     "__reduce__",
                     Shape.METHOD,
                     null,
-                    null,
+                    "__reduce__($self, /)\n--\n\n",
                     TypeDict::oSErrorReduce);
 
     /**
@@ -494,12 +578,20 @@ final class TypeDict {
                     INIT_DOC,
                     TypeDict::groupInit);
 
-    /** {@code g.derive(exceptions)}: a group of the same shape holding the children given. */
+    /**
+     * {@code g.derive(exceptions)}: a group of the same shape holding the children given.
+     *
+     * <p>The three group methods are the rows whose clinic block names no sentence at all: the table is
+     * what the text holds, and so {@code __doc__} reads {@code None} while {@code __text_signature__}
+     * reads the arguments.
+     */
     static final Member GROUP_DERIVE =
             new Member(
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "derive",
                     Shape.METHOD,
+                    null,
+                    "derive($self, excs, /)\n--\n\n",
                     TypeDict::groupDerive);
 
     /** {@code g.split(matcher)}: the matching part and the rest, as a two-tuple. */
@@ -508,6 +600,8 @@ final class TypeDict {
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "split",
                     Shape.METHOD,
+                    null,
+                    "split($self, matcher_value, /)\n--\n\n",
                     TypeDict::groupSplit);
 
     /** {@code g.subgroup(matcher)}: the matching part alone, or {@code None}. */
@@ -516,6 +610,8 @@ final class TypeDict {
                     ExceptionTypes.BASE_EXCEPTION_GROUP,
                     "subgroup",
                     Shape.METHOD,
+                    null,
+                    "subgroup($self, matcher_value, /)\n--\n\n",
                     TypeDict::groupSubgroup);
 
     private TypeDict() {
@@ -660,9 +756,9 @@ final class TypeDict {
         table.wrapper("__gt__", GT_DOC, (args, kw, q) -> identity(args, CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, (args, kw, q) -> identity(args, CompareOp.GE));
         table.wrapper("__init__", INIT_DOC, TypeDict::objectInit);
-        table.method("__reduce_ex__", PICKLE_DOC, TypeDict::objectReduceEx);
-        table.method("__reduce__", PICKLE_DOC, TypeDict::objectReduce);
-        table.method("__getstate__", PICKLE_DOC, TypeDict::objectState);
+        table.method("__reduce_ex__", REDUCE_EX_DOC, TypeDict::objectReduceEx);
+        table.method("__reduce__", REDUCE_DOC, TypeDict::objectReduce);
+        table.method("__getstate__", GETSTATE_DOC, TypeDict::objectState);
         table.classMethod("__subclasshook__", SUBCLASS_HOOK_DOC, TypeDict::subclassHook);
         table.put("__init_subclass__", INIT_SUBCLASS);
         table.method("__format__", FORMAT_DOC, TypeDict::objectFormat);
@@ -745,9 +841,9 @@ final class TypeDict {
         table.wrapper("__ne__", NE_DOC, (args, kw, q) -> windowed(args, CompareOp.NE));
         table.wrapper("__gt__", GT_DOC, (args, kw, q) -> windowed(args, CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, (args, kw, q) -> windowed(args, CompareOp.GE));
-        table.wrapper("__iter__", "Implement iter(self).", args -> args[0].iterator());
-        table.wrapper("__or__", "Return self|value.", TypeDict::windowOr);
-        table.wrapper("__ror__", "Return value|self.", TypeDict::windowOr);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__or__", OR_DOC, TypeDict::windowOr);
+        table.wrapper("__ror__", ROR_DOC, TypeDict::windowOr);
         table.wrapper("__ior__", IOR_DOC, TypeDict::refuseIor);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
         table.wrapper("__getitem__", GETITEM_DOC, (args, kw, q) -> window(args[0]).getItem(args[1]));
@@ -790,7 +886,7 @@ final class TypeDict {
         table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
         table.wrapper(
                 "__call__",
-                "Call self as a function.",
+                CALL_DOC,
                 (args, kwNames, qualified) ->
                         args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
         table.wrapper("__lt__", LT_DOC, functionCompare(CompareOp.LT));
@@ -799,7 +895,7 @@ final class TypeDict {
         table.wrapper("__ne__", NE_DOC, functionCompare(CompareOp.NE));
         table.wrapper("__gt__", GT_DOC, functionCompare(CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, functionCompare(CompareOp.GE));
-        table.method("__reduce__", null, args -> functionReduce(args[0]));
+        table.method("__reduce__", "__reduce__($self, /)\n--\n\n", args -> functionReduce(args[0]));
         table.member("__module__", null, TypeDict::moduleRead, TypeDict::moduleWrite);
         table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
         table.getset("__name__", null, self -> self.getAttr("__name__"), null);
@@ -2115,8 +2211,10 @@ final class TypeDict {
             // different classes, and the reason this is the one leaf of the family with a `__getstate__`
             // of its own filed beside it.
             table.wrapper("__init__", INIT_DOC, TypeDict::attributeErrorInit);
-            table.method("__getstate__", null, TypeDict::attributeGetstate);
-            table.method("__reduce__", null, TypeDict::attributeReduce);
+            table.method(
+                    "__getstate__", "__getstate__($self, /)\n--\n\n", TypeDict::attributeGetstate);
+            table.method(
+                    "__reduce__", "__reduce__($self, /)\n--\n\n", TypeDict::attributeReduce);
             table.member(
                     "name",
                     "attribute name",
@@ -2175,7 +2273,8 @@ final class TypeDict {
             // initialiser, files no row of its own, and is named in none of its refusals.
             table.wrapper("__str__", STR_DOC, args -> PyStr.of(((PyBaseException) args[0]).importErrorText()));
             table.wrapper("__init__", INIT_DOC, TypeDict::importErrorInit);
-            table.method("__reduce__", null, TypeDict::importErrorReduce);
+            table.method(
+                    "__reduce__", "__reduce__($self, /)\n--\n\n", TypeDict::importErrorReduce);
             table.member(
                     "msg",
                     "exception message",
@@ -4223,11 +4322,14 @@ final class TypeDict {
             return switch (attribute) {
                 case "__name__" -> PyStr.of(name);
                 case "__qualname__" -> PyStr.of(qualified);
-                case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
-                // The table this runtime keeps for a member is its sentence, not the argument table on the
-                // line above it, so the name CPython cuts out of the internal text has nothing here to be
-                // cut from — every one of these reads None where the reference synthesises a short form.
-                case "__text_signature__" -> PyNone.INSTANCE;
+                case "__doc__" -> PyNativeFunction.docOf(name, doc);
+                // Each of these texts is CPython's ml_doc for the row: the argument table, the rule under
+                // it, then the sentence. The two reads are the two knives of typeobject.c run in opposite
+                // directions over that rule, so a row whose clinic block named no sentence reads None for
+                // __doc__ and keeps its table, and a row registered by hand — the six __class_getitem__s
+                // and the four mappingproxy views — reads None here where the reference invents a short
+                // form out of the METH_NOARGS or METH_O|METH_CLASS it was registered with.
+                case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc);
                 case "__self__" -> shape == Shape.RAW ? declaring : PyNotImplemented.INSTANCE;
                 case "__objclass__" -> shape == Shape.RAW ? PyNotImplemented.INSTANCE : declaring;
                 // A `builtin_function_or_method` is not a descriptor at all — `__new__` has no `__get__` to
@@ -4399,8 +4501,11 @@ final class TypeDict {
                 case "__name__" -> PyStr.of(name);
                 case "__qualname__" -> PyStr.of(qualifiedName());
                 case "__self__" -> receiver;
-                case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
-                case "__text_signature__" -> PyNone.INSTANCE;
+                // A bound row is cut from the same text as the descriptor it came from: CPython hands the
+                // slot's own name and docstring to the same two reads, so `().__lt__.__doc__` is the
+                // sentence and `().__lt__.__text_signature__` the table the unbound row reports.
+                case "__doc__" -> PyNativeFunction.docOf(name, doc);
+                case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc);
                 // Only a bound slot wrapper keeps the type that declared its slot: CPython reads the class
                 // out of the wrapper record a method-wrapper still points at, and a built-in method bound
                 // to a value — `b''.upper`, `bytes.fromhex` — has no such record to read.
