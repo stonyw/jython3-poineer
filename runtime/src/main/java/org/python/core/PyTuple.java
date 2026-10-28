@@ -141,8 +141,8 @@ public class PyTuple extends PyObject {
     private static final Members METHODS = Members.of(PyType.TUPLE)
             // Pickle's one argument: a tuple is rebuilt from the tuple it already is, which is why
             // {@code (1, 2).__getnewargs__()} is {@code ((1, 2),)} and not the two elements loose. The
-            // entry is the one in either of these two tables whose {@code ml_doc} is NULL, so the table
-            // transcribes no sentence — which is the deviation and the reference agreeing for once.
+            // entry is the one in either of these two tables whose text is a table with nothing after it,
+            // so {@code __doc__} reads {@code None} in both — the sentence knife cuts and finds no prose.
             .addNoArgument("__getnewargs__", self -> PyTuple.of(self))
             .addOne("count", (self, item) ->
                     PyInt.of(Sequences.countOf(((PyTuple) self).items, item, 0, ((PyTuple) self).size())))
@@ -159,7 +159,30 @@ public class PyTuple extends PyObject {
                     throw Slots.valueError("tuple.index(x): x not in tuple");
                 }
                 return PyInt.of(found);
-            });
+            })
+            // The three sentences clinic files beside `tuple_methods`. Two of them are the sentences the
+            // list's table files too: `tuple_count__doc__` and `tuple_index__doc__` are word for word the
+            // two texts `PyList` files, because clinic wrote each type's table from the same argument
+            // declaration. `__getnewargs__` is the row that says nothing but its table.
+            .document(
+                    "__getnewargs__",
+                    "__getnewargs__($self, /)\n"
+                            + "--\n"
+                            + "\n")
+            .document(
+                    "index",
+                    "index($self, value, start=0, stop=sys.maxsize, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return first index of value.\n"
+                            + "\n"
+                            + "Raises ValueError if the value is not present.")
+            .document(
+                    "count",
+                    "count($self, value, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return number of occurrences of value.");
 
     @Override
     public long hash() {

@@ -488,14 +488,12 @@ public final class PyList extends PyObject {
             // `__sizeof__` counts a C struct this runtime does not have, so it says nought.
             .add(
                     "__getitem__",
-                    "Return self[index].",
                     (self, args, kwNames) -> {
                         Arguments.exactlyOne("list.__getitem__()", args, kwNames);
                         return self.getItem(args[0]);
                     })
             .add(
                     "__reversed__",
-                    "Return a reverse iterator over the list.",
                     (self, args, kwNames) -> {
                         Arguments.none("list.__reversed__()", args, kwNames);
                         List<PyObject> back = new ArrayList<>(((PyList) self).items);
@@ -504,11 +502,111 @@ public final class PyList extends PyObject {
                     })
             .add(
                     "__sizeof__",
-                    "Return the size of the list in memory, in bytes.",
                     (self, args, kwNames) -> {
                         Arguments.none("list.__sizeof__()", args, kwNames);
                         return PyInt.of(0);
-                    });
+                    })
+            // The fourteen sentences `list_methods` files, each the whole `ml_doc`: the row's own name, its
+            // argument table, the `--` knife, and the prose. Thirteen are read from
+            // `Objects/clinic/listobject.c.h` through the `*_METHODDEF` macro the table names; `__getitem__`
+            // is the one row written by hand, text and all (listobject.c:3577). The table's fifteenth row is
+            // `__class_getitem__`, a sentence with no table, whose `($type, object, /)` the reference reads
+            // out of the METH_O|METH_CLASS flags — the one table entry this runtime leaves silent.
+            .document(
+                    "__getitem__",
+                    "__getitem__($self, index, /)\n--\n\nReturn self[index].")
+            .document(
+                    "__reversed__",
+                    "__reversed__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a reverse iterator over the list.")
+            .document(
+                    "__sizeof__",
+                    "__sizeof__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the size of the list in memory, in bytes.")
+            .document(
+                    "clear",
+                    "clear($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove all items from list.")
+            .document(
+                    "copy",
+                    "copy($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a shallow copy of the list.")
+            .document(
+                    "append",
+                    "append($self, object, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Append object to the end of the list.")
+            .document(
+                    "insert",
+                    "insert($self, index, object, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Insert object before index.")
+            .document(
+                    "extend",
+                    "extend($self, iterable, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Extend list by appending elements from the iterable.")
+            .document(
+                    "pop",
+                    "pop($self, index=-1, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove and return item at index (default last).\n"
+                            + "\n"
+                            + "Raises IndexError if list is empty or index is out of range.")
+            .document(
+                    "remove",
+                    "remove($self, value, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove first occurrence of value.\n"
+                            + "\n"
+                            + "Raises ValueError if the value is not present.")
+            .document(
+                    "index",
+                    "index($self, value, start=0, stop=sys.maxsize, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return first index of value.\n"
+                            + "\n"
+                            + "Raises ValueError if the value is not present.")
+            .document(
+                    "count",
+                    "count($self, value, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return number of occurrences of value.")
+            .document(
+                    "reverse",
+                    "reverse($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Reverse *IN PLACE*.")
+            .document(
+                    "sort",
+                    "sort($self, /, *, key=None, reverse=False)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Sort the list in ascending order and return None.\n"
+                            + "\n"
+                            + "The sort is in-place (i.e. the list itself is modified) and stable\n"
+                            + "(i.e. the order of two equal elements is maintained).\n"
+                            + "\n"
+                            + "If a key function is given, apply it once to each list item and sort\n"
+                            + "them, ascending or descending, according to their function values.\n"
+                            + "\n"
+                            + "The reverse flag can be set to sort in descending order.");
 
     /** {@code a.extend(b)}: append every value of an iterable, which may be the list itself. */
     private void extend(PyObject iterable) {
