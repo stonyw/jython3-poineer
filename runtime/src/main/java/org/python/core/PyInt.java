@@ -106,59 +106,6 @@ public final class PyInt extends PyObject {
         return self instanceof PyInt exact ? exact : PyInt.of(Numbers.asInteger(self));
     }
 
-    /** The sentences {@code long_methods} writes beside the twelve functions it lists. */
-    private static final String CONJUGATE_DOC = "Returns self, the complex conjugate of any int.";
-
-    private static final String BIT_LENGTH_DOC =
-            "Number of bits necessary to represent self in binary.\n\n>>> bin(37)\n'0b100101'\n>>>"
-                    + " (37).bit_length()\n6";
-
-    private static final String BIT_COUNT_DOC =
-            "Number of ones in the binary representation of the absolute value of self.\n\nAlso known as"
-                    + " the population count.\n\n>>> bin(13)\n'0b1101'\n>>> (13).bit_count()\n3";
-
-    private static final String TO_BYTES_DOC =
-            "Return an array of bytes representing an integer.\n\n  length\n    Length of bytes object to"
-                    + " use.  An OverflowError is raised if\n    the integer is not representable with the"
-                    + " given number of bytes.\n    Default is length 1.\n  byteorder\n    The byte order used"
-                    + " to represent the integer.  If byteorder is\n    'big', the most significant byte is at"
-                    + " the beginning of the byte\n    array.  If byteorder is 'little', the most significant"
-                    + " byte is at\n    the end of the byte array.  To request the native byte order of\n"
-                    + "    the host system, use sys.byteorder as the byte order value.\n    Default is to use"
-                    + " 'big'.\n  signed\n    Determines whether two's complement is used to represent the\n"
-                    + "    integer.  If signed is False and a negative integer is given,\n    an OverflowError"
-                    + " is raised.";
-
-    private static final String FROM_BYTES_DOC =
-            "Return the integer represented by the given array of bytes.\n\n  bytes\n    Holds the array of"
-                    + " bytes to convert.  The argument must either\n    support the buffer protocol or be an"
-                    + " iterable object producing\n    bytes.  Bytes and bytearray are examples of built-in"
-                    + " objects that\n    support the buffer protocol.\n  byteorder\n    The byte order used to"
-                    + " represent the integer.  If byteorder is\n    'big', the most significant byte is at the"
-                    + " beginning of the byte\n    array.  If byteorder is 'little', the most significant byte"
-                    + " is at\n    the end of the byte array.  To request the native byte order of\n    the host"
-                    + " system, use sys.byteorder as the byte order value.\n    Default is to use 'big'.\n "
-                    + " signed\n    Indicates whether two's complement is used to represent the\n    integer.";
-
-    private static final String RATIO_DOC =
-            "Return a pair of integers, whose ratio is equal to the original int.\n\nThe ratio is in lowest"
-                    + " terms and has a positive denominator.\n\n>>> (10).as_integer_ratio()\n(10, 1)\n>>>"
-                    + " (-10).as_integer_ratio()\n(-10, 1)\n>>> (0).as_integer_ratio()\n(0, 1)";
-
-    private static final String TRUNC_DOC = "Truncating an Integral returns itself.";
-    private static final String FLOOR_DOC = "Flooring an Integral returns itself.";
-    private static final String CEIL_DOC = "Ceiling of an Integral returns itself.";
-
-    private static final String ROUND_DOC =
-            "Rounding an Integral returns itself.\n\nRounding with an ndigits argument also returns an"
-                    + " integer.";
-
-    private static final String FORMAT_SPEC_DOC = "Convert to a string according to format_spec.";
-    private static final String VALUE_SIZEOF_DOC = "Returns size in memory, in bytes.";
-
-    private static final String IS_INTEGER_DOC =
-            "Returns True. Exists for duck type compatibility with float.is_integer.";
-
     /**
      * {@code long_methods}, in the order the reference interpreter lists it and therefore in the order
      * {@code int.__dict__} shows it.
@@ -171,22 +118,156 @@ public final class PyInt extends PyObject {
      * int(*args)} is written for.
      */
     private static final Members METHODS = Members.of(PyType.INT)
-            .addNoArgument("conjugate", CONJUGATE_DOC, PyInt::longLong)
-            .addNoArgument(
-                    "bit_length", BIT_LENGTH_DOC, self -> PyInt.of(((PyInt) self).value.abs().bitLength()))
-            .addNoArgument(
-                    "bit_count", BIT_COUNT_DOC, self -> PyInt.of(((PyInt) self).value.abs().bitCount()))
-            .add("to_bytes", TO_BYTES_DOC, PyInt::toBytes)
-            .addClassNamed("from_bytes", FROM_BYTES_DOC, PyInt::fromBytes)
-            .addNoArgument("as_integer_ratio", RATIO_DOC, self -> PyTuple.of(longLong(self), ONE))
-            .addNoArgument("__trunc__", TRUNC_DOC, PyInt::longLong)
-            .addNoArgument("__floor__", FLOOR_DOC, PyInt::longLong)
-            .addNoArgument("__ceil__", CEIL_DOC, PyInt::longLong)
-            .add("__round__", ROUND_DOC, PyInt::roundTo)
-            .addNoArgument("__getnewargs__", null, self -> PyTuple.of(PyInt.of(((PyInt) self).value)))
-            .addOne("__format__", FORMAT_SPEC_DOC, PyInt::formatted)
-            .addNoArgument("__sizeof__", VALUE_SIZEOF_DOC, PyInt::sizeInBytes)
-            .addNoArgument("is_integer", IS_INTEGER_DOC, self -> PyBool.TRUE);
+            .addNoArgument("conjugate", PyInt::longLong)
+            .addNoArgument("bit_length", self -> PyInt.of(((PyInt) self).value.abs().bitLength()))
+            .addNoArgument("bit_count", self -> PyInt.of(((PyInt) self).value.abs().bitCount()))
+            .add("to_bytes", PyInt::toBytes)
+            .addClassNamed("from_bytes", PyInt::fromBytes)
+            .addNoArgument("as_integer_ratio", self -> PyTuple.of(longLong(self), ONE))
+            .addNoArgument("__trunc__", PyInt::longLong)
+            .addNoArgument("__floor__", PyInt::longLong)
+            .addNoArgument("__ceil__", PyInt::longLong)
+            .add("__round__", PyInt::roundTo)
+            .addNoArgument("__getnewargs__", self -> PyTuple.of(PyInt.of(((PyInt) self).value)))
+            .addOne("__format__", PyInt::formatted)
+            .addNoArgument("__sizeof__", PyInt::sizeInBytes)
+            .addNoArgument("is_integer", self -> PyBool.TRUE)
+            // The fourteen sentences `long_methods` files (Objects/longobject.c:6450), each the whole
+            // `ml_doc`: ten read from `Objects/clinic/longobject.c.h` through the `*_METHODDEF` macro the
+            // table names, and four written by hand inside the table row itself — `conjugate`, `__trunc__`,
+            // `__floor__` and `__ceil__`, the four ways of asking a number that is already whole for its
+            // whole. Those four carry a sentence and no table, so `find_signature` never starts on them: what
+            // the reference reads as `($self, /)` comes out of `signature_from_flags` and is the one table
+            // this runtime does not invent. `__getnewargs__` is the other kind of silence — a table with
+            // nothing written under it, which is why its `__doc__` reads `None` here and in the reference.
+            // `from_bytes` is the table's one `$type` row, and `to_bytes` and `from_bytes` are the two whose
+            // tables carry the keyword-only `*`.
+            .document(
+                    "conjugate",
+                    "Returns self, the complex conjugate of any int.")
+            .document(
+                    "bit_length",
+                    "bit_length($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Number of bits necessary to represent self in binary.\n"
+                            + "\n"
+                            + ">>> bin(37)\n"
+                            + "'0b100101'\n"
+                            + ">>> (37).bit_length()\n"
+                            + "6")
+            .document(
+                    "bit_count",
+                    "bit_count($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Number of ones in the binary representation of the absolute value of self.\n"
+                            + "\n"
+                            + "Also known as the population count.\n"
+                            + "\n"
+                            + ">>> bin(13)\n"
+                            + "'0b1101'\n"
+                            + ">>> (13).bit_count()\n"
+                            + "3")
+            .document(
+                    "to_bytes",
+                    "to_bytes($self, /, length=1, byteorder='big', *, signed=False)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return an array of bytes representing an integer.\n"
+                            + "\n"
+                            + "  length\n"
+                            + "    Length of bytes object to use.  An OverflowError is raised if\n"
+                            + "    the integer is not representable with the given number of bytes.\n"
+                            + "    Default is length 1.\n"
+                            + "  byteorder\n"
+                            + "    The byte order used to represent the integer.  If byteorder is\n"
+                            + "    'big', the most significant byte is at the beginning of the byte\n"
+                            + "    array.  If byteorder is 'little', the most significant byte is at\n"
+                            + "    the end of the byte array.  To request the native byte order of\n"
+                            + "    the host system, use sys.byteorder as the byte order value.\n"
+                            + "    Default is to use 'big'.\n"
+                            + "  signed\n"
+                            + "    Determines whether two's complement is used to represent the\n"
+                            + "    integer.  If signed is False and a negative integer is given,\n"
+                            + "    an OverflowError is raised.")
+            .document(
+                    "from_bytes",
+                    "from_bytes($type, /, bytes, byteorder='big', *, signed=False)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the integer represented by the given array of bytes.\n"
+                            + "\n"
+                            + "  bytes\n"
+                            + "    Holds the array of bytes to convert.  The argument must either\n"
+                            + "    support the buffer protocol or be an iterable object producing\n"
+                            + "    bytes.  Bytes and bytearray are examples of built-in objects that\n"
+                            + "    support the buffer protocol.\n"
+                            + "  byteorder\n"
+                            + "    The byte order used to represent the integer.  If byteorder is\n"
+                            + "    'big', the most significant byte is at the beginning of the byte\n"
+                            + "    array.  If byteorder is 'little', the most significant byte is at\n"
+                            + "    the end of the byte array.  To request the native byte order of\n"
+                            + "    the host system, use sys.byteorder as the byte order value.\n"
+                            + "    Default is to use 'big'.\n"
+                            + "  signed\n"
+                            + "    Indicates whether two's complement is used to represent the\n"
+                            + "    integer.")
+            .document(
+                    "as_integer_ratio",
+                    "as_integer_ratio($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a pair of integers, whose ratio is equal to the original int.\n"
+                            + "\n"
+                            + "The ratio is in lowest terms and has a positive denominator.\n"
+                            + "\n"
+                            + ">>> (10).as_integer_ratio()\n"
+                            + "(10, 1)\n"
+                            + ">>> (-10).as_integer_ratio()\n"
+                            + "(-10, 1)\n"
+                            + ">>> (0).as_integer_ratio()\n"
+                            + "(0, 1)")
+            .document(
+                    "__trunc__",
+                    "Truncating an Integral returns itself.")
+            .document(
+                    "__floor__",
+                    "Flooring an Integral returns itself.")
+            .document(
+                    "__ceil__",
+                    "Ceiling of an Integral returns itself.")
+            .document(
+                    "__round__",
+                    "__round__($self, ndigits=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Rounding an Integral returns itself.\n"
+                            + "\n"
+                            + "Rounding with an ndigits argument also returns an integer.")
+            .document(
+                    "__getnewargs__",
+                    "__getnewargs__($self, /)\n"
+                            + "--\n"
+                            + "\n")
+            .document(
+                    "__format__",
+                    "__format__($self, format_spec, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Convert to a string according to format_spec.")
+            .document(
+                    "__sizeof__",
+                    "__sizeof__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Returns size in memory, in bytes.")
+            .document(
+                    "is_integer",
+                    "is_integer($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Returns True. Exists for duck type compatibility with float.is_integer.");
 
     // --- rounding, presenting and measuring -------------------------------------------------
 
