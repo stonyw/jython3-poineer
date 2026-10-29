@@ -67,100 +67,141 @@ public final class PyFloat extends PyObject {
         return Members.find(this, name);
     }
 
-    private static final String FROM_NUMBER_DOC =
-            "Convert real number to a floating-point number.";
-
-    private static final String CONJUGATE_DOC =
-            "Return self, the complex conjugate of any float.";
-
-    private static final String TRUNC_DOC =
-            "Return the Integral closest to x between 0 and x.";
-
-    private static final String FLOOR_DOC = "Return the floor as an Integral.";
-
-    private static final String CEIL_DOC = "Return the ceiling as an Integral.";
-
-    private static final String ROUND_DOC =
-            "Return the Integral closest to x, rounding half toward even.\n"
-                    + "\n"
-                    + "When an argument is passed, work like built-in round(x, ndigits).";
-
-    private static final String RATIO_DOC =
-            "Return a pair of integers, whose ratio is exactly equal to the original float.\n"
-                    + "\n"
-                    + "The ratio is in lowest terms and has a positive denominator.  Raise\n"
-                    + "OverflowError on infinities and a ValueError on NaNs.\n"
-                    + "\n"
-                    + ">>> (10.0).as_integer_ratio()\n"
-                    + "(10, 1)\n"
-                    + ">>> (0.0).as_integer_ratio()\n"
-                    + "(0, 1)\n"
-                    + ">>> (-.25).as_integer_ratio()\n"
-                    + "(-1, 4)";
-
-    private static final String FROMHEX_DOC =
-            "Create a floating-point number from a hexadecimal string.\n"
-                    + "\n"
-                    + ">>> float.fromhex('0x1.ffffp10')\n"
-                    + "2047.984375\n"
-                    + ">>> float.fromhex('-0x1p-1074')\n"
-                    + "-5e-324";
-
-    private static final String HEX_DOC =
-            "Return a hexadecimal representation of a floating-point number.\n"
-                    + "\n"
-                    + ">>> (-0.1).hex()\n"
-                    + "'-0x1.999999999999ap-4'\n"
-                    + ">>> 3.14159.hex()\n"
-                    + "'0x1.921f9f01b866ep+1'";
-
-    private static final String IS_INTEGER_DOC = "Return True if the float is an integer.";
-
-    private static final String GET_FORMAT_DOC =
-            "You probably don't want to use this function.\n"
-                    + "\n"
-                    + "  typestr\n"
-                    + "    Must be 'double' or 'float'.\n"
-                    + "\n"
-                    + "It exists mainly to be used in Python's test suite.\n"
-                    + "\n"
-                    + "This function returns whichever of 'unknown', 'IEEE, big-endian' or\n"
-                    + "'IEEE, little-endian' best describes the format of floating-point\n"
-                    + "numbers used by the C type named by typestr.";
-
-    private static final String FORMAT_DOC = "Formats the float according to format_spec.";
-
-    /**
-     * The thirteen sentences {@code floatobject.c}'s {@code float_methods} carries, filed in the order the
-     * dictionary shows them.
-     *
-     * <p>Three of the thirteen are {@code METH_CLASS} — {@code from_number}, {@code fromhex} and {@code
-     * __getformat__} — and are reached through a type rather than through a value, which is why {@code
-     * float.__dict__} holds a {@code classmethod_descriptor} for those three names and a plain {@code
-     * method_descriptor} for the rest.
-     */
     private static final Members METHODS = Members.of(PyType.FLOAT)
-            .addClassNamed("from_number", FROM_NUMBER_DOC, PyFloat::fromNumber)
-            .addNoArgument("conjugate", CONJUGATE_DOC, Numeric::floatFloat)
-            .addNoArgument("__trunc__", TRUNC_DOC, self -> Numeric.longFromDouble(((PyFloat) self).value))
+            .addClassNamed("from_number", PyFloat::fromNumber)
+            .addNoArgument("conjugate", Numeric::floatFloat)
+            .addNoArgument("__trunc__", self -> Numeric.longFromDouble(((PyFloat) self).value))
             .addNoArgument(
                     "__floor__",
-                    FLOOR_DOC,
                     self -> Numeric.longFromDouble(Math.floor(((PyFloat) self).value)))
             .addNoArgument(
                     "__ceil__",
-                    CEIL_DOC,
                     self -> Numeric.longFromDouble(Math.ceil(((PyFloat) self).value)))
-            .add("__round__", ROUND_DOC, PyFloat::roundTo)
-            .addNoArgument("as_integer_ratio", RATIO_DOC, PyFloat::integerRatio)
-            .addClassNamed("fromhex", FROMHEX_DOC, PyFloat::fromHex)
-            .addNoArgument("hex", HEX_DOC, self -> PyStr.of(hexOf(((PyFloat) self).value)))
-            .addNoArgument("is_integer", IS_INTEGER_DOC, self -> PyBool.of(
-                    isIntegral(((PyFloat) self).value)))
+            .add("__round__", PyFloat::roundTo)
+            .addNoArgument("as_integer_ratio", PyFloat::integerRatio)
+            .addClassNamed("fromhex", PyFloat::fromHex)
+            .addNoArgument("hex", self -> PyStr.of(hexOf(((PyFloat) self).value)))
+            .addNoArgument("is_integer", self -> PyBool.of(isIntegral(((PyFloat) self).value)))
             .addNoArgument(
-                    "__getnewargs__", null, self -> PyTuple.of(PyFloat.of(((PyFloat) self).value)))
-            .addClassNamed("__getformat__", GET_FORMAT_DOC, PyFloat::getFormat)
-            .addOne("__format__", FORMAT_DOC, PyFloat::formatted);
+                    "__getnewargs__", self -> PyTuple.of(PyFloat.of(((PyFloat) self).value)))
+            .addClassNamed("__getformat__", PyFloat::getFormat)
+            .addOne("__format__", PyFloat::formatted)
+            // The thirteen sentences `float_methods` files (Objects/floatobject.c:1780), every one of them
+            // read out of `Objects/clinic/floatobject.c.h` through the `*_METHODDEF` macro the table names —
+            // float writes no row by hand. All thirteen therefore carry a table, which is why thirteen rows
+            // here close thirteen tables where int's fourteen closed only ten. `__getnewargs__` is the
+            // silence of a table with nothing written under it, `from_number`, `fromhex` and `__getformat__`
+            // are the three `$type` rows whose `METH_CLASS` flag makes `float.__dict__` file a
+            // `classmethod_descriptor` while the other ten are plain `method_descriptor`s, `__round__` is
+            // the one default, and the three texts that quote arrive from C literals written as `\'`.
+            .document(
+                    "from_number",
+                    "from_number($type, number, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Convert real number to a floating-point number.")
+            .document(
+                    "conjugate",
+                    "conjugate($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return self, the complex conjugate of any float.")
+            .document(
+                    "__trunc__",
+                    "__trunc__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the Integral closest to x between 0 and x.")
+            .document(
+                    "__floor__",
+                    "__floor__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the floor as an Integral.")
+            .document(
+                    "__ceil__",
+                    "__ceil__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the ceiling as an Integral.")
+            .document(
+                    "__round__",
+                    "__round__($self, ndigits=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the Integral closest to x, rounding half toward even.\n"
+                            + "\n"
+                            + "When an argument is passed, work like built-in round(x, ndigits).")
+            .document(
+                    "as_integer_ratio",
+                    "as_integer_ratio($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a pair of integers, whose ratio is exactly equal to the original float.\n"
+                            + "\n"
+                            + "The ratio is in lowest terms and has a positive denominator.  Raise\n"
+                            + "OverflowError on infinities and a ValueError on NaNs.\n"
+                            + "\n"
+                            + ">>> (10.0).as_integer_ratio()\n"
+                            + "(10, 1)\n"
+                            + ">>> (0.0).as_integer_ratio()\n"
+                            + "(0, 1)\n"
+                            + ">>> (-.25).as_integer_ratio()\n"
+                            + "(-1, 4)")
+            .document(
+                    "fromhex",
+                    "fromhex($type, string, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Create a floating-point number from a hexadecimal string.\n"
+                            + "\n"
+                            + ">>> float.fromhex('0x1.ffffp10')\n"
+                            + "2047.984375\n"
+                            + ">>> float.fromhex('-0x1p-1074')\n"
+                            + "-5e-324")
+            .document(
+                    "hex",
+                    "hex($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a hexadecimal representation of a floating-point number.\n"
+                            + "\n"
+                            + ">>> (-0.1).hex()\n"
+                            + "'-0x1.999999999999ap-4'\n"
+                            + ">>> 3.14159.hex()\n"
+                            + "'0x1.921f9f01b866ep+1'")
+            .document(
+                    "is_integer",
+                    "is_integer($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the float is an integer.")
+            .document(
+                    "__getnewargs__",
+                    "__getnewargs__($self, /)\n"
+                            + "--\n"
+                            + "\n")
+            .document(
+                    "__getformat__",
+                    "__getformat__($type, typestr, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "You probably don't want to use this function.\n"
+                            + "\n"
+                            + "  typestr\n"
+                            + "    Must be 'double' or 'float'.\n"
+                            + "\n"
+                            + "It exists mainly to be used in Python's test suite.\n"
+                            + "\n"
+                            + "This function returns whichever of 'unknown', 'IEEE, big-endian' or\n"
+                            + "'IEEE, little-endian' best describes the format of floating-point\n"
+                            + "numbers used by the C type named by typestr.")
+            .document(
+                    "__format__",
+                    "__format__($self, format_spec, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Formats the float according to format_spec.");
 
     /**
      * Whether the value is an integer, which {@code float.is_integer()} answers and the arithmetic

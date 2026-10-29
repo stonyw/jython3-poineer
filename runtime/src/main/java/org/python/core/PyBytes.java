@@ -413,16 +413,20 @@ public final class PyBytes extends PyObject {
                 Arguments.none("bytes.__getnewargs__()", args, kwNames);
                 return PyTuple.of(self);
             })
-            .add(
-                    "__bytes__",
-                    "Convert this value to exact type bytes.",
-                    (self, args, kwNames) -> {
-                        Arguments.none("bytes.__bytes__()", args, kwNames);
-                        return self;
-                    })
-            // The sentence clinic writes beside each of the forty-two rows `bytes_methods` files.
-            // Two names are read out of that one text, and the cutting is the same
+            .add("__bytes__", (self, args, kwNames) -> {
+                Arguments.none("bytes.__bytes__()", args, kwNames);
+                return self;
+            })
+            // The whole internal text clinic writes beside each of the forty-three rows `bytes_methods`
+            // files with an `ml_doc`; the forty-fourth row, `__getnewargs__`, is filed with none, so it has
+            // no text to transcribe. Two names are read out of that one text, and the cutting is the same
             // `find_signature`/`skip_signature` pair a built-in function's rows go through.
+            .document(
+                    "__bytes__",
+                    "__bytes__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Convert this value to exact type bytes.")
             .document(
                     "capitalize",
                     "capitalize($self, /)\n"
