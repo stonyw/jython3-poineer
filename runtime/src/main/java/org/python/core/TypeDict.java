@@ -215,6 +215,27 @@ final class TypeDict {
     private static final String IOR_DOC = "__ior__($self, value, /)\n--\n\nReturn self|=value.";
 
     /**
+     * The three sentences {@code slotdefs} carries for the descriptor protocol itself.
+     *
+     * <p>{@code add_operators} installs one {@code wrapper_descriptor} over each of these for every type
+     * that has the slot, and the five kinds of CPython's {@code PyDescrObject} family all have {@code
+     * tp_descr_get} — which is why each of them files {@code __get__} and only the two that can write a
+     * field file the other two. The wording of {@code __delete__} is the odd one out: {@code
+     * wrap_descr_delete} hands {@code PyArg_UnpackTuple} no name, so a wrong count there says nothing about
+     * who was asked, while {@code wrap_descr_set} says {@code __set__} and {@code wrap_descr_get} counts a
+     * range rather than a number.
+     */
+    private static final String DESCR_GET_DOC =
+            "__get__($self, instance, owner=None, /)\n--\n\n"
+                    + "Return an attribute of instance, which is of type owner.";
+
+    private static final String DESCR_SET_DOC =
+            "__set__($self, instance, value, /)\n--\n\nSet an attribute of instance to value.";
+
+    private static final String DESCR_DELETE_DOC =
+            "__delete__($self, instance, /)\n--\n\nDelete an attribute of instance.";
+
+    /**
      * The six sentences the {@code PyNumberMethods} half of a set's struct carries.
      *
      * <p>{@code set} and {@code frozenset} are the only types here whose operators are number slots rather
@@ -676,6 +697,26 @@ final class TypeDict {
             functionTable(into);
             return;
         }
+        if (owner == PyType.METHOD_DESCRIPTOR) {
+            methodDescrTable(into);
+            return;
+        }
+        if (owner == PyType.WRAPPER_DESCRIPTOR) {
+            wrapperDescrTable(into);
+            return;
+        }
+        if (owner == PyType.CLASS_METHOD_DESCRIPTOR) {
+            classMethodDescrTable(into);
+            return;
+        }
+        if (owner == PyType.GETSET_DESCRIPTOR) {
+            getsetDescrTable(into);
+            return;
+        }
+        if (owner == PyType.MEMBER_DESCRIPTOR) {
+            memberDescrTable(into);
+            return;
+        }
         if (owner == PyType.BYTES) {
             bytesTable(into);
             return;
@@ -915,6 +956,191 @@ final class TypeDict {
         table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
         table.getset("__self__", null, self -> self.getAttr("__self__"), null);
         table.getset("__text_signature__", null, self -> self.getAttr("__text_signature__"), null);
+    }
+
+    /**
+     * {@code method_descriptor}'s own dictionary, as {@code descrobject.c} files it: nine names.
+     *
+     * <p>{@code type_ready_fill_dict} runs {@code add_operators} first, and that copies each filled slot of
+     * the type into its dictionary as a {@code wrapper_descriptor}, which is why three of the nine are slot
+     * rows before {@code descr_methods}'s one row and {@code descr_members}' two fields: {@code __repr__}
+     * and {@code __call__} are what {@code method_repr} and {@code PyVectorcall_Call} leave behind, and
+     * {@code __get__} is {@code method_get}. The two members and the three getsets after them are the
+     * same lists every other kind of this family files, and the last of the three is the one name this
+     * kind has that the {@code PyDescrObject} family's two writable kinds do not.
+     */
+    private static void methodDescrTable(PyDict into) {
+        PyType owner = PyType.METHOD_DESCRIPTOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper(
+                "__call__",
+                CALL_DOC,
+                (args, kwNames, qualified) ->
+                        args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.method("__reduce__", null, TypeDict::descrReduce, METH_NOARGS);
+        table.member("__objclass__", self -> self.getAttr("__objclass__"));
+        table.member("__name__", self -> self.getAttr("__name__"));
+        table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
+        table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+        table.getset("__text_signature__", null, self -> self.getAttr("__text_signature__"), null);
+    }
+
+    /**
+     * {@code wrapper_descriptor}'s dictionary: the nine names of {@link #methodDescrTable}, under the
+     * type a slot wrapper is kept in.
+     *
+     * <p>{@code PyWrapperDescr_Type} files the same {@code descr_methods} and {@code descr_members} lists
+     * and a {@code wrapperdescr_getset} whose three sentences are read off {@code d_base->doc} — the slot
+     * definition's own text — rather than off a {@code PyMethodDef}. That is why the two kinds are one
+     * shape here, and why {@code object.__dict__["__init__"].__doc__} and {@code
+     * wrapper_descriptor.__dict__["__doc__"].__doc__} answer from the same table: {@code
+     * wrapperdescr_get_doc} is {@code _PyType_GetDocFromInternalDoc} with a different struct to read.
+     */
+    private static void wrapperDescrTable(PyDict into) {
+        PyType owner = PyType.WRAPPER_DESCRIPTOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper(
+                "__call__",
+                CALL_DOC,
+                (args, kwNames, qualified) ->
+                        args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.method("__reduce__", null, TypeDict::descrReduce, METH_NOARGS);
+        table.member("__objclass__", self -> self.getAttr("__objclass__"));
+        table.member("__name__", self -> self.getAttr("__name__"));
+        table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
+        table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+        table.getset("__text_signature__", null, self -> self.getAttr("__text_signature__"), null);
+    }
+
+    /**
+     * {@code classmethod_descriptor}'s dictionary: eight names, the nine above without pickle's one.
+     *
+     * <p>{@code PyClassMethodDescr_Type} files no {@code tp_methods} at all, so {@code
+     * object.__dict__["__subclasshook__"].__reduce__} reaches past this dictionary to {@code object}'s and
+     * refuses the pickle in {@code object_reduce}'s words — "cannot pickle 'classmethod_descriptor'
+     * object" — where its two neighbours answer {@code (getattr, (<class 'object'>, '__subclasshook__'))}.
+     * The {@code __call__} row is {@code classmethoddescr_call}, which binds the class it was handed and
+     * calls the result, so the argument that names no class at all is refused with this type's own
+     * sentence rather than the one the method's parameter list would write.
+     */
+    private static void classMethodDescrTable(PyDict into) {
+        PyType owner = PyType.CLASS_METHOD_DESCRIPTOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper(
+                "__call__",
+                CALL_DOC,
+                (args, kwNames, qualified) ->
+                        args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.member("__objclass__", self -> self.getAttr("__objclass__"));
+        table.member("__name__", self -> self.getAttr("__name__"));
+        table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
+        table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+        table.getset("__text_signature__", null, self -> self.getAttr("__text_signature__"), null);
+    }
+
+    /**
+     * {@code getset_descriptor}'s dictionary: eight names, and the first of the two kinds that can write.
+     *
+     * <p>{@code tp_descr_set} is filled here, so {@code add_operators} files it twice over — once as {@code
+     * __set__} and once as {@code __delete__}, two entries of {@code slotdefs} over the one slot with {@code
+     * wrap_descr_delete} handing {@code PyArg_UnpackTuple} a {@code NULL} where {@code wrap_descr_set} hands
+     * a name. There is no {@code tp_call} and no {@code tp_methods}, so
+     * neither {@code __call__} nor pickle's {@code __reduce__} is a name this dictionary holds, and
+     * {@code getset_getset} stops at the two names it shares with {@code member_getset}.
+     */
+    private static void getsetDescrTable(PyDict into) {
+        PyType owner = PyType.GETSET_DESCRIPTOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.wrapper("__set__", DESCR_SET_DOC, TypeDict::descrWrite);
+        table.wrapper("__delete__", DESCR_DELETE_DOC, TypeDict::descrRemove);
+        table.member("__objclass__", self -> self.getAttr("__objclass__"));
+        table.member("__name__", self -> self.getAttr("__name__"));
+        table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
+        table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+    }
+
+    /**
+     * {@code member_descriptor}'s dictionary: the eight of {@link #getsetDescrTable} plus pickle's row.
+     *
+     * <p>Only {@code tp_methods} separates the two writing kinds: {@code PyMemberDescr_Type} files {@code
+     * descr_methods} where {@code PyGetSetDescr_Type} files none, so {@code del} and the write reach the
+     * field's own refusal — "readonly attribute", the sentence {@code PyMember_SetOne} has for a {@code
+     * Py_READONLY} table — and {@code __reduce__} answers from this dictionary instead of inheriting
+     * {@code object}'s complaint.
+     */
+    private static void memberDescrTable(PyDict into) {
+        PyType owner = PyType.MEMBER_DESCRIPTOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.wrapper("__set__", DESCR_SET_DOC, TypeDict::descrWrite);
+        table.wrapper("__delete__", DESCR_DELETE_DOC, TypeDict::descrRemove);
+        table.method("__reduce__", null, TypeDict::descrReduce, METH_NOARGS);
+        table.member("__objclass__", self -> self.getAttr("__objclass__"));
+        table.member("__name__", self -> self.getAttr("__name__"));
+        table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
+        table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+    }
+
+    /**
+     * {@code wrap_descr_get}: the field or the method the descriptor stands for, asked of the receiver the
+     * call names.
+     *
+     * <p>The row's own receiver is the descriptor, and the argument list it was handed begins after it, so
+     * {@link Descriptors#called} runs the same two gates {@code PyArg_UnpackTuple} runs on that tail —
+     * {@code __get__} counted between one and two, either of them {@code None} read as not given, and the
+     * pair of them missing at once refused by name.
+     */
+    private static PyObject descrRead(PyObject[] args, String[] kwNames, String qualified) {
+        return Descriptors.called(args[0], tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * {@code wrap_descr_set}: {@code tp_descr_set} with the value still in the list.
+     *
+     * <p>The count is the wrapper's — two arguments and no keyword — and what happens next is the
+     * descriptor's own business: a field that is {@code Py_READONLY} complains about itself, and a getset
+     * with no setter complains in the words its type files the name under.
+     */
+    private static PyObject descrWrite(PyObject[] args, String[] kwNames, String qualified) {
+        Descriptors.set(args[0], args[1], args[2]);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code wrap_descr_delete}: the same pointer with nothing handed over. */
+    private static PyObject descrRemove(PyObject[] args, String[] kwNames, String qualified) {
+        Descriptors.delete(args[0], args[1]);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code descr_reduce}: {@code (getattr, (the type the descriptor belongs to, its name))}.
+     *
+     * <p>One row of {@code descr_methods} behind all three kinds that file it, and a format string that
+     * nests: the two names go into the second half of the pair, which is what pickle calls with the
+     * instance it restores. A {@code classmethod_descriptor} and a {@code getset_descriptor} answer
+     * nothing of this, because the first files no {@code tp_methods} and the second files none either.
+     *
+     * <p>Its {@code METH_NOARGS} is what refuses a call that brought anything beside the descriptor — and
+     * it refuses only after {@code methoddescr_call} has found a receiver of the right kind among the
+     * arguments, so {@code method_descriptor.__reduce__("junk", 1)} complains about the {@code str} and
+     * never counts the one argument that came with it.
+     */
+    private static PyObject descrReduce(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        PyObject self = args[0];
+        PyObject getattr = PyRuntime.builtins().get(PyStr.interned("getattr"));
+        return PyTuple.of(
+                getattr,
+                PyTuple.of(self.getAttr("__objclass__"), self.getAttr("__name__")));
     }
 
     /**
@@ -2506,15 +2732,33 @@ final class TypeDict {
         return text == null ? PyNone.INSTANCE : PyStr.of(text);
     }
 
-    /** {@code type.__doc__}, and of every class: the sentence the type declares for itself, or {@code None}. */
-    private static PyObject docOf(PyObject target) {
+    /**
+     * {@code type.__doc__}, and of every class: the sentence the type declares for itself.
+     *
+     * <p>CPython's {@code type_get_doc} has two halves, and which one answers depends on whether the type
+     * was written down with a {@code tp_doc}. A class Python wrote — and a static type with no sentence of
+     * its own — takes the second: read the {@code __doc__} entry the type files and run it through its own
+     * descriptor, which is how {@code method_descriptor.__doc__} answers the {@code getset_descriptor} its
+     * {@code tp_getset} lists rather than {@code None}. Running the entry is not a second-order case:
+     * {@code getset_get} handed no instance returns the descriptor, so a kind's doc is its own row.
+     */
+    static PyObject docOf(PyObject target) {
         if (target instanceof PyClass declaring) {
-            // A heap type's doc is its own dictionary's, and is never inherited: `class D(C): pass`
-            // reports None however much C had to say about itself.
-            PyObject filed = declaring.namespace().get(PyStr.interned("__doc__"));
-            return filed == null ? PyNone.INSTANCE : filed;
+            return described(declaring.namespace(), declaring);
         }
-        return docValue((PyType) target);
+        PyType owner = (PyType) target;
+        if (owner.docText() != null) {
+            return docValue(owner);
+        }
+        return described(owner.namespace(), owner);
+    }
+
+    /** The {@code __doc__} a dictionary files, told as its descriptor tells it, or {@code None}. */
+    private static PyObject described(PyDict from, PyType owner) {
+        // `class D(C): pass` reports None however much C had to say about itself: the dictionary of the
+        // type being asked is the only one read, and `type_get_doc` never walks a base for the name.
+        PyObject filed = from.get(PyStr.interned("__doc__"));
+        return filed == null ? PyNone.INSTANCE : Descriptors.get(filed, null, owner);
     }
 
     /** {@code type.__module__}: what the class was written down as, or what its body said. */
@@ -4015,11 +4259,17 @@ final class TypeDict {
      * without a value counts to one and says so. The seven that answer the receiver alone are the five
      * unary number slots and the two coercions beside them: {@code wrap_unaryfunc} and {@code
      * wrap_inquirypred} both call {@code check_num_args(args, 0)}.
+     *
+     * <p>{@code __get__} joins the uncounted two for a different reason: {@code wrap_descr_get} counts, but
+     * counts a {@code PyArg_UnpackTuple} range — one or two — and the wrapper's own message has no shape for
+     * "at least" and "at most" in one sentence. The body it reaches says those two, so the count is left to
+     * it. {@code __set__} is the plain case of a slot handed two: {@code wrap_descr_set} unpacks exactly
+     * {@code (instance, value)} and names itself while doing it, which is what {@link #slotArity} reads.
      */
     private static int slotExtra(String name) {
         return switch (name) {
-            case "__setattr__", "__setitem__" -> 2;
-            case "__init__", "__call__" -> -1;
+            case "__setattr__", "__setitem__", "__set__" -> 2;
+            case "__init__", "__call__", "__get__" -> -1;
             case "__repr__",
                     "__str__",
                     "__hash__",
@@ -4041,12 +4291,13 @@ final class TypeDict {
      * {@code wrapperdescr_call}'s refusal of the wrong count.
      *
      * <p>A slot that takes only its receiver says the number bare — {@code expected 0 arguments, got 1} —
-     * because there is no method name that would help. Three wrappers name themselves, and each is the
+     * because there is no method name that would help. Four wrappers name themselves, and each is the
      * because of the C function behind it: {@code wrap_setattr} hands {@code PyArg_UnpackTuple} the name
-     * {@code __setattr__}, {@code wrap_ass_subscript} hands it {@code __setitem__}, and {@code wrap_buffer}
-     * hands it {@code __buffer__}. Everything else, including the {@code __delattr__} and
-     * {@code __getattribute__} that sit beside the first and the {@code __delitem__} beside the second,
-     * passes no name and so prints none.
+     * {@code __setattr__}, {@code wrap_ass_subscript} hands it {@code __setitem__}, {@code wrap_buffer}
+     * hands it {@code __buffer__} and {@code wrap_descr_set} hands it {@code __set__}. Everything else,
+     * including the {@code __delattr__} and {@code __getattribute__} that sit beside the first, the {@code
+     * __delitem__} beside the second and the {@code __delete__} beside the fourth, passes no name and so
+     * prints none.
      *
      * <p>{@code __pow__} and {@code __rpow__} are the two that state a range rather than a number, because
      * {@code check_pow_args} is written for a slot that may or may not be handed a modulus: {@code
@@ -4066,6 +4317,7 @@ final class TypeDict {
         String plural = need == 1 ? "" : "s";
         if (name.equals("__setattr__")
                 || name.equals("__setitem__")
+                || name.equals("__set__")
                 || name.equals("__buffer__")) {
             throw Slots.typeError(
                     "%s expected %d argument%s, got %d", name, need, plural, got);
@@ -4388,14 +4640,12 @@ final class TypeDict {
                 case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc, flags);
                 case "__self__" -> shape == Shape.RAW ? declaring : PyNotImplemented.INSTANCE;
                 case "__objclass__" -> shape == Shape.RAW ? PyNotImplemented.INSTANCE : declaring;
-                // A `builtin_function_or_method` is not a descriptor at all — `__new__` has no `__get__` to
-                // ask — while each of the three descriptor kinds files one, which is what `hasattr` reads.
-                case "__get__" ->
-                        shape == Shape.RAW
-                                ? PyNotImplemented.INSTANCE
-                                : new PyNativeFunction(
-                                        "__get__",
-                                        (args, kwNames) -> Descriptors.called(this, args, kwNames));
+                // No `__get__` here: the three descriptor kinds each file the slot as their own
+                // `wrapper_descriptor`, installed by `add_operators` over their filled
+                // `tp_descr_get`, so the read of `bytes.hex.__get__` walks to that row and answers a
+                // method-wrapper. `__new__` is the shape with no such row anywhere on its way — a
+                // `builtin_function_or_method` is not a descriptor at all — and it is refused by the
+                // missing name rather than by this switch.
                 default -> PyNotImplemented.INSTANCE;
             };
         }

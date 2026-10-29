@@ -156,8 +156,13 @@ final class Descriptors {
      * The {@code __get__} Python sees on one of the Java-written descriptors: {@code wrap_descr_get},
      * which unpacks one or two arguments, reads {@code None} as "not given" both ways round, and
      * refuses a call that names neither the value nor its class.
+     *
+     * <p>The target is asked the same question {@link #get} asks, so a descriptor written in Java answers
+     * through {@link Protocol#asAttribute} and one written in Python through its own {@code __get__} —
+     * which is what lets the slot wrapper a descriptor kind files for {@code __get__} hand the call to
+     * whatever kind of descriptor it was read from.
      */
-    static PyObject called(Protocol target, PyObject[] args, String[] kwNames) {
+    static PyObject called(PyObject target, PyObject[] args, String[] kwNames) {
         if (kwNames != null) {
             throw Slots.typeError("wrapper __get__() takes no keyword arguments");
         }
@@ -173,7 +178,7 @@ final class Descriptors {
             // names its type, and a descriptor that reads its owner is never handed a null class.
             owner = obj instanceof PyType ? obj : obj.getType();
         }
-        return target.asAttribute(obj, owner);
+        return get(target, obj, owner);
     }
 
     /** The function {@code value}'s own type declares under {@code name}, which CPython reads as a slot. */

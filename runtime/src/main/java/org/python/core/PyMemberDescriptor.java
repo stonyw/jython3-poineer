@@ -128,28 +128,13 @@ final class PyMemberDescriptor extends PyObject implements Descriptors.Protocol 
             case "__qualname__" -> PyStr.of(owner.name() + "." + name);
             case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
             case "__objclass__" -> owner;
-            case "__get__" -> new PyNativeFunction(
-                    "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
-            // The two halves of `tp_descr_set`, reached as the slot wrappers CPython installs them as.
-            // Both refuse a keyword in the wrapper's own words and then count what arrived, but only the
-            // writing half has a name to put in front of the count: `__delete__` says nothing about who
-            // was asked, `__set__` says it was itself.
-            case "__set__" -> new PyNativeFunction(
-                    "__set__",
-                    (args, kwNames) -> {
-                        Arguments.noWrapperKeywords("__set__", kwNames);
-                        Arguments.exactly("__set__", args, kwNames, 2);
-                        write(args[0], args[1]);
-                        return PyNone.INSTANCE;
-                    });
-            case "__delete__" -> new PyNativeFunction(
-                    "__delete__",
-                    (args, kwNames) -> {
-                        Arguments.noWrapperKeywords("__delete__", kwNames);
-                        Arguments.exactlyUnnamed(args, 1);
-                        write(args[0], null);
-                        return PyNone.INSTANCE;
-                    });
+            // The three halves of the descriptor protocol are the kind's own rows, not this field's:
+            // `add_operators` copies `tp_descr_get` and `tp_descr_set` into the dictionary
+            // `member_descriptor` files, and copies the writing slot twice over as the `slotdefs` entries
+            // `__set__` and `__delete__`. Both of those two refuse a keyword in the wrapper's own words and
+            // then count what arrived, but only the writing half has a name to put in front of the count:
+            // `wrap_descr_delete` hands `PyArg_UnpackTuple` a NULL, so it says nothing about who was asked,
+            // while `wrap_descr_set` names itself.
             default -> PyNotImplemented.INSTANCE;
         };
     }

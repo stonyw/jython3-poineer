@@ -243,14 +243,16 @@ class InventedTableTest {
         assertThat(text(row(PyType.OBJECT, "__init_subclass__"))).contains("The default implementation");
         assertThat(text(row(PyType.OBJECT, "__init_subclass__"))).doesNotContain("--");
 
-        // The flag is not writable: it is a fact of the row, as the `PyMethodDef` it came from is.
+        // The flag is not writable: it is a fact of the row, as the `PyMethodDef` it came from is. The kind
+        // files the name as a getset with no setter, so the write is refused by the descriptor rather than by
+        // the dictionary the row has not got.
         refuses(
-                "AttributeError: 'method_descriptor' object has no attribute '__text_signature__'"
-                        + " and no __dict__ for setting new attributes",
+                "AttributeError: attribute '__text_signature__' of 'method_descriptor' objects"
+                        + " is not writable",
                 () -> Slots.setAttr(row(PyType.STR, "count"), "__text_signature__", PyStr.of("()")));
         refuses(
-                "AttributeError: 'method_descriptor' object has no attribute '__text_signature__'"
-                        + " and no __dict__ for setting new attributes",
+                "AttributeError: attribute '__text_signature__' of 'method_descriptor' objects"
+                        + " is not writable",
                 () -> Slots.delAttr(row(PyType.STR, "count"), "__text_signature__"));
     }
 

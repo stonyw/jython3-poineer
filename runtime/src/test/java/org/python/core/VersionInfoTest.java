@@ -55,9 +55,15 @@ class VersionInfoTest {
                 names.length == 0 ? null : PyBoundMethod.keywordTuple(names));
     }
 
-    /** {@code version_info.__get__(...)}: the wrapper CPython installs for {@code tp_descr_get}. */
+    /**
+     * {@code version_info.__get__(...)}: the wrapper CPython installs for {@code tp_descr_get}.
+     *
+     * <p>Read through the descriptor, not off it: the row is in the kind's own dictionary, so the attribute
+     * a program reaches is the method-wrapper bound to this one descriptor rather than the bare callable the
+     * {@code __get__} case used to build.
+     */
     private static PyObject getOf(String field, PyObject[] values) {
-        return Slots.call(filed(field).getAttr("__get__"), values, null);
+        return Slots.call(Slots.getAttr(filed(field), "__get__"), values, null);
     }
 
     /**
@@ -205,8 +211,8 @@ class VersionInfoTest {
      */
     @Test
     void aWrapperJudgesKeywordsBeforeCountingAndCountingBeforeTheReceiver() {
-        PyObject set = filed("major").getAttr("__set__");
-        PyObject delete = filed("major").getAttr("__delete__");
+        PyObject set = Slots.getAttr(filed("major"), "__set__");
+        PyObject delete = Slots.getAttr(filed("major"), "__delete__");
         PyTuple x = PyBoundMethod.keywordTuple(new String[] {"x"});
 
         refuses(

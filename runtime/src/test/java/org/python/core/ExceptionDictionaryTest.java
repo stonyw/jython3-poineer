@@ -338,6 +338,22 @@ class ExceptionDictionaryTest {
     }
 
     /**
+     * Whether a read of a filed row answers the name, which is what {@code hasattr} asks of it.
+     *
+     * <p>Read through the row rather than off it, because the names a descriptor carries are not cases in its
+     * own read: {@code __get__} is the {@code wrapper_descriptor} row CPython's {@code add_operators} files
+     * for the kind, so it arrives bound to the row being asked.
+     */
+    private static boolean answers(PyObject row, String name) {
+        try {
+            Slots.getAttr(row, name);
+            return true;
+        } catch (PyRaise missing) {
+            return false;
+        }
+    }
+
+    /**
      * What each of the six kinds answers about itself, and the sentences the C declarations write.
      *
      * <p>The {@code __new__} row is a {@code builtin_function_or_method}, which is not a descriptor at all: it
@@ -353,14 +369,10 @@ class ExceptionDictionaryTest {
             PyObject member = entry(ExceptionTypes.BASE_EXCEPTION, name);
             boolean aValue = name.equals("__doc__");
             boolean notADescriptor = aValue || name.equals("__new__");
-            assertThat(member.getAttr("__qualname__") != PyNotImplemented.INSTANCE)
-                    .isEqualTo(!aValue);
-            assertThat(member.getAttr("__objclass__") != PyNotImplemented.INSTANCE)
-                    .isEqualTo(!notADescriptor);
-            assertThat(member.getAttr("__get__") != PyNotImplemented.INSTANCE)
-                    .isEqualTo(!notADescriptor);
-            assertThat(member.getAttr("__self__") != PyNotImplemented.INSTANCE)
-                    .isEqualTo(name.equals("__new__"));
+            assertThat(answers(member, "__qualname__")).isEqualTo(!aValue);
+            assertThat(answers(member, "__objclass__")).isEqualTo(!notADescriptor);
+            assertThat(answers(member, "__get__")).isEqualTo(!notADescriptor);
+            assertThat(answers(member, "__self__")).isEqualTo(name.equals("__new__"));
         }
         assertThat(entry(ExceptionTypes.BASE_EXCEPTION, "__new__").getAttr("__self__"))
                 .isSameAs(ExceptionTypes.BASE_EXCEPTION);

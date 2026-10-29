@@ -62,7 +62,11 @@ public class PyType extends PyObject {
                                     + " and returns a new featureless\ninstance that has no instance"
                                     + " attributes and cannot be given any.\n");
 
-    public static final PyType TYPE = new PyType("type", OBJECT);
+    public static final PyType TYPE =
+            new PyType("type", OBJECT)
+                    .documented(
+                            "type(object) -> the object's type\n"
+                                    + "type(name, bases, dict, **kwds) -> a new type");
 
     static {
         // Every type is an instance of `type`, including `type` itself and `object`.
@@ -653,7 +657,7 @@ public class PyType extends PyObject {
         return switch (attribute) {
             case "__name__", "__qualname__" -> PyStr.of(name);
             case "__module__" -> PyStr.of(moduleName());
-            case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
+            case "__doc__" -> TypeDict.docOf(this);
             case "__base__" -> parent == null ? PyNone.INSTANCE : parent;
             case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(bases());
             case "__mro__" -> PyTuple.of(mro());

@@ -104,27 +104,12 @@ final class PyGetSetDescriptor extends PyObject implements Descriptors.Protocol 
             case "__qualname__" -> PyStr.of(owner.dottedName() + "." + name);
             case "__doc__" -> doc == null ? PyNone.INSTANCE : PyStr.of(doc);
             case "__objclass__" -> owner;
-            case "__get__" ->
-                    new PyNativeFunction(
-                            "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
-            case "__set__" ->
-                    new PyNativeFunction(
-                            "__set__",
-                            (args, kwNames) -> {
-                                Arguments.noWrapperKeywords("__set__", kwNames);
-                                Arguments.exactly("__set__", args, kwNames, 2);
-                                write(args[0], args[1]);
-                                return PyNone.INSTANCE;
-                            });
-            case "__delete__" ->
-                    new PyNativeFunction(
-                            "__delete__",
-                            (args, kwNames) -> {
-                                Arguments.noWrapperKeywords("__delete__", kwNames);
-                                Arguments.exactlyUnnamed(args, 1);
-                                write(args[0], null);
-                                return PyNone.INSTANCE;
-                            });
+            // The three halves of the descriptor protocol are not answered here: `add_operators` copies this
+            // type's `tp_descr_get` and `tp_descr_set` into `getset_descriptor`'s own dictionary as wrapper
+            // rows, and `tp_descr_set` is copied twice over — the two `slotdefs` entries `__set__` and
+            // `__delete__`, the same pointer with `wrap_descr_delete` handing a name of NULL. A read of
+            // `e.args.__set__` walks to those rows and answers a method-wrapper, and the count and the
+            // keyword refusal it makes are the wrapper's, not a function written beside this field.
             default -> PyNotImplemented.INSTANCE;
         };
     }

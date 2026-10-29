@@ -99,8 +99,9 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
             // part in: a row whose text names none is answered from the flag it was registered with.
             case "__doc__" -> PyNativeFunction.docOf(name, doc);
             case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc, flags);
-            case "__get__" -> new PyNativeFunction(
-                    "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
+            // No `__get__` among these: `add_operators` files the kind's own `tp_descr_get` in
+            // `method_descriptor`'s dictionary, so a read of the name walks there and answers a
+            // method-wrapper rather than a function made here.
             default -> PyNotImplemented.INSTANCE;
         };
     }
