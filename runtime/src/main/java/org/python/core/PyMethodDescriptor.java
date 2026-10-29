@@ -23,14 +23,25 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
     private final PyType owner;
     private final String name;
 
-    /** The sentence the method table carries, or {@code null} where it carries none. */
+    /** The whole internal text the method table carries, or {@code null} where it carries none. */
     private final String doc;
 
-    PyMethodDescriptor(PyType owner, String name, String doc) {
+    /**
+     * The flag the row was registered with, which is where a table comes from when the text carries none.
+     *
+     * <p>Only the two flags {@code signature_from_flags} reads are ever kept here — {@code METH_NOARGS} for
+     * {@code int.conjugate} and {@code str.__getnewargs__}, {@code METH_O} for a one-argument row whose
+     * clinic text names none — and every other row arrives with nought, which answers {@code None} for a
+     * table the way CPython's default case does.
+     */
+    private final int flags;
+
+    PyMethodDescriptor(PyType owner, String name, String doc, int flags) {
         super(PyType.METHOD_DESCRIPTOR);
         this.owner = owner;
         this.name = name;
         this.doc = doc;
+        this.flags = flags;
     }
 
     @Override
@@ -84,9 +95,10 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
             // leaves NULL beside the function pointer. Both names are read out of the one text the same way
             // a builtin function reads them, because `descr_get_doc` and `descr_get_text_signature` call
             // the same two functions `methodobject.c` does — with the method's own name, not its qualified
-            // one, as the prefix to look for.
+            // one, as the prefix to look for. The table has a second source, though, that `__doc__` has no
+            // part in: a row whose text names none is answered from the flag it was registered with.
             case "__doc__" -> PyNativeFunction.docOf(name, doc);
-            case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc);
+            case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc, flags);
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> PyNotImplemented.INSTANCE;

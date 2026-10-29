@@ -726,7 +726,7 @@ public class PySet extends PyObject {
         // clinic copied `copy`'s docstring rather than the type's, so a frozenset's `copy` still says "a
         // set". `__class_getitem__` is the twenty-first row of each table and the one clinic never wrote:
         // CPython files it with a sentence but no table, and reads its `($type, object, /)` out of the
-        // METH_O|METH_CLASS flags, which this runtime does not model.
+        // METH_O|METH_CLASS it registers the row with, which is the flag `Table.genericSubscript` keeps.
         methods
                 .document(
                         "__contains__",

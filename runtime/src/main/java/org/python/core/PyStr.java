@@ -460,16 +460,13 @@ public final class PyStr extends PyObject {
                         Arguments.none("str.__sizeof__()", args, kwNames);
                         return PyInt.of(0);
                     })
-            .add("__getnewargs__", (self, args, kwNames) -> {
-                Arguments.none("str.__getnewargs__()", args, kwNames);
-                return PyTuple.of(self);
-            })
+            .addNoArgument("__getnewargs__", self -> PyTuple.of(self))
             // The sentences clinic files beside `unicode_methods`, transcribed from
             // `Objects/clinic/unicodeobject.c.h` and, for the two hand-written ones, from
             // `Objects/unicodeobject.c`. Each is the whole `ml_doc`: the row's own name, its argument
             // table, the `--` knife, and the prose. `__getnewargs__` is the one row of the nine files
-            // without a sentence of its own, so CPython builds its table from the METH_NOARGS flag;
-            // that table is a flag's work rather than a text's, and is not invented here.
+            // without a sentence of its own, so CPython builds its table from the METH_NOARGS flag — the
+            // shape this registration names, and the second source `__text_signature__` reads.
             .document(
                     "__format__",
                     "__format__($self, format_spec, /)\n"

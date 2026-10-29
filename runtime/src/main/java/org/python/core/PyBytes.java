@@ -409,10 +409,7 @@ public final class PyBytes extends PyObject {
             // The two names pickle and the buffer protocol read off a value rather than call: the argument
             // list a rebuild is made from is the octet run itself, and `__bytes__` answers the same object
             // it was asked on, because a bytes is already the exact type it converts to.
-            .add("__getnewargs__", (self, args, kwNames) -> {
-                Arguments.none("bytes.__getnewargs__()", args, kwNames);
-                return PyTuple.of(self);
-            })
+            .addNoArgument("__getnewargs__", self -> PyTuple.of(self))
             .add("__bytes__", (self, args, kwNames) -> {
                 Arguments.none("bytes.__bytes__()", args, kwNames);
                 return self;

@@ -367,25 +367,71 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     }
 
     /**
-     * {@code _PyType_GetTextSignatureFromInternalDoc}: the argument table on the first line, with the rule
-     * under it cut away, or {@code None} where the text carries none.
+     * {@code _PyType_GetTextSignatureFromInternalDoc} for a row whose text is the only place a table can
+     * come from.
      *
-     * <p>CPython has a second way of answering this — {@code signature_from_flags} makes a table out of
-     * the {@code METH_NOARGS} or {@code METH_O} a built-in was registered with, and that is how {@code
-     * bytes.upper} reads {@code ($self, /)} — and this runtime keeps no flags, only bodies. Every table
-     * that was transcribed with its sentence is answered from the text; one that was not reads {@code
-     * None} where the reference interpreter would have invented the short form.
+     * <p>CPython has a second way of answering this — {@link #signatureFromFlags} makes a table out of the
+     * {@code METH_NOARGS} or {@code METH_O} a row was registered with — and a row whose body takes an
+     * argument list and keyword names is registered with neither, so the text is all it has. The rows the
+     * method tables file by hand, without a clinic text at all, carry the flag and read the other form.
      */
     static PyObject signatureOf(String name, String internal) {
+        return signatureOf(name, internal, 0);
+    }
+
+    /**
+     * The same read with the row's own {@code PyMethodDef} flags beside it, which CPython tries second.
+     *
+     * <p>The order is the C function's: a text that carries a table wins, and the flag is only reached for
+     * the rows whose {@code ml_doc} is a sentence with no table above it or nothing at all — {@code
+     * bytes.__getnewargs__}, {@code int.conjugate}, the five {@code mappingproxy} views, {@code
+     * object}'s two hooks and the seven generic subscripts. Those answer {@code ($self, /)} or {@code
+     * ($type, object, /)} in the reference interpreter because a flag says so, not because anyone wrote it.
+     */
+    static PyObject signatureOf(String name, String internal, int flags) {
         int rule = table(name, internal);
         if (rule < 0) {
-            return PyNone.INSTANCE;
+            String invented = signatureFromFlags(flags);
+            return invented == null ? PyNone.INSTANCE : PyStr.of(invented);
         }
         return PyStr.of(internal.substring(signatureStart(name, internal), rule + 1));
     }
 
     /** The rule {@code skip_signature} looks for: a bracket, then a {@code --}, then a blank line. */
     private static final String SIGNATURE_END = ")\n--\n\n";
+
+    /** {@code methodobject.h}: the three flags {@link #signatureFromFlags} can answer a table for. */
+    static final int METH_NOARGS = 0x0004;
+
+    static final int METH_O = 0x0008;
+    static final int METH_CLASS = 0x0010;
+    static final int METH_STATIC = 0x0020;
+
+    /** A row filed twice over two names, which is not part of the calling convention read here. */
+    private static final int METH_COEXIST = 0x0040;
+
+    /**
+     * {@code signature_from_flags} (Objects/typeobject.c:888): the table CPython cuts out of a row's flags
+     * when its text carries none, or {@code null} for every other calling convention.
+     *
+     * <p>Four of the six cases name a receiver, and they are the four this runtime reaches: a row that takes
+     * no argument says whether the thing it was handed is the value or the type, and a row that takes one
+     * says the same, so {@code ($self, /)} and {@code ($type, /)} sit under {@code METH_NOARGS} and {@code
+     * ($self, object, /)} and {@code ($type, object, /)} under {@code METH_O}. The static pair is what a
+     * {@code staticmethod} registered like those reads; no row here is, because every static clinic files
+     * comes with a text of its own, which the read above answers from first.
+     */
+    private static String signatureFromFlags(int flags) {
+        return switch (flags & ~METH_COEXIST) {
+            case METH_NOARGS -> "($self, /)";
+            case METH_NOARGS | METH_CLASS -> "($type, /)";
+            case METH_NOARGS | METH_STATIC -> "()";
+            case METH_O -> "($self, object, /)";
+            case METH_O | METH_CLASS -> "($type, object, /)";
+            case METH_O | METH_STATIC -> "(object, /)";
+            default -> null;
+        };
+    }
 
     /**
      * Where a text's table ends, or -1 where it has none: {@code find_signature} and {@code

@@ -44,17 +44,31 @@ import java.util.concurrent.ConcurrentHashMap;
  * function object sitting in the dictionary, which is what makes {@code Meta.__new__ is type.__new__}
  * hold while {@code Meta.mro is type.mro} does not.
  *
- * <p>Four details of CPython's own are not modelled. There is no {@code tp_new_wrapper} check that a
+ * <p>Three details of CPython's own are not modelled. There is no {@code tp_new_wrapper} check that a
  * subtype's {@code __new__} slot still belongs to the type it derives from, so {@code type.__new__} of
  * an odd metatype is accepted rather than refused as "not safe"; {@code object} keeps only {@code
  * __init_subclass__} here, so a class that declares no {@code __new__} or {@code __init__} reads the
- * metatype's rather than {@code object}'s; a bound wrapper prints the type's own name where CPython
- * prints the address of the object it bound to; and the fourteen rows registered as {@code METH_NOARGS}
- * or {@code METH_O|METH_CLASS} — the two hooks of {@code object}, the six of {@code
- * mappingproxy_methods} and the six {@code __class_getitem__}s — read no {@code __text_signature__},
- * because CPython builds those tables out of a flag this runtime does not keep.
+ * metatype's rather than {@code object}'s; and a bound wrapper prints the type's own name where CPython
+ * prints the address of the object it bound to. The fourteen rows registered by hand rather than by
+ * clinic — {@code object}'s two hooks, the five views of {@code mappingproxy_methods} and the seven
+ * {@code __class_getitem__}s — do keep the {@code METH_NOARGS} or {@code METH_O|METH_CLASS} beside them,
+ * which is what {@code __text_signature__} is cut out of when the row's sentence names no table.
  */
 final class TypeDict {
+
+    /**
+     * The three flags the rows written by hand rather than by clinic are registered with.
+     *
+     * <p>{@code object}'s two hooks, the five views of {@code mappingproxy_methods} and the seven generic
+     * subscripts each file a sentence that names no argument table, so {@code signature_from_flags} answers
+     * their {@code __text_signature__} out of one of these three pairs — which is the whole of why a row of
+     * these dictionaries carries a flag at all, and why the other rows carry none.
+     */
+    private static final int METH_NOARGS = PyNativeFunction.METH_NOARGS;
+
+    private static final int METH_O_ON_TYPE = PyNativeFunction.METH_O | PyNativeFunction.METH_CLASS;
+    private static final int METH_NOARGS_ON_TYPE =
+            PyNativeFunction.METH_NOARGS | PyNativeFunction.METH_CLASS;
 
     /**
      * The two sentences CPython writes once and lets every class inherit.
@@ -139,10 +153,9 @@ final class TypeDict {
      * <p>Only {@link #GET_DOC} carries a table: it is the one row of the file clinic generated, and the
      * other four are hand-written docstrings that name themselves in the body of the sentence — {@code
      * D.keys() ->} is what a person reads, where a clinic text would have said the same above a
-     * {@code ($self, /)} rule. Those four, and {@link #PROXY_CLASS_GETITEM_DOC} filed beside them, read
-     * an invented table in the reference interpreter because {@code descrobject.c} registers them with
-     * {@code METH_NOARGS} or {@code METH_O|METH_CLASS}; this runtime keeps bodies rather than flags, and
-     * so reads {@code None} for their signatures.
+     * {@code ($self, /)} rule. Those four, {@link #REVERSED_DOC} and {@link #PROXY_CLASS_GETITEM_DOC} filed
+     * beside them are answered from the {@code METH_NOARGS} or {@code METH_O|METH_CLASS} {@code
+     * descrobject.c} registers them with, since no text of theirs carries a table to cut.
      */
     private static final String GET_DOC =
             "get($self, key, default=None, /)\n--\n\nReturn the value for key if key is in the mapping,"
@@ -341,10 +354,10 @@ final class TypeDict {
      * two types because it has two places for a value to sit. The two sets spell the same thing out in the
      * plural, because a set holds any number of elements of one type rather than one element per position.
      *
-     * <p>None of the five carries a table, which is why this group is the one that reads {@code None}
-     * where the reference interpreter reads {@code ($type, object, /)}: a row registered as {@code
-     * METH_O|METH_CLASS} over {@code Py_GenericAlias} has no clinic text to cut, and the reference
-     * invents the table out of the flags it was registered with.
+     * <p>None of the five carries a table, and so none is cut from the text: the row is registered as
+     * {@code METH_O|METH_CLASS} over {@code Py_GenericAlias}, and {@code ($type, object, /)} is what {@code
+     * signature_from_flags} reads out of that pair — the second source CPython tries, and the one these
+     * seven rows answer from here.
      */
     private static final String LIST_CLASS_GETITEM_DOC =
             "lists are generic over the type of their contents";
@@ -448,7 +461,8 @@ final class TypeDict {
                     null,
                     "This method is called when a class is subclassed.\n\nThe default implementation does"
                             + " nothing. It may be\noverridden to extend subclasses.\n",
-                    TypeDict::initSubclass);
+                    TypeDict::initSubclass,
+                    METH_NOARGS_ON_TYPE);
 
     /**
      * {@code BaseException.__new__(cls, *args)}: the creator every exception class inherits, which keeps
@@ -759,7 +773,7 @@ final class TypeDict {
         table.method("__reduce_ex__", REDUCE_EX_DOC, TypeDict::objectReduceEx);
         table.method("__reduce__", REDUCE_DOC, TypeDict::objectReduce);
         table.method("__getstate__", GETSTATE_DOC, TypeDict::objectState);
-        table.classMethod("__subclasshook__", SUBCLASS_HOOK_DOC, TypeDict::subclassHook);
+        table.classMethod("__subclasshook__", SUBCLASS_HOOK_DOC, TypeDict::subclassHook, METH_O_ON_TYPE);
         table.put("__init_subclass__", INIT_SUBCLASS);
         table.method("__format__", FORMAT_DOC, TypeDict::objectFormat);
         table.method("__sizeof__", SIZEOF_DOC, TypeDict::objectSize);
@@ -850,13 +864,12 @@ final class TypeDict {
         table.wrapper(
                 "__contains__", CONTAINS_DOC, (args, kw, q) -> window(args[0]).contains(args[1]));
         table.method("get", GET_DOC, TypeDict::proxyGet);
-        table.method("keys", KEYS_DOC, args -> proxyView(args[0], "keys"));
-        table.method("values", VALUES_DOC, args -> proxyView(args[0], "values"));
-        table.method("items", ITEMS_DOC, args -> proxyView(args[0], "items"));
-        table.method("copy", COPY_DOC, args -> window(args[0]).copy());
-        table.classMethod(
-                "__class_getitem__", PROXY_CLASS_GETITEM_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
-        table.method("__reversed__", REVERSED_DOC, args -> reversedKeys(window(args[0])));
+        table.method("keys", KEYS_DOC, args -> proxyView(args[0], "keys"), METH_NOARGS);
+        table.method("values", VALUES_DOC, args -> proxyView(args[0], "values"), METH_NOARGS);
+        table.method("items", ITEMS_DOC, args -> proxyView(args[0], "items"), METH_NOARGS);
+        table.method("copy", COPY_DOC, args -> window(args[0]).copy(), METH_NOARGS);
+        table.genericSubscript(PROXY_CLASS_GETITEM_DOC);
+        table.method("__reversed__", REVERSED_DOC, args -> reversedKeys(window(args[0])), METH_NOARGS);
         table.value("__doc__", docValue(owner));
     }
 
@@ -1088,10 +1101,7 @@ final class TypeDict {
         table.named(
                 "clear", "copy", "append", "insert", "extend", "pop", "remove", "index", "count", "reverse",
                 "sort");
-        table.classMethod(
-                "__class_getitem__",
-                LIST_CLASS_GETITEM_DOC,
-                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.genericSubscript(LIST_CLASS_GETITEM_DOC);
         table.value("__doc__", docValue(owner));
     }
 
@@ -1130,10 +1140,7 @@ final class TypeDict {
         table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
         table.named("__getnewargs__");
         table.named("index", "count");
-        table.classMethod(
-                "__class_getitem__",
-                TUPLE_CLASS_GETITEM_DOC,
-                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.genericSubscript(TUPLE_CLASS_GETITEM_DOC);
         table.value("__doc__", docValue(owner));
     }
 
@@ -1184,10 +1191,7 @@ final class TypeDict {
         table.named("get", "setdefault", "pop", "popitem", "keys", "items", "values", "update");
         table.named("fromkeys");
         table.named("clear", "copy", "__reversed__");
-        table.classMethod(
-                "__class_getitem__",
-                DICT_CLASS_GETITEM_DOC,
-                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.genericSubscript(DICT_CLASS_GETITEM_DOC);
         table.value("__doc__", docValue(owner));
     }
 
@@ -1250,10 +1254,7 @@ final class TypeDict {
                 "intersection_update", "isdisjoint", "issubset", "issuperset", "pop", "__reduce__",
                 "remove", "__sizeof__", "symmetric_difference", "symmetric_difference_update", "union",
                 "update");
-        table.classMethod(
-                "__class_getitem__",
-                SET_CLASS_GETITEM_DOC,
-                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.genericSubscript(SET_CLASS_GETITEM_DOC);
         table.value("__doc__", docValue(owner));
     }
 
@@ -1300,10 +1301,7 @@ final class TypeDict {
         table.named(
                 "copy", "difference", "intersection", "isdisjoint", "issubset", "issuperset",
                 "__reduce__", "__sizeof__", "symmetric_difference", "union");
-        table.classMethod(
-                "__class_getitem__",
-                FROZENSET_CLASS_GETITEM_DOC,
-                (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+        table.genericSubscript(FROZENSET_CLASS_GETITEM_DOC);
         table.value("__doc__", docValue(owner));
     }
 
@@ -2086,10 +2084,7 @@ final class TypeDict {
             table.wrapper(
                     "__str__", STR_DOC, args -> PyStr.of(((PyBaseException) args[0]).described()));
             table.put("__init__", GROUP_INIT);
-            table.classMethod(
-                    "__class_getitem__",
-                    GROUP_CLASS_GETITEM_DOC,
-                    (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified));
+            table.genericSubscript(GROUP_CLASS_GETITEM_DOC);
             table.put("derive", GROUP_DERIVE);
             table.put("split", GROUP_SPLIT);
             table.put("subgroup", GROUP_SUBGROUP);
@@ -2525,6 +2520,9 @@ final class TypeDict {
     /** {@code type.__module__}: what the class was written down as, or what its body said. */
     private static PyObject moduleOf(PyObject target) {
         if (target instanceof PyClass declaring) {
+            // `type_module` reads the dictionary only for a heap type: a static class answers the half of
+            // `tp_name` before the last dot however its dictionary is filled, which is why
+            // `builtin_function_or_method.__module__` is the word and not the member row it files.
             PyObject filed = declaring.namespace().get(PyStr.interned("__module__"));
             if (filed != null) {
                 return filed;
@@ -4117,7 +4115,7 @@ final class TypeDict {
             wrapper(name, doc, (args, kwNames, qualified) -> body.apply(args));
         }
 
-        /** {@code METH_VARARGS} over a value: the method a value of this type answers. */
+        /** {@code slot_tp_*} over a value, and no flag: the method a value of this type answers. */
         void method(String name, String doc, Method body) {
             put(name, new Member(owner, name, Shape.METHOD, null, doc, body));
         }
@@ -4129,6 +4127,39 @@ final class TypeDict {
         /** {@code METH_CLASS}: binds the class the read ran on, and never a value. */
         void classMethod(String name, String doc, Method body) {
             put(name, new Member(owner, name, Shape.CLASSMETHOD, null, doc, body));
+        }
+
+        /**
+         * A method of a value with the {@code PyMethodDef} flags its row is registered with, which is where
+         * CPython reads a table from when the sentence names none.
+         */
+        void method(String name, String doc, Method body, int flags) {
+            put(name, new Member(owner, name, Shape.METHOD, null, doc, body, flags));
+        }
+
+        void method(String name, String doc, Receiver body, int flags) {
+            method(name, doc, (args, kwNames, qualified) -> body.apply(args), flags);
+        }
+
+        /** The same over the class rather than a value: {@code METH_O|METH_CLASS}, {@code METH_NOARGS}. */
+        void classMethod(String name, String doc, Method body, int flags) {
+            put(name, new Member(owner, name, Shape.CLASSMETHOD, null, doc, body, flags));
+        }
+
+        /**
+         * {@code {"__class_getitem__", Py_GenericAlias, METH_O|METH_CLASS, doc}}: the generic subscript a
+         * collection files for {@code list[int]} and {@code dict[str, int]} to reach.
+         *
+         * <p>Seven types file this one row and all seven sentences are PEP 585 notes rather than clinic
+         * output, so the table is the flag's work in every one of them — which is why the row is built here
+         * rather than spelled out at each of the seven, and why the flag and the name are one pair.
+         */
+        void genericSubscript(String doc) {
+            classMethod(
+                    "__class_getitem__",
+                    doc,
+                    (args, kwNames, qualified) -> classGetItem(owner, args, kwNames, qualified),
+                    METH_O_ON_TYPE);
         }
 
         /**
@@ -4254,6 +4285,17 @@ final class TypeDict {
         private final String doc;
         private final Method body;
 
+        /**
+         * The {@code PyMethodDef} flags CPython keeps beside this row, as far as they carry a table.
+         *
+         * <p>The rows written by hand rather than by clinic — {@code object}'s two hooks, the five view
+         * methods of {@code mappingproxy_methods} and the seven generic subscripts — are filed with a
+         * sentence that names no arguments, and the reference interpreter reads their tables out of these
+         * flags. Every other row of these dictionaries is registered with a calling convention that has no
+         * table to read, and is filed here as nought, which is CPython's default case.
+         */
+        private final int flags;
+
         /** {@code m_module}, which the one writable name of this type's dictionary reads and writes. */
         private PyObject module;
 
@@ -4275,6 +4317,18 @@ final class TypeDict {
          * the name it reports is not the declaring class's, what {@code __qualname__} is.
          */
         Member(PyType declaring, String name, Shape shape, String qualified, String doc, Method body) {
+            this(declaring, name, shape, qualified, doc, body, 0);
+        }
+
+        /** The same with the flag the row was registered with, for the fourteen whose text names no table. */
+        Member(
+                PyType declaring,
+                String name,
+                Shape shape,
+                String qualified,
+                String doc,
+                Method body,
+                int flags) {
             super(shape.describing());
             this.declaring = declaring;
             this.name = name;
@@ -4282,6 +4336,7 @@ final class TypeDict {
             this.qualified = qualified == null ? declaring.name() + "." + name : qualified;
             this.doc = doc;
             this.body = body;
+            this.flags = flags;
         }
 
         @Override
@@ -4314,7 +4369,7 @@ final class TypeDict {
                         case RAW -> null;
                         case WRAPPER, METHOD -> obj;
                     };
-            return receiver == null ? this : new Bound(declaring, name, shape, body, receiver, doc);
+            return receiver == null ? this : new Bound(declaring, name, shape, body, receiver, doc, flags);
         }
 
         @Override
@@ -4326,10 +4381,11 @@ final class TypeDict {
                 // Each of these texts is CPython's ml_doc for the row: the argument table, the rule under
                 // it, then the sentence. The two reads are the two knives of typeobject.c run in opposite
                 // directions over that rule, so a row whose clinic block named no sentence reads None for
-                // __doc__ and keeps its table, and a row registered by hand — the six __class_getitem__s
-                // and the four mappingproxy views — reads None here where the reference invents a short
-                // form out of the METH_NOARGS or METH_O|METH_CLASS it was registered with.
-                case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc);
+                // __doc__ and keeps its table, and a row registered by hand — object's two hooks, the five
+                // mappingproxy views and the seven __class_getitem__s — has a sentence and no table, so its
+                // __doc__ is that whole text and its table comes from the METH_NOARGS or METH_O|METH_CLASS
+                // the row carries, which is the short form the reference reads for the same fourteen names.
+                case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc, flags);
                 case "__self__" -> shape == Shape.RAW ? declaring : PyNotImplemented.INSTANCE;
                 case "__objclass__" -> shape == Shape.RAW ? PyNotImplemented.INSTANCE : declaring;
                 // A `builtin_function_or_method` is not a descriptor at all — `__new__` has no `__get__` to
@@ -4406,6 +4462,7 @@ final class TypeDict {
         private final Method body;
         private final PyObject receiver;
         private final String doc;
+        private final int flags;
 
         /** {@code m_module}, writable through this type's dictionary and nothing else. */
         private PyObject module;
@@ -4419,8 +4476,9 @@ final class TypeDict {
                 Shape shape,
                 Method body,
                 PyObject receiver,
-                String doc) {
-            this(declaring, name, shape, body, receiver, doc, false);
+                String doc,
+                int flags) {
+            this(declaring, name, shape, body, receiver, doc, flags, false);
         }
 
         Bound(
@@ -4430,6 +4488,7 @@ final class TypeDict {
                 Method body,
                 PyObject receiver,
                 String doc,
+                int flags,
                 boolean leftUnbound) {
             super(shape.bound());
             this.declaring = declaring;
@@ -4438,6 +4497,7 @@ final class TypeDict {
             this.body = body;
             this.receiver = receiver;
             this.doc = doc;
+            this.flags = flags;
             this.leftUnbound = leftUnbound;
         }
 
@@ -4452,7 +4512,7 @@ final class TypeDict {
         @Override
         PyObject methodForm() {
             return shape == Shape.METHOD && !leftUnbound
-                    ? new Bound(declaring, name, shape, body, receiver, doc, true)
+                    ? new Bound(declaring, name, shape, body, receiver, doc, flags, true)
                     : this;
         }
 
@@ -4505,7 +4565,7 @@ final class TypeDict {
                 // slot's own name and docstring to the same two reads, so `().__lt__.__doc__` is the
                 // sentence and `().__lt__.__text_signature__` the table the unbound row reports.
                 case "__doc__" -> PyNativeFunction.docOf(name, doc);
-                case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc);
+                case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc, flags);
                 // Only a bound slot wrapper keeps the type that declared its slot: CPython reads the class
                 // out of the wrapper record a method-wrapper still points at, and a built-in method bound
                 // to a value — `b''.upper`, `bytes.fromhex` — has no such record to read.

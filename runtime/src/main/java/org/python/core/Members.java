@@ -110,10 +110,23 @@ final class Members {
      *
      * <p>CPython keeps each one in the {@code PyMethodDef} next to the function pointer, so it belongs to
      * the type rather than to a read of it, and a bound method and its descriptor answer with the same
-     * text. Most tables here transcribe no sentence, and the names they file answer {@code __doc__} with
-     * {@code None} — a deviation the plan records for the whole family.
+     * text. A name the reference files with no {@code ml_doc} at all is absent here, and answers {@code
+     * __doc__} with {@code None} in both runtimes.
      */
     private final Map<String, String> docs = new LinkedHashMap<>();
+
+    /**
+     * The {@code PyMethodDef} flag of each row registered with one that carries a table of its own.
+     *
+     * <p>{@link #addNoArgument} files {@code METH_NOARGS} and {@link #addOne} {@code METH_O} because that is
+     * what CPython writes beside those two shapes of function pointer, and {@code signature_from_flags}
+     * cuts a table out of them for a row whose {@code ml_doc} names none — {@code int.conjugate} and its
+     * three whole-number neighbours, and {@code str}'s and {@code bytes}' {@code __getnewargs__} among
+     * them. Every other name of {@link #entries} is absent, because a body handed an argument list and
+     * keyword names is registered with a convention the rule answers {@code null} for: its table can only
+     * come from its text.
+     */
+    private final Map<String, Integer> flags = new LinkedHashMap<>();
 
     /** Made on the first lookup through the type, which is why this one is concurrent. */
     private final Map<String, PyObject> descriptors = new ConcurrentHashMap<>();
@@ -274,10 +287,12 @@ final class Members {
     /** {@code upper()}, {@code bit_length()}: no arguments, and the message says so in CPython's words. */
     Members addNoArgument(String name, Function<PyObject, PyObject> body) {
         String qualified = owner.name() + "." + name + "()";
-        return add(name, (self, args, kwNames) -> {
+        add(name, (self, args, kwNames) -> {
             Arguments.none(qualified, args, kwNames);
             return body.apply(self);
         });
+        flags.put(name, PyNativeFunction.METH_NOARGS);
+        return this;
     }
 
     /** The same, with the sentence that {@code PyMethodDef} carries beside it. */
@@ -290,10 +305,12 @@ final class Members {
     /** {@code append(x)}, {@code join(x)}: exactly one argument. */
     Members addOne(String name, One body) {
         String qualified = owner.name() + "." + name + "()";
-        return add(name, (self, args, kwNames) -> {
+        add(name, (self, args, kwNames) -> {
             Arguments.exactlyOne(qualified, args, kwNames);
             return body.apply(self, args[0]);
         });
+        flags.put(name, PyNativeFunction.METH_O);
+        return this;
     }
 
     /** The same, with the sentence that {@code PyMethodDef} carries beside it. */
@@ -460,8 +477,11 @@ final class Members {
         if (!defines(name)) {
             return PyNotImplemented.INSTANCE;
         }
+        // The nought is CPython's default case: a row registered with neither METH_NOARGS nor METH_O has no
+        // flag to cut a table from, so its text is the only place one can come from.
         return descriptors.computeIfAbsent(
-                name, key -> new PyMethodDescriptor(owner, key, docs.get(key)));
+                name,
+                key -> new PyMethodDescriptor(owner, key, docs.get(key), flags.getOrDefault(key, 0)));
     }
 
     /** Whether this type defines that method at all, which {@code hasattr} and {@code in} both ask. */

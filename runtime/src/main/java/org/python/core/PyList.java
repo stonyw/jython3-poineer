@@ -510,8 +510,8 @@ public final class PyList extends PyObject {
             // argument table, the `--` knife, and the prose. Thirteen are read from
             // `Objects/clinic/listobject.c.h` through the `*_METHODDEF` macro the table names; `__getitem__`
             // is the one row written by hand, text and all (listobject.c:3577). The table's fifteenth row is
-            // `__class_getitem__`, a sentence with no table, whose `($type, object, /)` the reference reads
-            // out of the METH_O|METH_CLASS flags — the one table entry this runtime leaves silent.
+            // `__class_getitem__`, a sentence with no table, whose `($type, object, /)` both runtimes read
+            // out of the METH_O|METH_CLASS flags rather than out of a text.
             .document(
                     "__getitem__",
                     "__getitem__($self, index, /)\n--\n\nReturn self[index].")

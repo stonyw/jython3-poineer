@@ -137,8 +137,8 @@ public final class PyInt extends PyObject {
             // table names, and four written by hand inside the table row itself — `conjugate`, `__trunc__`,
             // `__floor__` and `__ceil__`, the four ways of asking a number that is already whole for its
             // whole. Those four carry a sentence and no table, so `find_signature` never starts on them: what
-            // the reference reads as `($self, /)` comes out of `signature_from_flags` and is the one table
-            // this runtime does not invent. `__getnewargs__` is the other kind of silence — a table with
+            // the reference reads as `($self, /)` comes out of `signature_from_flags` over the METH_NOARGS
+            // that `addNoArgument` registers. `__getnewargs__` is the other kind of silence — a table with
             // nothing written under it, which is why its `__doc__` reads `None` here and in the reference.
             // `from_bytes` is the table's one `$type` row, and `to_bytes` and `from_bytes` are the two whose
             // tables carry the keyword-only `*`.
