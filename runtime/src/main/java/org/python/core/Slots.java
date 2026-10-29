@@ -359,13 +359,23 @@ public final class Slots {
      * for {@code throw} and for {@code close} and takes the absence of either as the answer: an iterator
      * that cannot be thrown into is one the exception goes back to the delegating frame for, and one with
      * no close needs no closing.
+     *
+     * <p>The last step is the same one {@link #getAttr} takes, because it is the same lookup with a
+     * different refusal: {@code functools_wraps} asks a wrapped value for its four names with this
+     * function, and one of those four — {@code __doc__} — is not a member of any value but a sentence its
+     * type files. So {@code staticmethod(5).__dict__} holds an {@code int}'s {@code __doc__} and nothing
+     * else, which needs the class dictionary to be walked here as much as it is in the complaining read.
      */
     public static PyObject findAttr(PyObject target, String name) {
         PyObject answer = target.getAttr(name);
         if (answer != PyNotImplemented.INSTANCE) {
             return answer;
         }
-        return name.equals(ClassAttribute.NAME) ? ClassAttribute.read(target) : null;
+        if (name.equals(ClassAttribute.NAME)) {
+            return ClassAttribute.read(target);
+        }
+        PyObject published = TypeDict.read(target, name);
+        return published == PyNotImplemented.INSTANCE ? null : published;
     }
 
     /**

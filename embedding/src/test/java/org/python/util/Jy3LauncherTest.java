@@ -273,7 +273,8 @@ class Jy3LauncherTest {
                 "97_int_tables.py",
                 "98_float_tables.py",
                 "99_invented_tables.py",
-                "100_descr_tables.py");
+                "100_descr_tables.py",
+                "101_wrapper_tables.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

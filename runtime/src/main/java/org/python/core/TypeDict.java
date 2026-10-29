@@ -717,6 +717,14 @@ final class TypeDict {
             memberDescrTable(into);
             return;
         }
+        if (owner == PyType.STATIC_METHOD) {
+            staticMethodTable(into);
+            return;
+        }
+        if (owner == PyType.CLASS_METHOD) {
+            classMethodTable(into);
+            return;
+        }
         if (owner == PyType.BYTES) {
             bytesTable(into);
             return;
@@ -1088,6 +1096,155 @@ final class TypeDict {
         table.member("__name__", self -> self.getAttr("__name__"));
         table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
         table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+    }
+
+    /**
+     * {@code staticmethod}'s own dictionary, as {@code funcobject.c} files it: thirteen names.
+     *
+     * <p>{@code add_operators} runs first, and this is the first type of the four whose slots it fills
+     * here that has a {@code tp_call}: {@code sm_call} is why {@code Scores.__dict__["weight"](9)} is a
+     * call of the wrapped function rather than a complaint, and it is the single row that separates these
+     * thirteen from {@code classmethod}'s twelve. {@code tp_descr_get} is {@code sm_descr_get}, which
+     * hands back the field without binding it, and {@code tp_init} is {@code sm_init} — whose two gates
+     * name the type plainly in the legacy family's words, "staticmethod expected 1 argument, got 0",
+     * because {@code PyArg_UnpackTuple} is handed "staticmethod" and {@code _PyArg_NoKeywords} the same.
+     *
+     * <p>The two members are one {@code _Py_T_OBJECT} offset read twice over, both {@code Py_READONLY}, so
+     * {@code __func__} and {@code __wrapped__} answer the same callable from two descriptors that are not
+     * equal to each other. The four getsets after them are the wrapper's dictionary: {@code __dict__} is
+     * the generic pair, {@code __annotations__} and {@code __annotate__} are read off the callable and
+     * cached into it, and {@code __isabstractmethod__} — like {@code property}'s — has no writing half.
+     */
+    private static void staticMethodTable(PyDict into) {
+        PyType owner = PyType.STATIC_METHOD;
+        Table table = new Table(owner, into);
+        table.raw(
+                "__new__", NEW_DOC, (args, kwNames, qualified) -> wrapperNew(owner, args, kwNames));
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper(
+                "__call__",
+                CALL_DOC,
+                (args, kwNames, qualified) ->
+                        Slots.call(
+                                ((PyCallableWrapper) args[0]).wrapped(),
+                                tail(args, kwNames),
+                                PyBoundMethod.keywordTuple(kwNames)));
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.wrapper(
+                "__init__",
+                INIT_DOC,
+                (args, kwNames, qualified) -> wrapperInit(owner, args, kwNames));
+        table.genericSubscript(null);
+        table.member("__func__", self -> ((PyCallableWrapper) self).wrapped());
+        table.member("__wrapped__", self -> ((PyCallableWrapper) self).wrapped());
+        table.getset(
+                "__isabstractmethod__",
+                null,
+                self -> ((PyCallableWrapper) self).abstractFlag(),
+                null);
+        table.getset(
+                "__dict__",
+                null,
+                self -> ((PyCallableWrapper) self).held(),
+                (self, value) -> ((PyCallableWrapper) self).replaceDict(value));
+        table.getset(
+                "__annotations__",
+                null,
+                self -> ((PyCallableWrapper) self).wrappedAttribute("__annotations__"),
+                (self, value) ->
+                        ((PyCallableWrapper) self)
+                                .writeWrappedAttribute("__annotations__", value));
+        table.getset(
+                "__annotate__",
+                null,
+                self -> ((PyCallableWrapper) self).wrappedAttribute("__annotate__"),
+                (self, value) ->
+                        ((PyCallableWrapper) self).writeWrappedAttribute("__annotate__", value));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code classmethod}'s dictionary: the thirteen above without {@code tp_call}, so twelve.
+     *
+     * <p>{@code PyClassMethod_Type} fills no {@code tp_call}, which is the whole difference between the
+     * two — {@code C.__dict__["m"]()} refuses as {@code TypeError: 'classmethod' object is not callable}
+     * where the same read of a staticmethod row calls. {@code cm_descr_get} is the other half that
+     * differs, and it is a row of the same shape: {@code PyMethod_New} over the field and the class, which
+     * is why binding a wrapper around {@code None} still answers a {@code method}.
+     */
+    private static void classMethodTable(PyDict into) {
+        PyType owner = PyType.CLASS_METHOD;
+        Table table = new Table(owner, into);
+        table.raw(
+                "__new__", NEW_DOC, (args, kwNames, qualified) -> wrapperNew(owner, args, kwNames));
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.wrapper(
+                "__init__",
+                INIT_DOC,
+                (args, kwNames, qualified) -> wrapperInit(owner, args, kwNames));
+        table.genericSubscript(null);
+        table.member("__func__", self -> ((PyCallableWrapper) self).wrapped());
+        table.member("__wrapped__", self -> ((PyCallableWrapper) self).wrapped());
+        table.getset(
+                "__isabstractmethod__",
+                null,
+                self -> ((PyCallableWrapper) self).abstractFlag(),
+                null);
+        table.getset(
+                "__dict__",
+                null,
+                self -> ((PyCallableWrapper) self).held(),
+                (self, value) -> ((PyCallableWrapper) self).replaceDict(value));
+        table.getset(
+                "__annotations__",
+                null,
+                self -> ((PyCallableWrapper) self).wrappedAttribute("__annotations__"),
+                (self, value) ->
+                        ((PyCallableWrapper) self)
+                                .writeWrappedAttribute("__annotations__", value));
+        table.getset(
+                "__annotate__",
+                null,
+                self -> ((PyCallableWrapper) self).wrappedAttribute("__annotate__"),
+                (self, value) ->
+                        ((PyCallableWrapper) self).writeWrappedAttribute("__annotate__", value));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code sm_new} and {@code cm_new} behind {@code tp_new_wrapper}'s four gates.
+     *
+     * <p>Neither creates anything from its arguments: both allocate and file {@code None} in the callable,
+     * which is what {@code staticmethod.__new__(staticmethod)} answers and why the field only appears once
+     * {@code __init__} has been run over the object — separately by {@code type(...)}, together by a call
+     * of the type.
+     */
+    private static PyObject wrapperNew(
+            PyType declaring, PyObject[] args, String[] kwNames) {
+        declaredClass(declaring, args, kwNames);
+        return declaring == PyType.STATIC_METHOD
+                ? new PyStaticMethod()
+                : new PyClassMethod();
+    }
+
+    /**
+     * {@code sm_init} and {@code cm_init} written in place: the same object, refilled.
+     *
+     * <p>The two gates are {@code _PyArg_NoKeywords} with the type's name and {@code PyArg_UnpackTuple}
+     * with the same, which puts this row in the legacy family that names itself bare — "staticmethod
+     * expected 1 argument, got 4" — while the call that reaches here through {@code type(...)} refuses
+     * keywords as {@code staticmethod() takes no keyword arguments} from the very same pair. What follows
+     * is {@code functools_wraps}, so an {@code __init__} run by hand over a wrapper {@code __new__} made
+     * fills both the field and the four names beside it.
+     */
+    private static PyObject wrapperInit(
+            PyType declaring, PyObject[] args, String[] kwNames) {
+        PyObject[] given = tail(args, kwNames);
+        Arguments.noKeywords(declaring.name() + "()", kwNames);
+        Arguments.exactly(declaring.name(), given, kwNames, 1);
+        ((PyCallableWrapper) args[0]).initialise(given[0]);
+        return PyNone.INSTANCE;
     }
 
     /**
@@ -4402,9 +4559,12 @@ final class TypeDict {
          * {@code {"__class_getitem__", Py_GenericAlias, METH_O|METH_CLASS, doc}}: the generic subscript a
          * collection files for {@code list[int]} and {@code dict[str, int]} to reach.
          *
-         * <p>Seven types file this one row and all seven sentences are PEP 585 notes rather than clinic
-         * output, so the table is the flag's work in every one of them — which is why the row is built here
-         * rather than spelled out at each of the seven, and why the flag and the name are one pair.
+         * <p>Nine types file this one row. The seven collections write their sentence as a PEP 585 note
+         * rather than as clinic output, so the table is the flag's work in every one of them, which is why
+         * the row is built here rather than spelled out at each of the seven; the two wrappers — {@code
+         * staticmethod} and {@code classmethod}, both {@code Py_GenericAlias} over a {@code METH_O|METH_CLASS}
+         * with {@code NULL} beside it — file the row with no sentence at all, which is what a null doc reads
+         * as.
          */
         void genericSubscript(String doc) {
             classMethod(

@@ -258,10 +258,47 @@ public class PyType extends PyObject {
             builtin("mappingproxy").documented("Read-only proxy of a mapping.");
     /** What {@code Plain.__call__} is: a built-in slot already bound to a value. */
     static final PyType METHOD_WRAPPER = builtin("method-wrapper");
+    /**
+     * The two sentences {@code staticmethod_doc} and {@code classmethod_doc} write for the wrappers.
+     *
+     * <p>Each is the whole of what Python reads as the type's {@code __doc__}, and neither carries the
+     * {@code ()} header and rule that clinic puts in front of a method's text: a wrapper type's sentence is
+     * written beside its {@code PyTypeObject} as plain prose, so {@code _PyType_DocWithoutSignature} has
+     * nothing to throw away and {@code staticmethod.__doc__} is the ten lines the docs teach with. The two
+     * end by pointing at each other — {@code staticmethod} at {@code classmethod}, {@code classmethod} at
+     * {@code staticmethod} — which is how a person reading {@code help()} finds the one they meant.
+     */
+    private static final String STATICMETHOD_DOC =
+            "Convert a function to be a static method.\n\n"
+                    + "A static method does not receive an implicit first argument.\n"
+                    + "To declare a static method, use this idiom:\n\n     class C:\n"
+                    + "         @staticmethod\n         def f(arg1, arg2, argN):\n"
+                    + "             ...\n\n"
+                    + "It can be called either on the class (e.g. C.f()) or on an instance\n"
+                    + "(e.g. C().f()). Both the class and the instance are ignored, and\n"
+                    + "neither is passed implicitly as the first argument to the method.\n\n"
+                    + "Static methods in Python are similar to those found in Java or C++.\n"
+                    + "For a more advanced concept, see the classmethod builtin.";
+
+    private static final String CLASSMETHOD_DOC =
+            "Convert a function to be a class method.\n\n"
+                    + "A class method receives the class as implicit first argument,\n"
+                    + "just like an instance method receives the instance.\n"
+                    + "To declare a class method, use this idiom:\n\n  class C:\n"
+                    + "      @classmethod\n      def f(cls, arg1, arg2, argN):\n          ...\n\n"
+                    + "It can be called either on the class (e.g. C.f()) or on an instance\n"
+                    + "(e.g. C().f()).  The instance is ignored except for its class.\n"
+                    + "If a class method is called for a derived class, the derived class\n"
+                    + "object is passed as the implied first argument.\n\n"
+                    + "Class methods are different than C++ or Java static methods.\n"
+                    + "If you want those, see the staticmethod builtin.";
+
     /** The three members that are nothing but the descriptor protocol, each its own type. */
     public static final PyType PROPERTY = builtin("property");
-    public static final PyType CLASS_METHOD = builtin("classmethod");
-    public static final PyType STATIC_METHOD = builtin("staticmethod");
+    public static final PyType CLASS_METHOD =
+            builtin("classmethod").documented(CLASSMETHOD_DOC);
+    public static final PyType STATIC_METHOD =
+            builtin("staticmethod").documented(STATICMETHOD_DOC);
     public static final PyType MODULE = builtin("module");
     public static final PyType CELL = builtin("cell");
     public static final PyType ITERATOR = builtin("iterator");
@@ -593,9 +630,20 @@ public class PyType extends PyObject {
      * {@code object} itself answers where CPython does: the root has no dictionary, which is why {@code
      * object().__dict__} is the {@code AttributeError} it is. {@link GenericAttributes} asks the same
      * question before it writes a name it found nowhere on the class.
+     *
+     * <p>The two wrappers join the four because {@code funcobject.c} gives both a {@code tp_dictoffset},
+     * which is where {@code functools_wraps} files the wrapped callable's {@code __module__}, {@code
+     * __name__}, {@code __qualname__} and {@code __doc__} as the wrapper's own — the four names {@code
+     * staticmethod(f).__dict__} holds after one call of {@code sm_init}. {@code property} is the third of
+     * the family and keeps none: its struct has no dictionary, which is why {@code p.__dict__} is the
+     * {@code AttributeError} it is while {@code p.fget} is a field.
      */
     boolean hasValueDict() {
-        return this == TYPE || this == MODULE || this == FUNCTION
+        return this == TYPE
+                || this == MODULE
+                || this == FUNCTION
+                || this == STATIC_METHOD
+                || this == CLASS_METHOD
                 || matches(ExceptionTypes.BASE_EXCEPTION);
     }
 
