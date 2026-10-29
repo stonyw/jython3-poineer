@@ -119,6 +119,7 @@ show("getitem bound qualname", lambda: BaseExceptionGroup.__class_getitem__.__qu
 show("getitem not shared", lambda: ExceptionGroup.__class_getitem__ is BaseExceptionGroup.__class_getitem__)
 show("getitem not repeated", lambda: BaseExceptionGroup.__class_getitem__ is BaseExceptionGroup.__class_getitem__)
 show("getitem bound self", lambda: BaseExceptionGroup.__class_getitem__.__self__ is BaseExceptionGroup)
-show("new row is not inherited", lambda: ExceptionGroup.__new__ is BaseExceptionGroup.__new__)
+show("new row inherited whole", lambda: ExceptionGroup.__new__ is BaseExceptionGroup.__dict__["__new__"])
+show("base read is the row", lambda: BaseExceptionGroup.__new__ is BaseExceptionGroup.__dict__["__new__"])
 show("new qualname stays", lambda: ExceptionGroup.__new__.__qualname__)
 show("derive row", lambda: BaseExceptionGroup.derive.__qualname__)
