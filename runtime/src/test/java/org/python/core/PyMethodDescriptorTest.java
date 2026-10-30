@@ -51,7 +51,7 @@ class PyMethodDescriptorTest {
     void aSubtypeAnswersWithTheMembersItInherits() {
         PyObject inherited = Slots.getAttr(PyBool.TRUE, "bit_length");
 
-        assertThat(inherited).isInstanceOf(PyBoundMethod.class);
+        assertThat(inherited).isInstanceOf(PyBoundBuiltin.class);
         assertThat(Slots.call(inherited, new PyObject[0], null)).isEqualTo(PyInt.of(1));
         assertThat(call(PyType.INT, "bit_length", PyBool.TRUE)).isEqualTo(PyInt.of(1));
         assertThat(PyType.BOOL.getAttr("bit_length")).isSameAs(PyType.INT.getAttr("bit_length"));

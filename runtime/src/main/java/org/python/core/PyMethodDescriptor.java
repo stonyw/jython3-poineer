@@ -6,10 +6,10 @@ import java.util.Arrays;
  * A method reached through its type rather than through one of its values: {@code str.upper},
  * {@code list.append}, {@code int.bit_length}.
  *
- * <p>CPython keeps one of these per method in the type's dictionary, and the difference from a
- * {@link PyBoundMethod} is only where the receiver comes from — a bound method has it already, a
- * descriptor takes it as its first argument. That is what makes {@code str.upper("abc")} and
- * {@code sorted(words, key=str.lower)} work, and it is the same shape a Java class's unbound method
+ * <p>CPython keeps one of these per method in the type's dictionary, and the difference from a {@link
+ * PyBoundBuiltin} is only where the receiver comes from — a method read through a value has it already, a
+ * descriptor takes it as its first argument. That is what makes {@code str.upper("abc")} and {@code
+ * sorted(words, key=str.lower)} work, and it is the same shape a Java class's unbound method
  * has, which is why the interop layer hands out nothing else.
  *
  * <p>The call is handed to the receiver's own attribute lookup rather than to the table body, so that

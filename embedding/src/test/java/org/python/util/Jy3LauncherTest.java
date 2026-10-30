@@ -276,7 +276,8 @@ class Jy3LauncherTest {
                 "100_descr_tables.py",
                 "101_wrapper_tables.py",
                 "102_property_table.py",
-                "103_method_wrapper_table.py");
+                "103_method_wrapper_table.py",
+                "104_bound_method_table.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

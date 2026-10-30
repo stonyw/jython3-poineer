@@ -9,8 +9,8 @@ import java.util.function.Function;
  * The methods a type's values share, as CPython's method definition tables are.
  *
  * One table per type, built once in a static field, and a lookup that hands back a
- * {@link PyBoundMethod} carrying the receiver — which is what makes {@code "a".upper} print as
- * {@code <built-in method upper of str object>} and compare correctly against itself.
+ * {@link PyBoundBuiltin} carrying the receiver — which is what makes {@code "a".upper} print as
+ * {@code <built-in method upper of str object at 0x…>} and compare correctly against itself.
  *
  * <p>A table also remembers which type it belongs to, because the same methods are reachable through
  * the type: {@code str.upper("a")} takes the value as its argument, and CPython answers that with a
@@ -419,7 +419,10 @@ final class Members {
      * The method named {@code name}, bound to {@code self}, or a refusal if this type has no such method.
      *
      * <p>{@code self} is kept as the receiver and only the body sees the adapted one, so that a method a
-     * bool inherits from int still reports itself as {@code bool.bit_length}.
+     * bool inherits from int still reports itself as {@code bool.bit_length} while {@code int}'s body reads
+     * the integer it stands for. {@code method_get} makes a fresh {@code PyCFunctionObject} per read and
+     * {@code PyCFunction_NewEx} is handed a null module, which is what the copy made here answers for
+     * {@code __module__} until a program writes the one name of this kind that takes a write.
      */
     PyObject bind(PyObject self, String name) {
         PyNativeFunction noReceiver = statics.get(name);
@@ -434,13 +437,8 @@ final class Members {
         if (body == null) {
             return PyNotImplemented.INSTANCE;
         }
-        String doc = docs.get(name);
-        PyObject receiver = self.adaptedFor(owner);
-        if (receiver == self) {
-            return new PyBoundMethod(self, name, body, doc);
-        }
-        return new PyBoundMethod(self, name, (ignored, args, kwNames) ->
-                body.apply(receiver, args, kwNames), doc);
+        return new PyBoundBuiltin(
+                name, docs.get(name), flags.getOrDefault(name, 0), body, self, self.adaptedFor(owner));
     }
 
     /**

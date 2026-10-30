@@ -346,16 +346,17 @@ class InventedTableTest {
     }
 
     /**
-     * A bound row carries its flag with it — except where the bound kind files no such name.
+     * Every bound row carries the table its filed row was read with.
      *
      * <p>{@code object}'s two hooks bind over the class they were read from, and the bound half reads the
      * same two rules as the filed row: that is {@code methodForm} and {@code Bound} carrying the flag through
-     * the binding. A row of a value class's own {@code Members} table binds to this runtime's {@code method},
-     * which files neither {@code __text_signature__} nor a dictionary to write one into — the reference binds
-     * the same row to a {@code builtin_function_or_method} that reads both rules again.
+     * the binding. A row of a value class's own {@code Members} table binds over the value, and since {@code
+     * method_get} makes a {@code PyCFunctionObject} of it rather than a {@code PyMethodObject}, the read
+     * answers the same two rules too — the dictionary that files {@code __text_signature__} is the one {@code
+     * builtin_function_or_method} files, not the one {@code method} files.
      */
     @Test
-    void bindingCarriesTheTableExceptWhereTheBoundKindHasNoSuchName() {
+    void everyBoundRowCarriesTheTableItsFiledRowWasReadWith() {
         PyObject hook = Slots.getAttr(PyType.INT, "__subclasshook__");
         assertThat(hook.getType().name()).isEqualTo("builtin_function_or_method");
         assertThat(table(hook)).isEqualTo("($type, object, /)");
@@ -365,15 +366,15 @@ class InventedTableTest {
         PyObject subclassed = Slots.getAttr(PyType.INT, "__init_subclass__");
         assertThat(table(subclassed)).isEqualTo("($type, /)");
 
-        // The bound half of a `method_descriptor` on a value: same table in the reference, no name at all
-        // here. The unbound row still answers it, and the call still works.
+        // The bound half of a `method_descriptor` on a value: the same table, read from the same row, over a
+        // receiver the read keeps. A row whose text names nothing answers the flag in both halves.
         assertThat(table(Slots.getAttr(PyType.BYTES, "__getnewargs__"))).isEqualTo("($self, /)");
         PyObject bound = Slots.getAttr(SAMPLE, "__getnewargs__");
-        assertThat(bound.getType().name()).isEqualTo("method");
+        assertThat(bound.getType().name()).isEqualTo("builtin_function_or_method");
+        assertThat(table(bound)).isEqualTo("($self, /)");
         assertThat(Slots.getAttr(bound, "__name__")).isEqualTo(PyStr.of("__getnewargs__"));
-        refuses(
-                "AttributeError: 'method' object has no attribute '__text_signature__'",
-                () -> Slots.getAttr(bound, "__text_signature__"));
+        assertThat(Slots.getAttr(bound, "__self__")).isSameAs(SAMPLE);
+        assertThat(Slots.getAttr(bound, "__module__")).isSameAs(PyNone.INSTANCE);
         assertThat(((PyTuple) Slots.call(bound, new PyObject[0], null)).at(0)).isSameAs(SAMPLE);
     }
 
