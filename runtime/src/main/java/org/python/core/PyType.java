@@ -234,18 +234,20 @@ public class PyType extends PyObject {
     /** One activation of one code object, as Python sees it through {@code tb_frame} and {@code f_back}. */
     public static final PyType FRAME = builtin("frame").flagged(MAPPING);
     public static final PyType FUNCTION = builtin("function");
-    public static final PyType BUILTIN_FUNCTION = builtin("builtin_function_or_method");
+    public static final PyType BUILTIN_FUNCTION =
+            builtin("builtin_function_or_method").withoutNew();
     public static final PyType METHOD = builtin("method");
     /** What {@code str.upper} is: a method reached through its type rather than through a value. */
-    public static final PyType METHOD_DESCRIPTOR = builtin("method_descriptor");
+    public static final PyType METHOD_DESCRIPTOR = builtin("method_descriptor").withoutNew();
     /** What {@code sys.version_info.major} is: a field of a value, reached the same way. */
-    public static final PyType MEMBER_DESCRIPTOR = builtin("member_descriptor");
+    public static final PyType MEMBER_DESCRIPTOR = builtin("member_descriptor").withoutNew();
     /** What {@code type.__call__} is: a slot of a built-in type, reached the same way. */
-    static final PyType WRAPPER_DESCRIPTOR = builtin("wrapper_descriptor");
+    static final PyType WRAPPER_DESCRIPTOR = builtin("wrapper_descriptor").withoutNew();
     /** What {@code type.__prepare__} is before a class reads it: a class method of a built-in type. */
-    static final PyType CLASS_METHOD_DESCRIPTOR = builtin("classmethod_descriptor");
+    static final PyType CLASS_METHOD_DESCRIPTOR =
+            builtin("classmethod_descriptor").withoutNew();
     /** What {@code BaseException.args} is: a pair of C functions reached as an attribute. */
-    static final PyType GETSET_DESCRIPTOR = builtin("getset_descriptor");
+    static final PyType GETSET_DESCRIPTOR = builtin("getset_descriptor").withoutNew();
     /**
      * What {@code int.__dict__} is: the read-only window a type's dictionary opens onto itself.
      *
@@ -257,7 +259,7 @@ public class PyType extends PyObject {
     public static final PyType MAPPING_PROXY =
             builtin("mappingproxy").documented("Read-only proxy of a mapping.");
     /** What {@code Plain.__call__} is: a built-in slot already bound to a value. */
-    static final PyType METHOD_WRAPPER = builtin("method-wrapper");
+    static final PyType METHOD_WRAPPER = builtin("method-wrapper").withoutNew();
     /**
      * The two sentences {@code staticmethod_doc} and {@code classmethod_doc} write for the wrappers.
      *
@@ -553,9 +555,13 @@ public class PyType extends PyObject {
      * {@code Py_TPFLAGS_DISALLOW_INSTANTIATION}: this type's {@code tp_new} is a null pointer.
      *
      * <p>A type declared this way exists only as what another class's work hands out — {@code
-     * sys.version_info} and the three windows a dict opens — and the refusal comes before any argument is
-     * read. Both routes to it answer the same sentence, which is how the {@code tp_new} safety gate and a
-     * plain call can say {@code cannot create 'dict_keys' instances} for the same reason.
+     * sys.version_info}, the three windows a dict opens, and the seven kinds the class system is made of,
+     * from {@code builtin_function_or_method} and {@code method-wrapper} down to the five descriptors. The
+     * refusal comes before any argument is read, and every route reaches it from the same slot: {@code
+     * type_call} looks at the slot before it looks at the arguments, and {@code object_new} and {@code
+     * tp_new_wrapper} look at it for the class they were handed — which is how {@code dict_keys()}, {@code
+     * object.__new__(dict_keys)} and {@code dict_keys.__new__(dict_keys)} all say {@code cannot create
+     * 'dict_keys' instances}.
      */
     PyType withoutNew() {
         withoutInstances = true;

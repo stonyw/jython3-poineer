@@ -719,6 +719,10 @@ final class TypeDict {
             functionTable(into);
             return;
         }
+        if (owner == PyType.METHOD_WRAPPER) {
+            methodWrapperTable(into);
+            return;
+        }
         if (owner == PyType.METHOD_DESCRIPTOR) {
             methodDescrTable(into);
             return;
@@ -990,6 +994,59 @@ final class TypeDict {
         table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
         table.getset("__self__", null, self -> self.getAttr("__self__"), null);
         table.getset("__text_signature__", null, self -> self.getAttr("__text_signature__"), null);
+    }
+
+    /**
+     * {@code method-wrapper}'s own dictionary, as {@code descrobject.c} files it: the same sixteen-name shape
+     * {@link #functionTable} gives {@code builtin_function_or_method}, over a callable that is a bound slot —
+     * {@code __self__} where that one has a writable {@code __module__}, and the value rather than the type in
+     * what {@code __reduce__} names.
+     *
+     * <p>Nine rows are {@code add_operators} over the four slots this type fills — {@code tp_repr}, {@code
+     * tp_hash}, {@code tp_call} and the six halves of {@code tp_richcompare} — and each runs the slot over the
+     * value the wrapper holds while saying something about the wrapper: {@code wrapper_repr} words the
+     * descriptor's name beside the value's class and address, {@code wrapper_hash} mixes the value's identity
+     * with the descriptor's pointer, and {@code wrapper_call} hands {@code wp->self} to {@code
+     * wrapperdescr_raw_call} with the tail of its own arguments, which is what makes {@code
+     * (3).__add__.__call__(4)} the same 7 as {@code (3).__add__(4)}. The six ordering rows decline whatever they
+     * are asked, because {@code wrapper_richcompare} ranks nothing and answers equality out of the descriptor
+     * and the value together — the only pair a program has, since every read makes a fresh wrapper.
+     *
+     * <p>{@code __reduce__} and {@code __self__} are the record's one {@code PyMethodDef} and its one
+     * {@code PyMemberDef}, and the pair is the difference from the unbound half of this family: where a
+     * descriptor pickles as the type and the name, the wrapper that was bound from it pickles as the value and
+     * the name, and {@code __self__} is the one name here a program can read but never write, since {@code
+     * wrapper_members} registers it {@code Py_READONLY}. The five getsets after them read out of the
+     * descriptor rather than the value — the name it was filed under, the class that filed it, the sentence and
+     * the table its {@code ml_doc} carries — so a wrapper answers the same five reads as the descriptor it was
+     * made from. This type files no {@code tp_doc}, so {@code type_dict_set_doc} leaves the dictionary alone
+     * and the {@code __doc__} row is what a read of {@code method-wrapper.__doc__} hands out — the descriptor
+     * itself.
+     */
+    private static void methodWrapperTable(PyDict into) {
+        PyType owner = PyType.METHOD_WRAPPER;
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper(
+                "__call__",
+                CALL_DOC,
+                (args, kwNames, qualified) ->
+                        args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
+        table.wrapper("__lt__", LT_DOC, wrapperCompare(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, wrapperCompare(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, wrapperCompare(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, wrapperCompare(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, wrapperCompare(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, wrapperCompare(CompareOp.GE));
+        table.method("__reduce__", null, TypeDict::wrapperReduce, METH_NOARGS);
+        table.member("__self__", self -> self.getAttr("__self__"));
+        table.getset("__objclass__", null, self -> self.getAttr("__objclass__"), null);
+        table.getset("__name__", null, self -> self.getAttr("__name__"), null);
+        table.getset("__qualname__", null, self -> self.getAttr("__qualname__"), null);
+        table.getset("__doc__", null, self -> self.getAttr("__doc__"), null);
+        table.getset(
+                "__text_signature__", null, self -> self.getAttr("__text_signature__"), null);
     }
 
     /**
@@ -1457,6 +1514,42 @@ final class TypeDict {
         return PyTuple.of(
                 getattr,
                 PyTuple.of(self.getAttr("__objclass__"), self.getAttr("__name__")));
+    }
+
+    /**
+     * {@code wrapper_reduce}: {@code (getattr, (the value the wrapper holds, the slot's name))}.
+     *
+     * <p>The one {@code PyMethodDef} of the wrapper record, and the reason a bound slot pickles where {@code
+     * object_reduce} refuses it: {@code (3).__add__.__reduce__()} names the {@code 3} beside the name, while
+     * {@link #descrReduce} — pickle's row of the three unbound kinds, over {@code descr_methods} rather than
+     * this list — names the {@code int} the descriptor belongs to instead. Both hand the pair to {@code
+     * getattr}, which is the half that makes the restored value the same method rather than a copy of
+     * nothing.
+     */
+    private static PyObject wrapperReduce(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        PyObject wrapper = args[0];
+        PyObject getattr = PyRuntime.builtins().get(PyStr.interned("getattr"));
+        return PyTuple.of(
+                getattr,
+                PyTuple.of(wrapper.getAttr("__self__"), wrapper.getAttr("__name__")));
+    }
+
+    /**
+     * {@code wrapper_richcompare} behind the six ordering rows of a bound slot: the same two answers
+     * {@link #functionCompare} gives, over the pair of identities a wrapper is made of.
+     *
+     * <p>The four orderings have no ranking to offer, so {@code (3).__add__.__lt__(other)} declines and the
+     * operator that called it complains. Equality is the descriptor and the value together, never the
+     * wrapper alone — and since every read makes a fresh wrapper, the pair is the only thing a program has
+     * to compare.
+     */
+    private static Method wrapperCompare(CompareOp cmp) {
+        boolean deciding = cmp == CompareOp.EQ || cmp == CompareOp.NE;
+        return (args, kwNames, qualified) ->
+                deciding && args[1].getType() == PyType.METHOD_WRAPPER
+                        ? args[0].richCompare(cmp, args[1])
+                        : PyNotImplemented.INSTANCE;
     }
 
     /**
