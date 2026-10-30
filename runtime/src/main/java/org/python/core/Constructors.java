@@ -107,23 +107,24 @@ final class Constructors {
 
     // --- the descriptor builtins ---------------------------------------------------------------
 
-    private static final String[] PROPERTY_NAMES = {"fget", "fset", "fdel", "doc"};
-    private static final PyObject[] PROPERTY_DEFAULTS = {
-        PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE,
-    };
-
     /**
      * {@code property(fget, fset, fdel, doc)}.
      *
-     * <p>The four arguments may all be given by name, and {@code None} is what an omitted one is read
-     * as — including {@code doc=None}, which does not mean "no docstring" but "take the getter's". The
-     * count refusal counts a keyword among the arguments, which puts {@code property} in the qualified
-     * family rather than the legacy one {@code classmethod} belongs to.
+     * <p>The four arguments may all be given by name, and the ones a call leaves out are read as the ones
+     * that are not there — including {@code doc}, whose absence does not mean "no docstring" but "go and ask
+     * the getter". The parser is the same one the {@code __init__} row runs, which is what puts {@code
+     * property} in the qualified family rather than the legacy one {@code classmethod} belongs to and makes a
+     * fifth argument refused in the same words whichever of the two ways the property was made.
      */
     private static PyObject property(PyObject[] args, String[] kwNames) {
-        Arguments.atMostQualified("property", args, kwNames, PROPERTY_NAMES.length);
         PyObject[] given =
-                Arguments.fill("property", args, kwNames, PROPERTY_NAMES, PROPERTY_DEFAULTS);
+                Arguments.unpackKeywords(
+                        "property",
+                        args,
+                        kwNames,
+                        PyProperty.PARAMETERS,
+                        0,
+                        PyProperty.PARAMETERS.length);
         return new PyProperty(given[0], given[1], given[2], given[3]);
     }
 

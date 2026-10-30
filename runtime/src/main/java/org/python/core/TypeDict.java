@@ -236,6 +236,28 @@ final class TypeDict {
             "__delete__($self, instance, /)\n--\n\nDelete an attribute of instance.";
 
     /**
+     * The four sentences of {@code property_methods}.
+     *
+     * <p>The first three are written beside their functions as plain prose, with no clinic block, which is
+     * why the three rows carry {@code METH_O} and read their argument table out of the flag: a row of a
+     * built-in type whose {@code ml_doc} names no table gets {@code ($self, object, /)} from {@code
+     * signature_from_flags} and nothing else. The fourth is the odd one — {@code set_name_doc} is written
+     * in the clinic shape by hand, block and all, over a {@code METH_VARARGS} that has no table to read, so
+     * its {@code __doc__} is the sentence below the rule and its table is the text above it.
+     */
+    private static final String PROPERTY_GETTER_DOC =
+            "Descriptor to obtain a copy of the property with a different getter.";
+
+    private static final String PROPERTY_SETTER_DOC =
+            "Descriptor to obtain a copy of the property with a different setter.";
+
+    private static final String PROPERTY_DELETER_DOC =
+            "Descriptor to obtain a copy of the property with a different deleter.";
+
+    private static final String PROPERTY_SET_NAME_DOC =
+            "__set_name__($self, owner, name, /)\n--\n\nMethod to set name of a property.";
+
+    /**
      * The six sentences the {@code PyNumberMethods} half of a set's struct carries.
      *
      * <p>{@code set} and {@code frozenset} are the only types here whose operators are number slots rather
@@ -725,6 +747,10 @@ final class TypeDict {
             classMethodTable(into);
             return;
         }
+        if (owner == PyType.PROPERTY) {
+            propertyTable(into);
+            return;
+        }
         if (owner == PyType.BYTES) {
             bytesTable(into);
             return;
@@ -1210,6 +1236,139 @@ final class TypeDict {
                 (self, value) ->
                         ((PyCallableWrapper) self).writeWrappedAttribute("__annotate__", value));
         table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code property}'s own dictionary, as {@code descrobject.c} files it: fifteen names.
+     *
+     * <p>Two of the four wrappers after {@code __new__} are the halves of one slot: {@code property} has a
+     * {@code tp_descr_set} whatever it holds, and {@code add_operators} copies that pointer twice over, as
+     * the {@code __set__} and the {@code __delete__} row. {@code __init__} is the one row of these fifteen
+     * that takes keywords at all — {@code wrap_init} hands the whole argument list to {@code property_init}
+     * — and it is the only route to the five fields, which is why a value made by {@code __new__} alone has
+     * nothing in any of them and reads {@code None} for the three functions and no {@code __name__} at all.
+     *
+     * <p>The three members and the {@code __doc__} beside them are one {@code _Py_T_OBJECT} offset each, and
+     * only the last is written with anything but {@code Py_READONLY}: the docstring a property carries is
+     * storage a program may rewrite and empty, and {@code del p.__doc__} leaves {@code None} behind rather
+     * than complaining. The two getsets are the name {@code __set_name__} was handed and the abstract flag
+     * read off the three functions, and the first of those has a setter while the second has none — which is
+     * why {@code p.__name__ = 'x'} answers {@code None} and {@code p.__isabstractmethod__ = True} says the
+     * field is not writable. There is no {@code __repr__} and no {@code __call__} row, because the struct
+     * fills neither slot.
+     */
+    private static void propertyTable(PyDict into) {
+        PyType owner = PyType.PROPERTY;
+        Table table = new Table(owner, into);
+        table.raw(
+                "__new__",
+                NEW_DOC,
+                (args, kwNames, qualified) -> {
+                    declaredClass(owner, args, kwNames);
+                    return new PyProperty();
+                });
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.wrapper("__set__", DESCR_SET_DOC, TypeDict::propertyWrite);
+        table.wrapper("__delete__", DESCR_DELETE_DOC, TypeDict::propertyRemove);
+        table.wrapper("__init__", INIT_DOC, TypeDict::propertyInit);
+        table.method(
+                "getter",
+                PROPERTY_GETTER_DOC,
+                (args, kwNames, qualified) ->
+                        propertyCopy(args, kwNames, qualified, PyProperty.READ),
+                PyNativeFunction.METH_O);
+        table.method(
+                "setter",
+                PROPERTY_SETTER_DOC,
+                (args, kwNames, qualified) ->
+                        propertyCopy(args, kwNames, qualified, PyProperty.WRITE),
+                PyNativeFunction.METH_O);
+        table.method(
+                "deleter",
+                PROPERTY_DELETER_DOC,
+                (args, kwNames, qualified) ->
+                        propertyCopy(args, kwNames, qualified, PyProperty.REMOVE),
+                PyNativeFunction.METH_O);
+        table.method("__set_name__", PROPERTY_SET_NAME_DOC, TypeDict::propertySetName);
+        table.member("fget", self -> ((PyProperty) self).function(PyProperty.READ));
+        table.member("fset", self -> ((PyProperty) self).function(PyProperty.WRITE));
+        table.member("fdel", self -> ((PyProperty) self).function(PyProperty.REMOVE));
+        table.member(
+                "__doc__",
+                self -> ((PyProperty) self).documentation(),
+                (self, value) -> ((PyProperty) self).writeDocumentation(value));
+        table.getset(
+                "__name__",
+                null,
+                self -> ((PyProperty) self).nameValue(),
+                (self, value) -> ((PyProperty) self).writeName(value));
+        table.getset(
+                "__isabstractmethod__",
+                null,
+                self -> ((PyProperty) self).abstractFlag(),
+                null);
+    }
+
+    /**
+     * {@code property_init} over the receiver the {@code __init__} row was handed.
+     *
+     * <p>The parser's own name is the bare type, not the qualified row: clinic writes {@code .fname =
+     * "property"} for this one, so a fifth argument is refused as {@code property() takes at most 4
+     * arguments (5 given)} whether the call came through {@code type(...)} or through the slot wrapper.
+     * What the four arguments say is refilled over the same object, and the docstring is not among them
+     * unless one of them is it — see {@link PyProperty#refill}.
+     */
+    private static PyObject propertyInit(PyObject[] args, String[] kwNames, String unused) {
+        PyObject[] given =
+                Arguments.unpackKeywords(
+                        PyType.PROPERTY.name(), tail(args, kwNames), kwNames,
+                        PyProperty.PARAMETERS, 0, PyProperty.PARAMETERS.length);
+        ((PyProperty) args[0]).refill(given[0], given[1], given[2], given[3]);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code property_getter}, {@code _setter} and {@code _deleter}: three names for one copy.
+     *
+     * <p>Each is {@code METH_O}, so the argument count and the keyword refusal are the same pair every
+     * built-in method answers — and both name the row as Python reads it, {@code property.getter()}, which
+     * is the qualified name rather than the bare one {@code property_init} counts under.
+     */
+    private static PyObject propertyCopy(
+            PyObject[] args, String[] kwNames, String qualified, int which) {
+        Arguments.exactlyOne(qualified + "()", tail(args, kwNames), kwNames);
+        return ((PyProperty) args[0]).copied(args[1], which);
+    }
+
+    /**
+     * {@code property_set_name} over the {@code __set_name__} row.
+     *
+     * <p>The count is written into the C function rather than parsed, so it names itself bare — {@code
+     * __set_name__() takes 2 positional arguments but 1 were given} — and it counts what arrived after the
+     * receiver, which is one less than the argument list the row was handed. Keywords are refused ahead of
+     * that, by {@code methoddescr_call} over the qualified name.
+     */
+    private static PyObject propertySetName(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.noKeywords(qualified + "()", kwNames);
+        int given = Arguments.positional(args, kwNames) - 1;
+        if (given != 2) {
+            throw Slots.typeError(
+                    "__set_name__() takes 2 positional arguments but %d were given", given);
+        }
+        ((PyProperty) args[0]).setName(args[2]);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code property_descr_set} with a value in hand, behind the {@code __set__} row. */
+    private static PyObject propertyWrite(PyObject[] args, String[] kwNames, String unused) {
+        ((PyProperty) args[0]).write(args[1], args[2]);
+        return PyNone.INSTANCE;
+    }
+
+    /** The same slot from the {@code __delete__} row, which CPython reaches with nothing handed over. */
+    private static PyObject propertyRemove(PyObject[] args, String[] kwNames, String unused) {
+        ((PyProperty) args[0]).write(args[1], null);
+        return PyNone.INSTANCE;
     }
 
     /**

@@ -293,8 +293,51 @@ public class PyType extends PyObject {
                     + "Class methods are different than C++ or Java static methods.\n"
                     + "If you want those, see the staticmethod builtin.";
 
-    /** The three members that are nothing but the descriptor protocol, each its own type. */
-    public static final PyType PROPERTY = builtin("property");
+    /**
+     * The three members that are nothing but the descriptor protocol, each its own type.
+     *
+     * <p>{@code property}'s sentence is not written beside its {@code PyTypeObject}, the way the two
+     * wrappers below it write theirs: it is {@code property_init}'s clinic text, whose first three lines are
+     * the argument table and the rule under it. {@code _PyType_DocWithoutSignature} cuts those away on the way
+     * into {@code __doc__}, which is why the value a program reads is the 750 characters below the table and
+     * not the 806 the source holds — and why the row named {@code __doc__} in the dictionary is a member over
+     * the property's own field, with nothing to do with the class's.
+     */
+    private static final String PROPERTY_DOC =
+            "Property attribute.\n"
+                    + "\n"
+                    + "  fget\n"
+                    + "    function to be used for getting an attribute value\n"
+                    + "  fset\n"
+                    + "    function to be used for setting an attribute value\n"
+                    + "  fdel\n"
+                    + "    function to be used for del'ing an attribute\n"
+                    + "  doc\n"
+                    + "    docstring\n"
+                    + "\n"
+                    + "Typical use is to define a managed attribute x:\n"
+                    + "\n"
+                    + "class C(object):\n"
+                    + "    def getx(self): return self._x\n"
+                    + "    def setx(self, value): self._x = value\n"
+                    + "    def delx(self): del self._x\n"
+                    + "    x = property(getx, setx, delx, \"I'm the 'x' property.\")\n"
+                    + "\n"
+                    + "Decorators make defining new properties or modifying existing ones easy:\n"
+                    + "\n"
+                    + "class C(object):\n"
+                    + "    @property\n"
+                    + "    def x(self):\n"
+                    + "        \"I am the 'x' property.\"\n"
+                    + "        return self._x\n"
+                    + "    @x.setter\n"
+                    + "    def x(self, value):\n"
+                    + "        self._x = value\n"
+                    + "    @x.deleter\n"
+                    + "    def x(self):\n"
+                    + "        del self._x";
+
+    public static final PyType PROPERTY = builtin("property").documented(PROPERTY_DOC);
     public static final PyType CLASS_METHOD =
             builtin("classmethod").documented(CLASSMETHOD_DOC);
     public static final PyType STATIC_METHOD =
