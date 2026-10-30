@@ -795,6 +795,10 @@ final class TypeDict {
             floatTable(into);
             return;
         }
+        if (owner == PyType.COMPLEX) {
+            complexTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -2164,6 +2168,101 @@ final class TypeDict {
     private static PyObject floatsNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.FLOAT, args, kwNames);
         return Constructors.floating(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The thirty-one rows {@code complex} files for itself.
+     *
+     * <p>Two C lists and one dictionary entry, in the order {@code __dict__} shows them: the twenty-two
+     * slot wrappers behind {@code complex_as_number}, then the five of {@code complex_methods}
+     * (Objects/complexobject.c:1331) and the two of {@code complex_members}, and above all of them the
+     * {@code __new__} clinic writes. The number struct leaves four slots empty, which is why this type
+     * files no {@code __mod__}, no {@code __floordiv__} and no {@code __divmod__} where {@code float} and
+     * {@code int} both file nine arithmetic rows.
+     *
+     * <p>{@code real} and {@code imag} are a {@code Py_T_DOUBLE} field of the value's own struct marked
+     * {@code Py_READONLY}, and so are {@code member_descriptor}s — the same two reads and the same refusal
+     * of a write that {@code float} and {@code int} answer through a {@code getset_descriptor}, which is
+     * what {@code vars(complex)['real'].__class__.__name__} says and what makes the four names of the
+     * descriptor kind ({@code __objclass__} among them) answer here. The four orderings are filed because
+     * {@code tp_richcompare} is, and answer the decline it answers: {@code complex.__lt__(1+2j, 3)} is
+     * {@code NotImplemented}, where the operator over the same pair names both types. The type's own
+     * sentence is {@code tp_doc} with the argument table cut out of it.
+     */
+    private static void complexTable(PyDict into) {
+        PyType owner = PyType.COMPLEX;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::complexesNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, complexComparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, complexComparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, complexComparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, complexComparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, complexComparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, complexComparing(CompareOp.GE));
+        table.wrapper("__add__", ADD_DOC, complexOperating(BinaryOp.ADD));
+        table.wrapper("__radd__", RADD_DOC, reflectedComplexOperating(BinaryOp.ADD));
+        table.wrapper("__sub__", SUB_DOC, complexOperating(BinaryOp.SUB));
+        table.wrapper("__rsub__", RSUB_DOC, reflectedComplexOperating(BinaryOp.SUB));
+        table.wrapper("__mul__", MUL_DOC, complexOperating(BinaryOp.MUL));
+        table.wrapper("__rmul__", RMUL_DOC, reflectedComplexOperating(BinaryOp.MUL));
+        table.wrapper("__pow__", POW_DOC, TypeDict::complexRaising);
+        table.wrapper("__rpow__", RPOW_DOC, TypeDict::reflectedComplexRaising);
+        table.wrapper("__neg__", NEG_DOC, args -> Numeric.unary(UnaryOp.NEGATIVE, args[0]));
+        table.wrapper("__pos__", POS_DOC, args -> Numeric.unary(UnaryOp.POSITIVE, args[0]));
+        table.wrapper("__abs__", ABS_DOC, args -> Numeric.unary(UnaryOp.ABSOLUTE, args[0]));
+        table.wrapper("__bool__", TRUTH_DOC, args -> args[0].truth());
+        table.wrapper("__truediv__", TRUEDIV_DOC, complexOperating(BinaryOp.TRUEDIV));
+        table.wrapper("__rtruediv__", RTRUEDIV_DOC, reflectedComplexOperating(BinaryOp.TRUEDIV));
+        table.named(
+                "from_number", "conjugate", "__complex__", "__getnewargs__", "__format__");
+        table.member("real", REAL_DOC, self -> PyFloat.of(((PyComplex) self).real()), null);
+        table.member("imag", IMAG_DOC, self -> PyFloat.of(((PyComplex) self).imaginary()), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code complex_richcompare} over the row: the two equalities, and the four orderings declined.
+     *
+     * <p>{@code CHECK_BINOP} here is {@code PyNumber_Check} over both operands, so a complex is compared
+     * with an integer — {@code complex.__eq__(1+2j, 1)} is {@code False} rather than a refusal — while a
+     * string is declined the way {@code float} declines it.
+     */
+    private static Method complexComparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> Numeric.complexCompare(cmp, args[0], args[1]);
+    }
+
+    /** {@code complex_add} and its five siblings: the two-operand slot of the receiver, decline included. */
+    private static Method complexOperating(BinaryOp op) {
+        return (args, kwNames, qualified) -> Numeric.complexSlot(op, args[0], args[1]);
+    }
+
+    /** {@code RBINSLOT}'s swap: the same C function with the operands the other way round. */
+    private static Method reflectedComplexOperating(BinaryOp op) {
+        return (args, kwNames, qualified) -> Numeric.complexSlot(op, args[1], args[0]);
+    }
+
+    /** {@code complex_pow}: the modulus is refused before either operand is read, in the family's own words. */
+    private static PyObject complexRaising(PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.complexPower(args[0], args[1], modulus(args));
+    }
+
+    private static PyObject reflectedComplexRaising(
+            PyObject[] args, String[] kwNames, String qualified) {
+        return Numeric.complexPower(args[1], args[0], modulus(args));
+    }
+
+    /**
+     * {@code actual_complex_new} over a {@code tp_new} reached through the dictionary.
+     *
+     * <p>The class gate is {@code tp_new_wrapper}'s, so {@code complex.__new__(int)} names the subtype it
+     * was handed; what follows is the constructor's own two stages, which is what makes
+     * {@code complex.__new__(complex, 1+2j)} the very value it was given.
+     */
+    private static PyObject complexesNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.COMPLEX, args, kwNames);
+        return Constructors.complexing(tail(args, kwNames), kwNames);
     }
 
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */

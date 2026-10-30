@@ -605,6 +605,58 @@ final class Numeric {
         return PyComplex.of(magnitude * Math.cos(phase), magnitude * Math.sin(phase));
     }
 
+    /**
+     * {@code CHECK_BINOP} over the pair, then the arithmetic of {@link #complexOp}.
+     *
+     * <p>The gate is looser than {@code float}'s because the body converts: {@code complex.__add__(1+2j, 3)}
+     * answers {@code (4+2j)} where {@code float.__add__(1.5, 2j)} declines, and {@code complex.__add__(1+2j,
+     * True)} answers too — a bool is a number to {@code PyNumber_AsDouble}. What is left outside the tower
+     * is declined rather than refused, so the operator can ask the reflected slot and, failing that, name
+     * both types in its complaint.
+     */
+    static PyObject complexSlot(BinaryOp op, PyObject left, PyObject right) {
+        if (!isNumber(left) || !isNumber(right)) {
+            return PyNotImplemented.INSTANCE;
+        }
+        return complexOp(op, asComplex(left), asComplex(right));
+    }
+
+    /** {@code complex_pow}: the modulus arrives as the one {@code ValueError} of this family. */
+    static PyObject complexPower(PyObject base, PyObject exponent, PyObject modulus) {
+        if (modulus != PyNone.INSTANCE) {
+            throw Slots.valueError("complex modulo");
+        }
+        return complexSlot(BinaryOp.POW, base, exponent);
+    }
+
+    /**
+     * {@code complex_richcompare}: the two equalities, and no ordering test at all.
+     *
+     * <p>{@code complex} files {@code tp_richcompare} and not the six slot methods, so the four ordering
+     * rows answer the decline whatever arrives — {@code complex.__lt__(1+2j, 3)} is {@code NotImplemented}
+     * while {@code (1+2j) < 3} is the error that names both types. Equality reads the other side the way
+     * {@code float} reads it, which is what makes {@code (2+0j) == 2} true and {@code (1+0j) == 10**400}
+     * false: an integer with no double form cannot be the real part of anything.
+     */
+    static PyObject complexCompare(CompareOp cmp, PyObject complexSide, PyObject other) {
+        if (cmp != CompareOp.EQ && cmp != CompareOp.NE) {
+            return PyNotImplemented.INSTANCE;
+        }
+        if (!isNumber(other)) {
+            return PyNotImplemented.INSTANCE;
+        }
+        PyComplex z = (PyComplex) complexSide;
+        boolean same;
+        if (other instanceof PyComplex part) {
+            same = z.real() == part.real() && z.imaginary() == part.imaginary();
+        } else {
+            same =
+                    z.imaginary() == 0.0
+                            && floatCompare(CompareOp.EQ, PyFloat.of(z.real()), other) == PyBool.TRUE;
+        }
+        return cmp == CompareOp.EQ ? PyBool.of(same) : PyBool.of(!same);
+    }
+
     // --- unary, absolute and comparison ----------------------------------------------------
 
     /**
@@ -617,7 +669,10 @@ final class Numeric {
         if (value instanceof PyComplex c) {
             return switch (op) {
                 case NEGATIVE -> PyComplex.of(-c.real(), -c.imaginary());
-                case POSITIVE -> PyComplex.of(c.real(), c.imaginary());
+                // `complex_pos` (Objects/complexobject.c:770) hands back the receiver for an exact complex,
+                // so `+z is z` — the same identity `nb_positive` answers for a float and a bool, and the only
+                // one of the twenty-two wrappers of this type that returns the value rather than a number.
+                case POSITIVE -> c;
                 case ABSOLUTE -> PyFloat.of(complexAbs(c));
                 case INVERT -> PyNotImplemented.INSTANCE;
             };

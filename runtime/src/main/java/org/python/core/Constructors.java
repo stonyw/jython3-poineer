@@ -53,7 +53,7 @@ final class Constructors {
             return floating(args, keywordNames);
         }
         if (type == PyType.COMPLEX) {
-            return complexValue(args, keywordNames);
+            return complexing(args, keywordNames);
         }
         if (type == PyType.STR) {
             return text(args, keywordNames);
@@ -569,7 +569,7 @@ final class Constructors {
         return out.toString();
     }
 
-    private static PyObject complexValue(PyObject[] args, String[] kwNames) {
+    static PyObject complexing(PyObject[] args, String[] kwNames) {
         acceptKeywordsOnly("complex", kwNames, "real", "imag");
         int given = Arguments.count(args, kwNames);
         if (given > 2) {
@@ -580,6 +580,12 @@ final class Constructors {
                 ? args[0]
                 : keywordOr(kwNames, args, positional, "real", PyInt.ZERO);
         boolean imagGiven = positional > 1 || names(kwNames, "imag");
+        if (positional == 1 && given == 1 && real instanceof PyComplex taken) {
+            // The constructor is two stages in CPython: `actual_complex_new` answers a lone complex with
+            // the very object it was handed — `complex(z) is z` — and only the shapes it cannot settle
+            // there reach the clinic half that reads `real` and `imag` as two numbers.
+            return taken;
+        }
         if (!imagGiven && real instanceof PyStr s) {
             // complex("1+2j") is a parse, and only when no imaginary part was also given — otherwise
             // the string is simply the wrong kind of first argument.

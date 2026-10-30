@@ -128,7 +128,25 @@ public class PyType extends PyObject {
      */
     public static final PyType BOOL = subclass("bool", INT).documented(BOOL_DOC);
     public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF).documented(FLOAT_DOC);
-    public static final PyType COMPLEX = builtin("complex");
+
+    /**
+     * The sentence {@code complex_new__doc__} says, which is the half of it the reference reads.
+     *
+     * <p>{@code tp_doc} holds the whole internal text, argument table and all, and {@code type} cuts the
+     * table out before answering either name — the dictionary's {@code __doc__} and {@code complex.__doc__}
+     * are both the sentence left behind. The four lines are the constructor's four shapes, in the order the
+     * clinic's paragraph puts them, and unlike {@link #FLOAT_DOC} this one runs to a paragraph because the
+     * two halves of {@code complex(real, imag)} need naming separately.
+     */
+    private static final String COMPLEX_DOC =
+            "Create a complex number from a string or numbers.\n"
+                    + "\n"
+                    + "If a string is given, parse it as a complex number.\n"
+                    + "If a single number is given, convert it to a complex number.\n"
+                    + "If the 'real' or 'imag' arguments are given, create a complex number\n"
+                    + "with the specified real and imaginary components.";
+
+    public static final PyType COMPLEX = builtin("complex").documented(COMPLEX_DOC);
 
     /**
      * The two sentences CPython's {@code unicode_doc} and {@code bytes_doc} write for these types.
