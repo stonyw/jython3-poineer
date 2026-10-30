@@ -14,6 +14,11 @@ package org.python.core;
  * is hashable, and answers {@code v & x} with a {@code TypeError}. Every result of a view's set
  * operation is a plain {@code set}, because CPython files the view's values into one before it
  * starts, and the operator then complains in the set's words rather than the view's.
+ *
+ * <p>The three types keep their rows in one place here as much as CPython does: {@code dictview_repr},
+ * {@code dictview_len} and one {@code tp_iter} are shared by all three, while {@code dictviews_as_number}
+ * and {@code dictview_richcompare} are written into only two of the three structs, and {@code
+ * dictvalues_methods} is {@code dictkeys_methods} without {@code isdisjoint}.
  */
 final class DictViews {
 
@@ -23,9 +28,20 @@ final class DictViews {
     // Under `object`, as CPython's three view types are: a base of `type` would put `type.__dict__` and
     // `type.__dir__` in a value's MRO, and those getters cast their receiver to a `PyType`. None of the
     // three can be called — CPython gives each an empty `tp_new`, so a view only ever comes from a dict.
-    private static final PyType KEYS = PyType.declare("dict_keys", PyType.OBJECT).withoutNew();
-    private static final PyType VALUES = PyType.declare("dict_values", PyType.OBJECT).withoutNew();
-    private static final PyType ITEMS = PyType.declare("dict_items", PyType.OBJECT).withoutNew();
+    private static final PyType KEYS = PyType.DICT_KEYS;
+    private static final PyType VALUES = PyType.DICT_VALUES;
+    private static final PyType ITEMS = PyType.DICT_ITEMS;
+
+    /** The three {@code PyDoc_STRVAR}s beside the method lists, each of which is the row's whole sentence. */
+    private static final String ISDISJOINT_DOC =
+            "Return True if the view and the given iterable have a null intersection.";
+
+    private static final String REVERSED_KEYS_DOC =
+            "Return a reverse iterator over the dict keys.";
+    private static final String REVERSED_ITEMS_DOC =
+            "Return a reverse iterator over the dict items.";
+    private static final String REVERSED_VALUES_DOC =
+            "Return a reverse iterator over the dict values.";
 
     static PyObject keys(PyDict mapping) {
         return new Keys(mapping);
@@ -39,20 +55,43 @@ final class DictViews {
         return new Items(mapping);
     }
 
+    /**
+     * {@code view.mapping}, reached the way the type dictionary reaches it: through a descriptor written
+     * for the type rather than through a value that knows its own name is filed.
+     *
+     * <p>The receiver is already the right kind of view — {@code PyGetSetDescriptor} checks it against the
+     * class that declares the row before calling this — and a fresh window is made every time, because
+     * {@code dictview_mapping} hands out a new {@code PyDictProxyObject} rather than one the view holds.
+     */
+    static PyObject mappingOf(PyObject view) {
+        return ((View) view).window();
+    }
+
     /** What the three share: the dict they read, its length, and how it is shown. */
     private abstract static class View extends PyObject {
 
         final PyDict mapping;
-        private final Members methods;
 
-        View(PyDict mapping, PyType type, Members methods) {
+        View(PyDict mapping, PyType type) {
             super(type);
             this.mapping = mapping;
-            this.methods = methods;
         }
 
         /** The values the view shows, in the dict's own order. */
         abstract PyObject[] elements();
+
+        /** The same values from the last one written back to the first, which is what {@code reversed()} asks. */
+        abstract PyIterator backwards();
+
+        /**
+         * {@code view.isdisjoint} and {@code view.__reversed__}, bound the way every other built-in value
+         * binds its two method rows: through the table rather than through the dictionary, because a read
+         * that reached the {@code method_descriptor} there would ask this same read for the method again.
+         */
+        @Override
+        public PyObject getAttr(String name) {
+            return Members.find(this, name);
+        }
 
         @Override
         public PyObject length() {
@@ -68,22 +107,17 @@ final class DictViews {
             return getType().name() + "(" + PyList.of(elements()).repr() + ")";
         }
 
-        @Override
-        public PyObject getAttr(String name) {
-            if ("mapping".equals(name)) {
-                // A mappingproxy has no M1 equivalent, and handing back the dict itself would be a
-                // promise the view could not keep: the proxy refuses what this dict allows.
-                throw Slots.notImplemented("the 'mapping' attribute of a dict view");
-            }
-            return methods.bind(this, name);
+        /** The window over the dict this view reads, made fresh. */
+        PyObject window() {
+            return PyMappingProxy.of(mapping);
         }
     }
 
     /** {@code dict_keys} and {@code dict_items}, the two views CPython treats as sets. */
     private abstract static class SetLike extends View {
 
-        SetLike(PyDict mapping, PyType type, Members methods) {
-            super(mapping, type, methods);
+        SetLike(PyDict mapping, PyType type) {
+            super(mapping, type);
         }
 
         /** Whether one value is a member, in the view's own words. */
@@ -98,11 +132,15 @@ final class DictViews {
          * CPython's {@code dictview_richcompare}, which is offered only to a set or to another
          * set-like view and never orders anything: the length decides first, and then whether every
          * value on one side is on the other. {@code <} is a proper subset.
+         *
+         * <p>The guard is the function's first line and it declines with {@code NotImplemented} rather than
+         * answering, so {@code keys == [1]} is the identity comparison that {@code PyObject_RichCompare} falls
+         * back to, not the {@code False} an equality written over all operands would give.
          */
         @Override
         public PyObject richCompare(CompareOp cmp, PyObject other) {
             if (!(other instanceof PySet || other instanceof SetLike)) {
-                return super.richCompare(cmp, other);
+                return PyNotImplemented.INSTANCE;
             }
             int length = mapping.size();
             int otherLength = sizeOf(other);
@@ -227,15 +265,27 @@ final class DictViews {
             return true;
         }
 
+        /** Whether this view has any value in common with the other side, asked through {@code other}'s test. */
+        private boolean overlapsWith(PyObject other) {
+            for (PyObject element : elements()) {
+                if (Slots.contains(other, element)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /** {@code view.isdisjoint(other)}: the shorter walk when the other side has a length. */
         private PyObject disjoint(PyObject other) {
             if (other == this) {
                 return PyBool.of(mapping.size() == 0);
             }
-            if (other instanceof PySet || other instanceof SetLike) {
-                return PyBool.of(sizeOf(other) > mapping.size()
-                        ? !containedIn(other)
-                        : !covers(other));
+            if ((other instanceof PySet || other instanceof SetLike)
+                    && sizeOf(other) > mapping.size()) {
+                // {@code dictviews_isdisjoint} swaps the two sides when the other is a set with more
+                // values than this view, so that the shorter of the two is the one walked. The test is the
+                // same either way — one common value is enough — and only the direction of the walk moves.
+                return PyBool.of(!overlapsWith(other));
             }
             // Anything else is iterated and tested against the view, which is where the dict's own
             // key message comes from for `isdisjoint([[1]])`.
@@ -253,21 +303,42 @@ final class DictViews {
         private static int sizeOf(PyObject other) {
             return other instanceof PySet set ? set.size() : ((SetLike) other).mapping.size();
         }
-
-        /** The one method the two set-like views share. */
-        private static Members methods(PyType type) {
-            return Members.of(type)
-                    .addOne("isdisjoint", (self, other) -> ((SetLike) self).disjoint(other));
-        }
     }
+
+    /** The method list a set-like view files: {@code dictkeys_methods} and its {@code dictitems} twin. */
+    private static Members setMethods(PyType type, String reversedDoc) {
+        return Members.of(type)
+                .addOne(
+                        "isdisjoint",
+                        ISDISJOINT_DOC,
+                        (self, other) -> ((SetLike) self).disjoint(other))
+                .addNoArgument("__reversed__", reversedDoc, self -> ((View) self).backwards());
+    }
+
+    /** The one method {@code dictvalues_methods} files — the list without {@code isdisjoint}. */
+    private static Members valuesMethods() {
+        return Members.of(VALUES)
+                .addNoArgument("__reversed__", REVERSED_VALUES_DOC, self -> ((View) self).backwards());
+    }
+
+    /**
+     * The three method lists, filed as this class is initialized.
+     *
+     * <p>Nothing here reads them back: {@link Members#of} installs each one where a type dictionary finds
+     * it, and {@code TypeDict} asks {@link Members} for the table of the type it is filling. Making the
+     * tables a field of this class rather than a step of that fill is what lets {@code dict_keys.isdisjoint}
+     * answer before the interpreter has made a single view.
+     */
+    private static final Members KEY_METHODS = setMethods(KEYS, REVERSED_KEYS_DOC);
+
+    private static final Members ITEM_METHODS = setMethods(ITEMS, REVERSED_ITEMS_DOC);
+    private static final Members VALUE_METHODS = valuesMethods();
 
     /** {@code d.keys()}: membership is the dict's own lookup, message and all. */
     private static final class Keys extends SetLike {
 
-        private static final Members METHODS = SetLike.methods(KEYS);
-
         Keys(PyDict mapping) {
-            super(mapping, KEYS, METHODS);
+            super(mapping, KEYS);
         }
 
         @Override
@@ -284,15 +355,18 @@ final class DictViews {
         public PyObject iterator() {
             return mapping.keyIterator();
         }
+
+        @Override
+        PyIterator backwards() {
+            return mapping.reverseKeyIterator();
+        }
     }
 
     /** {@code d.items()}: a member is a pair, and only a two-element tuple can be one. */
     private static final class Items extends SetLike {
 
-        private static final Members METHODS = SetLike.methods(ITEMS);
-
         Items(PyDict mapping) {
-            super(mapping, ITEMS, METHODS);
+            super(mapping, ITEMS);
         }
 
         /**
@@ -318,15 +392,18 @@ final class DictViews {
         public PyObject iterator() {
             return mapping.itemIterator();
         }
+
+        @Override
+        PyIterator backwards() {
+            return mapping.reverseItemIterator();
+        }
     }
 
     /** {@code d.values()}: a window with a length, an iteration and nothing else. */
     private static final class Values extends View {
 
-        private static final Members METHODS = Members.of(VALUES);
-
         Values(PyDict mapping) {
-            super(mapping, VALUES, METHODS);
+            super(mapping, VALUES);
         }
 
         @Override
@@ -339,10 +416,17 @@ final class DictViews {
             return mapping.valueIterator();
         }
 
+        @Override
+        PyIterator backwards() {
+            return mapping.reverseValueIterator();
+        }
+
         /**
-         * A values view has no {@code __eq__}, so CPython leaves it {@code object}'s identity hash —
-         * which is what makes it the one dict view that can be a dict key. An address is not
-         * reproducible here either, so the Java identity hash stands in for it.
+         * A values view files no comparison row at all — CPython's struct writes {@code 0} for {@code
+         * tp_richcompare} beside it ({@code Objects/dictobject.c:6759}), which takes {@code
+         * tp_hash} with it in the pair the inheritance rule copies — so it keeps {@code object}'s identity
+         * hash and is the one dict view that can be a dict key. An address is not reproducible here either,
+         * so the Java identity hash stands in for it.
          */
         @Override
         public long hash() {

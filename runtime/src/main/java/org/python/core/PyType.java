@@ -239,6 +239,21 @@ public class PyType extends PyObject {
             builtin("set").flagged(MATCH_SELF).documented(SET_DOC);
     public static final PyType FROZENSET =
             builtin("frozenset").flagged(MATCH_SELF).documented(FROZENSET_DOC);
+    /**
+     * The three windows a dict opens onto itself, which are not names in {@code builtins}.
+     *
+     * <p>{@code type({}.keys())} is the only way Python reaches them: CPython writes {@code
+     * PyDictKeys_Type}, {@code PyDictValues_Type} and {@code PyDictItems_Type} (all three in {@code
+     * Objects/dictobject.c}) with a dotless {@code tp_name} and registers none in the builtins table, so
+     * each reads {@code builtins} as its module by the same rule that gives {@code mappingproxy} its name.
+     * None of the three has a {@code tp_new}, and only the first and the last fill {@code tp_richcompare} —
+     * which is what decides that two of them file the six comparison rows and a trailing {@code None} for
+     * {@code __hash__} while {@code dict_values} files neither.
+     */
+    static final PyType DICT_KEYS = builtin("dict_keys").withoutNew();
+
+    static final PyType DICT_VALUES = builtin("dict_values").withoutNew();
+    static final PyType DICT_ITEMS = builtin("dict_items").withoutNew();
     public static final PyType SLICE = builtin("slice");
     public static final PyType CODE = builtin("code");
     /**

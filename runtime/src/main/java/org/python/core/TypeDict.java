@@ -369,6 +369,9 @@ final class TypeDict {
     private static final String DENOMINATOR_DOC =
             "the denominator of a rational number in lowest terms";
 
+    /** The one {@code PyGetSetDef} all three dict views file, and the only name they share with no slot. */
+    private static final String MAPPING_DOC = "dictionary that this view refers to";
+
     /**
      * The three slots a mutable sequence files that an octet run does not.
      *
@@ -773,6 +776,14 @@ final class TypeDict {
         }
         if (owner == PyType.DICT) {
             dictTable(into);
+            return;
+        }
+        if (owner == PyType.DICT_KEYS || owner == PyType.DICT_ITEMS) {
+            dictViewTable(owner, true, into);
+            return;
+        }
+        if (owner == PyType.DICT_VALUES) {
+            dictViewTable(owner, false, into);
             return;
         }
         if (owner == PyType.SET) {
@@ -1832,6 +1843,63 @@ final class TypeDict {
         table.named("clear", "copy", "__reversed__");
         table.genericSubscript(DICT_CLASS_GETITEM_DOC);
         table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * The dictionary one of the three dict views files: twenty-three names for the two set-like ones, six
+     * for {@code dict_values}.
+     *
+     * <p>The order is {@code type_ready}'s walk of the struct, and it is the same walk that gives a dict
+     * its own: {@code tp_repr}, then the six of {@code tp_richcompare}, then {@code tp_iter}, then the
+     * eight of {@code tp_as_number}, then {@code tp_length}, then {@code sq_contains}. After the slots come
+     * the two {@code PyMethodDef}s — {@code isdisjoint} and {@code __reversed__} — and then {@code
+     * dictview_getset}, which is the one name here that is neither a slot nor a method. The sentence the
+     * type carries is filed last and is {@code None} in all three, because all three write {@code 0} for
+     * {@code tp_doc}; and the two set-like views file a trailing {@code None} for {@code __hash__} after it,
+     * which {@code type_ready_set_hash} appends when it finds neither a {@code tp_hash} nor a {@code
+     * __hash__} row of their own.
+     *
+     * <p>What {@code dict_values} leaves out is the whole of the difference between the three. Its struct
+     * fills no {@code tp_richcompare} and no {@code tp_as_number}, so it files neither the six comparisons
+     * nor the eight operators — and because the pair the inheritance rule copies is a {@code tp_richcompare}
+     * and a {@code tp_hash} together, leaving the first null is what lets it keep {@code object}'s identity
+     * hash and be the one dict view a program can put in a set. It files one method rather than two, since
+     * {@code dictvalues_methods} is {@code dictkeys_methods} without {@code isdisjoint}.
+     */
+    private static void dictViewTable(PyType owner, boolean setLike, PyDict into) {
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        if (setLike) {
+            table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+            table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+            table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+            table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+            table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+            table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        }
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        if (setLike) {
+            table.wrapper("__sub__", SUB_DOC, operating(BinaryOp.SUB));
+            table.wrapper("__rsub__", RSUB_DOC, reflectedOperating(BinaryOp.SUB));
+            table.wrapper("__and__", AND_DOC, operating(BinaryOp.AND));
+            table.wrapper("__rand__", RAND_DOC, reflectedOperating(BinaryOp.AND));
+            table.wrapper("__xor__", XOR_DOC, operating(BinaryOp.XOR));
+            table.wrapper("__rxor__", RXOR_DOC, reflectedOperating(BinaryOp.XOR));
+            table.wrapper("__or__", OR_DOC, operating(BinaryOp.OR));
+            table.wrapper("__ror__", ROR_DOC, reflectedOperating(BinaryOp.OR));
+        }
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        if (setLike) {
+            table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+            table.named("isdisjoint", "__reversed__");
+        } else {
+            table.named("__reversed__");
+        }
+        table.getset("mapping", MAPPING_DOC, DictViews::mappingOf, null);
+        table.value("__doc__", docValue(owner));
+        if (setLike) {
+            table.value("__hash__", PyNone.INSTANCE);
+        }
     }
 
     /**

@@ -244,12 +244,26 @@ public final class PyDict extends PyObject {
      * changes while it is being walked backwards complains exactly as it does walking forwards.
      */
     PyIterator reverseKeyIterator() {
-        PyObject[] keys = keys();
-        PyObject[] backwards = new PyObject[keys.length];
-        for (int i = 0; i < keys.length; i++) {
-            backwards[i] = keys[keys.length - 1 - i];
+        return new Walker(backwards(keys()));
+    }
+
+    /** The values walked from the last one written back to the first, which is {@code reversed(d.values())}. */
+    PyIterator reverseValueIterator() {
+        return new Walker(backwards(values()));
+    }
+
+    /** The pairs walked from the last one written back to the first, which is {@code reversed(d.items())}. */
+    PyIterator reverseItemIterator() {
+        return new Walker(backwards(pairs()));
+    }
+
+    /** The snapshot in the other order, which is all CPython's three reverse dict iterators are. */
+    private static PyObject[] backwards(PyObject[] steps) {
+        PyObject[] reversedSteps = new PyObject[steps.length];
+        for (int i = 0; i < steps.length; i++) {
+            reversedSteps[i] = steps[steps.length - 1 - i];
         }
-        return new Walker(backwards);
+        return reversedSteps;
     }
 
     /** The keys, in insertion order. */

@@ -57,6 +57,11 @@ final class Members {
             Map.entry(PyType.DICT, PyDict.class),
             Map.entry(PyType.SET, PySet.class),
             Map.entry(PyType.FROZENSET, PySet.class),
+            // The three dict views declare their method lists in one place, so their tables belong to that
+            // class too: `dict_keys.__reversed__` is answerable whether or not a view has ever been made.
+            Map.entry(PyType.DICT_KEYS, DictViews.class),
+            Map.entry(PyType.DICT_VALUES, DictViews.class),
+            Map.entry(PyType.DICT_ITEMS, DictViews.class),
             // A code object's values are made by whichever front-end reads one, so its table belongs to no
             // value class: CodeMembers declares it, and is loaded when a code object is.
             Map.entry(PyType.CODE, CodeMembers.class),
