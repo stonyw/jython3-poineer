@@ -11,8 +11,9 @@ package org.python.core;
  *
  * Two rules from CPython are reproduced rather than approximated. The left operand is asked first
  * and the right operand's reflected slot only after a refusal — with the exception of a proper
- * subclass on the right, which CPython asks first and {@link #compare} does too. And a refusal is
- * {@link PyNotImplemented}, never an error: only the protocol knows whether both sides declined.
+ * subclass on the right, which CPython asks first and {@link #compare} does too. And a refusal of
+ * those two-way slots is {@link PyNotImplemented}, never an error: only the protocol knows whether
+ * both sides declined.
  *
  * <p>A third rule is visible in every message here: a type is named by {@link PyType#filedName()}, the
  * name it is written down as, and not by the bare half Python reads as {@code __name__}. For all but a
@@ -21,17 +22,53 @@ package org.python.core;
  */
 public final class Slots {
 
+    /**
+     * What a slot answers when the type behind the value fills that slot with nothing.
+     *
+     * <p>It is deliberately not {@link PyNotImplemented}. For the slots that run the reflected-operator
+     * protocol — the {@code nb_*} and {@code sq_compare} families and their reflected twins — CPython's
+     * refusal <em>is</em> that value, and {@link #binary}, {@link #unary} and {@link #compare} read it as
+     * one. Every other slot is a function that simply returns what it was given: {@code PyObject_GetItem}
+     * hands back whatever {@code mp_subscript} answered, so {@code {"k": NotImplemented}["k"]} reads the
+     * value, while the same answer from a type with no subscript at all is {@code 'dict' object is not
+     * subscriptable}. Sharing one object between the two made the first look like the second.
+     *
+     * <p>Public because a value defined outside this package still has to decline: the Java interop's
+     * wrappers override {@link PyObject#getAttr} and the container slots, and the only way one of them can
+     * say "ask the next one" is to answer with this marker. A {@link PyNotImplemented} from such an
+     * override is the value, exactly as it is for a dict holding it.
+     */
+    public static final PyObject DECLINED = new Declined();
+
+    /** A marker with no Python-visible behaviour: a value reaching it from Python code is a bug. */
+    private static final class Declined extends PyObject {
+
+        @Override
+        public String repr() {
+            return "<slot declination>";
+        }
+    }
+
+    /**
+     * Whether an answer declines a question that runs the reflected protocol. Both currencies count:
+     * {@link #DECLINED} for a Java slot with no body behind it, {@link PyNotImplemented} for a slot — built
+     * in or written in Python — that answered with the value CPython itself reads as a decline.
+     */
+    static boolean declined(PyObject answer) {
+        return answer == DECLINED || answer == PyNotImplemented.INSTANCE;
+    }
+
     private Slots() {
     }
 
     /** {@code left op right}. */
     public static PyObject binary(BinaryOp op, PyObject left, PyObject right) {
         PyObject result = left.binaryOp(op, right);
-        if (result != PyNotImplemented.INSTANCE) {
+        if (!declined(result)) {
             return result;
         }
         result = right.reflectedOp(op, left);
-        if (result != PyNotImplemented.INSTANCE) {
+        if (!declined(result)) {
             return result;
         }
         throw typeError(
@@ -47,7 +84,7 @@ public final class Slots {
     public static PyObject augmented(BinaryOp op, PyObject left, PyObject right, boolean augmented) {
         if (augmented) {
             PyObject inPlace = left.inplaceOp(op, right);
-            if (inPlace != PyNotImplemented.INSTANCE) {
+            if (!declined(inPlace)) {
                 return inPlace;
             }
         }
@@ -56,7 +93,7 @@ public final class Slots {
 
     public static PyObject unary(UnaryOp op, PyObject value) {
         PyObject result = value.unaryOp(op);
-        if (result != PyNotImplemented.INSTANCE) {
+        if (!declined(result)) {
             return result;
         }
         throw typeError(
@@ -72,7 +109,7 @@ public final class Slots {
      */
     public static PyObject absolute(PyObject value) {
         PyObject result = value.unaryOp(UnaryOp.ABSOLUTE);
-        if (result != PyNotImplemented.INSTANCE) {
+        if (!declined(result)) {
             return result;
         }
         throw typeError("bad operand type for abs(): '%s'", value.getType().filedName());
@@ -98,18 +135,18 @@ public final class Slots {
                 && right.getType() != left.getType()
                 && right.getType().matches(left.getType())) {
             PyObject result = right.richCompare(cmp.reflected(), left);
-            if (result != PyNotImplemented.INSTANCE) {
+            if (!declined(result)) {
                 return result;
             }
             reversedFirst = true;
         }
         PyObject result = left.richCompare(cmp, right);
-        if (result != PyNotImplemented.INSTANCE) {
+        if (!declined(result)) {
             return result;
         }
         if (!reversedFirst) {
             result = right.richCompare(cmp.reflected(), left);
-            if (result != PyNotImplemented.INSTANCE) {
+            if (!declined(result)) {
                 return result;
             }
         }
@@ -132,12 +169,15 @@ public final class Slots {
     /**
      * {@code bool(x)}: {@code __bool__}, then {@code __len__}, then true.
      *
-     * The fallthrough order is CPython's {@code PyObject_IsTrue}, and it is what makes an empty tuple
-     * false without {@code PyTuple} having to say so.
+     * <p>The fallthrough order is CPython's {@code PyObject_IsTrue}, and it is what makes an empty tuple
+     * false without {@code PyTuple} having to say so. An answer that is the value {@code NotImplemented} is
+     * not a fallthrough: {@code notimplemented_bool} ({@code Objects/object.c:2365}) is the only entry of
+     * {@code notimplemented_as_number}, so a bare {@code bool(NotImplemented)} — and every {@code if} that
+     * reaches it — refuses in those words rather than borrowing the length.
      */
     public static boolean truth(PyObject value) {
         PyObject answer = value.truth();
-        if (answer == PyNotImplemented.INSTANCE) {
+        if (answer == DECLINED) {
             return !isEmpty(value);
         }
         if (answer instanceof PyBool bool) {
@@ -148,7 +188,7 @@ public final class Slots {
 
     private static boolean isEmpty(PyObject value) {
         PyObject length = value.length();
-        if (length == PyNotImplemented.INSTANCE) {
+        if (length == DECLINED) {
             return false;
         }
         return counted(length) == 0;
@@ -157,7 +197,7 @@ public final class Slots {
     /** {@code len(x)} as a Python value, so a huge length stays a Python int. */
     public static PyObject length(PyObject value) {
         PyObject answer = value.length();
-        if (answer == PyNotImplemented.INSTANCE) {
+        if (answer == DECLINED) {
             throw typeError("object of type '%s' has no len()", value.getType().filedName());
         }
         return PyInt.of(counted(answer));
@@ -194,10 +234,15 @@ public final class Slots {
      * <p>A class is named by what it is rather than by its metatype, because {@code int[x]} has to say
      * {@code type 'int' is not subscriptable} while every other value says {@code '<type>' object is not
      * subscriptable} — the two wordings CPython keeps in {@code PyObject_GetItem} itself.
+     *
+     * <p>Whatever the subscript answers is handed back, including the value {@code NotImplemented}:
+     * {@code PyObject_GetItem} never looks at the result, so {@code {"k": NotImplemented}["k"]} and a class
+     * whose {@code __getitem__} returns it both read the value. Only a type with no {@code mp_subscript}
+     * behind it declines, and that is {@link #DECLINED}. The same rule holds for the two writing halves.
      */
     public static PyObject getItem(PyObject container, PyObject key) {
         PyObject answer = container.getItem(key);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (answer != DECLINED) {
             return answer;
         }
         if (container instanceof PyType kind) {
@@ -209,7 +254,7 @@ public final class Slots {
 
     public static void setItem(PyObject container, PyObject key, PyObject value) {
         PyObject answer = container.setItem(key, value);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (answer != DECLINED) {
             return;
         }
         throw typeError(
@@ -218,7 +263,7 @@ public final class Slots {
 
     public static void delItem(PyObject container, PyObject key) {
         PyObject answer = container.delItem(key);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (answer != DECLINED) {
             return;
         }
         throw typeError(
@@ -229,17 +274,21 @@ public final class Slots {
      * {@code item in container}, as {@code CONTAINS_OP} wants it: both sides get a chance, and a
      * refusal for a value that has neither {@code __contains__} nor an iteration protocol is an
      * error rather than a false.
+     *
+     * <p>An answer that is not a bool is tested for truth rather than read as a decline, which is what
+     * {@code slot_sq_contains} does with whatever {@code __contains__} handed back — and the value {@code
+     * NotImplemented} is truth-tested like anything else, so {@code 1 in x} says the boolean-context refusal
+     * where {@code x.__contains__(1)} says the value.
      */
     public static boolean contains(PyObject container, PyObject item) {
         PyObject answer = container.contains(item);
         if (answer instanceof PyBool bool) {
             return bool.getValue();
         }
-        if (answer != PyNotImplemented.INSTANCE) {
-            // A __contains__ that answers with a non-bool is still tested for truth, as in CPython.
+        if (answer != DECLINED) {
             return truth(answer);
         }
-        if (container.iterator() == PyNotImplemented.INSTANCE) {
+        if (container.iterator() == DECLINED) {
             // 3.14's wording for `1 in 2`, which is not the same message as `iter(1)`: containment
             // asks for a container, and gets an answer neither way.
             throw typeError(
@@ -261,7 +310,7 @@ public final class Slots {
     /** {@code iter(x)}. */
     public static PyIterator iterator(PyObject iterable) {
         PyObject answer = iterable.iterator();
-        if (answer == PyNotImplemented.INSTANCE) {
+        if (answer == DECLINED) {
             throw typeError("'%s' object is not iterable", iterable.getType().filedName());
         }
         if (answer instanceof PyIterator iterator) {
@@ -307,7 +356,7 @@ public final class Slots {
      */
     public static PyObject getIter(PyObject iterable) {
         PyObject answer = iterable.iterator();
-        if (answer == PyNotImplemented.INSTANCE) {
+        if (answer == DECLINED) {
             throw typeError("'%s' object is not iterable", iterable.getType().filedName());
         }
         if (asIterator(answer) != null) {
@@ -319,7 +368,7 @@ public final class Slots {
     /** {@code getattr(x, name)} for the builtin types. */
     public static PyObject getAttr(PyObject target, String name) {
         PyObject answer = target.getAttr(name);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (answer != DECLINED) {
             return answer;
         }
         if (name.equals(ClassAttribute.NAME)) {
@@ -344,7 +393,7 @@ public final class Slots {
         // how the members a type publishes but this runtime reads from a C field anyway are answered twice
         // the same way.
         PyObject published = TypeDict.read(target, name);
-        if (published != PyNotImplemented.INSTANCE) {
+        if (published != DECLINED) {
             return published;
         }
         throw failedRead(
@@ -368,14 +417,14 @@ public final class Slots {
      */
     public static PyObject findAttr(PyObject target, String name) {
         PyObject answer = target.getAttr(name);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (answer != DECLINED) {
             return answer;
         }
         if (name.equals(ClassAttribute.NAME)) {
             return ClassAttribute.read(target);
         }
         PyObject published = TypeDict.read(target, name);
-        return published == PyNotImplemented.INSTANCE ? null : published;
+        return published == DECLINED ? null : published;
     }
 
     /**
@@ -395,7 +444,7 @@ public final class Slots {
             return;
         }
         PyObject answer = target.setAttr(name, value);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (answer != DECLINED) {
             return;
         }
         GenericAttributes.write(target, name, value);
@@ -408,7 +457,7 @@ public final class Slots {
             return;
         }
         PyObject answer = target.delAttr(name);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (answer != DECLINED) {
             return;
         }
         GenericAttributes.delete(target, name);
@@ -416,7 +465,7 @@ public final class Slots {
 
     /** Whether {@code value} can be iterated, which is what {@code *} and {@code in} ask before failing. */
     public static boolean isIterable(PyObject value) {
-        return value.iterator() != PyNotImplemented.INSTANCE;
+        return value.iterator() != DECLINED;
     }
 
     /**

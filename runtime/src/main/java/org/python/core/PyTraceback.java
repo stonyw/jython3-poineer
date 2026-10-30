@@ -108,7 +108,7 @@ public final class PyTraceback extends PyObject {
             case "tb_lasti" -> PyInt.of(lasti);
             case "tb_lineno" -> lineNumber();
             case "__dir__" -> DIR;
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

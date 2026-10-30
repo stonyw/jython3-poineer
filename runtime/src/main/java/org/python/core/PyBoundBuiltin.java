@@ -83,7 +83,7 @@ final class PyBoundBuiltin extends PyObject implements FunctionFields {
             case "__self__" -> receiver;
             case "__doc__" -> PyNativeFunction.docOf(name, doc);
             case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc, flags);
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

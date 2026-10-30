@@ -52,7 +52,7 @@ public final class PyModule extends PyObject {
             return dictionary;
         }
         PyObject value = dictionary.get(PyStr.interned(attribute));
-        return value == null ? PyNotImplemented.INSTANCE : value;
+        return value == null ? Slots.DECLINED : value;
     }
 
     @Override
@@ -81,7 +81,7 @@ public final class PyModule extends PyObject {
             throw Slots.attributeError("readonly attribute");
         }
         return dictionary.remove(PyStr.interned(attribute)) == null
-                ? PyNotImplemented.INSTANCE
+                ? Slots.DECLINED
                 : PyNone.INSTANCE;
     }
 

@@ -169,7 +169,7 @@ public final class PySuper extends PyObject {
             case "__self__" -> obj == null ? PyNone.INSTANCE : obj;
             case "__self_class__" -> startType == null ? PyNone.INSTANCE : startType;
             case "__thisclass__" -> thisClass;
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

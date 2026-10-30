@@ -1030,7 +1030,7 @@ public final class PyBytes extends PyObject {
 
     /** {@code separator.join(iterable)}: a run for every item, and nothing else. */
     private static PyObject joined(byte[] separator, PyObject parts) {
-        if (parts.iterator() == PyNotImplemented.INSTANCE) {
+        if (parts.iterator() == Slots.DECLINED) {
             throw Slots.typeError("can only join an iterable");
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();

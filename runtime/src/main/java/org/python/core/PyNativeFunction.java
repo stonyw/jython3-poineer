@@ -295,18 +295,18 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
                     ? receiver
                     : declaredBy != null
                             ? PyNone.INSTANCE
-                            : home != null ? home : PyNotImplemented.INSTANCE;
+                            : home != null ? home : Slots.DECLINED;
             // Only the dictionary's own entry has an owner to name; the method a read makes has none.
             case "__objclass__" -> declaring != null && receiver == null
                     ? declaring
-                    : PyNotImplemented.INSTANCE;
+                    : Slots.DECLINED;
             // A classmethod_descriptor is a descriptor; the built-in method a read makes is not one, and
             // neither is a plain function like `len`, which CPython says has no `__get__` at all.
             case "__get__" -> onType && receiver == null
                     ? new PyNativeFunction(
                             "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames))
-                    : PyNotImplemented.INSTANCE;
-            default -> PyNotImplemented.INSTANCE;
+                    : Slots.DECLINED;
+            default -> Slots.DECLINED;
         };
     }
 

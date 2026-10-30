@@ -464,7 +464,7 @@ public final class PyInt extends PyObject {
             return run.getValue();
         }
         PyObject answered = Specials.invoke(value, "__bytes__");
-        if (answered != PyNotImplemented.INSTANCE) {
+        if (answered != Slots.DECLINED) {
             if (!(answered instanceof PyBytes bytes)) {
                 throw Slots.typeError(
                         "__bytes__ returned non-bytes (type %s)", answered.getType().name());

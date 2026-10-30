@@ -1,8 +1,8 @@
 package org.python.javaclass;
 
 import org.python.core.PyBaseException;
-import org.python.core.PyNotImplemented;
 import org.python.core.PyObject;
+import org.python.core.Slots;
 import org.python.core.PyStr;
 
 /**
@@ -47,7 +47,7 @@ public final class PyJavaThrowable extends PyBaseException {
     @Override
     public PyObject getAttr(String name) {
         PyObject answer = PyJavaObject.memberOf(failure, this, name);
-        return answer != PyNotImplemented.INSTANCE ? answer : super.getAttr(name);
+        return answer != Slots.DECLINED ? answer : super.getAttr(name);
     }
 
     /** {@code e.args}, the way constructing the same exception in Java would have given it. */

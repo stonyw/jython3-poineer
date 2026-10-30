@@ -107,7 +107,7 @@ public final class PyBoundMethod extends PyObject {
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "__self__" -> target;
-            case "__func__" -> function == null ? PyNotImplemented.INSTANCE : function;
+            case "__func__" -> function == null ? Slots.DECLINED : function;
             case "__name__" -> PyStr.of(name);
             case "__qualname__" -> function != null
                     ? function.getAttr("__qualname__")
@@ -115,7 +115,7 @@ public final class PyBoundMethod extends PyObject {
             case "__doc__" -> function != null
                     ? function.getAttr("__doc__")
                     : PyNativeFunction.docOf(name, doc);
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

@@ -427,7 +427,7 @@ class ValueDictionaryTest {
 
         PyObject bound = Slots.getAttr(PyType.BYTES, "fromhex");
         assertThat(bound.getType().name()).isEqualTo("builtin_function_or_method");
-        assertThat(bound.getAttr("__objclass__")).isSameAs(PyNotImplemented.INSTANCE);
+        assertThat(bound.getAttr("__objclass__")).isSameAs(Slots.DECLINED);
         assertThat(Slots.getAttr(bound, "__self__")).isSameAs(PyType.BYTES);
         assertThat(call(bound, PyStr.of("61"))).isEqualTo(octets("a"));
 
@@ -462,9 +462,9 @@ class ValueDictionaryTest {
         assertThat(Slots.getAttr(filed, "__func__")).isSameAs(function);
         assertThat(Slots.getAttr(filed, "__wrapped__")).isSameAs(function);
         assertThat(Slots.getAttr(filed, "__isabstractmethod__")).isSameAs(PyBool.FALSE);
-        assertThat(filed.getAttr("__name__")).isSameAs(PyNotImplemented.INSTANCE);
-        assertThat(filed.getAttr("__qualname__")).isSameAs(PyNotImplemented.INSTANCE);
-        assertThat(filed.getAttr("__module__")).isSameAs(PyNotImplemented.INSTANCE);
+        assertThat(filed.getAttr("__name__")).isSameAs(Slots.DECLINED);
+        assertThat(filed.getAttr("__qualname__")).isSameAs(Slots.DECLINED);
+        assertThat(filed.getAttr("__module__")).isSameAs(Slots.DECLINED);
         assertThat(Slots.getAttr(filed, "__doc__"))
                 .isEqualTo(Slots.getAttr(PyType.STATIC_METHOD, "__doc__"));
 

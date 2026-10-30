@@ -342,7 +342,7 @@ public class PyBaseExceptionGroup extends PyBaseException {
         made.setContext(original.context());
         made.setCause(original.cause());
         PyObject notes = original.getAttr("__notes__");
-        if (notes != null && Sequences.isSequence(notes)) {
+        if (notes != null && notes != Slots.DECLINED && Sequences.isSequence(notes)) {
             made.setAttr("__notes__", PyList.of(elements(notes).toArray(new PyObject[0])));
         }
         return made;

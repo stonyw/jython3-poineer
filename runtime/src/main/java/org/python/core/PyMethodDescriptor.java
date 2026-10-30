@@ -102,7 +102,7 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
             // No `__get__` among these: `add_operators` files the kind's own `tp_descr_get` in
             // `method_descriptor`'s dictionary, so a read of the name walks there and answers a
             // method-wrapper rather than a function made here.
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

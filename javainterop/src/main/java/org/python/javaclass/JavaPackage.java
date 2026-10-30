@@ -6,8 +6,8 @@ import java.util.Map;
 import org.python.core.PyDict;
 import org.python.core.PyList;
 import org.python.core.PyNone;
-import org.python.core.PyNotImplemented;
 import org.python.core.PyObject;
+import org.python.core.Slots;
 import org.python.core.PyStr;
 import org.python.core.PyType;
 
@@ -49,7 +49,7 @@ public final class JavaPackage extends PyObject {
         }
         PyObject member = member(attribute);
         if (member == null) {
-            return PyNotImplemented.INSTANCE;
+            return Slots.DECLINED;
         }
         dictionary.put(PyStr.interned(attribute), member);
         return member;

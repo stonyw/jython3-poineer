@@ -14,7 +14,6 @@ import org.python.core.PyBool;
 import org.python.core.PyInt;
 import org.python.core.PyIterator;
 import org.python.core.PyNone;
-import org.python.core.PyNotImplemented;
 import org.python.core.PyObject;
 import org.python.core.Slots;
 
@@ -94,7 +93,7 @@ public final class PyJavaObject extends PyObject {
         if (!methods.isEmpty()) {
             return JavaMethods.instance(owner, attribute, methods, target);
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /** {@code widget.size = 3} writes the field; {@code widget.name = "x"} calls {@code setName}. */
@@ -135,7 +134,7 @@ public final class PyJavaObject extends PyObject {
         try {
             return JavaConvert.toPython(field.get(target));
         } catch (IllegalAccessException hidden) {
-            return PyNotImplemented.INSTANCE;
+            return Slots.DECLINED;
         }
     }
 
@@ -193,7 +192,7 @@ public final class PyJavaObject extends PyObject {
         if (reflected().isArray()) {
             return PyInt.of(Array.getLength(target));
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /** A {@code Map} is indexed by key; a {@code List} or an array by position, negatives included. */
@@ -210,7 +209,7 @@ public final class PyJavaObject extends PyObject {
             int at = JavaMembers.index(key, Array.getLength(target), getType().name());
             return JavaConvert.toPython(Array.get(target, at));
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /**
@@ -238,7 +237,7 @@ public final class PyJavaObject extends PyObject {
                     JavaConvert.javaOf(value));
             return PyNone.INSTANCE;
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     @Override
@@ -252,7 +251,7 @@ public final class PyJavaObject extends PyObject {
             list.remove(JavaMembers.index(key, list.size(), getType().name()));
             return PyNone.INSTANCE;
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     @Override
@@ -272,7 +271,7 @@ public final class PyJavaObject extends PyObject {
             }
             return PyBool.of(false);
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /** A {@code Map} iterates its keys, because Python reads a mapping by its keys. */
@@ -294,7 +293,7 @@ public final class PyJavaObject extends PyObject {
             }
             return PyIterator.of(items);
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /**

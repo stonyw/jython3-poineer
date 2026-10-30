@@ -6,9 +6,11 @@ package org.python.core;
  * The type is held in a field instead of being inferred from the Java class, because a Python-level
  * subclass (M3) has to report its own type without a Java subclass existing.
  *
- * A slot that this type does not implement answers {@link PyNotImplemented} rather than throwing:
- * that refusal is the whole content of CPython's reflected-operator protocol, and only
- * {@link Slots}, which runs the protocol, turns a refusal into an error. {@code hash} and {@code eq}
+ * A slot that this type does not implement answers {@link Slots#DECLINED} rather than throwing, and the
+ * protocol in {@link Slots} turns that into the complaint the operator makes. The one exception is the
+ * two-way protocol — {@link #binaryOp}, {@link #reflectedOp}, {@link #inplaceOp}, {@link #unaryOp} and
+ * {@link #richCompare} — where CPython's own refusal is the value {@link PyNotImplemented} and a decline
+ * has to be in that currency for the other operand's turn to make sense. {@code hash} and {@code eq}
  * keep throwing/returning definite answers because they sit under {@code PyDict} and {@code PySet},
  * where a refusal would have nowhere to go.
  */
@@ -146,7 +148,7 @@ public abstract class PyObject {
 
     /** {@code self[key]}, including slices. */
     public PyObject getItem(PyObject key) {
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /**
@@ -154,21 +156,21 @@ public abstract class PyObject {
      * mutation returns here becomes {@code None} in {@link Slots}.
      */
     public PyObject setItem(PyObject key, PyObject value) {
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     public PyObject delItem(PyObject key) {
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /** {@code item in self}. */
     public PyObject contains(PyObject item) {
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /** {@code iter(self)}: an iterator over this value, or a refusal. */
     public PyObject iterator() {
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     // --- slots: attributes and calls ---------------------------------------------------
@@ -181,7 +183,7 @@ public abstract class PyObject {
      * {@link ClassAttribute}.
      */
     public PyObject getAttr(String name) {
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /**

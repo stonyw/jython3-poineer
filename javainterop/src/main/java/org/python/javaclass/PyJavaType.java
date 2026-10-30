@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.python.core.ExceptionTypes;
-import org.python.core.PyNotImplemented;
 import org.python.core.PyObject;
 import org.python.core.PyStr;
 import org.python.core.PyTuple;
@@ -147,7 +146,7 @@ public final class PyJavaType extends PyType {
             return PyStr.of(PackageIndex.packageOf(reflected));
         }
         PyObject inherited = super.getAttr(attribute);
-        if (inherited != PyNotImplemented.INSTANCE) {
+        if (inherited != Slots.DECLINED) {
             return inherited;
         }
         Class<?> nested = PackageIndex.load(reflected.getName() + "$" + attribute);
@@ -164,7 +163,7 @@ public final class PyJavaType extends PyType {
         }
         List<Method> reflective = JavaMethods.named(Class.class, attribute);
         if (reflective.isEmpty()) {
-            return PyNotImplemented.INSTANCE;
+            return Slots.DECLINED;
         }
         // Bound to the Class object rather than unbound: it is this object's own method, in Java's sense,
         // and `Integer.getName()` reads the class the same way `Integer.class.getName()` does in Java.
@@ -175,7 +174,7 @@ public final class PyJavaType extends PyType {
         try {
             return JavaConvert.toPython(constant.get(null));
         } catch (IllegalAccessException hidden) {
-            return PyNotImplemented.INSTANCE;
+            return Slots.DECLINED;
         }
     }
 

@@ -182,7 +182,7 @@ class DictDictionaryTest {
         assertThat(entry(PyType.DICT, "fromkeys"))
                 .isSameAs(Members.tableOf(PyType.DICT).describe("fromkeys"));
         assertThat(Members.tableOf(PyType.DICT).describe("__class_getitem__"))
-                .isSameAs(PyNotImplemented.INSTANCE);
+                .isSameAs(Slots.DECLINED);
 
         assertThat(filed(PyType.DICT)).doesNotContain("__str__", "__format__", "__call__", "__reduce__");
         assertThat(Slots.getAttr(PyType.DICT, "__str__"))

@@ -218,7 +218,7 @@ class SetDictionaryTest {
         assertThat(entry(PyType.FROZENSET, "union"))
                 .isSameAs(Members.tableOf(PyType.FROZENSET).describe("union"));
         assertThat(Members.tableOf(PyType.FROZENSET).describe("__init__"))
-                .isSameAs(PyNotImplemented.INSTANCE);
+                .isSameAs(Slots.DECLINED);
 
         assertThat(kind(entry(PyType.SET, "__class_getitem__"))).isEqualTo("classmethod_descriptor");
         assertThat(entry(PyType.SET, "__class_getitem__"))

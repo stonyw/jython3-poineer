@@ -74,7 +74,7 @@ public final class PyVersionInfo extends PyTuple {
     @Override
     public PyObject getAttr(String name) {
         PyObject filed = Members.filed(this, name);
-        return filed == PyNotImplemented.INSTANCE ? super.getAttr(name) : filed;
+        return filed == Slots.DECLINED ? super.getAttr(name) : filed;
     }
 
     /**

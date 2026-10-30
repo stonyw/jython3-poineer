@@ -74,7 +74,7 @@ public final class PyRange extends PyObject {
             throw Slots.typeError("range indices must be integers");
         }
         BigInteger index = Numbers.index(key, "range");
-        return index == null ? PyNotImplemented.INSTANCE : itemAt(index);
+        return index == null ? Slots.DECLINED : itemAt(index);
     }
 
     @Override

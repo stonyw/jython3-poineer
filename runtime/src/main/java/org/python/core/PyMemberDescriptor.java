@@ -135,7 +135,7 @@ final class PyMemberDescriptor extends PyObject implements Descriptors.Protocol 
             // then count what arrived, but only the writing half has a name to put in front of the count:
             // `wrap_descr_delete` hands `PyArg_UnpackTuple` a NULL, so it says nothing about who was asked,
             // while `wrap_descr_set` names itself.
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

@@ -874,7 +874,7 @@ public class PyType extends PyObject {
             return Descriptors.get(declared, null, this);
         }
         return fromMeta == null
-                ? PyNotImplemented.INSTANCE
+                ? Slots.DECLINED
                 : Descriptors.get(fromMeta, this, type);
     }
 
@@ -967,7 +967,7 @@ public class PyType extends PyObject {
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
         PyObject declared = Specials.invoke(this, "__call__", args, kwNames);
-        if (declared != PyNotImplemented.INSTANCE) {
+        if (declared != Slots.DECLINED) {
             return declared;
         }
         return Classes.typeCall(this, args, kwNames);
@@ -994,12 +994,12 @@ public class PyType extends PyObject {
     @Override
     public PyObject getItem(PyObject key) {
         PyObject fromMeta = Specials.invoke(this, "__getitem__", key);
-        if (fromMeta != PyNotImplemented.INSTANCE) {
+        if (fromMeta != Slots.DECLINED) {
             return fromMeta;
         }
         PyObject generic = getAttr("__class_getitem__");
-        return generic == PyNotImplemented.INSTANCE
-                ? PyNotImplemented.INSTANCE
+        return generic == Slots.DECLINED
+                ? Slots.DECLINED
                 : Slots.call(generic, new PyObject[] {key}, null);
     }
 

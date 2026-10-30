@@ -111,13 +111,13 @@ public class PyClass extends PyType {
             return PyMappingProxy.of(namespace);
         }
         PyObject member = classMember(attribute);
-        if (member != PyNotImplemented.INSTANCE) {
+        if (member != Slots.DECLINED) {
             return member;
         }
         // The rest of the names a type answers for itself — `__name__`, `__base__` — are the built-in
         // type's own, and a class has nothing to say about them.
         PyObject answered = super.getAttr(attribute);
-        return answered == PyNotImplemented.INSTANCE
+        return answered == Slots.DECLINED
                 ? Specials.invoke(this, "__getattr__", PyStr.of(attribute))
                 : answered;
     }

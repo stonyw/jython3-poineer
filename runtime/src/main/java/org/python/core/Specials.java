@@ -96,12 +96,14 @@ final class Specials {
     /**
      * {@code self.name(...)}: what the method hands back.
      *
-     * <p>A class that declares nothing under the name declines in the same currency as a built-in type
-     * whose Java slot is empty, so a caller that runs a protocol can pass this straight back to
-     * {@link Slots} and get the protocol's own refusal.
+     * <p>A class that declares nothing under the name declines with {@link Slots#DECLINED}, the same currency
+     * as a built-in type whose Java slot is empty, so a caller that runs a protocol can pass the answer
+     * straight back to {@link Slots}. What the method <em>returns</em> is not a decline, whatever it is: the
+     * value {@code NotImplemented} from a {@code __getitem__} is the value, and only the comparison-running
+     * protocols read it as a refusal.
      *
-     * @return the result, or {@link PyNotImplemented} when no class in the order declares the name as a
-     *     function — which is also what {@code __hash__ = None} means, and is meant by it
+     * @return the result, or {@link Slots#DECLINED} when no class in the order declares the name as a
+     *     function
      */
     static PyObject invoke(PyObject self, String name, PyObject... arguments) {
         return invoke(self, name, arguments, null);
@@ -117,7 +119,7 @@ final class Specials {
     static PyObject invoke(PyObject self, String name, PyObject[] arguments, PyTuple kwNames) {
         PyObject declared = lookUp(self.getType(), name);
         if (!(declared instanceof PyFunction method)) {
-            return PyNotImplemented.INSTANCE;
+            return Slots.DECLINED;
         }
         PyObject[] all = new PyObject[arguments.length + 1];
         all[0] = self;

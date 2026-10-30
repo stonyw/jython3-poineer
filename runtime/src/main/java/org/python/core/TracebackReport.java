@@ -552,7 +552,7 @@ public final class TracebackReport {
     private static String only(PyBaseException value, Frame innermost) {
         StringBuilder text = new StringBuilder(complaint(value, innermost));
         PyObject notes = value.getAttr("__notes__");
-        if (notes == null || notes instanceof PyNone || notes instanceof PyNotImplemented) {
+        if (notes == null || notes instanceof PyNone || notes == Slots.DECLINED) {
             return text.toString();
         }
         if (notes instanceof PyList list) {

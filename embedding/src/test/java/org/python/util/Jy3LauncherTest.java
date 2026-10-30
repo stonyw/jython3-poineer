@@ -279,7 +279,8 @@ class Jy3LauncherTest {
                 "103_method_wrapper_table.py",
                 "104_bound_method_table.py",
                 "105_complex_table.py",
-                "106_dict_view_tables.py");
+                "106_dict_view_tables.py",
+                "107_not_implemented.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

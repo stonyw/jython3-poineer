@@ -287,16 +287,16 @@ public final class PyInstance extends PyObject {
     public PyObject richCompare(CompareOp cmp, PyObject other) {
         if (cmp == CompareOp.NE) {
             PyObject custom = Specials.invoke(this, "__ne__", other);
-            if (custom != PyNotImplemented.INSTANCE) {
+            if (!Slots.declined(custom)) {
                 return custom;
             }
             PyObject equal = Specials.invoke(this, "__eq__", other);
-            return equal == PyNotImplemented.INSTANCE
+            return Slots.declined(equal)
                     ? PyBool.of(this != other)
                     : PyBool.of(!Slots.truth(equal));
         }
         PyObject answer = Specials.invoke(this, cmp.dunder(), other);
-        if (answer != PyNotImplemented.INSTANCE) {
+        if (!Slots.declined(answer)) {
             return answer;
         }
         return cmp == CompareOp.EQ ? PyBool.of(this == other) : PyNotImplemented.INSTANCE;
@@ -338,11 +338,11 @@ public final class PyInstance extends PyObject {
     @Override
     public PyObject iterator() {
         PyObject walking = Specials.invoke(this, "__iter__");
-        if (walking != PyNotImplemented.INSTANCE) {
+        if (walking != Slots.DECLINED) {
             return walking;
         }
         return Specials.function(type, "__getitem__") == null
-                ? PyNotImplemented.INSTANCE
+                ? Slots.DECLINED
                 : new Indexed();
     }
 
@@ -419,7 +419,7 @@ public final class PyInstance extends PyObject {
     @Override
     public boolean eq(PyObject other) {
         PyObject answer = Specials.invoke(this, "__eq__", other);
-        if (answer == PyNotImplemented.INSTANCE) {
+        if (Slots.declined(answer)) {
             return this == other;
         }
         return Slots.truth(answer);

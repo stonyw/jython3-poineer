@@ -4,7 +4,6 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import org.python.core.ModuleFinder;
-import org.python.core.PyNotImplemented;
 import org.python.core.PyObject;
 import org.python.core.PyRaise;
 import org.python.core.PyRuntime;
@@ -118,7 +117,7 @@ public final class JavaInterop {
         /** The Python callable for one interface method: the value's member of that name, or itself. */
         private PyObject memberCalled(String name) {
             PyObject member = value.getAttr(name);
-            if (member != PyNotImplemented.INSTANCE && JavaConvert.isCallable(member)) {
+            if (member != Slots.DECLINED && JavaConvert.isCallable(member)) {
                 return member;
             }
             if (JavaConvert.isCallable(value)) {

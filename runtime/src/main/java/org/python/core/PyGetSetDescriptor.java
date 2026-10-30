@@ -110,7 +110,7 @@ final class PyGetSetDescriptor extends PyObject implements Descriptors.Protocol 
             // `__delete__`, the same pointer with `wrap_descr_delete` handing a name of NULL. A read of
             // `e.args.__set__` walks to those rows and answers a method-wrapper, and the count and the
             // keyword refusal it makes are the wrapper's, not a function written beside this field.
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

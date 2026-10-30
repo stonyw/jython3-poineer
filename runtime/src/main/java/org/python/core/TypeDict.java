@@ -833,7 +833,7 @@ final class TypeDict {
                 return Descriptors.get(entry, self, owner);
             }
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /**
@@ -5007,7 +5007,7 @@ final class TypeDict {
             Members methods = Members.tableOf(owner);
             for (String name : names) {
                 PyObject entry = methods.describe(name);
-                if (entry == PyNotImplemented.INSTANCE) {
+                if (entry == Slots.DECLINED) {
                     throw Slots.runtimeError(
                             "the " + owner.name() + " table files no member named '" + name + "'");
                 }
@@ -5217,15 +5217,15 @@ final class TypeDict {
                 // __doc__ is that whole text and its table comes from the METH_NOARGS or METH_O|METH_CLASS
                 // the row carries, which is the short form the reference reads for the same fourteen names.
                 case "__text_signature__" -> PyNativeFunction.signatureOf(name, doc, flags);
-                case "__self__" -> shape == Shape.RAW ? declaring : PyNotImplemented.INSTANCE;
-                case "__objclass__" -> shape == Shape.RAW ? PyNotImplemented.INSTANCE : declaring;
+                case "__self__" -> shape == Shape.RAW ? declaring : Slots.DECLINED;
+                case "__objclass__" -> shape == Shape.RAW ? Slots.DECLINED : declaring;
                 // No `__get__` here: the three descriptor kinds each file the slot as their own
                 // `wrapper_descriptor`, installed by `add_operators` over their filled
                 // `tp_descr_get`, so the read of `bytes.hex.__get__` walks to that row and answers a
                 // method-wrapper. `__new__` is the shape with no such row anywhere on its way — a
                 // `builtin_function_or_method` is not a descriptor at all — and it is refused by the
                 // missing name rather than by this switch.
-                default -> PyNotImplemented.INSTANCE;
+                default -> Slots.DECLINED;
             };
         }
 
@@ -5399,8 +5399,8 @@ final class TypeDict {
                 // out of the wrapper record a method-wrapper still points at, and a built-in method bound
                 // to a value — `b''.upper`, `bytes.fromhex` — has no such record to read.
                 case "__objclass__" ->
-                        shape == Shape.WRAPPER ? declaring : PyNotImplemented.INSTANCE;
-                default -> PyNotImplemented.INSTANCE;
+                        shape == Shape.WRAPPER ? declaring : Slots.DECLINED;
+                default -> Slots.DECLINED;
             };
         }
 

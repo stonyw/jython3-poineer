@@ -1562,7 +1562,7 @@ public final class Interpreter {
      */
     private static void importAll(Frame frame, PyObject module) {
         PyObject published = module == null ? null : module.getAttr("__all__");
-        if (published != null && published != PyNotImplemented.INSTANCE) {
+        if (published != null && published != Slots.DECLINED) {
             for (PyObject entry : drain(Slots.iterator(published))) {
                 if (!(entry instanceof PyStr name)) {
                     throw Slots.typeError(

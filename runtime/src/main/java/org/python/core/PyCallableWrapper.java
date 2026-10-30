@@ -116,7 +116,7 @@ abstract class PyCallableWrapper extends PyObject implements Descriptors.Protoco
         if (kept != null) {
             return kept;
         }
-        return member == null ? PyNotImplemented.INSTANCE : Descriptors.get(member, this, kind);
+        return member == null ? Slots.DECLINED : Descriptors.get(member, this, kind);
     }
 
     /**

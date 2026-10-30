@@ -52,7 +52,7 @@ public final class PyGenericAlias extends PyObject {
             // The parameters are the type variables the arguments were left as; every argument here is a
             // class already, so there are none — which is also why `list[int]` cannot be reused as one.
             case "__parameters__" -> PyTuple.EMPTY;
-            default -> PyNotImplemented.INSTANCE;
+            default -> Slots.DECLINED;
         };
     }
 

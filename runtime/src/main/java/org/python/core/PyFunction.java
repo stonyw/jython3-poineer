@@ -412,7 +412,7 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             default -> {
                 PyObject held =
                         attributes == null ? null : attributes.get(PyStr.interned(attribute));
-                yield held == null ? PyNotImplemented.INSTANCE : held;
+                yield held == null ? Slots.DECLINED : held;
             }
         };
     }

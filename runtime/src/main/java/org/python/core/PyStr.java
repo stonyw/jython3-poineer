@@ -1239,7 +1239,7 @@ public final class PyStr extends PyObject {
 
     /** {@code separator.join(iterable)}: an iterable of strings, and nothing else. */
     private static String join(String separator, PyObject iterable) {
-        if (iterable.iterator() == PyNotImplemented.INSTANCE) {
+        if (iterable.iterator() == Slots.DECLINED) {
             throw Slots.typeError("can only join an iterable");
         }
         StringBuilder out = new StringBuilder();

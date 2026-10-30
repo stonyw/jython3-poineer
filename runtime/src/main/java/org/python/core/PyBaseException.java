@@ -439,7 +439,7 @@ public class PyBaseException extends PyObject {
     @Override
     public boolean eq(PyObject other) {
         PyObject answer = Specials.invoke(this, "__eq__", other);
-        if (answer == PyNotImplemented.INSTANCE) {
+        if (Slots.declined(answer)) {
             return this == other;
         }
         return Slots.truth(answer);
@@ -912,14 +912,14 @@ public class PyBaseException extends PyObject {
     /**
      * {@code self->notes}: the {@code __notes__} entry, read as the field CPython keeps notes in.
      *
-     * <p>An exception with no notes answers with {@code PyNotImplemented} instead of raising, which is what
+     * <p>An exception with no notes answers with {@link Slots#DECLINED} instead of raising, which is what
      * lets a comparison of two of them say "neither has any" without a third case. This runtime files them
      * in the dictionary because {@code add_note}, the only other way CPython writes the field, is not
      * implemented here — so the two are the same list a person can read and replace.
      */
     PyObject notes() {
         PyObject kept = dictionary == null ? null : dictionary.get(PyStr.interned("__notes__"));
-        return kept == null ? PyNotImplemented.INSTANCE : kept;
+        return kept == null ? Slots.DECLINED : kept;
     }
 
     /**

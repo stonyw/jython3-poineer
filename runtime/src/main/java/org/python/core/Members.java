@@ -179,7 +179,7 @@ final class Members {
      * own type can read, since it casts to {@link PyInt} rather than to {@link PyBool}. See
      * {@link PyObject#adaptedFor}.
      *
-     * @return the bound method, or {@link PyNotImplemented} when no type in the order declares it
+     * @return the bound method, or {@link Slots#DECLINED} when no type in the order declares it
      */
     static PyObject find(PyObject self, String name) {
         for (PyType owner : self.getType().mro()) {
@@ -188,11 +188,11 @@ final class Members {
                 continue;
             }
             PyObject bound = methods.bind(self, name);
-            if (bound != PyNotImplemented.INSTANCE) {
+            if (bound != Slots.DECLINED) {
                 return bound;
             }
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /**
@@ -203,7 +203,7 @@ final class Members {
      * dictionary's own entry and needs no checking, because every value of the type is asked with the
      * same object.
      *
-     * @return the answer, or {@link PyNotImplemented} when no type in the order files the name
+     * @return the answer, or {@link Slots#DECLINED} when no type in the order files the name
      */
     static PyObject filed(PyObject self, String name) {
         for (PyType owner : self.getType().mro()) {
@@ -220,7 +220,7 @@ final class Members {
                 return value;
             }
         }
-        return PyNotImplemented.INSTANCE;
+        return Slots.DECLINED;
     }
 
     /**
@@ -440,7 +440,7 @@ final class Members {
         }
         PyBoundMethod.Body body = entries.get(name);
         if (body == null) {
-            return PyNotImplemented.INSTANCE;
+            return Slots.DECLINED;
         }
         return new PyBoundBuiltin(
                 name, docs.get(name), flags.getOrDefault(name, 0), body, self, self.adaptedFor(owner));
@@ -478,7 +478,7 @@ final class Members {
             return onType;
         }
         if (!defines(name)) {
-            return PyNotImplemented.INSTANCE;
+            return Slots.DECLINED;
         }
         // The nought is CPython's default case: a row registered with neither METH_NOARGS nor METH_O has no
         // flag to cut a table from, so its text is the only place one can come from.

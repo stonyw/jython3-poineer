@@ -934,7 +934,7 @@ class FloatDictionaryTest {
 
         // The two names `int` neither files nor inherits, read out of the two places a lookup reaches.
         assertThat(TypeDict.declared(PyType.INT).get(PyStr.interned("from_number"))).isNull();
-        assertThat(Members.tableOf(PyType.INT).describe("from_number")).isSameAs(PyNotImplemented.INSTANCE);
+        assertThat(Members.tableOf(PyType.INT).describe("from_number")).isSameAs(Slots.DECLINED);
     }
 
     /**
