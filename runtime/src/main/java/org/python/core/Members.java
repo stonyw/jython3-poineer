@@ -68,7 +68,10 @@ final class Members {
             Map.entry(PyType.GENERATOR, PyGenerator.class),
             // The one named sequence is declared by its value class too, so that asking the type for a
             // field works before the interpreter has built the value it files.
-            Map.entry(PyType.VERSION_INFO, PyVersionInfo.class));
+            Map.entry(PyType.VERSION_INFO, PyVersionInfo.class),
+            // A slice is made by the compiler for every extended subscript, but a program can ask the type
+            // for its two rows before any value exists, so `PySlice` is loaded to file them.
+            Map.entry(PyType.SLICE, PySlice.class));
 
     private final PyType owner;
 

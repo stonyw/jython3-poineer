@@ -810,6 +810,10 @@ final class TypeDict {
             complexTable(into);
             return;
         }
+        if (owner == PyType.SLICE) {
+            sliceTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -2331,6 +2335,63 @@ final class TypeDict {
     private static PyObject complexesNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.COMPLEX, args, kwNames);
         return Constructors.complexing(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The fifteen rows {@code slice} files for itself.
+     *
+     * <p>Three C lists and one dictionary entry, in the order {@code __dict__} shows them: the eight slot
+     * wrappers behind {@code PySlice_Type}'s own {@code tp_repr}, {@code tp_hash} and {@code
+     * tp_richcompare}, then the two of {@code slice_methods} (Objects/sliceobject.c:571) and the three of
+     * {@code slice_members} ({@code :367}), and above all of them the {@code __new__} {@code tp_new_wrapper}
+     * installs. The number of names a program sees through {@code dir()} grows by four and not by fifteen
+     * because eleven of these rows are dunders {@code object} already files — {@code slice}'s are the same
+     * names, filed again with this type's own C functions behind them.
+     *
+     * <p>The three fields are {@code _Py_T_OBJECT} offsets marked {@code Py_READONLY}, so they are {@code
+     * member_descriptor}s with no writing half: {@code s.start} is the value the slice was built with and
+     * nothing else, {@code s.start = 1} is the descriptor's own {@code readonly attribute}, and the same
+     * write through the class is refused one level up, by {@code type_setattro}'s rule that a static type
+     * has no attributes to set. The six orderings are filed because {@code tp_richcompare} is, and answer
+     * the declination it answers — {@code slice(1) == (1, None, None)} is false because neither side will
+     * compare, not because the three fields disagree. The type's own sentence is {@code tp_doc} whole, since
+     * it carries no argument table for the knife to cut.
+     */
+    private static void sliceTable(PyDict into) {
+        PyType owner = PyType.SLICE;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::slicesNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, sliceComparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, sliceComparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, sliceComparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, sliceComparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, sliceComparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, sliceComparing(CompareOp.GE));
+        table.named("indices", "__reduce__");
+        table.member("start", null, self -> ((PySlice) self).start(), null);
+        table.member("stop", null, self -> ((PySlice) self).stop(), null);
+        table.member("step", null, self -> ((PySlice) self).step(), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code slice_richcompare}: the two operands have to both be slices, and nothing else. */
+    private static Method sliceComparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> Slices.compare(cmp, args[0], args[1]);
+    }
+
+    /**
+     * {@code slice_new} over a {@code tp_new_wrapper}: the class gates, then the legacy unpack.
+     *
+     * <p>The swap that turns one argument into {@code slice(None, x, None)} belongs to the constructor, so
+     * it runs here too — {@code slice.__new__(slice, 5)} is the very slice {@code slice(5)} is. The three
+     * refusals after the gate are {@code PyArg_UnpackTuple}'s and {@code _PyArg_NoKeywords}'s, both naming
+     * {@code slice} rather than the subtype that was handed over.
+     */
+    private static PyObject slicesNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.SLICE, args, kwNames);
+        return Constructors.slicing(tail(args, kwNames), kwNames);
     }
 
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */

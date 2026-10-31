@@ -87,7 +87,7 @@ final class Constructors {
             return range(args, keywordNames);
         }
         if (type == PyType.SLICE) {
-            return slice(args, keywordNames);
+            return slicing(args, keywordNames);
         }
         if (type == PyType.PROPERTY) {
             return property(args, keywordNames);
@@ -803,7 +803,7 @@ final class Constructors {
     }
 
     /** {@code slice(stop)}, {@code slice(start, stop)}, {@code slice(start, stop, step)}. */
-    private static PyObject slice(PyObject[] args, String[] kwNames) {
+    static PyObject slicing(PyObject[] args, String[] kwNames) {
         refuseKeywords("slice", kwNames);
         Arguments.between("slice", args, kwNames, 1, 3);
         PyObject none = PyNone.INSTANCE;

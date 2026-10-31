@@ -254,7 +254,19 @@ public class PyType extends PyObject {
 
     static final PyType DICT_VALUES = builtin("dict_values").withoutNew();
     static final PyType DICT_ITEMS = builtin("dict_items").withoutNew();
-    public static final PyType SLICE = builtin("slice");
+    /**
+     * The one sentence CPython's {@code slice_doc} writes for the slicing type (Objects/sliceobject.c:340).
+     *
+     * <p>It is the only {@code tp_doc} here that lists two constructor shapes on their own lines and then
+     * says nothing about behaviour, and it carries no argument table: the text opens with {@code slice(stop)},
+     * which the signature rule reads as a table only to give up on when no {@code --} follows the closing
+     * bracket. So the whole thing is the sentence, and {@code slice.__text_signature__} is {@code None}.
+     */
+    private static final String SLICE_DOC =
+            "slice(stop)\nslice(start, stop[, step])\n\nCreate a slice object.\n\nThis is used for"
+                    + " extended slicing (e.g. a[0:10:2]).";
+
+    public static final PyType SLICE = builtin("slice").documented(SLICE_DOC);
     public static final PyType CODE = builtin("code");
     /**
      * {@code sys.exc_info()[2]} and {@code e.__traceback__}.
