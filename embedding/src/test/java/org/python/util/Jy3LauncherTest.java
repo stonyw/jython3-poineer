@@ -281,7 +281,8 @@ class Jy3LauncherTest {
                 "105_complex_table.py",
                 "106_dict_view_tables.py",
                 "107_not_implemented.py",
-                "108_index_protocol.py");
+                "108_index_protocol.py",
+                "109_conversion_slots.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

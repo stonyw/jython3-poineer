@@ -1,6 +1,5 @@
 package org.python.core;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
@@ -331,30 +330,30 @@ final class Constructors {
         return radix;
     }
 
-    /** {@code int(x)} where {@code x} is neither text nor absent. */
+    /**
+     * {@code int(x)} where {@code x} is neither text nor absent.
+     *
+     * <p>Everything the number can be asked for is in {@link Numbers#longOf}, including the truncation of
+     * a float, which CPython does not special-case either: {@code float} files an {@code __int__} and the
+     * conversion half of {@code PyNumber_Long} simply calls it, so {@code int(2.7)} is two and
+     * {@code int(nan)} is the {@code ValueError} that row raises about it. What is left here is the two
+     * ends — the object an {@code int} is handed back unchanged, and the sentence for a value that files
+     * no conversion at all.
+     */
     private static PyObject integerFromNumber(PyObject value) {
-        BigInteger exact = Numbers.asInteger(value);
-        if (exact != null) {
+        if (value instanceof PyInt i) {
             // PyNumber_Long hands the int it was given back rather than rebuilding it, which is
             // what makes `int(x) is x` hold for a value too big for the small-int cache. A bool is not
             // that int: it answers with the number it stands for.
-            return value instanceof PyInt i ? i : PyInt.of(exact);
+            return i;
         }
-        if (value instanceof PyFloat f) {
-            double number = f.getValue();
-            if (Double.isNaN(number)) {
-                throw Slots.valueError("cannot convert float NaN to integer");
-            }
-            if (Double.isInfinite(number)) {
-                throw Slots.overflowError("cannot convert float infinity to integer");
-            }
-            // BigDecimal.valueOf keeps the double's own decimal value, so this truncates rather
-            // than rounds — which is what int(1.9) == 1 and int(-1.9) == -1 both need.
-            return PyInt.of(BigDecimal.valueOf(number).toBigInteger());
+        BigInteger converted = Numbers.longOf(value);
+        if (converted == null) {
+            throw Slots.typeError(
+                    "int() argument must be a string, a bytes-like object or a real number, not '%s'",
+                    value.getType().name());
         }
-        throw Slots.typeError(
-                "int() argument must be a string, a bytes-like object or a real number, not '%s'",
-                value.getType().name());
+        return PyInt.of(converted);
     }
 
     private static final BigInteger THIRTY_SIX = BigInteger.valueOf(36);
@@ -473,7 +472,9 @@ final class Constructors {
      * then count, then the value — so both spellings of an over-long call give the same legacy sentence,
      * {@code float expected at most 1 argument, got 2}, and neither names a parameter. A float is
      * {@code PyNumber_Float}'s one argument that needs no conversion at all: it is the value that comes
-     * back, because {@code nb_float} is {@code float_float} and hands the receiver out.
+     * back, because {@code nb_float} is {@code float_float} and hands the receiver out. Anything else is
+     * read by {@link Numbers#floatOf}, whose two slots are {@code __float__} and {@code __index__} — and
+     * not {@code __int__}, which is why {@code float(Int())} refuses although {@code int(Int())} is seven.
      */
     static PyObject floating(PyObject[] args, String[] kwNames) {
         refuseKeywords("float", kwNames);
@@ -490,15 +491,16 @@ final class Constructors {
             }
             return PyFloat.of(parsed);
         }
-        if (!Numbers.isReal(args[0])) {
+        if (args[0] instanceof PyFloat number) {
+            return number;
+        }
+        Double converted = Numbers.floatOf(args[0]);
+        if (converted == null) {
             throw Slots.typeError(
                     "float() argument must be a string or a real number, not '%s'",
                     args[0].getType().name());
         }
-        if (args[0] instanceof PyFloat number) {
-            return number;
-        }
-        return PyFloat.of(Numeric.asDouble(args[0]));
+        return PyFloat.of(converted);
     }
 
     /**
@@ -578,46 +580,56 @@ final class Constructors {
         PyObject real = positional > 0
                 ? args[0]
                 : keywordOr(kwNames, args, positional, "real", PyInt.ZERO);
-        boolean imagGiven = positional > 1 || names(kwNames, "imag");
-        if (positional == 1 && given == 1 && real instanceof PyComplex taken) {
-            // The constructor is two stages in CPython: `actual_complex_new` answers a lone complex with
-            // the very object it was handed — `complex(z) is z` — and only the shapes it cannot settle
-            // there reach the clinic half that reads `real` and `imag` as two numbers.
-            return taken;
-        }
-        if (!imagGiven && real instanceof PyStr s) {
-            // complex("1+2j") is a parse, and only when no imaginary part was also given — otherwise
-            // the string is simply the wrong kind of first argument.
-            PyComplex parsed = decodeComplex(s.getValue());
-            if (parsed == null) {
-                throw Slots.valueError("complex() arg is a malformed string");
+        // The constructor is two stages in CPython: `actual_complex_new` settles a call of one positional
+        // value and no name — a lone complex handed back as it came (`complex(z) is z`), a string parsed —
+        // and only what it cannot settle reaches the clinic half, where every argument is gated in its own
+        // named words and a string is simply the wrong kind of number. A keyword is what sends a call to
+        // that half even when only one value was given, which is why `complex(real="1+2j")` refuses while
+        // `complex("1+2j")` is 1+2j.
+        boolean parts = positional > 1 || kwNames != null;
+        if (!parts) {
+            if (real instanceof PyComplex taken) {
+                return taken;
             }
-            return parsed;
-        }
-        if (!imagGiven && !Numbers.isReal(real)) {
-            throw Slots.typeError(
-                    "complex() argument must be a string or a number, not %s",
-                    real.getType().name());
+            if (real instanceof PyStr s) {
+                PyComplex parsed = decodeComplex(s.getValue());
+                if (parsed == null) {
+                    throw Slots.valueError("complex() arg is a malformed string");
+                }
+                return parsed;
+            }
+            if (!Numbers.hasRealForm(real)) {
+                throw Slots.typeError(
+                        "complex() argument must be a string or a number, not %s",
+                        real.getType().name());
+            }
         }
         PyObject imag = positional > 1 ? args[1] : keywordOr(kwNames, args, positional, "imag", PyInt.ZERO);
-        double realPart = realArgument("real", real);
-        double imagPart = realArgument("imag", imag);
-        if (imag instanceof PyComplex) {
-            // complex(1, 2j) is 1 + 2j*i, which is -1: CPython multiplies the second argument by i
-            // rather than taking it as the imaginary part when it is already complex.
-            PyComplex second = (PyComplex) imag;
-            return PyComplex.of(realPart - second.imaginary(), second.real());
-        }
-        return PyComplex.of(realPart, imagPart);
+        // Both gates are read before either part is converted, which is why complex(Bad(), Nothing())
+        // complains about the second argument and not about what the first one's __float__ raised.
+        refuseNonReal("real", real);
+        refuseNonReal("imag", imag);
+        double realPart = real instanceof PyComplex taken ? taken.real() : Numbers.floatOf(real);
+        double realCross = real instanceof PyComplex taken ? taken.imaginary() : 0.0;
+        double imagPart = imag instanceof PyComplex taken ? taken.real() : Numbers.floatOf(imag);
+        double imagCross = imag instanceof PyComplex taken ? taken.imaginary() : 0.0;
+        // A part that is itself a complex crosses over rather than being taken at face value:
+        // complex(1, 2j) is 1 + 2j*i, which is -1, because CPython multiplies the second argument by i.
+        return PyComplex.of(realPart - imagCross, imagPart + realCross);
     }
 
-    private static double realArgument(String name, PyObject value) {
-        if (Numbers.isReal(value)) {
-            return Numeric.asDouble(value);
+    /**
+     * {@code complex_new_impl}'s gate over one of its two arguments, which is its own sentence for each.
+     *
+     * <p>{@code nb_float} or {@code nb_index} or the name {@code complex} — and not {@code nb_int}, so a
+     * class that can only answer as an integer is refused here although {@code int()} reads it.
+     */
+    private static void refuseNonReal(String name, PyObject value) {
+        if (!Numbers.hasRealForm(value)) {
+            throw Slots.typeError(
+                    "complex() argument '%s' must be a real number, not %s",
+                    name, value.getType().name());
         }
-        throw Slots.typeError(
-                "complex() argument '%s' must be a real number, not %s",
-                name, value.getType().name());
     }
 
     /**
@@ -980,19 +992,6 @@ final class Constructors {
         if (kwNames != null) {
             throw Slots.typeError("%s() takes no keyword arguments", name);
         }
-    }
-
-    /** Whether any of these names was given by keyword, which {@code fill} cannot tell a caller. */
-    private static boolean names(String[] kwNames, String name) {
-        if (kwNames == null) {
-            return false;
-        }
-        for (String keyword : kwNames) {
-            if (keyword.equals(name)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /** The value {@code name} was given, or null; keyword values trail the positional ones. */

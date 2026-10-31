@@ -1,6 +1,5 @@
 package org.python.core;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 
 /**
@@ -258,24 +257,20 @@ final class Percent {
      * the width belongs to {@link #pad}, which counts code points where {@code Formats} counts
      * UTF-16 units.
      *
-     * {@code %d} truncates a float toward zero, which {@code %x} refuses; both name the type
-     * character they were written with.
+     * <p>Two converters, and only one of them rewords what it gets. The six integer siblings of
+     * {@code %d} are {@code mainformatlong}, whose {@code wrongtype} label replaces a
+     * {@code TypeError} with the format's own complaint about what arrived; the six float siblings of
+     * {@code %f} are {@code formatfloat}, which is {@code PyFloat_AsDouble} and passes every error on
+     * unchanged — so {@code '%f' % Bad()} is {@code must be real number, not Bad} in the converter's own
+     * words, and {@code '%f' % FloatRaised()} is the {@code ValueError} raised inside the method.
      */
     private String number(Field field, PyObject value) {
         char type = field.type;
-        PyObject converted = value;
+        PyObject converted;
         if ("diuoxX".indexOf(type) >= 0) {
-            BigInteger count = Numbers.asInteger(value);
-            if (count == null) {
-                if ("xXo".indexOf(type) >= 0) {
-                    throw Slots.typeError(
-                            "%%%s format: an integer is required, not %s",
-                            type, value.getType().name());
-                }
-                converted = PyInt.of(integerFromReal(type, value));
-            }
+            converted = PyInt.of(counted(field, value));
         } else {
-            Double real = Numbers.asReal(value);
+            Double real = Numbers.floatOf(value);
             if (real == null) {
                 throw Slots.typeError("must be real number, not %s", value.getType().name());
             }
@@ -296,20 +291,53 @@ final class Percent {
         return body;
     }
 
-    /** {@code %d} and {@code %i} of a float, which CPython truncates and refuses to lie about. */
-    private static BigInteger integerFromReal(char type, PyObject value) {
-        Double real = Numbers.asReal(value);
-        if (real == null) {
-            throw Slots.typeError(
-                    "%%%s format: a real number is required, not %s", type, value.getType().name());
+    /**
+     * {@code mainformatlong}'s conversion half: the integer a value is once the slot its type files has
+     * been asked.
+     *
+     * <p>Three steps in CPython's order. A value that files none of the three numeric slots is refused by
+     * the format before any conversion is tried, which is why {@code '%d' % '12'} is about a real number
+     * being required and not about the digits a {@code str} holds. {@code %o}, {@code %x} and {@code %X}
+     * then want an index and nothing else — {@code '%x' % 2.7} refuses although {@code '%d' % 2.7} is
+     * two — while the three decimal siblings read {@code PyNumber_Long}, which is where an
+     * {@code __int__} is asked and a float truncated toward zero.
+     *
+     * <p>What either conversion raises is reworded only when it is a {@code TypeError}, which is the whole
+     * difference between {@code '%d' % IntRaised()} being the {@code ValueError} from inside the method
+     * and {@code '%d' % IntBad()} — an {@code __int__} that answers with a str — being the format's own
+     * refusal, the same sentence as the class that files nothing at all.
+     */
+    private static BigInteger counted(Field field, PyObject value) {
+        char type = field.type;
+        if (!Numbers.isNumber(value)) {
+            throw wrongType(type, value);
         }
-        if (real.isNaN()) {
-            throw Slots.valueError("cannot convert float NaN to integer");
+        BigInteger count = Numbers.asInteger(value);
+        if (count != null) {
+            return count;
         }
-        if (real.isInfinite()) {
-            throw Slots.overflowError("cannot convert float infinity to integer");
+        boolean integral = "xXo".indexOf(type) >= 0;
+        if (integral ? !Numbers.isIndex(value) : !Numbers.hasLongForm(value)) {
+            throw wrongType(type, value);
         }
-        return BigDecimal.valueOf(real).toBigInteger();
+        try {
+            return integral ? Numbers.asIndex(value) : Numbers.longOf(value);
+        } catch (PyRaise refusal) {
+            if (!refusal.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                throw refusal;
+            }
+            throw wrongType(type, value);
+        }
+    }
+
+    /** The refusal CPython's {@code wrongtype} label writes for the conversion character {@code type}. */
+    private static PyRaise wrongType(char type, PyObject value) {
+        return Slots.typeError(
+                "xXo".indexOf(type) >= 0
+                        ? "%%%s format: an integer is required, not %s"
+                        : "%%%s format: a real number is required, not %s",
+                type,
+                value.getType().name());
     }
 
     /**

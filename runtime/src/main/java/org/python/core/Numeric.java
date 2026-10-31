@@ -375,7 +375,7 @@ final class Numeric {
     }
 
     /** {@code PyLong_AsDouble}, whose one refusal is the number being too large for a double. */
-    private static double integerAsDouble(BigInteger integer) {
+    static double integerAsDouble(BigInteger integer) {
         double asDouble = integer.doubleValue();
         if (Double.isInfinite(asDouble) && integer.signum() != 0) {
             throw Slots.overflowError("int too large to convert to float");

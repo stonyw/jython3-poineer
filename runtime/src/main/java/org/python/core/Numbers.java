@@ -3,11 +3,13 @@ package org.python.core;
 import java.math.BigInteger;
 
 /**
- * Conversions between the numeric types, and the index tests that guard them.
+ * Conversions between the numeric types, and the tests that guard them.
  *
- * These are the questions the tower keeps asking — is this an integer, is this a real number, is this
- * usable as an index — and they are answered here once so that {@link PyInt}, {@link PyFloat} and
- * {@link PyComplex} can each decline in a single line what they cannot compute.
+ * These are the questions the tower keeps asking — is this an integer, is this usable as an index, does
+ * this value file a conversion at all — and they are answered here once so that {@link PyInt},
+ * {@link PyFloat} and {@link PyComplex} can each decline in a single line what they cannot compute, and so
+ * that the three readers {@code int()}, {@code float()} and {@code %d} share one copy of CPython's
+ * {@code PyNumber_Long}, {@code PyFloat_AsDouble} and {@code PyNumber_Check}.
  */
 final class Numbers {
 
@@ -23,20 +25,6 @@ final class Numbers {
             return b.getValue() ? BigInteger.ONE : BigInteger.ZERO;
         }
         return null;
-    }
-
-    /** The value of {@code o} as a real number, or null when it is not an int, bool or float. */
-    static Double asReal(PyObject o) {
-        if (o instanceof PyFloat f) {
-            return f.getValue();
-        }
-        BigInteger integer = asInteger(o);
-        return integer == null ? null : integer.doubleValue();
-    }
-
-    /** Both parts of the tower that a {@code complex} accepts. */
-    static boolean isReal(PyObject o) {
-        return asReal(o) != null;
     }
 
     /**
@@ -73,24 +61,132 @@ final class Numbers {
         if (number != null) {
             return number;
         }
-        PyObject declared = Specials.member(value.getType(), "__index__");
-        if (declared == null) {
+        if (Specials.member(value.getType(), "__index__") == null) {
             throw Slots.typeError(
                     "'%s' object cannot be interpreted as an integer", value.getType().filedName());
         }
-        PyObject answer =
-                declared instanceof PyFunction
-                        ? Specials.invoke(value, "__index__")
-                        : Slots.call(
-                                Descriptors.get(declared, value, value.getType()),
-                                new PyObject[0],
-                                null);
+        PyObject answer = asked(value, "__index__");
         BigInteger index = asInteger(answer);
         if (index == null) {
             throw Slots.typeError(
                     "__index__ returned non-int (type %s)", answer.getType().filedName());
         }
         return index;
+    }
+
+    /**
+     * The row {@code name} files on {@code value}'s type, asked with no arguments — the way CPython
+     * calls a {@code nb_int}, {@code nb_float} or {@code nb_index} slot.
+     *
+     * <p>Null means the type files no such row, which is a different question from the row answering
+     * badly: the caller refuses in its own words when there is nothing to ask and passes on what the
+     * asking raised.
+     */
+    private static PyObject asked(PyObject value, String name) {
+        PyObject declared = Specials.member(value.getType(), name);
+        if (declared == null) {
+            return null;
+        }
+        return declared instanceof PyFunction
+                ? Specials.invoke(value, name)
+                : Slots.call(Descriptors.get(declared, value, value.getType()), new PyObject[0], null);
+    }
+
+    /**
+     * Whether {@code value} is one of the numbers CPython's {@code PyNumber_Check} lets through.
+     *
+     * <p>The test is only about the slots, and it is asked once, by {@code mainformatlong}, before any
+     * conversion is tried — so a value filing none of the three is refused by the format itself, in the
+     * words of the conversion character, before {@code int()}'s or {@code float()}'s longer sentence is
+     * ever reached. A {@code str} files none of them, and neither does a class with only {@code __len__}
+     * or only {@code __str__}; a complex is a number here by name alone, because the test reads
+     * {@code PyComplex_Check} instead of its slots, which are empty.
+     */
+    static boolean isNumber(PyObject value) {
+        return asInteger(value) != null
+                || value instanceof PyFloat
+                || value instanceof PyComplex
+                || Specials.member(value.getType(), "__int__") != null
+                || Specials.member(value.getType(), "__float__") != null
+                || Specials.member(value.getType(), "__index__") != null;
+    }
+
+    /**
+     * {@code PyNumber_Long}'s answer, or null when {@code value} files no conversion at all.
+     *
+     * <p>An {@code int} is read without being asked, which is what keeps {@code int(x) is x}; a bool is not
+     * that exact int, and is asked its own {@code __int__} like any other class. Then the two slots, in
+     * CPython's order: {@code __int__} first — so {@code int(Both())} is the seven it answers with and
+     * never the float its {@code __float__} would give — and {@code __index__} for a class that files no
+     * {@code __int__}, which keeps arbitrary precision, {@code int(IndexWide())} being the full number.
+     *
+     * <p>What a slot raises is not caught here. A {@code __int__} that answers with a str is the
+     * {@code TypeError} about the answer's type, and one that raises a {@code ValueError} is that
+     * {@code ValueError} — the two are told apart by whoever asked, since {@code int()} reports either as
+     * its own refusal of the argument while {@code %d} replaces only the {@code TypeError}.
+     */
+    static BigInteger longOf(PyObject value) {
+        if (value instanceof PyInt i) {
+            return i.getValue();
+        }
+        if (Specials.member(value.getType(), "__int__") != null) {
+            PyObject answer = asked(value, "__int__");
+            BigInteger number = asInteger(answer);
+            if (number == null) {
+                throw Slots.typeError(
+                        "__int__ returned non-int (type %s)", answer.getType().filedName());
+            }
+            return number;
+        }
+        return isIndex(value) ? asIndex(value) : null;
+    }
+
+    /**
+     * {@code PyFloat_AsDouble}'s answer, or null when {@code value} files no conversion at all.
+     *
+     * <p>Three steps and the {@code __int__} slot is not among them, which is the whole reason
+     * {@code float(Int())} refuses while {@code int(Int())} is seven: a value is read as a double through
+     * its own {@code __float__}, or through the integer it can answer as an index, or not at all. The
+     * complaint about a bad {@code __float__} names both types — the value asked and the answer it gave —
+     * where {@code __int__}'s names only the answer, because that is how the two are filed in CPython.
+     *
+     * <p>The index half is read by {@code PyLong_AsDouble}, so a number wider than a double overflows
+     * here rather than arriving rounded.
+     */
+    static Double floatOf(PyObject value) {
+        if (value instanceof PyFloat f) {
+            return f.getValue();
+        }
+        if (Specials.member(value.getType(), "__float__") != null) {
+            PyObject answer = asked(value, "__float__");
+            if (!(answer instanceof PyFloat number)) {
+                throw Slots.typeError(
+                        "%s.__float__ returned non-float (type %s)",
+                        value.getType().filedName(), answer.getType().filedName());
+            }
+            return number.getValue();
+        }
+        return isIndex(value) ? Numeric.integerAsDouble(asIndex(value)) : null;
+    }
+
+    /** Whether {@link #longOf} would convert {@code value} rather than decline it. */
+    static boolean hasLongForm(PyObject value) {
+        return asInteger(value) != null
+                || Specials.member(value.getType(), "__int__") != null
+                || isIndex(value);
+    }
+
+    /**
+     * Whether {@code complex()} reads {@code value} as one of its two parts.
+     *
+     * <p>The gate is {@code nb_float} or {@code nb_index} or the name {@code complex} itself, and
+     * {@code nb_int} is deliberately missing from it: {@code complex(Int())} refuses as though the class
+     * filed nothing, because the constructor has no way to know that an {@code __int__} is a real number.
+     */
+    static boolean hasRealForm(PyObject value) {
+        return value instanceof PyComplex
+                || Specials.member(value.getType(), "__float__") != null
+                || isIndex(value);
     }
 
     /**
