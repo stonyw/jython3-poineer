@@ -1,6 +1,5 @@
 package org.python.core;
 
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -280,37 +279,31 @@ public final class PyList extends PyObject {
     /**
      * An index for {@code l[i] = v} and {@code del l[i]}: {@link Slices}' arithmetic, in the
      * assignment voice CPython uses for both.
+     *
+     * <p>{@code list_ass_subscript} converts with {@code PyNumber_AsSsize_t(item, PyExc_IndexError)}, so
+     * an index too wide for a machine word is refused as an {@code IndexError} about fitting, and only one
+     * that fits gets the chance to be out of range: {@code data[2 ** 70] = 1} says {@code cannot fit 'int'
+     * into an index-sized integer} where {@code data[2 ** 40] = 1} says {@code list assignment index out
+     * of range}. {@link PyTuple} and {@link PyStr} read a subscript the same way, with their own
+     * out-of-range sentence.
      */
     private int position(PyObject key) {
-        BigInteger value = Numbers.index(key, "list");
-        if (!Numbers.fitsInt(value)) {
-            throw Slots.indexError("list assignment index out of range");
-        }
-        int at = value.intValue();
-        if (at < 0) {
-            at += items.size();
-        }
-        if (at < 0 || at >= items.size()) {
-            throw Slots.indexError("list assignment index out of range");
-        }
-        return at;
+        return Numbers.wrapIndex(
+                key, Numbers.index(key, "list"), items.size(), "list assignment index out of range");
     }
 
     /**
      * An index for {@code pop} and {@code insert}, which CPython converts as an {@code __index__}
      * rather than as a subscript: a float is refused in other words, and an integer too wide for a
      * machine word is an {@code OverflowError} instead of an {@code IndexError}.
+     *
+     * <p>{@code list_pop_impl(self, Py_ssize_t index)} is a clinic function, and clinic's {@code
+     * Py_ssize_t} converter is {@code _PyNumber_Index} followed by {@code PyLong_AsSsize_t} — the pair
+     * behind {@link Numbers#size}, which is why {@code pop(2 ** 70)} complains about a C {@code ssize_t}
+     * where {@code [2 ** 70]} complains about an index-sized integer.
      */
     private static long counted(PyObject key) {
-        BigInteger value = Numbers.asInteger(key);
-        if (value == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", key.getType().name());
-        }
-        if (value.bitLength() >= 64) {
-            throw Slots.overflowError("Python int too large to convert to C ssize_t");
-        }
-        return value.longValue();
+        return Numbers.size(key);
     }
 
     /** An index wrapped against this list, for {@code pop}, which bounds-checks. */
@@ -440,7 +433,7 @@ public final class PyList extends PyObject {
                         args[0],
                         args.length > 1 ? Sequences.searchStart(args[1], elements.length) : 0,
                         args.length > 2
-                                ? Sequences.searchStop(args[2], elements.length)
+                                ? Sequences.indexStop(args[2], elements.length)
                                 : elements.length);
                 if (found < 0) {
                     throw Slots.valueError("list.index(x): x not in list");

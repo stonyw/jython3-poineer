@@ -189,29 +189,27 @@ public final class PyStr extends PyObject {
      * {@code string indices must be integers, not 'float'}; the arithmetic is still {@link Numbers}'s.
      */
     private int index(PyObject key) {
-        BigInteger position = Numbers.asInteger(key);
-        if (position == null) {
-            throw Slots.typeError("string indices must be integers, not '%s'", key.getType().name());
+        if (!Numbers.isIndex(key)) {
+            throw Slots.typeError("string indices must be integers, not '%s'", key.getType().filedName());
         }
-        if (!Numbers.fitsInt(position)) {
-            throw Slots.indexError("string index out of range");
-        }
-        int at = position.intValue();
-        if (at < 0) {
-            at += codePoints;
-        }
-        if (at < 0 || at >= codePoints) {
-            throw Slots.indexError("string index out of range");
-        }
-        return at;
+        return Numbers.wrapIndex(key, Numbers.asIndex(key), codePoints, "string index out of range");
     }
 
-    /** {@code self * n}: {@link Sequences} counts the repeats and works out what may be refused. */
+    /**
+     * {@code self * n}: {@link Sequences} reads the multiplier, and the width of the result is
+     * {@code str}'s own to refuse — {@code unicode_repeat} is the one sequence repeat that answers an
+     * {@code OverflowError} with a sentence about the string rather than a {@code MemoryError}.
+     */
     private String repeated(PyObject times) {
-        PyObject[] pieces = Sequences.multiplied(new PyObject[] {this}, times);
-        StringBuilder out = new StringBuilder();
-        for (PyObject piece : pieces) {
-            out.append(((PyStr) piece).value);
+        long count = Sequences.multiplier(times);
+        int total =
+                Sequences.scaled(codePoints, count, "repeated string is too long");
+        if (total == 0) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(total);
+        for (long at = 0; at < count; at++) {
+            out.append(value);
         }
         return out.toString();
     }

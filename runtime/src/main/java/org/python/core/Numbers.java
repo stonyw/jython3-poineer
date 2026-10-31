@@ -40,33 +40,103 @@ final class Numbers {
     }
 
     /**
-     * An index, as a sequence wants it: an integer, or a {@code long} of that integer.
+     * Whether CPython would read {@code value} as an index at all: {@code _PyIndex_Check}.
      *
-     * @param what the word CPython puts in front of "indices" — "list", "tuple", or "byte" for a
-     *     {@code bytes}, which is the one sequence whose refusal names the element rather than itself
+     * <p>The question is about the type, not about the answer, and it is asked before the answer is read
+     * because a caller that skips it refuses in the wrong words. A class files {@code __index__} with
+     * anything at all — {@code None}, a number, a {@code staticmethod} — and the class system fills the
+     * slot from whatever it finds, so {@code [0,1,2][X()]} for a class holding {@code __index__ = None}
+     * is the complaint about calling a {@code NoneType} rather than {@code list indices must be integers
+     * or slices, not X}. An integer needs no slot to be an index, and is one whatever it files.
      */
-    static BigInteger index(PyObject key, String what) {
-        BigInteger value = asInteger(key);
-        if (value == null) {
-            throw Slots.typeError(
-                    "%s indices must be integers or slices, not %s", what, key.getType().name());
-        }
-        return value;
+    static boolean isIndex(PyObject value) {
+        return asInteger(value) != null || Specials.member(value.getType(), "__index__") != null;
     }
 
     /**
-     * A bound of a slice, or of the {@code start}/{@code stop} pair a search takes.
+     * {@code _PyNumber_Index}: the integer a value is when something asks it as an index.
+     *
+     * <p>Three steps, and the first is why the last two are invisible to an {@code int}. A long — a bool
+     * or a subclass included — is handed back unread, so {@code [0,1,2][True]} is {@code 2} and a class
+     * that subclasses {@code int} and redefines {@code __index__} is still read as the number it is.
+     * Anything else is asked its own {@code __index__} with no arguments, and what answers has to be a
+     * long: a str, a float and the value {@code NotImplemented} are each refused as {@code __index__
+     * returned non-int (type X)}, naming the answer rather than the value asked.
+     *
+     * <p>CPython additionally warns when the answer is a strict subclass of {@code int} —
+     * {@code __index__} returning {@code True} is a {@code DeprecationWarning} whose value is still
+     * {@code 1}. This runtime has no warnings machinery to write it with, so the number it stands for is
+     * taken without the complaint.
+     */
+    static BigInteger asIndex(PyObject value) {
+        BigInteger number = asInteger(value);
+        if (number != null) {
+            return number;
+        }
+        PyObject declared = Specials.member(value.getType(), "__index__");
+        if (declared == null) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer", value.getType().filedName());
+        }
+        PyObject answer =
+                declared instanceof PyFunction
+                        ? Specials.invoke(value, "__index__")
+                        : Slots.call(
+                                Descriptors.get(declared, value, value.getType()),
+                                new PyObject[0],
+                                null);
+        BigInteger index = asInteger(answer);
+        if (index == null) {
+            throw Slots.typeError(
+                    "__index__ returned non-int (type %s)", answer.getType().filedName());
+        }
+        return index;
+    }
+
+    /**
+     * An index, as a sequence wants it: an integer, or anything with {@code __index__}.
+     *
+     * @param what the word CPython puts in front of "indices" — "list", "tuple", "range", or "byte" for a
+     *     {@code bytes}, which is the one sequence whose refusal names the element rather than itself
+     */
+    static BigInteger index(PyObject key, String what) {
+        if (!isIndex(key)) {
+            throw Slots.typeError(
+                    "%s indices must be integers or slices, not %s", what, key.getType().filedName());
+        }
+        return asIndex(key);
+    }
+
+    /**
+     * A bound of a slice.
      *
      * CPython words this refusal differently from an index's — the slice path can also accept
      * {@code None} and anything with {@code __index__}, and says so.
      */
     static BigInteger sliceIndex(PyObject value) {
-        BigInteger number = asInteger(value);
-        if (number == null) {
-            throw Slots.typeError(
-                    "slice indices must be integers or None or have an __index__ method");
+        return indexOr(value, "slice indices must be integers or None or have an __index__ method");
+    }
+
+    /**
+     * The {@code start} or {@code stop} of a {@code list}/{@code tuple} search, where {@code None} is
+     * already taken as the whole sequence and so is not in the sentence.
+     *
+     * <p>The two forms are one function in CPython twice over — {@code _PyEval_SliceIndex} and
+     * {@code _PyEval_SliceIndexNotNone} ({@code Python/ceval.c:3091} and {@code :3112}) — and the clinic
+     * files the second one only into {@code index} and {@code count}. So {@code "ab"[Bad:None]} blames
+     * the slice path with {@code None} in its list of acceptables while
+     * {@code [1].index(1, Bad)} says only {@code slice indices must be integers or have an __index__
+     * method}.
+     */
+    static BigInteger searchIndex(PyObject value) {
+        return indexOr(value, "slice indices must be integers or have an __index__ method");
+    }
+
+    private static BigInteger indexOr(PyObject value, String refusal) {
+        if (!isIndex(value)) {
+            throw Slots.typeError("%s", refusal);
         }
-        return number;
+        return asIndex(value);
     }
 
     /**
@@ -76,13 +146,13 @@ final class Numbers {
      * has to be and refuses an overflow in its own words: {@code split(b'a', 2**40)} is a list of the
      * whole bytes, while {@code split(b'a', 10**30)} is an {@code OverflowError}. Neither of those
      * numbers is ever an index, so neither gets {@link #fitsInt}'s message.
+     *
+     * <p>The argument's {@code __index__} is asked first, because {@code %n} in CPython's own argument
+     * parser is {@code _PyNumber_Index} and {@code PyLong_AsSsize_t} and nothing else: a width may be a
+     * value of any class that can answer as a number.
      */
     static long size(PyObject value) {
-        BigInteger number = asInteger(value);
-        if (number == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", value.getType().name());
-        }
+        BigInteger number = asIndex(value);
         // bitLength() counts the magnitude's bits, and a ssize_t is one signed 64-bit word:
         // 2**63 - 1 and -(2**63) both need 63 of them, and either number one wider does not fit.
         if (number.bitLength() > 63) {
@@ -100,15 +170,36 @@ final class Numbers {
      * an index-sized integer} where {@code to_bytes(2**70)} is the {@code OverflowError} about a C
      * {@code ssize_t}. What arrives is a {@code Py_ssize_t} rather than an index, so the window is the
      * same sixty-four bits and only the refusal changes.
+     *
+     * <p>The name inside the sentence is the asked value's type, not the index it answered with —
+     * {@code characters_written = Big()} where {@code __index__} returns {@code 2**70} is
+     * {@code cannot fit 'Big' into an index-sized integer}, because {@code PyNumber_AsSsize_t} formats
+     * the object it was handed before it converted it.
      */
     static long count(PyObject value) {
-        BigInteger number = asInteger(value);
-        if (number == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", value.getType().name());
-        }
+        BigInteger number = asIndex(value);
         if (number.bitLength() > 63) {
-            throw Slots.valueError("cannot fit 'int' into an index-sized integer");
+            throw Slots.valueError(
+                    "cannot fit '%s' into an index-sized integer", value.getType().filedName());
+        }
+        return number.longValue();
+    }
+
+    /**
+     * {@code PyNumber_AsSsize_t(value, PyExc_OverflowError)}: the count of a sequence repeat.
+     *
+     * <p>Of the three forms of this one converter this is the middle: the overflow is an
+     * {@code OverflowError} like {@link #size}'s but says "index-sized" like {@link #count}'s, and it is
+     * the only one whose refusal of a value with no {@code __index__} at all is not its own — that
+     * refusal belongs to the caller, which has to say {@code can't multiply sequence by non-int of type
+     * 'X'} where {@code _PyIndex_Check} failed, and {@code __index__ returned non-int} where the answer
+     * was not a number.
+     */
+    static long repeat(PyObject value) {
+        BigInteger number = asIndex(value);
+        if (number.bitLength() > 63) {
+            throw Slots.overflowError(
+                    "cannot fit '%s' into an index-sized integer", value.getType().filedName());
         }
         return number.longValue();
     }
@@ -181,11 +272,7 @@ final class Numbers {
      * converter that names the parameter.
      */
     static int cInteger(PyObject value) {
-        BigInteger number = asInteger(value);
-        if (number == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", value.getType().name());
-        }
+        BigInteger number = asIndex(value);
         if (!fitsInt(number)) {
             throw Slots.overflowError("Python int too large to convert to C int");
         }
@@ -193,25 +280,46 @@ final class Numbers {
     }
 
     /**
+     * {@code PyNumber_AsSsize_t(value, NULL)}: the clipping form, which refuses nothing for width.
+     *
+     * <p>A bound that no machine word holds is read as the widest one that does, which is why
+     * {@code "abc".center(2 ** 70)} is an overflow while {@code a[2 ** 70:]} is simply an empty slice:
+     * the slice path takes this form and the width path takes {@link #size}'s.
+     */
+    static long clipped(PyObject value) {
+        BigInteger number = asIndex(value);
+        if (number.bitLength() > 63) {
+            return number.signum() < 0 ? Long.MIN_VALUE : Long.MAX_VALUE;
+        }
+        return number.longValue();
+    }
+
+    /**
      * An integer index made non-negative against {@code length}, and checked.
      *
+     * @param item the value the index was read from, since the width refusal names its type: a
+     *     {@code __index__} of {@code 2 ** 70} is {@code cannot fit 'Big' into an index-sized integer}
+     *     while the same number written as a literal says {@code 'int'}
      * @param outOfRange the sequence's whole sentence for an index past the end, since {@code bytes}
      *     says only "index out of range" while the others name themselves
-     * @throws IndexError for a value outside the sequence, including one too wide for an {@code int}
+     * @throws IndexError for a value outside the sequence, including one too wide for a machine word
      */
-    static int wrapIndex(BigInteger value, int length, String outOfRange) {
-        if (!fitsInt(value)) {
+    static int wrapIndex(PyObject item, BigInteger value, int length, String outOfRange) {
+        if (value.bitLength() > 63) {
             // CPython checks the width before the bounds, so a huge index is not "out of range".
-            throw Slots.indexError("cannot fit 'int' into an index-sized integer");
+            throw Slots.indexError(
+                    "cannot fit '%s' into an index-sized integer", item.getType().filedName());
         }
-        int at = value.intValue();
+        // A word-wide index is still past the end, and only the width refusal above is about width:
+        // a[2 ** 40] is an IndexError about a range, not one about an int that will not fit.
+        long at = value.longValue();
         if (at < 0) {
             at += length;
         }
         if (at < 0 || at >= length) {
             throw Slots.indexError(outOfRange);
         }
-        return at;
+        return (int) at;
     }
 
     /** {@code o} as a Java {@code String}, if it is a {@code str} and nothing else. */

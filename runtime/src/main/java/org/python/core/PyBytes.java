@@ -229,20 +229,19 @@ public final class PyBytes extends PyObject {
         return op == BinaryOp.MUL ? binaryOp(op, other) : PyNotImplemented.INSTANCE;
     }
 
-    /** {@code b * n} repeats octets, not the ints its elements read as. */
+    /**
+     * {@code b * n} repeats octets, not the ints its elements read as.
+     *
+     * <p>The multiplier is {@link Sequences}' to read and the length of the result is {@code bytes}' own
+     * to refuse, in the one word that differs from a string's: {@code repeated bytes are too long}.
+     */
     private byte[] repeated(PyObject times) {
-        BigInteger count = Numbers.asInteger(times);
-        if (count == null) {
-            throw Slots.typeError(
-                    "can't multiply sequence by non-int of type '%s'", times.getType().name());
-        }
-        if (count.signum() < 0) {
+        long count = Sequences.multiplier(times);
+        int total = Sequences.scaled(value.length, count, "repeated bytes are too long");
+        if (total == 0) {
             return new byte[0];
         }
-        if (!Numbers.fitsInt(count)) {
-            throw Slots.overflowError("cannot fit 'int' into an index-sized integer");
-        }
-        byte[] out = new byte[value.length * count.intValue()];
+        byte[] out = new byte[total];
         for (int at = 0; at < out.length; ) {
             for (byte b : value) {
                 out[at++] = b;
@@ -258,12 +257,36 @@ public final class PyBytes extends PyObject {
      * {@code ValueError} about its value, while anything that is neither an integer nor a run of
      * octets is refused as the missing buffer — so {@code 300 in b''} complains about the range and
      * {@code 2.0 in b''} about the float.
+     *
+     * <p>The number is read by {@code PyNumber_AsSsize_t(arg, NULL)}, the clipping form, so
+     * {@code 2 ** 70 in b'ab'} is not a refusal of width but a clip past the end of the range and then
+     * the {@code ValueError} about it. The step to the buffer path is guarded by {@code ival == -1 &&
+     * PyErr_Occurred()} and its {@code PyErr_Clear()} names no class, so <em>any</em> error the reading
+     * raises — a missing {@code __index__}, one that answers badly, one whose body raises — is swallowed
+     * and the value is asked for as a buffer instead: {@code Raised() in b'ab'} says {@code a bytes-like
+     * object is required, not 'Raised'}, which is {@link #run}'s sentence and not the one raised inside
+     * {@code __index__}.
      */
     @Override
     public PyObject contains(PyObject item) {
-        BigInteger wanted = Numbers.asInteger(item);
+        BigInteger wanted = askedAsOctet(item);
         byte[] needle = wanted == null ? run(item) : octet(wanted);
         return PyBool.of(first(value, needle, 0, value.length, false) >= 0);
+    }
+
+    /**
+     * The octet {@code _Py_bytes_contains} reads, or null when it clears the error and asks for a buffer
+     * instead.
+     */
+    private static BigInteger askedAsOctet(PyObject item) {
+        if (!Numbers.isIndex(item)) {
+            return null;
+        }
+        try {
+            return BigInteger.valueOf(Numbers.clipped(item));
+        } catch (PyRaise swallowed) {
+            return null;
+        }
     }
 
     @Override
@@ -908,18 +931,25 @@ public final class PyBytes extends PyObject {
         throw Slots.typeError("a bytes-like object is required, not '%s'", value.getType().name());
     }
 
-    /** The needle of {@code find}, {@code index}, {@code count} and their mirrors: an octet or a run. */
+    /**
+     * The needle of {@code find}, {@code index}, {@code count} and their mirrors: an octet or a run.
+     *
+     * <p>{@code parse_args_finds_byte} asks {@code _PyIndex_Check} before it asks anything else, so a
+     * class with a bad {@code __index__} is read as a number and refused as one —
+     * {@code __index__ returned non-int} — where a class with no {@code __index__} at all is the
+     * "integer or bytes-like object" complaint. Its conversion is the clipping form, so
+     * {@code b'abc'.find(2 ** 70)} is a clip and then the {@code ValueError} about the range.
+     */
     private static byte[] octetOrRun(PyObject value) {
         if (value instanceof PyBytes b) {
             return b.value;
         }
-        BigInteger wanted = Numbers.asInteger(value);
-        if (wanted == null) {
+        if (!Numbers.isIndex(value)) {
             throw Slots.typeError(
                     "argument should be integer or bytes-like object, not '%s'",
-                    value.getType().name());
+                    value.getType().filedName());
         }
-        return octet(wanted);
+        return octet(BigInteger.valueOf(Numbers.clipped(value)));
     }
 
     private static byte[] octet(BigInteger wanted) {

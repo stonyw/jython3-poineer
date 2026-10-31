@@ -61,9 +61,20 @@ public final class PyRange extends PyObject {
         return valueAt(at);
     }
 
+    /**
+     * {@code range_length}, which is {@code PyLong_AsSsize_t} over the length the range computed for
+     * itself. The arithmetic is arbitrary precision on both sides — {@code range(Big(), Big())} is a
+     * range of two values — but the count is handed back as a machine word, so a range longer than
+     * sixty-three bits answers {@code len()} with an {@code OverflowError} about a C {@code ssize_t}
+     * where {@code r[2 ** 70]} is an {@code IndexError} about the position.
+     */
     @Override
     public PyObject length() {
-        return PyInt.of(lengthValue());
+        BigInteger length = lengthValue();
+        if (length.bitLength() > 63) {
+            throw Slots.overflowError("Python int too large to convert to C ssize_t");
+        }
+        return PyInt.of(length);
     }
 
     @Override
@@ -73,8 +84,9 @@ public final class PyRange extends PyObject {
             // with str, bytes and list and lands with them.
             throw Slots.typeError("range indices must be integers");
         }
-        BigInteger index = Numbers.index(key, "range");
-        return index == null ? Slots.DECLINED : itemAt(index);
+        // A range's own subscript is arbitrary-precision all the way down: range_subscript asks
+        // PyNumber_Index rather than PyNumber_AsSsize_t, so no width is ever refused for not fitting.
+        return itemAt(Numbers.index(key, "range"));
     }
 
     @Override

@@ -280,11 +280,7 @@ public final class PyInt extends PyObject {
         if (args.length == 0 || args[0] == PyNone.INSTANCE) {
             return PyInt.longLong(self);
         }
-        BigInteger digits = Numbers.asInteger(args[0]);
-        if (digits == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", args[0].getType().name());
-        }
+        BigInteger digits = Numbers.asIndex(args[0]);
         if (digits.signum() >= 0) {
             // Rounding to a place after the point asks for the whole number, however far that place is.
             return PyInt.longLong(self);
@@ -477,11 +473,7 @@ public final class PyInt extends PyObject {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         PyIterator iterator = Slots.iterator(value);
         for (PyObject item = iterator.nextOrNull(); item != null; item = iterator.nextOrNull()) {
-            BigInteger octet = Numbers.asInteger(item);
-            if (octet == null) {
-                throw Slots.typeError(
-                        "'%s' object cannot be interpreted as an integer", item.getType().name());
-            }
+            BigInteger octet = Numbers.asIndex(item);
             if (octet.signum() < 0 || octet.compareTo(OCTET_MAX) >= 0) {
                 throw Slots.valueError("bytes must be in range(0, 256)");
             }

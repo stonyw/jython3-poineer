@@ -154,7 +154,7 @@ public class PyTuple extends PyObject {
                         tuple.items,
                         args[0],
                         args.length > 1 ? Sequences.searchStart(args[1], tuple.size()) : 0,
-                        args.length > 2 ? Sequences.searchStop(args[2], tuple.size()) : tuple.size());
+                        args.length > 2 ? Sequences.indexStop(args[2], tuple.size()) : tuple.size());
                 if (found < 0) {
                     throw Slots.valueError("tuple.index(x): x not in tuple");
                 }

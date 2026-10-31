@@ -376,17 +376,13 @@ public final class PyFloat extends PyObject {
         return Math.copySign(magnitude - below >= 0.5 ? below + 1.0 : below, x);
     }
 
-    /** {@code PyNumber_AsSsize_t} with no exception to raise, which is to say the clipping form. */
+    /**
+     * {@code PyNumber_AsSsize_t} with no exception to raise, which is to say the clipping form:
+     * {@code _PyNumber_Index} still answers for a bad one, but a number that is merely too wide for a
+     * machine word goes to one of its ends instead of refusing.
+     */
     private static long clippedToMachineInteger(PyObject value) {
-        BigInteger exact = Numbers.asInteger(value);
-        if (exact == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", value.getType().name());
-        }
-        if (exact.compareTo(LONG_MAX_VALUE) > 0) {
-            return Long.MAX_VALUE;
-        }
-        return exact.compareTo(LONG_MIN_VALUE) < 0 ? Long.MIN_VALUE : exact.longValue();
+        return Numbers.clipped(value);
     }
 
     /** {@code float_as_integer_ratio}: the exact pair of integers the value is, in lowest terms. */

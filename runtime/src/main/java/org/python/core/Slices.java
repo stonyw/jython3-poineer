@@ -36,7 +36,7 @@ final class Slices {
      * @param outOfRange the whole sentence for an index past the end
      */
     static int index(PyObject key, int length, String indices, String outOfRange) {
-        return Numbers.wrapIndex(Numbers.index(key, indices), length, outOfRange);
+        return Numbers.wrapIndex(key, Numbers.index(key, indices), length, outOfRange);
     }
 
     /** {@code slice.indices(length)}, as CPython resolves it. */

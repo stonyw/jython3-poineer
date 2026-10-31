@@ -457,14 +457,13 @@ final class Constructors {
     /**
      * An argument used as a number where CPython demands an integer, which is its own refusal because
      * {@code __index__} is a different thing from {@code __int__}.
+     *
+     * <p>{@code long_new_impl} and {@code range_new} both go through {@code _PyNumber_Index}, so a class
+     * that only files {@code __index__} is read as the number it answers with, and arbitrary precision
+     * is kept: {@code range(Big())} is a range of {@code 2 ** 70} values, not an {@code OverflowError}.
      */
     private static BigInteger interpretedAsInteger(PyObject value) {
-        BigInteger exact = Numbers.asInteger(value);
-        if (exact == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", value.getType().name());
-        }
-        return exact;
+        return Numbers.asIndex(value);
     }
 
     /**
@@ -873,38 +872,80 @@ final class Constructors {
             String mode = args.length > 2 ? ((PyStr) args[2]).getValue() : "strict";
             return PyBytes.encodeText(s.getValue(), ((PyStr) args[1]).getValue(), mode);
         }
-        BigInteger count = Numbers.asInteger(value);
+        Long count = askedForOctets(value);
         if (count != null) {
-            if (count.signum() < 0) {
+            if (count < 0) {
                 throw Slots.valueError("negative count");
             }
-            if (!Numbers.fitsInt(count)) {
-                throw Slots.memoryError();
-            }
-            return PyBytes.wrap(new byte[count.intValue()]);
+            return PyBytes.wrap(new byte[Numbers.total(count)]);
         }
         if (value instanceof PyBytes source) {
             return PyBytes.wrap(source.getValue().clone());
         }
-        if (Numbers.isReal(value)) {
-            throw Slots.typeError(
-                    "cannot convert '%s' object to bytes", value.getType().name());
-        }
-        List<PyObject> items = materialise(value);
+        List<PyObject> items = fromIterator(value);
         byte[] out = new byte[items.size()];
         for (int i = 0; i < out.length; i++) {
-            BigInteger item = Numbers.asInteger(items.get(i));
-            if (item == null) {
-                throw Slots.typeError(
-                        "'%s' object cannot be interpreted as an integer",
-                        items.get(i).getType().name());
-            }
+            BigInteger item = Numbers.asIndex(items.get(i));
             if (item.signum() < 0 || item.compareTo(BYTE_LIMIT) > 0) {
                 throw Slots.valueError("bytes must be in range(0, 256)");
             }
             out[i] = item.byteValue();
         }
         return PyBytes.wrap(out);
+    }
+
+    /**
+     * {@code PyBytes_FromObject}'s last step: the values of an iterable, or the constructor's own
+     * refusal for anything that cannot be read as one.
+     *
+     * <p>Only the {@code TypeError} of {@code PyObject_GetIter} becomes {@code cannot convert 'X' object
+     * to bytes} — a {@code TypeError} raised further down, by the iterator or by an item that is not a
+     * number, is what {@code _PyBytes_FromIterator} reported and stays as it is. That is why a float is
+     * refused by its class and not as {@code 'float' object is not iterable}: {@code bytes(1.5)} says
+     * {@code cannot convert 'float' object to bytes}.
+     */
+    private static List<PyObject> fromIterator(PyObject value) {
+        PyIterator iterator;
+        try {
+            iterator = Slots.iterator(value);
+        } catch (PyRaise refusal) {
+            if (!refusal.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                throw refusal;
+            }
+            throw Slots.typeError(
+                    "cannot convert '%s' object to bytes", value.getType().name());
+        }
+        List<PyObject> out = new ArrayList<>();
+        PyObject item;
+        while ((item = iterator.nextOrNull()) != null) {
+            out.add(item);
+        }
+        return out;
+    }
+
+    /**
+     * {@code bytes(x)}'s integer branch: {@code _PyIndex_Check} first, then a count read as a machine
+     * word in {@link Numbers#repeat}'s own refusal.
+     *
+     * <p>The answer is null exactly where CPython answers {@code PyErr_Clear()} and lets the value fall
+     * through to {@code PyBytes_FromObject}: a bad {@code __index__} is a {@code TypeError}, and a
+     * {@code TypeError} is the one refusal the constructor does not keep. So {@code bytes(BadIndex())} is
+     * {@code cannot convert 'BadIndex' object to bytes} — the iterable path's complaint, which is what the
+     * measured answer says — while {@code bytes(Big())} is an {@code OverflowError} the constructor has
+     * already committed to and does raise. A value with no {@code __index__} never enters this branch.
+     */
+    private static Long askedForOctets(PyObject value) {
+        if (!Numbers.isIndex(value)) {
+            return null;
+        }
+        try {
+            return Numbers.repeat(value);
+        } catch (PyRaise refusal) {
+            if (!refusal.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                throw refusal;
+            }
+            return null;
+        }
     }
 
     private static final BigInteger BYTE_LIMIT = BigInteger.valueOf(255);

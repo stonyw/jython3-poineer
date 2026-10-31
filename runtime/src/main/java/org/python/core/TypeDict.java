@@ -2640,13 +2640,16 @@ final class TypeDict {
         return args[0].inplaceOp(BinaryOp.ADD, args[1]);
     }
 
-    /** {@code sq_inplace_repeat}, filed as {@code __imul__}: the count is read as an index first. */
+    /**
+     * {@code sq_inplace_repeat}, filed as {@code __imul__}: the count is read as an index first.
+     *
+     * <p>{@code wrap_indexargfunc} converts before the slot sees anything, so this is
+     * {@link Numbers#repeat}'s face and not the operator's: a float is refused for what it is rather
+     * than for the pair, and a count too wide for a machine word names the value asked. Handing the
+     * number it read on to {@code *=} keeps the sequence's own refusal of the result's length.
+     */
     private static PyObject repeatedInPlace(PyObject[] args) {
-        if (Numbers.asInteger(args[1]) == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", args[1].getType().name());
-        }
-        return args[0].inplaceOp(BinaryOp.MUL, args[1]);
+        return args[0].inplaceOp(BinaryOp.MUL, PyInt.of(Numbers.repeat(args[1])));
     }
 
     /**
@@ -2817,16 +2820,14 @@ final class TypeDict {
      * {@code sq_repeat}: the count arrives as an index, which the operator's wording is not.
      *
      * <p>{@code b'ab' * 1.5} complains about multiplying a sequence, because the operator tries the int's
-     * own {@code __mul__} and reports the pair that failed; {@code b'ab'.__mul__(1.5)} is the slot asked
-     * directly and says only what it could not read. The number itself is then the value's to check, so an
-     * index too wide for a machine word keeps {@link PyBytes}'s own refusal.
+     * own {@code __mul__} and reports the pair that failed; {@code b'ab'.__mul__(1.5)} is the slot wrapper
+     * {@code wrap_indexargfunc} asked directly, and its {@code PyNumber_AsSsize_t} says only what it could
+     * not read — {@code 'float' object cannot be interpreted as an integer} — and, for a count too wide for
+     * a machine word, {@code cannot fit 'Big' into an index-sized integer}. The number it reads is then
+     * handed to the value's own repeat, which keeps the refusal of the length the result would come to.
      */
     private static PyObject repeated(PyObject[] args) {
-        if (Numbers.asInteger(args[1]) == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", args[1].getType().name());
-        }
-        return args[0].binaryOp(BinaryOp.MUL, args[1]);
+        return args[0].binaryOp(BinaryOp.MUL, PyInt.of(Numbers.repeat(args[1])));
     }
 
     /**
@@ -2834,9 +2835,10 @@ final class TypeDict {
      *
      * <p>Three refusals arrive before any buffer is made, and all three are printable. A number that is
      * not one is {@code PyNumber_AsSsize_t}'s complaint about interpretation; a number too wide for a
-     * machine word is the same complaint as an overflow, which is why {@code __buffer__(2 ** 70)} says
-     * "index-sized" where {@code __buffer__(2 ** 31)} — a number that fits the word but not the {@code int}
-     * the flags are kept in — says they are out of range. What is left is the flags themselves, and a
+     * machine word is {@link Numbers#repeat}'s complaint about an index-sized one, which is why
+     * {@code __buffer__(2 ** 70)} says "index-sized" where {@code __buffer__(2 ** 31)} — a number that
+     * fits the word but not the {@code int} the flags are kept in, which is the next test down in
+     * {@code wrap_buffer} — says they are out of range. What is left is the flags themselves, and a
      * bytes or a str asks that its memory not be written to: {@code b''.__buffer__(-1)} asks for every flag
      * there is, including that one, and is refused as not writable.
      *
@@ -2844,18 +2846,11 @@ final class TypeDict {
      * yet, and so no object to hand back.
      */
     private static PyObject exposeBuffer(PyObject[] args, String[] kwNames, String qualified) {
-        java.math.BigInteger flags = Numbers.asInteger(args[1]);
-        if (flags == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", args[1].getType().name());
-        }
-        if (flags.bitLength() > 63) {
-            throw Slots.overflowError("cannot fit 'int' into an index-sized integer");
-        }
-        if (flags.bitLength() > 31) {
+        long flags = Numbers.repeat(args[1]);
+        if (flags < Integer.MIN_VALUE || flags > Integer.MAX_VALUE) {
             throw Slots.overflowError("buffer flags out of range");
         }
-        if ((flags.intValue() & 1) != 0) {
+        if (((int) flags & 1) != 0) {
             throw Slots.bufferError("Object is not writable.");
         }
         throw Slots.notImplemented("memoryview");

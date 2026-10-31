@@ -211,21 +211,21 @@ public final class Slots {
      * integer at all is a {@code TypeError} about interpretation, one too wide for a machine word is an
      * {@code OverflowError}, and a negative one is a {@code ValueError} — a length is a count, and only
      * the last of those is about the number rather than its type.
+     *
+     * <p>The order is the source's: {@code _PyNumber_Index} first, then {@code _PyLong_IsNegative}, then
+     * {@code PyNumber_AsSsize_t}, so {@code __len__} returning {@code -(2 ** 70)} is refused for being
+     * negative rather than for not fitting. What the last step names is {@code int}, always, because the
+     * object it looks at is the number the conversion produced rather than the answer that arrived.
      */
     private static long counted(PyObject answer) {
-        java.math.BigInteger value = Numbers.asInteger(answer);
-        if (value == null) {
-            throw typeError(
-                    "'%s' object cannot be interpreted as an integer", answer.getType().filedName());
-        }
-        if (value.bitLength() >= 64) {
-            throw overflowError("cannot fit 'int' into an index-sized integer");
-        }
-        long length = value.longValue();
-        if (length < 0) {
+        java.math.BigInteger value = Numbers.asIndex(answer);
+        if (value.signum() < 0) {
             throw valueError("__len__() should return >= 0");
         }
-        return length;
+        if (value.bitLength() > 63) {
+            throw overflowError("cannot fit 'int' into an index-sized integer");
+        }
+        return value.longValue();
     }
 
     /**

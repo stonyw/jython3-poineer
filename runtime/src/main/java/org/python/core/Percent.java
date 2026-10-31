@@ -329,7 +329,17 @@ final class Percent {
                 : body.substring(0, exponent) + "." + body.substring(exponent);
     }
 
-    /** {@code %c}: a code point given as an integer, or as a one-character string. */
+    /**
+     * {@code %c}: a code point given as an integer, or as a one-character string.
+     *
+     * <p>The number is read with {@code PyLong_AsLongAndOverflow}, which asks {@code __index__} of
+     * anything that is not already an int — so {@code "%c" % Index()} is {@code '\x02'} — and the
+     * {@code TypeError} that conversion raises is replaced by the format's own complaint about what
+     * arrived. An error the method itself raises is not, which is why {@code "%c" % Raised()} is the
+     * {@code ValueError} from inside it. A number that overflows the read is not a refusal of the
+     * conversion but of the range, so {@code %c} of {@code 2 ** 70} is the same {@code OverflowError}
+     * as a code point past the planes.
+     */
     private static String character(PyObject value) {
         if (value instanceof PyStr text) {
             if (text.codePointLength() != 1) {
@@ -339,12 +349,20 @@ final class Percent {
             }
             return text.getValue();
         }
-        BigInteger code = Numbers.asInteger(value);
-        if (code == null) {
+        BigInteger code;
+        try {
+            code = Numbers.asIndex(value);
+        } catch (PyRaise refusal) {
+            if (!refusal.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                throw refusal;
+            }
             throw Slots.typeError(
-                    "%%c requires an int or a unicode character, not %s", value.getType().name());
+                    "%%c requires an int or a unicode character, not %s",
+                    value.getType().filedName());
         }
-        if (!Numbers.fitsInt(code) || code.intValue() < 0 || code.intValue() >= 0x110000) {
+        if (code.signum() < 0
+                || !Numbers.fitsInt(code)
+                || code.intValue() >= 0x110000) {
             throw Slots.overflowError("%%c arg not in range(0x110000)");
         }
         return new String(Character.toChars(code.intValue()));

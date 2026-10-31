@@ -65,16 +65,20 @@ final class Sequences {
         return out;
     }
 
-    /** {@code seq * n} for a repeatable sequence, with {@code n} already clamped. */
+    /**
+     * {@code seq * n} for a repeatable sequence, with the count already read as an index.
+     *
+     * <p>The count has already been refused for width by {@link #multiplier}; what is left is the width
+     * of the result, and a Java array is the narrower ceiling here. CPython's list and tuple answer a
+     * product too wide for a {@code Py_ssize_t} with {@code PyErr_NoMemory()}, which is the bare
+     * {@code MemoryError} that {@link Numbers#total} also answers for a length no Java array can carry.
+     */
     static PyObject[] repeat(PyObject[] items, long times) {
-        if (times <= 0 || items.length == 0) {
+        int total = scaled(items.length, times, null);
+        if (total == 0) {
             return new PyObject[0];
         }
-        long total = items.length * times;
-        if (total > Integer.MAX_VALUE) {
-            throw Slots.overflowError("cannot fit 'int' into an index-sized integer");
-        }
-        PyObject[] out = new PyObject[(int) total];
+        PyObject[] out = new PyObject[total];
         for (int at = 0; at < out.length; ) {
             for (PyObject item : items) {
                 out[at++] = item;
@@ -83,30 +87,58 @@ final class Sequences {
         return out;
     }
 
-    private static PyObject ordered(CompareOp cmp, int signal) {
-        return PyObject.ordered(cmp, signal);
+    /**
+     * How many elements a repeat of {@code each} run {@code times} over comes to, refused in the words
+     * the repeating type files.
+     *
+     * <p>CPython tests the product one way in all four sequences — {@code input_size >
+     * PY_SSIZE_T_MAX / n}, the division that keeps the test itself from overflowing — and then differs
+     * in what it answers: {@code str} raises {@code repeated string is too long} and {@code bytes}
+     * {@code repeated bytes are too long}, both an {@code OverflowError} naming the result, while a
+     * list and a tuple fail the allocation and answer a {@code MemoryError}. Passing {@code null} for
+     * {@code tooLong} asks for that answer, which is also the only honest one for a length past what a
+     * Java array can be numbered to.
+     */
+    static int scaled(long each, long times, String tooLong) {
+        if (each == 0 || times <= 0) {
+            return 0;
+        }
+        if (each > Long.MAX_VALUE / times) {
+            throw tooLong == null ? Slots.memoryError() : Slots.overflowError(tooLong);
+        }
+        return Numbers.total(each * times);
     }
 
     /**
-     * {@code seq * n}, for the four built-in sequences that repeat.
+     * {@code seq * n} for the four built-in sequences that repeat, counted in elements.
      *
-     * A non-integer multiplier is refused here rather than declined, because CPython's sequence
-     * repeat function raises {@code TypeError} itself instead of returning {@code NotImplemented},
-     * so {@code "a" * 2.0} names the multiplier's type rather than both operands'.
+     * <p>An empty sequence or a non-positive count is the empty result before anything is measured, as
+     * it is in CPython: {@code [] * -(2 ** 70)} is {@code []}, because the sign is read first.
      */
     static PyObject[] multiplied(PyObject[] items, PyObject times) {
-        BigInteger count = Numbers.asInteger(times);
-        if (count == null) {
+        return repeat(items, multiplier(times));
+    }
+
+    /**
+     * The multiplier of {@code seq * n}, read the way CPython's sequence repeat reads it.
+     *
+     * <p>Both refusals are the converter's own and are worth telling apart, because they are what a
+     * class with a bad {@code __index__} sees: {@code "a" * 2.0} is refused by the slot test, in the
+     * words of {@code sequence_repeat}, which raises {@code TypeError} itself instead of answering
+     * {@code NotImplemented} — so the sentence names the multiplier and not the pair of operands —
+     * while {@code "a" * BadIndex()} reaches the conversion and is the complaint about the answer.
+     */
+    static long multiplier(PyObject times) {
+        if (!Numbers.isIndex(times)) {
             throw Slots.typeError(
-                    "can't multiply sequence by non-int of type '%s'", times.getType().name());
+                    "can't multiply sequence by non-int of type '%s'",
+                    times.getType().filedName());
         }
-        if (count.signum() < 0) {
-            return new PyObject[0];
-        }
-        if (count.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
-            throw Slots.overflowError("cannot fit 'int' into an index-sized integer");
-        }
-        return repeat(items, count.longValue());
+        return Numbers.repeat(times);
+    }
+
+    private static PyObject ordered(CompareOp cmp, int signal) {
+        return PyObject.ordered(cmp, signal);
     }
 
     /** How many elements equal {@code target}, which is {@code count} for a tuple and a list. */
@@ -136,14 +168,17 @@ final class Sequences {
     }
 
     /**
-     * The {@code start} and {@code stop} of a {@code index} or {@code count} search, resolved the way
-     * CPython resolves them: {@code None} means the whole sequence, a negative bound counts back from
+     * The {@code start} of a {@code list} or {@code tuple} {@code index} search, resolved the way
+     * CPython resolves it: {@code None} means the whole sequence, a negative bound counts back from
      * the end, and a bound beyond either end is clamped rather than refused.
+     *
+     * <p>{@code None} is not in the refusal because it has already been taken as the whole sequence —
+     * these two are the only callers of {@link Numbers#searchIndex}.
      */
     static int searchStart(PyObject bound, int length) {
         return bound == null || bound == PyNone.INSTANCE
                 ? 0
-                : clamp(Numbers.sliceIndex(bound), 0, length);
+                : clamp(Numbers.searchIndex(bound), 0, length);
     }
 
     /**
@@ -172,6 +207,13 @@ final class Sequences {
         return bound == null || bound == PyNone.INSTANCE
                 ? length
                 : clamp(Numbers.sliceIndex(bound), 0, length);
+    }
+
+    /** {@code list} and {@code tuple} {@code index} read their {@code stop} as their {@code start}. */
+    static int indexStop(PyObject bound, int length) {
+        return bound == null || bound == PyNone.INSTANCE
+                ? length
+                : clamp(Numbers.searchIndex(bound), 0, length);
     }
 
     private static int clamp(BigInteger value, int low, int high) {

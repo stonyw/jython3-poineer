@@ -606,13 +606,12 @@ final class Builtins {
         return (number.signum() < 0 ? "-" : "") + prefix + number.abs().toString(base);
     }
 
+    /**
+     * The number a builtin reads out of its argument with {@code _PyNumber_Index}: {@code chr}, and the
+     * three radix spellings, which are {@code PyNumber_ToBase} over the same conversion.
+     */
     private static BigInteger integerOrRefusal(PyObject value) {
-        BigInteger exact = Numbers.asInteger(value);
-        if (exact == null) {
-            throw Slots.typeError(
-                    "'%s' object cannot be interpreted as an integer", value.getType().name());
-        }
-        return exact;
+        return Numbers.asIndex(value);
     }
 
     /**
@@ -736,27 +735,33 @@ final class Builtins {
         if (positional < 1) {
             throw Slots.typeError("enumerate() missing required argument 'iterable'");
         }
-        long at = 0;
+        BigInteger at = BigInteger.ZERO;
         PyObject start = positional > 1
                 ? args[1]
                 : keywordValue(kwNames, args, positional, "start", null);
         if (start != null) {
-            BigInteger from = integerOrRefusal(start);
-            if (!Numbers.fitsInt(from)) {
-                throw Slots.overflowError("Python int too large to convert to C ssize_t");
-            }
-            at = from.longValue();
+            at = Numbers.asIndex(start);
         }
         return new Counter(Slots.iterator(args[0]), at);
     }
 
-    /** {@code enumerate}: the pair-counting iterator, which is its own type in CPython. */
+    /**
+     * {@code enumerate}: the pair-counting iterator, which is its own type in CPython.
+     *
+     * <p>The count is kept as wide as Python integers are because {@code enum_new} keeps it two ways:
+     * {@code PyLong_AsSsize_t} over the {@code __index__} answer, and when that overflows a
+     * {@code PyErr_Clear()} and a {@code en_longindex} that adds one at a time. The machine-word path is
+     * invisible from Python, so only the wide one is reproduced — which is what makes
+     * {@code enumerate("ab", 2 ** 70)} count from {@code 1180591620717411303424} rather than refuse.
+     */
     private static final class Counter extends PyIterator {
 
-        private final PyIterator source;
-        private long at;
+        private static final BigInteger ONE = BigInteger.ONE;
 
-        Counter(PyIterator source, long at) {
+        private final PyIterator source;
+        private BigInteger at;
+
+        Counter(PyIterator source, BigInteger at) {
             this.source = source;
             this.at = at;
         }
@@ -764,7 +769,12 @@ final class Builtins {
         @Override
         public PyObject nextOrNull() {
             PyObject value = source.nextOrNull();
-            return value == null ? null : PyTuple.of(PyInt.of(at++), value);
+            if (value == null) {
+                return null;
+            }
+            PyObject index = PyInt.of(at);
+            at = at.add(ONE);
+            return PyTuple.of(index, value);
         }
     }
 
