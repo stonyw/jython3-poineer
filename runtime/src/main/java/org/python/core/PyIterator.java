@@ -51,6 +51,28 @@ public abstract class PyIterator extends PyObject {
         return this;
     }
 
+    /**
+     * {@code tp_iternext} read as an attribute: {@code it.__next__()}, which raises the end rather than
+     * signalling it.
+     *
+     * <p>{@code Builtins.next} and a {@code for} loop are the two other readers of the same slot, and each
+     * has somewhere to put a null — a default to hand back, a loop to leave. {@code __next__} has neither,
+     * so CPython's {@code slot_tp_iternext} turns the null into the exception {@code PyIter_Next} would
+     * have set: the one the step that ended the iteration was made of when there was one, and a bare
+     * {@code StopIteration} invented at this point when the cursor simply ran out.
+     */
+    public PyObject stepped() {
+        PyObject value = nextOrNull();
+        if (value != null) {
+            return value;
+        }
+        PyBaseException stopped = exhaustion();
+        if (stopped != null) {
+            throw PyRaise.reraise(stopped);
+        }
+        throw PyRaise.of(new PyBaseException(ExceptionTypes.STOP_ITERATION, new PyObject[0]));
+    }
+
     @Override
     public String repr() {
         return "<iterator object>";

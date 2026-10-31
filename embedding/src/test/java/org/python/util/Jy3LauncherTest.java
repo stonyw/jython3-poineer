@@ -284,7 +284,8 @@ class Jy3LauncherTest {
                 "108_index_protocol.py",
                 "109_conversion_slots.py",
                 "110_slice_rows.py",
-                "111_range_rows.py");
+                "111_range_rows.py",
+                "112_range_iterators.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

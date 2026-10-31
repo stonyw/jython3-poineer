@@ -200,6 +200,7 @@ final class TypeDict {
     private static final String DELATTR_DOC =
             "__delattr__($self, name, /)\n--\n\nImplement delattr(self, name).";
     private static final String ITER_DOC = "__iter__($self, /)\n--\n\nImplement iter(self).";
+    private static final String NEXT_DOC = "__next__($self, /)\n--\n\nImplement next(self).";
     private static final String LEN_DOC = "__len__($self, /)\n--\n\nReturn len(self).";
     private static final String GETITEM_DOC = "__getitem__($self, key, /)\n--\n\nReturn self[key].";
     private static final String CONTAINS_DOC =
@@ -816,6 +817,10 @@ final class TypeDict {
         }
         if (owner == PyType.RANGE) {
             rangeTable(into);
+            return;
+        }
+        if (owner == PyType.RANGE_ITERATOR || owner == PyType.LONG_RANGE_ITERATOR) {
+            rangeIteratorTable(owner, into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -2460,6 +2465,33 @@ final class TypeDict {
     private static PyObject rangesNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.RANGE, args, kwNames);
         return Constructors.ranging(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The six rows each of the two range cursors files for itself.
+     *
+     * <p>{@code range_iterator} and {@code longrange_iterator} are one dictionary written twice — the same
+     * six names in the same order with the same sentences, because {@code rangeiter_methods}
+     * ({@code Objects/rangeobject.c:910}) and {@code longrangeiter_methods} ({@code :1087}) are the same
+     * three {@code PyMethodDef} rows over two different bodies, and the {@code tp_iter} and
+     * {@code tp_iternext} beside them are copied out as the same two slot wrappers. Two of the six are
+     * names {@code object} already files — {@code __reduce__} and {@code __doc__} — while neither
+     * {@code __iter__} nor {@code __next__} is one of them, which is why {@code dir()} grows by four
+     * names rather than six.
+     *
+     * <p>There is no {@code __new__} row: {@code tp_new} is null in both types, so {@code range_iterator()}
+     * is refused before its arguments are read and {@code object.__new__(range_iterator)} with it. Nor is
+     * there a sentence: {@code tp_doc} is zero in both, which is what makes the {@code __doc__} entry the
+     * value {@code None} rather than a string, and the type read its doc as {@code None} while {@code
+     * None.__doc__} says something else entirely. A value of either type has no dictionary either — {@code
+     * tp_dictoffset} is zero — so {@code vars(it)} is refused and {@code it.__dict__} names the type.
+     */
+    private static void rangeIteratorTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.named("__length_hint__", "__reduce__", "__setstate__");
+        table.value("__doc__", docValue(owner));
     }
 
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */
@@ -4974,6 +5006,7 @@ final class TypeDict {
                     "__str__",
                     "__hash__",
                     "__iter__",
+                    "__next__",
                     "__len__",
                     "__neg__",
                     "__pos__",

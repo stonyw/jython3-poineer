@@ -441,6 +441,22 @@ public class PyType extends PyObject {
                     + "When step is given, it specifies the increment (or decrement).";
 
     public static final PyType RANGE = builtin("range").documented(RANGE_DOC).flagged(SEQUENCE);
+
+    /**
+     * The cursor a range hands out when its three bounds and its length all fit a C {@code long}.
+     *
+     * <p>Two types where one would do, and CPython's reason is arithmetic rather than meaning: {@code
+     * range_iter} keeps {@code start}, {@code step} and {@code len} as C longs and steps them, which is
+     * the faster walk, and falls back to {@link #LONG_RANGE_ITERATOR} only when a bound, a step, or the
+     * count that would come off them does not fit. Both file the same six names, and their two bodies
+     * disagree in one place a program can see: the fast one reads its new index as {@code PyLong_AsLong},
+     * so it takes a bool, an {@code __index__}, and overflows at sixty-four bits, while the wide one
+     * demands an exact int and clips in arbitrary precision.
+     */
+    static final PyType RANGE_ITERATOR = builtin("range_iterator").withoutNew();
+
+    /** The cursor beside it, which counts in Python integers and so never runs out of width. */
+    static final PyType LONG_RANGE_ITERATOR = builtin("longrange_iterator").withoutNew();
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was

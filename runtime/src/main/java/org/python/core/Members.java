@@ -75,7 +75,11 @@ final class Members {
             // The four rows `range` declares are askable through the type before any range is built, and
             // the three fields beside them are read from the same table, so `PyRange` is loaded to file all
             // seven.
-            Map.entry(PyType.RANGE, PyRange.class));
+            Map.entry(PyType.RANGE, PyRange.class),
+            // Both cursors a range hands out declare the same three rows, over two bodies, so one class
+            // files both tables — and `range_iterator.__setstate__` is askable before a cursor exists.
+            Map.entry(PyType.RANGE_ITERATOR, RangeIterators.class),
+            Map.entry(PyType.LONG_RANGE_ITERATOR, RangeIterators.class));
 
     private final PyType owner;
 

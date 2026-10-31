@@ -175,15 +175,13 @@ public final class PyRange extends PyObject {
      * {@code range_reverse}: an iterator over {@code range(start + (n - 1) * step, start - step, -step)},
      * which is the same walk in the other order.
      *
-     * <p>The three expressions are the source's own, and are kept in arbitrary precision even though
-     * {@code range_reverse} drops to C {@code long} whenever the bounds fit: the long path and the
-     * {@code longrangeiterobject} beside it answer the same values, and an empty range folds to
-     * {@code range(x, x, -step)} — empty either way.
+     * <p>The fold belongs to {@link RangeIterators}, because which of the two cursors answers is the
+     * question the reversal has to answer for itself: the C function converts six numbers rather than
+     * three, so {@code range(0, 10, -(2 ** 63))} walks forwards in machine words and backwards in Python
+     * integers, even though the range is empty and neither walk produces a value.
      */
     private PyObject reversedIterator() {
-        BigInteger length = lengthValue();
-        BigInteger last = startValue().add(length.subtract(ONE).multiply(stepValue()));
-        return of(last, startValue().subtract(stepValue()), stepValue().negate()).iterator();
+        return RangeIterators.reversed(this);
     }
 
     /** {@code range_contains}: the arithmetic for an integer, a walk for anything else. */
@@ -267,7 +265,7 @@ public final class PyRange extends PyObject {
 
     @Override
     public PyObject iterator() {
-        return new RangeIterator(this, BigInteger.ZERO);
+        return RangeIterators.of(this);
     }
 
     @Override
@@ -370,26 +368,5 @@ public final class PyRange extends PyObject {
     @Override
     public PyObject getAttr(String name) {
         return Members.find(this, name);
-    }
-
-    private static final class RangeIterator extends PyIterator {
-
-        private final PyRange range;
-        private BigInteger index;
-
-        RangeIterator(PyRange range, BigInteger index) {
-            this.range = range;
-            this.index = index;
-        }
-
-        @Override
-        public PyObject nextOrNull() {
-            if (index.compareTo(range.lengthValue()) >= 0) {
-                return null;
-            }
-            PyObject value = range.valueAt(index);
-            index = index.add(ONE);
-            return value;
-        }
     }
 }
