@@ -421,7 +421,26 @@ public class PyType extends PyObject {
      * {@code TypesGenerator} is added to the structmember table but not to the builtins dict.
      */
     public static final PyType GENERATOR = builtin("generator");
-    public static final PyType RANGE = builtin("range").flagged(SEQUENCE);
+    /**
+     * The sentence CPython's {@code range_doc} writes for the sequence type (Objects/rangeobject.c:159).
+     *
+     * <p>It lists two constructor shapes on their own lines and then explains the arithmetic in eight lines
+     * all, and like {@link #SLICE_DOC} it carries no argument table: the signature rule reads the first line
+     * as a table only to give up when no {@code --} follows it, so {@code range.__text_signature__} is {@code
+     * None} and {@code range.__doc__} keeps the whole thing — the longest {@code tp_doc} of the types here,
+     * and the only one that says what its values produce rather than what they are.
+     */
+    private static final String RANGE_DOC =
+            "range(stop) -> range object\n"
+                    + "range(start, stop[, step]) -> range object\n"
+                    + "\n"
+                    + "Return an object that produces a sequence of integers from start (inclusive)\n"
+                    + "to stop (exclusive) by step.  range(i, j) produces i, i+1, i+2, ..., j-1.\n"
+                    + "start defaults to 0, and stop is omitted!  range(4) produces 0, 1, 2, 3.\n"
+                    + "These are exactly the valid indices for a list of 4 elements.\n"
+                    + "When step is given, it specifies the increment (or decrement).";
+
+    public static final PyType RANGE = builtin("range").documented(RANGE_DOC).flagged(SEQUENCE);
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was

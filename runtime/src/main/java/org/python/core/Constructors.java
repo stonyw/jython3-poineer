@@ -84,7 +84,7 @@ final class Constructors {
             return mapping(args, keywordNames);
         }
         if (type == PyType.RANGE) {
-            return range(args, keywordNames);
+            return ranging(args, keywordNames);
         }
         if (type == PyType.SLICE) {
             return slicing(args, keywordNames);
@@ -784,7 +784,7 @@ final class Constructors {
     }
 
     /** {@code range(stop)} / {@code range(start, stop[, step])}, which is one to three integers. */
-    private static PyObject range(PyObject[] args, String[] kwNames) {
+    static PyObject ranging(PyObject[] args, String[] kwNames) {
         refuseKeywords("range", kwNames);
         Arguments.between("range", args, kwNames, 1, 3);
         BigInteger start = BigInteger.ZERO;

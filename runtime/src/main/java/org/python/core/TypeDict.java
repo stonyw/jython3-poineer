@@ -814,6 +814,10 @@ final class TypeDict {
             sliceTable(into);
             return;
         }
+        if (owner == PyType.RANGE) {
+            rangeTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -2392,6 +2396,70 @@ final class TypeDict {
     private static PyObject slicesNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.SLICE, args, kwNames);
         return Constructors.slicing(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The twenty-two rows {@code range} files for itself.
+     *
+     * <p>Three C lists and one dictionary entry, in the order {@code __dict__} shows them: the thirteen slot
+     * wrappers behind {@code PyRange_Type}'s own {@code tp_repr}, {@code tp_hash}, {@code tp_richcompare},
+     * {@code tp_iter} and {@code nb_bool}, and the four its two protocol tables are read through — {@code
+     * sq_length} and {@code mp_length} being one {@code range_length} filed as one {@code __len__}, {@code
+     * __getitem__} being {@code mp_subscript}'s {@code range_subscript} rather than {@code sq_item}'s
+     * machine-word {@code range_item}, and {@code __contains__} being {@code sq_contains}. Then the four of
+     * {@code range_methods} (Objects/rangeobject.c:766) and the three of {@code range_members} ({@code :774}),
+     * and above all of them the {@code __new__} {@code tp_new_wrapper} installs. Eleven of the twenty-two are
+     * names {@code object} does not file, which is why {@code dir(range)} counts thirty-five rather than
+     * forty-six.
+     *
+     * <p>{@code __len__} and {@code __getitem__} are the two rows of the thirteen that disagree about width:
+     * the length is read as a {@code Py_ssize_t} and so {@code len(range(2 ** 70))} overflows, while the
+     * subscript is read as an index of any size and so {@code range(10)[2 ** 70]} is merely out of range. The
+     * three fields are {@code Py_T_OBJECT_EX} offsets marked {@code Py_READONLY}, so a read hands back the
+     * very parameter the range was built with — the same object twice for the same range — and a write is
+     * the descriptor's own {@code readonly attribute}. The type's sentence is {@code tp_doc} whole, since
+     * eight lines of arithmetic carry no argument table for the knife to cut.
+     */
+    private static void rangeTable(PyDict into) {
+        PyType owner = PyType.RANGE;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::rangesNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, rangeComparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, rangeComparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, rangeComparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, rangeComparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, rangeComparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, rangeComparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__bool__", TRUTH_DOC, args -> args[0].truth());
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+        table.named("__reversed__", "__reduce__", "count", "index");
+        table.member("start", null, self -> ((PyRange) self).start(), null);
+        table.member("stop", null, self -> ((PyRange) self).stop(), null);
+        table.member("step", null, self -> ((PyRange) self).step(), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code range_richcompare}: the two equalities answered, and the four orderings declined. */
+    private static Method rangeComparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> PyRange.compare(cmp, args[0], args[1]);
+    }
+
+    /**
+     * {@code range_new} over a {@code tp_new_wrapper}: the class gates, then the constructor's own count.
+     *
+     * <p>The three refusals after the gate name {@code range} rather than the subtype handed over, and the
+     * first of them is not {@code PyArg_UnpackTuple}'s but {@code range_new}'s own — {@code range()} says
+     * {@code range expected at least 1 argument, got 0} in the words the C function writes, whether it was
+     * reached as {@code range()} or as {@code range.__new__(range)}.
+     */
+    private static PyObject rangesNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.RANGE, args, kwNames);
+        return Constructors.ranging(tail(args, kwNames), kwNames);
     }
 
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */

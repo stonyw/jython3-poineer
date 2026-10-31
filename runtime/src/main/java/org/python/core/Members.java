@@ -71,7 +71,11 @@ final class Members {
             Map.entry(PyType.VERSION_INFO, PyVersionInfo.class),
             // A slice is made by the compiler for every extended subscript, but a program can ask the type
             // for its two rows before any value exists, so `PySlice` is loaded to file them.
-            Map.entry(PyType.SLICE, PySlice.class));
+            Map.entry(PyType.SLICE, PySlice.class),
+            // The four rows `range` declares are askable through the type before any range is built, and
+            // the three fields beside them are read from the same table, so `PyRange` is loaded to file all
+            // seven.
+            Map.entry(PyType.RANGE, PyRange.class));
 
     private final PyType owner;
 

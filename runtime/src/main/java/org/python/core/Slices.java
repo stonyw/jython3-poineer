@@ -81,6 +81,16 @@ final class Slices {
         if (length.signum() < 0) {
             throw Slots.valueError("length should not be negative");
         }
+        BigInteger[] folded = longIndices(slice, length);
+        return PyTuple.of(PyInt.of(folded[0]), PyInt.of(folded[1]), PyInt.of(folded[2]));
+    }
+
+    /**
+     * {@code _PySlice_GetLongIndices} over a length already known not to be negative: {@code start},
+     * {@code stop} and {@code step} as three numbers, which is what {@code compute_slice} multiplies and
+     * what {@link #indices} hands back as a tuple.
+     */
+    static BigInteger[] longIndices(PySlice slice, BigInteger length) {
         BigInteger step;
         boolean backwards;
         if (slice.step() == PyNone.INSTANCE) {
@@ -103,7 +113,7 @@ final class Slices {
                 slice.stop() == PyNone.INSTANCE
                         ? (backwards ? lower : upper)
                         : clipped(Numbers.sliceIndex(slice.stop()), length, lower, upper);
-        return PyTuple.of(PyInt.of(start), PyInt.of(stop), PyInt.of(step));
+        return new BigInteger[] {start, stop, step};
     }
 
     /**
