@@ -102,7 +102,7 @@ public final class PyList extends PyObject {
 
     @Override
     public PyObject iterator() {
-        return PyIterator.of(items);
+        return SequenceIterators.list(this);
     }
 
     /** {@code a + b} joins two lists; {@code a * n} repeats one. */
@@ -489,9 +489,7 @@ public final class PyList extends PyObject {
                     "__reversed__",
                     (self, args, kwNames) -> {
                         Arguments.none("list.__reversed__()", args, kwNames);
-                        List<PyObject> back = new ArrayList<>(((PyList) self).items);
-                        Collections.reverse(back);
-                        return PyIterator.of(back);
+                        return SequenceIterators.listBackwards((PyList) self);
                     })
             .add(
                     "__sizeof__",

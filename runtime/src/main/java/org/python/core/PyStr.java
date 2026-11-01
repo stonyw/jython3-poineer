@@ -150,7 +150,7 @@ public final class PyStr extends PyObject {
 
     @Override
     public PyObject iterator() {
-        return PyIterator.of(characters());
+        return SequenceIterators.of(this);
     }
 
     @Override
@@ -230,17 +230,20 @@ public final class PyStr extends PyObject {
         return Integer.compare(codePoints, other.codePoints);
     }
 
-    /** The one-character strings this value iterates over. */
-    private PyObject[] characters() {
-        PyObject[] out = new PyObject[codePoints];
-        for (int i = 0; i < out.length; i++) {
-            out[i] = characterAt(i);
-        }
-        return out;
+    /**
+     * {@code PyUnicode_IS_COMPACT_ASCII}: whether every code point is under 128, which is what {@code
+     * unicode_iter} asks before it chooses between the two string cursors.
+     *
+     * <p>The test is on the UTF-16 units, which is the same question: a code point at or above 128 is
+     * written either as one unit of its own or as a surrogate pair, and both are units over 127. The empty
+     * string passes, and so answers with the ASCII cursor.
+     */
+    boolean isAscii() {
+        return value.chars().allMatch(unit -> unit < 128);
     }
 
-    /** The one-character string holding the {@code at}-th code point. */
-    private PyObject characterAt(int at) {
+    /** The one-code-point string at a code-point index, which is what {@code s[i]} and a walk hand out. */
+    PyObject characterAt(int at) {
         int from = charIndex(at);
         return PyStr.of(value.substring(from, from + Character.charCount(value.codePointAt(from))));
     }

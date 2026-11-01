@@ -457,6 +457,39 @@ public class PyType extends PyObject {
 
     /** The cursor beside it, which counts in Python integers and so never runs out of width. */
     static final PyType LONG_RANGE_ITERATOR = builtin("longrange_iterator").withoutNew();
+
+    /**
+     * The six cursors the four sequence types hand out, each named for the type it walks.
+     *
+     * <p>CPython writes them in the four C files that need them — {@code listobject.c} two, {@code
+     * tupleobject.c}, {@code bytesobject.c} and {@code unicodeobject.c} one each, the last of those two —
+     * and the six dictionaries are the same six names in the same order, because each {@code Xiter_methods}
+     * list files the same three {@code PyMethodDef} rows over an {@code it_index} and an {@code it_seq}.
+     * Three of the six differ from the other three in one thing a program can see: the list cursors read
+     * the list as it is now, so an item appended during the walk is walked into, while the other three hold
+     * a source that cannot change and so report the position they ran out at rather than a spent one.
+     *
+     * <p>Two of them walk a {@code str}, and the pair is CPython's {@code unicode_iter} asking the string
+     * whether it is ASCII: the answer is a different type rather than a different cursor, because the two
+     * {@code tp_iternext}s read the same buffer at different widths and only one of them can hand back a
+     * shared one-character value.
+     */
+    static final PyType LIST_ITERATOR = builtin("list_iterator").withoutNew();
+
+    /** The same list, walked from its last item back to its first — what {@code reversed(list)} answers. */
+    static final PyType LIST_REVERSE_ITERATOR = builtin("list_reverseiterator").withoutNew();
+
+    /** {@code type(iter(()))}, which keeps its index when it runs out and drops only the tuple. */
+    static final PyType TUPLE_ITERATOR = builtin("tuple_iterator").withoutNew();
+
+    /** {@code type(iter(b''))}, whose items are the numbers of the octets. */
+    static final PyType BYTES_ITERATOR = builtin("bytes_iterator").withoutNew();
+
+    /** The cursor of a string with a code point at or above 128 in it. */
+    static final PyType STR_ITERATOR = builtin("str_iterator").withoutNew();
+
+    /** The cursor beside it, for a string whose every code point is under 128. */
+    static final PyType STR_ASCII_ITERATOR = builtin("str_ascii_iterator").withoutNew();
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was

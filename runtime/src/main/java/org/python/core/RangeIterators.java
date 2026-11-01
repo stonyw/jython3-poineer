@@ -145,7 +145,7 @@ final class RangeIterators {
     /** {@code Py_BuildValue("N(N)O", iter, range, None)} — the builtin reached for at the call. */
     private static PyObject reducedTo(PyRange rest) {
         return PyTuple.of(
-                PyRuntime.builtins().get(PyStr.interned("iter")),
+                PyRuntime.builtin("iter"),
                 PyTuple.of(rest),
                 PyNone.INSTANCE);
     }

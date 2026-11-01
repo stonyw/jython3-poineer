@@ -114,7 +114,7 @@ public class PyTuple extends PyObject {
 
     @Override
     public PyObject iterator() {
-        return PyIterator.of(items);
+        return SequenceIterators.of(this);
     }
 
     /**

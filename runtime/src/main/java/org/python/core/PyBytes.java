@@ -57,6 +57,11 @@ public final class PyBytes extends PyObject {
         return value.length;
     }
 
+    /** One octet, without copying the run: what {@code b[i]} and a walk read. */
+    int byteAt(int index) {
+        return value[index];
+    }
+
     @Override
     public PyObject length() {
         return PyInt.of(value.length);
@@ -291,11 +296,7 @@ public final class PyBytes extends PyObject {
 
     @Override
     public PyObject iterator() {
-        PyObject[] elements = new PyObject[value.length];
-        for (int i = 0; i < elements.length; i++) {
-            elements[i] = PyInt.of(value[i] & 0xff);
-        }
-        return PyIterator.of(elements);
+        return SequenceIterators.of(this);
     }
 
     /**

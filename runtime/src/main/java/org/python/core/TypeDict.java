@@ -819,8 +819,10 @@ final class TypeDict {
             rangeTable(into);
             return;
         }
-        if (owner == PyType.RANGE_ITERATOR || owner == PyType.LONG_RANGE_ITERATOR) {
-            rangeIteratorTable(owner, into);
+        if (owner == PyType.RANGE_ITERATOR
+                || owner == PyType.LONG_RANGE_ITERATOR
+                || isSequenceCursor(owner)) {
+            cursorTable(owner, into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -2468,25 +2470,46 @@ final class TypeDict {
     }
 
     /**
-     * The six rows each of the two range cursors files for itself.
+     * Whether {@code owner} is one of the six cursors the sequence types hand out.
      *
-     * <p>{@code range_iterator} and {@code longrange_iterator} are one dictionary written twice — the same
-     * six names in the same order with the same sentences, because {@code rangeiter_methods}
-     * ({@code Objects/rangeobject.c:910}) and {@code longrangeiter_methods} ({@code :1087}) are the same
-     * three {@code PyMethodDef} rows over two different bodies, and the {@code tp_iter} and
-     * {@code tp_iternext} beside them are copied out as the same two slot wrappers. Two of the six are
-     * names {@code object} already files — {@code __reduce__} and {@code __doc__} — while neither
-     * {@code __iter__} nor {@code __next__} is one of them, which is why {@code dir()} grows by four
-     * names rather than six.
-     *
-     * <p>There is no {@code __new__} row: {@code tp_new} is null in both types, so {@code range_iterator()}
-     * is refused before its arguments are read and {@code object.__new__(range_iterator)} with it. Nor is
-     * there a sentence: {@code tp_doc} is zero in both, which is what makes the {@code __doc__} entry the
-     * value {@code None} rather than a string, and the type read its doc as {@code None} while {@code
-     * None.__doc__} says something else entirely. A value of either type has no dictionary either — {@code
-     * tp_dictoffset} is zero — so {@code vars(it)} is refused and {@code it.__dict__} names the type.
+     * <p>Six of them over four C files: {@code listobject.c} writes the pair that walks a list, {@code
+     * tupleobject.c}, {@code bytesobject.c} and {@code unicodeobject.c} one apiece, and the string file two
+     * over the same struct, which {@code unicode_iter} chooses between by asking the string whether it is
+     * ASCII. Every one of the six {@code tp_methods} lists is the same three {@code PyMethodDef} rows with
+     * the same three sentences, so the bodies are six {@link Members} tables over one table shape.
      */
-    private static void rangeIteratorTable(PyType owner, PyDict into) {
+    private static boolean isSequenceCursor(PyType owner) {
+        return owner == PyType.LIST_ITERATOR
+                || owner == PyType.LIST_REVERSE_ITERATOR
+                || owner == PyType.TUPLE_ITERATOR
+                || owner == PyType.BYTES_ITERATOR
+                || owner == PyType.STR_ITERATOR
+                || owner == PyType.STR_ASCII_ITERATOR;
+    }
+
+    /**
+     * The six rows each of the eight cursors files for itself — the two a range hands out and the six the
+     * sequences do.
+     *
+     * <p>Each is one dictionary written many times over: {@code rangeiter_methods} ({@code
+     * Objects/rangeobject.c:910}) and {@code longrangeiter_methods} ({@code :1087}) are the same three rows
+     * twice, and {@code listiter_methods}, {@code listreviter_methods}, {@code tupleiter_methods}, {@code
+     * striter_methods} and {@code unicodeiter_methods} are those same three names and sentences five more
+     * times, in the five C files that need a cursor. The {@code tp_iter} and {@code tp_iternext} beside them
+     * are copied out as the same two slot wrappers, {@code PyObject_SelfIter} and the file's own step, which
+     * is what makes {@code iter(it) is it} true for all eight.
+     *
+     * <p>Four of the six names are not ones {@code object} already files — {@code __reduce__} and
+     * {@code __doc__} it does — which is why {@code dir()} of a cursor is twenty-eight against
+     * {@code object}'s twenty-four. There is no {@code __new__} row: {@code tp_new} is null in all eight
+     * types, so a cursor is refused before its arguments are read and {@code
+     * object.__new__(list_iterator)} with it. Nor is there a sentence: {@code tp_doc} is zero in all eight,
+     * which is what makes the {@code __doc__} entry the value {@code None} rather than a string, and the type
+     * read its doc as {@code None} while {@code None.__doc__} says something else entirely. A value of any of
+     * them has no dictionary either — {@code tp_dictoffset} is zero — so {@code vars(it)} is refused and
+     * {@code it.__dict__} names the type.
+     */
+    private static void cursorTable(PyType owner, PyDict into) {
         Table table = new Table(owner, into);
         table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
         table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());

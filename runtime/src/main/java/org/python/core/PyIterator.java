@@ -147,27 +147,27 @@ public abstract class PyIterator extends PyObject {
     }
 
     /**
-     * Iteration over a list, which differs from the array case in one way that matters: CPython
-     * detects the list changing size under the iterator and raises {@code RuntimeError}, where an
-     * index-based loop would silently skip or repeat. That check is the length this iterator
-     * remembers, and it is deliberately the only mutation guard here.
+     * Iteration over a snapshot list, made by {@code reversed} out of a sequence type that has no
+     * cursor of its own yet.
+     *
+     * <p>No size guard stands here, and none should: {@code listiter_next}
+     * ({@code Objects/listobject.c:4040}) reads {@code PyList_GET_SIZE} on every step and so happily
+     * walks items appended after the cursor was made — the slice that measured the six sequence
+     * cursors confirmed a growing list is silently seen rather than complained about. The
+     * {@code changed size during iteration} refusals belong to the dict and set cursors, not to a
+     * list's, and this list is a snapshot nothing outside this iterator can reach anyway.
      */
     private static final class ListIterator extends PyIterator {
 
         private final List<PyObject> items;
         private int at;
-        private final int expectedSize;
 
         ListIterator(List<PyObject> items) {
             this.items = items;
-            this.expectedSize = items.size();
         }
 
         @Override
         public PyObject nextOrNull() {
-            if (items.size() != expectedSize) {
-                throw Slots.runtimeError("list changed size during iteration");
-            }
             return at >= items.size() ? null : items.get(at++);
         }
     }

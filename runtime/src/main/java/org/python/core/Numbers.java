@@ -258,6 +258,27 @@ final class Numbers {
     }
 
     /**
+     * {@code PyLong_AsSsize_t} with nothing in front of it: a C {@code Py_ssize_t} read out of an integer
+     * and out of nothing else.
+     *
+     * <p>The gate is {@code PyLong_Check}, so this is the one converter of the three that never asks
+     * {@code __index__}: {@code list_iterator.__setstate__(Index())} is refused as {@code an integer is
+     * required}, the sentence this function owns, while {@code pop(Index())} walks the protocol and takes
+     * the answer. A bool passes for being a subclass of {@code int} rather than for answering as one, and
+     * the refusal of a number too wide for the word names the word, not the value.
+     */
+    static long asSsizeT(PyObject value) {
+        BigInteger number = asInteger(value);
+        if (number == null) {
+            throw Slots.typeError("an integer is required");
+        }
+        if (number.bitLength() > 63) {
+            throw Slots.overflowError("Python int too large to convert to C ssize_t");
+        }
+        return number.longValue();
+    }
+
+    /**
      * {@code PyNumber_AsSsize_t(value, PyExc_ValueError)}: a count asked of a value, with the overflow
      * complained about as a bad value rather than as a type.
      *

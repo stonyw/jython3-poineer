@@ -79,7 +79,15 @@ final class Members {
             // Both cursors a range hands out declare the same three rows, over two bodies, so one class
             // files both tables — and `range_iterator.__setstate__` is askable before a cursor exists.
             Map.entry(PyType.RANGE_ITERATOR, RangeIterators.class),
-            Map.entry(PyType.LONG_RANGE_ITERATOR, RangeIterators.class));
+            Map.entry(PyType.LONG_RANGE_ITERATOR, RangeIterators.class),
+            // Six cursors over four sequence types file the same three rows each, so one class files all
+            // six tables — and `list_iterator.__setstate__` is askable before any list has been iterated.
+            Map.entry(PyType.LIST_ITERATOR, SequenceIterators.class),
+            Map.entry(PyType.LIST_REVERSE_ITERATOR, SequenceIterators.class),
+            Map.entry(PyType.TUPLE_ITERATOR, SequenceIterators.class),
+            Map.entry(PyType.BYTES_ITERATOR, SequenceIterators.class),
+            Map.entry(PyType.STR_ITERATOR, SequenceIterators.class),
+            Map.entry(PyType.STR_ASCII_ITERATOR, SequenceIterators.class));
 
     private final PyType owner;
 

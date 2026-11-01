@@ -125,6 +125,24 @@ public final class PyRuntime {
         return builtins;
     }
 
+    /**
+     * {@code _PyEval_GetBuiltin} for one of the names CPython writes as {@code &_Py_ID(name)}.
+     *
+     * <p>Read at the call rather than held from here, which is what lets a program rebind {@code iter} and
+     * have a cursor's {@code __reduce__} name the replacement — {@code listiter_reduce_general} calls this
+     * before it touches the iterator's own pointers for exactly that reason (issue {@code #101765}). A name
+     * that is not in the dictionary is refused the way the C function refuses it: an {@code AttributeError}
+     * carrying the name and nothing else, so {@code str(exc)} is the name and {@code exc.name} is
+     * {@code None}, because {@code _PyEval_GetBuiltin} writes that error only when the lookup left none.
+     */
+    static PyObject builtin(String name) {
+        PyObject callable = builtins().get(PyStr.interned(name));
+        if (callable == null) {
+            throw Slots.attributeError("%s", name);
+        }
+        return callable;
+    }
+
     public static PyStream stdout() {
         startup();
         return stdout;
