@@ -5355,9 +5355,30 @@ final class TypeDict {
                     switch (shape) {
                         case CLASSMETHOD -> owner;
                         case RAW -> null;
-                        case WRAPPER, METHOD -> obj;
+                        // A read off the class hands back the row itself, which is what both `method_get`
+                        // (Objects/descrobject.c:138) and `wrapperdescr_get` (`:204`) answer before they ask
+                        // `descr_check` anything; a read off a value has to pass that check first.
+                        case WRAPPER, METHOD -> obj == null ? null : checked(obj);
                     };
             return receiver == null ? this : new Bound(declaring, name, shape, body, receiver, doc, flags);
+        }
+
+        /**
+         * {@code descr_check} (`:80`): a row binds only to a value of the class that files it.
+         *
+         * <p>The name the complaint quotes is the row's plain {@code ml_name} rather than its qualified
+         * one, and both classes are quoted by {@code tp_name}, which is the whole name of a named sequence.
+         * The test is {@code PyObject_TypeCheck}, which walks the value's own MRO and never asks a
+         * metaclass, so a subclass of the filing class passes and a class handed as its own receiver does
+         * not: {@code bytes.__len__.__get__(bytes)} names the receiver's type as {@code type}.
+         */
+        private PyObject checked(PyObject receiver) {
+            if (!declaring.instanceOf(receiver)) {
+                throw Slots.typeError(
+                        "descriptor '%s' for '%s' objects doesn't apply to a '%s' object",
+                        name, declaring.filedName(), receiver.getType().filedName());
+            }
+            return receiver;
         }
 
         @Override
