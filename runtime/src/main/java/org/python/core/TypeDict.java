@@ -829,6 +829,10 @@ final class TypeDict {
             hashCursorTable(owner, into);
             return;
         }
+        if (owner == PyType.REVERSED) {
+            reversedTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -940,10 +944,25 @@ final class TypeDict {
                 "__abstractmethods__", null, TypeDict::abstractMethods, files("__abstractmethods__"));
         table.getset("__dict__", null, TypeDict::dictOf, refuses("__dict__"));
         table.getset("__doc__", null, TypeDict::docOf, writes("__doc__"));
-        table.getset("__text_signature__", null, kind -> PyNone.INSTANCE, refuses("__text_signature__"));
+        table.getset(
+                "__text_signature__", null, TypeDict::signatureOfKind, refuses("__text_signature__"));
         table.getset("__annotations__", null, TypeDict::annotationsOf, files("__annotations__"));
         table.getset("__annotate__", null, TypeDict::annotateOf, writesAnnotate());
         table.getset("__type_params__", null, TypeDict::typeParamsOf, writes("__type_params__"));
+    }
+
+    /**
+     * {@code type_get_text_signature}: the table cut out of the type's own {@code tp_doc}.
+     *
+     * <p>The same text two knives read: {@code reversed.__doc__} is the sentence with its argument table cut
+     * off the front, and {@code reversed.__text_signature__} is nothing but the table. A type written down
+     * without one answers {@code None}, which is what every type whose sentence this runtime transcribed
+     * rather than generated still answers — {@code bool} and {@code float} carry tables in the reference and
+     * are filed here with their sentences alone.
+     */
+    private static PyObject signatureOfKind(PyObject target) {
+        PyType owner = (PyType) target;
+        return PyNativeFunction.signatureOf(owner.filedName(), owner.docText());
     }
 
     /**
@@ -2563,6 +2582,48 @@ final class TypeDict {
         table.value("__doc__", docValue(owner));
     }
 
+    /**
+     * The seven names the one cursor a builtin call makes for itself files.
+     *
+     * <p>One row longer than the six a sequence cursor files and two longer than the five a hash cursor
+     * does, and the row above all of them is the difference: {@code enumobject.c} writes a {@code tp_new}
+     * ({@code reversed_new}, {@code :380}) where the other fifteen cursors write a null pointer, and the
+     * builtin {@code reversed} <em>is</em> the type — its {@code tp_vectorcall} is {@code reversed_vectorcall}
+     * ({@code :423}), which is why {@code reversed(x)} and {@code reversed.__new__(reversed, x)} refuse a bad
+     * call in the same words. {@code reversediter_methods} ({@code :538}) is the three {@code
+     * method_descriptor} rows, and the two slot wrappers beside them are again {@code PyObject_SelfIter} and
+     * the file's own step.
+     *
+     * <p>Four of the seven are names {@code object} does not already file — {@code __reduce__} and {@code
+     * __doc__} it does — so {@code dir()} of the cursor is twenty-eight, the same four a sequence cursor
+     * gains. The tail entry is a string rather than the {@code None} the other fifteen file, because {@code
+     * tp_doc} is the constructor's own sentence, and a value reads the very same text through it. {@code
+     * tp_dictoffset} is zero as it is for all sixteen, so {@code vars()} of a cursor is still refused.
+     */
+    private static void reversedTable(PyDict into) {
+        PyType owner = PyType.REVERSED;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::reversedsNew);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.named("__length_hint__", "__reduce__", "__setstate__");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code reversed_new} over a {@code tp_new_wrapper}: the class gates, then the constructor's count.
+     *
+     * <p>The two refusals after the gate are the clinic table's, and they keep the order {@code
+     * reversed_vectorcall} asks them in — the keywords first, since {@code sequence} is positional-only, and
+     * the count after — so {@code reversed.__new__(reversed, [1], [2])} says exactly what {@code reversed([1],
+     * [2])} says. What is left after the two is the sequence, and {@link Reversed#over} asks it its own
+     * questions.
+     */
+    private static PyObject reversedsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.REVERSED, args, kwNames);
+        return Constructors.reversing(tail(args, kwNames), kwNames);
+    }
+
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */
     private static PyObject integerRepr(PyObject[] args) {
         return PyStr.of(Numbers.asInteger(args[0]).toString());
@@ -3527,10 +3588,17 @@ final class TypeDict {
         }
     }
 
-    /** The {@code __doc__} entry of a static type: a string, or {@code None} where the type says nothing. */
+    /**
+     * The {@code __doc__} entry of a static type: a string, or {@code None} where the type says nothing.
+     *
+     * <p>{@code PyType_Ready}'s {@code add_doc} files the sentence the same two knives cut for
+     * {@code type_get_doc}, so the dictionary and the read of the name answer one text — which is what makes
+     * {@code reversed.__dict__['__doc__'] == reversed.__doc__} true while {@code type}'s own entry is the
+     * {@code getset_descriptor} {@code type_set_descriptors} installed instead.
+     */
     private static PyObject docValue(PyType owner) {
         String text = owner.docText();
-        return text == null ? PyNone.INSTANCE : PyStr.of(text);
+        return text == null ? PyNone.INSTANCE : PyNativeFunction.docOf(owner.filedName(), text);
     }
 
     /**

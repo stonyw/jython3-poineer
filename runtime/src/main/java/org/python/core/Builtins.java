@@ -361,12 +361,11 @@ final class Builtins {
                                 + "\n"
                                 + "A custom key function can be supplied to customize the sort order, and the\n"
                                 + "reverse flag can be set to request the result in descending order."));
-        put(out, "reversed", unary("reversed", Builtins::reversed)
-                .documented(
-                        "reversed(sequence, /)\n"
-                                + "--\n"
-                                + "\n"
-                                + "Return a reverse iterator over the values of the given sequence."));
+        // The one name of the cursor-making builtins that is a type rather than a function: `reversed` in
+        // `builtins` is `PyReversed_Type`, whose `tp_vectorcall` is the constructor, so `reversed(x)` and
+        // `reversed.__new__(reversed, x)` are two spellings of one call. `map`, `zip`, `filter` and
+        // `enumerate` are functions, and the cursors they hand out name types no program can reach.
+        put(out, "reversed", PyType.REVERSED);
         put(out, "enumerate", new PyNativeFunction("enumerate", Builtins::enumerate)
                 .documented(
                         "enumerate(iterable, start=0)\n"
@@ -697,34 +696,6 @@ final class Builtins {
     }
 
     // --- iteration and sequences -----------------------------------------------------------
-
-    /**
-     * {@code reversed(x)} for the types that have an end.
-     *
-     * Reversal is not iteration: an iterator and a set are both iterable but neither has a last
-     * element, so the refusal is by type and comes before anything is read.
-     *
-     * <p>The special goes first, as {@code builtin_reversed} asks it: a type that declares
-     * {@code __reversed__} — a {@code dict}, a {@code mappingproxy} — answers for itself, and only one that
-     * does not is measured as a sequence.
-     */
-    private static PyObject reversed(PyObject value) {
-        PyObject hook = Slots.findAttr(value, "__reversed__");
-        if (hook != null) {
-            return Slots.call(hook, new PyObject[0], null);
-        }
-        if (!(value instanceof PyList
-                || value instanceof PyTuple
-                || value instanceof PyStr
-                || value instanceof PyBytes
-                || value instanceof PyRange
-                || value instanceof PyDict)) {
-            throw Slots.typeError("'%s' object is not reversible", value.getType().name());
-        }
-        List<PyObject> items = Constructors.materialise(value);
-        java.util.Collections.reverse(items);
-        return PyIterator.of(items);
-    }
 
     private static final String[] ENUMERATE_NAMES = {"start"};
 

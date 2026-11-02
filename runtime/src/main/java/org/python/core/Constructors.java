@@ -89,6 +89,9 @@ final class Constructors {
         if (type == PyType.SLICE) {
             return slicing(args, keywordNames);
         }
+        if (type == PyType.REVERSED) {
+            return reversing(args, keywordNames);
+        }
         if (type == PyType.PROPERTY) {
             return property(args, keywordNames);
         }
@@ -812,6 +815,20 @@ final class Constructors {
             case 2 -> PySlice.of(args[0], args[1], none);
             default -> PySlice.of(args[0], args[1], args[2]);
         };
+    }
+
+    /**
+     * {@code reversed(sequence)}, the one builtin that is a type and makes its own cursor.
+     *
+     * <p>The two refusals are {@code reversed_vectorcall}'s and come in its order — {@code _PyArg_NoKwnames}
+     * before {@code _PyArg_CheckPositional} — because the parameter is positional-only, so no spelling of a
+     * keyword can reach the count. What is left is one value, and the questions the constructor asks of it
+     * belong to {@link Reversed}.
+     */
+    static PyObject reversing(PyObject[] args, String[] kwNames) {
+        refuseKeywords("reversed", kwNames);
+        Arguments.exactly("reversed", args, kwNames, 1);
+        return Reversed.over(args[0]);
     }
 
     // --- text ------------------------------------------------------------------------------

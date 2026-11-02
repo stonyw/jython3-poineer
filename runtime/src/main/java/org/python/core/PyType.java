@@ -526,6 +526,39 @@ public class PyType extends PyObject {
     static final PyType SET_ITERATOR = builtin("set_iterator").withoutNew();
 
     /**
+     * {@code reversed_new__doc__}: what the constructor says of itself, filed as the type's {@code tp_doc}.
+     *
+     * <p>The argument table is kept welded to the front of the sentence because {@code type_get_doc} and
+     * {@code type_get_text_signature} read the two halves out of one text: {@code reversed.__doc__} is the
+     * sentence with the table cut off it, and {@code reversed.__text_signature__} is nothing but the table.
+     * This is the one {@code tp_doc} of the sixteen cursors that carries a table, and the one that carries
+     * anything at all.
+     */
+    private static final String REVERSED_DOC =
+            "reversed(sequence, /)\n--\n\nReturn a reverse iterator over the values of the given sequence.";
+
+    /**
+     * {@code reversed} itself: the name in {@code builtins} that is a type rather than a function, and the
+     * only cursor this runtime hands out that a program can make for itself.
+     *
+     * <p>The fifteen other cursor types are what their sources answer, and none of them can be built from
+     * Python — {@code tp_new} is null in every one, and each refuses its own name with {@code cannot create
+     * '%s' instances}. This one has a {@code tp_new} because the call that
+     * makes it <em>is</em> the builtin: {@code reversed_vectorcall} ({@code Objects/enumobject.c:423}) is
+     * the type's own vectorcall, so {@code reversed(x)} and {@code reversed.__new__(reversed, x)} are two
+     * spellings of one constructor, and the {@code __reversed__} question and the sequence test are both
+     * asked inside it ({@code :380}). That is also why the cursor is the one of the sixteen that reports a
+     * sentence of its own — {@code tp_doc} is {@code reversed_new__doc__}, the constructor's — and why its
+     * dictionary has seven names rather than the six a sequence cursor files or the five a hash cursor does.
+     *
+     * <p>It is a cursor only for what has no cursor: a list, a range, a dict, a view and a window each answer
+     * {@code __reversed__} with a type of their own, and what this one makes is the walk for a tuple, a
+     * string, an octet run and any class that subscripts by position, which read their source at every step
+     * rather than a copy of it.
+     */
+    public static final PyType REVERSED = builtin("reversed").documented(REVERSED_DOC);
+
+    /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was
      * given. It is named here because {@link Interpreter} compares a loaded {@code super} against it by

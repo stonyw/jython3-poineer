@@ -59,7 +59,7 @@ final class Dirs {
      *
      * @return what would be called, or null where nothing in the order names it
      */
-    private static PyObject lookupSpecial(PyObject target, String name) {
+    static PyObject lookupSpecial(PyObject target, String name) {
         PyType owner = target.getType();
         PyObject member = Specials.member(owner, name);
         return member == null ? null : Descriptors.get(member, target, owner);

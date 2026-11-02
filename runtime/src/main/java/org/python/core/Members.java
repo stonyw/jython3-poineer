@@ -96,7 +96,10 @@ final class Members {
             Map.entry(PyType.DICT_REVERSE_KEY_ITERATOR, HashIterators.class),
             Map.entry(PyType.DICT_REVERSE_VALUE_ITERATOR, HashIterators.class),
             Map.entry(PyType.DICT_REVERSE_ITEM_ITERATOR, HashIterators.class),
-            Map.entry(PyType.SET_ITERATOR, HashIterators.class));
+            Map.entry(PyType.SET_ITERATOR, HashIterators.class),
+            // The cursor `reversed` makes for a sequence with no walk of its own declares three rows, and
+            // asks them before any cursor exists: `Reversed` is loaded to file them.
+            Map.entry(PyType.REVERSED, Reversed.class));
 
     private final PyType owner;
 
