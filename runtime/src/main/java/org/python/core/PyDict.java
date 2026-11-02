@@ -219,51 +219,42 @@ public final class PyDict extends PyObject {
     // --- iteration -----------------------------------------------------------------------
 
     /**
-     * The steps of an iteration, as an array taken when the iterator is made. CPython reads the live
-     * table by index and notices only a size change, and that is what {@link Walker} does too:
+     * The steps of an iteration, as an array taken when the iterator is made. CPython reads the live table
+     * by index and notices only a size change, and that is what {@link HashIterators.Cursor} does too:
      * replacing a value is not something an iterator is allowed to complain about.
      */
     PyIterator keyIterator() {
-        return new Walker(keys());
+        return HashIterators.keys(this);
     }
 
     PyIterator valueIterator() {
-        return new Walker(values());
+        return HashIterators.values(this);
     }
 
-    /** Iterating a dict yields keys; {@code items()} yields the pairs, each as a fresh tuple. */
+    /** Iterating a dict yields keys; {@code items()} yields the pairs, each as a two-element tuple. */
     PyIterator itemIterator() {
-        return new Walker(pairs());
+        return HashIterators.items(this);
     }
 
     /**
      * The keys from the last one written back to the first, which is what {@code reversed(d)} and {@code
      * d.__reversed__()} hand out.
      *
-     * <p>The same snapshot and the same size check as the forward walk, read backwards: a dictionary that
-     * changes while it is being walked backwards complains exactly as it does walking forwards.
+     * <p>The same snapshot and the same size check as the forward walk, read from the other end: a
+     * dictionary that changes while it is being walked backwards complains exactly as it does forwards.
      */
     PyIterator reverseKeyIterator() {
-        return new Walker(backwards(keys()));
+        return HashIterators.backwardsKeys(this);
     }
 
     /** The values walked from the last one written back to the first, which is {@code reversed(d.values())}. */
     PyIterator reverseValueIterator() {
-        return new Walker(backwards(values()));
+        return HashIterators.backwardsValues(this);
     }
 
     /** The pairs walked from the last one written back to the first, which is {@code reversed(d.items())}. */
     PyIterator reverseItemIterator() {
-        return new Walker(backwards(pairs()));
-    }
-
-    /** The snapshot in the other order, which is all CPython's three reverse dict iterators are. */
-    private static PyObject[] backwards(PyObject[] steps) {
-        PyObject[] reversedSteps = new PyObject[steps.length];
-        for (int i = 0; i < steps.length; i++) {
-            reversedSteps[i] = steps[steps.length - 1 - i];
-        }
-        return reversedSteps;
+        return HashIterators.backwardsItems(this);
     }
 
     /** The keys, in insertion order. */
@@ -283,26 +274,6 @@ public final class PyDict extends PyObject {
             out.add(PyTuple.of(entry.getKey(), entry.getValue()));
         }
         return out.toArray(new PyObject[0]);
-    }
-
-    private final class Walker extends PyIterator {
-
-        private final PyObject[] itinerary;
-        private final int expectedSize;
-        private int at;
-
-        Walker(PyObject[] itinerary) {
-            this.itinerary = itinerary;
-            this.expectedSize = items.size();
-        }
-
-        @Override
-        public PyObject nextOrNull() {
-            if (items.size() != expectedSize) {
-                throw Slots.runtimeError("dictionary changed size during iteration");
-            }
-            return at >= itinerary.length ? null : itinerary[at++];
-        }
     }
 
     // --- key checks ----------------------------------------------------------------------

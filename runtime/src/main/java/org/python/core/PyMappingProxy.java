@@ -19,10 +19,12 @@ package org.python.core;
  * on the other window's mapping with the operator swapped, and it is that inner refusal whose wording
  * escapes. A key that will not hash is refused in the dict's own words for the same reason.
  *
- * <p>Two of CPython's answers are not modelled. The two iterators a window offers are {@code
- * dict_keyiterator} and {@code dict_reversekeyiterator} there and an ordinary {@code iterator} here, which
- * is what {@code type(iter(p)).__name__} shows; and {@code p[int]} declines to answer a generic alias
- * because this runtime has no {@code types.GenericAlias}.
+ * <p>One of CPython's answers is not modelled: {@code p[int]} declines to answer a generic alias because
+ * this runtime has no {@code types.GenericAlias}. The two walks it offers are modelled, and both are the
+ * dictionary's own cursors rather than the window's — {@code mappingproxy_getiter} hands the mapping to
+ * {@code PyObject_GetIter} and {@code mappingproxy_reversed} calls the mapping's {@code __reversed__}, so
+ * {@code type(iter(p)).__name__} is {@code dict_keyiterator} for a window exactly as it is for the dict
+ * underneath.
  */
 final class PyMappingProxy extends PyObject {
 
@@ -84,12 +86,7 @@ final class PyMappingProxy extends PyObject {
 
     /** {@code p.__reversed__()}: the keys from the last one written back to the first. */
     PyIterator reversedKeysIterator() {
-        PyObject[] keys = held.keys();
-        PyObject[] backwards = new PyObject[keys.length];
-        for (int at = 0; at < keys.length; at++) {
-            backwards[at] = keys[keys.length - 1 - at];
-        }
-        return PyIterator.of(backwards);
+        return held.reverseKeyIterator();
     }
 
     /**

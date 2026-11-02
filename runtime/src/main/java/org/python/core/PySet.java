@@ -75,7 +75,7 @@ public class PySet extends PyObject {
 
     @Override
     public PyObject iterator() {
-        return new Walker();
+        return HashIterators.over(this);
     }
 
     /**
@@ -377,7 +377,7 @@ public class PySet extends PyObject {
     }
 
     /** The elements as an array, for a walk that must not see a mutation. */
-    private PyObject[] elements() {
+    PyObject[] elements() {
         return items.toArray(new PyObject[0]);
     }
 
@@ -520,32 +520,6 @@ public class PySet extends PyObject {
             }
         }
         return false;
-    }
-
-    // --- iteration -----------------------------------------------------------------------
-
-    /**
-     * The steps over a set, which notices only that the set changed size, as CPython's iterator does,
-     * and in its own capitalised message.
-     */
-    private final class Walker extends PyIterator {
-
-        private final PyObject[] itinerary;
-        private final int expectedSize;
-        private int at;
-
-        Walker() {
-            this.itinerary = elements();
-            this.expectedSize = items.size();
-        }
-
-        @Override
-        public PyObject nextOrNull() {
-            if (items.size() != expectedSize) {
-                throw Slots.runtimeError("Set changed size during iteration");
-            }
-            return at >= itinerary.length ? null : itinerary[at++];
-        }
     }
 
     // --- methods -------------------------------------------------------------------------

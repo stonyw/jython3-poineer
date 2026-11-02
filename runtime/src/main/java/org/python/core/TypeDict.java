@@ -825,6 +825,10 @@ final class TypeDict {
             cursorTable(owner, into);
             return;
         }
+        if (isHashTableCursor(owner)) {
+            hashCursorTable(owner, into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -2517,6 +2521,48 @@ final class TypeDict {
         table.value("__doc__", docValue(owner));
     }
 
+    /**
+     * Whether {@code owner} is one of the seven cursors the two hash tables hand out.
+     *
+     * <p>Six of them walk a {@code dict} and are named for which of its three walks they are and which end
+     * they start at; the seventh is one type for {@code set}, {@code frozenset} and the keys of a {@code
+     * mappingproxy} alike. CPython writes the book for the six once — {@code dictiter_methods} ({@code
+     * Objects/dictobject.c:5211}), filed by all six {@code tp_methods} slots — and again for the seventh,
+     * {@code setiter_methods} ({@code Objects/setobject.c:895}), and the two are the same two rows.
+     */
+    private static boolean isHashTableCursor(PyType owner) {
+        return owner == PyType.DICT_KEY_ITERATOR
+                || owner == PyType.DICT_VALUE_ITERATOR
+                || owner == PyType.DICT_ITEM_ITERATOR
+                || owner == PyType.DICT_REVERSE_KEY_ITERATOR
+                || owner == PyType.DICT_REVERSE_VALUE_ITERATOR
+                || owner == PyType.DICT_REVERSE_ITEM_ITERATOR
+                || owner == PyType.SET_ITERATOR;
+    }
+
+    /**
+     * The five names each of the seven hash-table cursors files — three short of what a sequence cursor
+     * files, because none of these seven can be put back.
+     *
+     * <p>{@code dictiter_methods} and {@code setiter_methods} are two {@code PyMethodDef} rows apiece, the
+     * estimate and the pickle, and the two slot wrappers beside them are the same {@code PyObject_SelfIter}
+     * and the file's own step, which is what makes {@code iter(it) is it} true for all seven. Three of the
+     * five names are not ones {@code object} already files — {@code __reduce__} and {@code __doc__} it does
+     * — so {@code dir()} of one of these is twenty-seven against {@code object}'s twenty-four and
+     * twenty-eight for the sequence cursors, which file {@code __setstate__} as well.
+     *
+     * <p>{@code tp_new} is null in all seven, and so a cursor cannot be made from Python at all; {@code
+     * tp_doc} is zero, which makes the tail entry the value {@code None}; and {@code tp_dictoffset} is zero,
+     * so a cursor has no dictionary of its own.
+     */
+    private static void hashCursorTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.named("__length_hint__", "__reduce__");
+        table.value("__doc__", docValue(owner));
+    }
+
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */
     private static PyObject integerRepr(PyObject[] args) {
         return PyStr.of(Numbers.asInteger(args[0]).toString());
@@ -3928,16 +3974,14 @@ final class TypeDict {
     /**
      * {@code reversed(p)}: the keys from the last one written back to the first.
      *
-     * <p>The order is the mapping's insertion order, not the sorted order {@code dir()} takes, which is
-     * what makes {@code list(reversed(C.__dict__))} end with the two names a class body writes last.
+     * <p>{@code mappingproxy_reversed} does not build a walk of its own — it calls {@code __reversed__} on
+     * the mapping it stands for, so the answer is the dictionary's own reverse cursor and carries its type
+     * name, its estimate and its pickle with it. The order is the mapping's insertion order, not the sorted
+     * order {@code dir()} takes, which is what makes {@code list(reversed(C.__dict__))} end with the two
+     * names a class body writes last.
      */
     private static PyObject reversedKeys(PyDict mapping) {
-        PyObject[] keys = mapping.keys();
-        PyObject[] backwards = new PyObject[keys.length];
-        for (int at = 0; at < keys.length; at++) {
-            backwards[at] = keys[keys.length - 1 - at];
-        }
-        return PyIterator.of(backwards);
+        return mapping.reverseKeyIterator();
     }
 
     /** {@code p | q} and {@code q | p} reached as the slot: the operands the window stands for. */

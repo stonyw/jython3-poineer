@@ -490,6 +490,41 @@ public class PyType extends PyObject {
 
     /** The cursor beside it, for a string whose every code point is under 128. */
     static final PyType STR_ASCII_ITERATOR = builtin("str_ascii_iterator").withoutNew();
+
+    /**
+     * The seven cursors the two hash tables hand out.
+     *
+     * <p>One struct and one method table cover all seven: {@code dictiter_methods} ({@code
+     * Objects/dictobject.c:5211}) is filed by each of the six dict cursors and {@code setiter_methods}
+     * ({@code Objects/setobject.c:895}) by the set's, and both are two {@code PyMethodDef} rows — the
+     * estimate and the pickle, with no {@code __setstate__} beside them. The six dict types differ only in
+     * what their {@code tp_iternext} hands back and in which end they start at; the one set type is handed
+     * out by {@code set} and {@code frozenset} alike, and by {@code mappingproxy} for the keys.
+     *
+     * <p>None of them can be made from Python. {@code tp_new} is null in all seven, and {@code tp_alloc}
+     * is {@code Py_GenericAlloc}, which is the pair that writes {@code cannot create 'X' instances}.
+     */
+    static final PyType DICT_KEY_ITERATOR = builtin("dict_keyiterator").withoutNew();
+
+    /** {@code type(iter(d.values()))}, which hands back the value at the position it reached. */
+    static final PyType DICT_VALUE_ITERATOR = builtin("dict_valueiterator").withoutNew();
+
+    /** {@code type(iter(d.items()))}, the one cursor that builds a pair as it steps. */
+    static final PyType DICT_ITEM_ITERATOR = builtin("dict_itemiterator").withoutNew();
+
+    /** The three cursors that walk a dict from the last entry to the first. */
+    static final PyType DICT_REVERSE_KEY_ITERATOR =
+            builtin("dict_reversekeyiterator").withoutNew();
+
+    static final PyType DICT_REVERSE_VALUE_ITERATOR =
+            builtin("dict_reversevalueiterator").withoutNew();
+
+    static final PyType DICT_REVERSE_ITEM_ITERATOR =
+            builtin("dict_reverseitemiterator").withoutNew();
+
+    /** The cursor {@code set} and {@code frozenset} share, which is the one that names no table. */
+    static final PyType SET_ITERATOR = builtin("set_iterator").withoutNew();
+
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was

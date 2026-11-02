@@ -87,7 +87,16 @@ final class Members {
             Map.entry(PyType.TUPLE_ITERATOR, SequenceIterators.class),
             Map.entry(PyType.BYTES_ITERATOR, SequenceIterators.class),
             Map.entry(PyType.STR_ITERATOR, SequenceIterators.class),
-            Map.entry(PyType.STR_ASCII_ITERATOR, SequenceIterators.class));
+            Map.entry(PyType.STR_ASCII_ITERATOR, SequenceIterators.class),
+            // The two hash tables file two rows each over seven cursors, so one class files all seven tables
+            // — and `dict_keyiterator.__reduce__` is askable before any dictionary has been iterated.
+            Map.entry(PyType.DICT_KEY_ITERATOR, HashIterators.class),
+            Map.entry(PyType.DICT_VALUE_ITERATOR, HashIterators.class),
+            Map.entry(PyType.DICT_ITEM_ITERATOR, HashIterators.class),
+            Map.entry(PyType.DICT_REVERSE_KEY_ITERATOR, HashIterators.class),
+            Map.entry(PyType.DICT_REVERSE_VALUE_ITERATOR, HashIterators.class),
+            Map.entry(PyType.DICT_REVERSE_ITEM_ITERATOR, HashIterators.class),
+            Map.entry(PyType.SET_ITERATOR, HashIterators.class));
 
     private final PyType owner;
 
