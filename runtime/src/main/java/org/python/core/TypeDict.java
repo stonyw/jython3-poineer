@@ -982,14 +982,16 @@ final class TypeDict {
         table.getset("__name__", null, TypeDict::nameOf, writesIdentity("__name__"));
         table.getset("__qualname__", null, TypeDict::nameOf, writesIdentity("__qualname__"));
         table.getset("__bases__", null, TypeDict::basesOf, writesBases());
-        table.getset("__mro__", null, TypeDict::mroOf, refuses("__mro__"));
+        table.getset("__mro__", null, TypeDict::mroOf, null);
         table.getset("__module__", null, TypeDict::moduleOf, writesModule());
         table.getset(
-                "__abstractmethods__", null, TypeDict::abstractMethods, files("__abstractmethods__"));
-        table.getset("__dict__", null, TypeDict::dictOf, refuses("__dict__"));
+                "__abstractmethods__",
+                null,
+                TypeDict::abstractMethods,
+                filesAnyBook("__abstractmethods__"));
+        table.getset("__dict__", null, TypeDict::dictOf, null);
         table.getset("__doc__", null, TypeDict::docOf, writes("__doc__"));
-        table.getset(
-                "__text_signature__", null, TypeDict::signatureOfKind, refuses("__text_signature__"));
+        table.getset("__text_signature__", null, TypeDict::signatureOfKind, null);
         table.getset("__annotations__", null, TypeDict::annotationsOf, files("__annotations__"));
         table.getset("__annotate__", null, TypeDict::annotateOf, writesAnnotate());
         table.getset("__type_params__", null, TypeDict::typeParamsOf, writes("__type_params__"));
@@ -4122,15 +4124,17 @@ final class TypeDict {
     /**
      * The setter of a name a class keeps in its own dictionary and can take back out again.
      *
-     * <p>{@code __abstractmethods__} and {@code __annotations__} are the two, and they share the one
+     * <p>{@code __annotations__} is the one left here, and it shares with {@link #filesAnyBook(String)} the
      * answer that is not any other name's: a delete of a filing that is not there is the bare {@code
      * AttributeError} naming the attribute, because CPython raises it from inside the setter when {@code
-     * PyDict_Pop} reports nothing removed. A write takes any value at all — {@code
-     * type_set_abstractmethods} only asks {@code PyObject_IsTrue} of it.
+     * PyDict_Pop} reports nothing removed. A write takes any value at all.
      *
-     * <p>{@code __annotations__} deviates on the write: the reference interpreter puts a value there under
-     * {@code __annotations_cache__} when the dictionary holds no {@code __annotations__} yet, and this
-     * runtime files the name itself, so the two disagree about what a following {@code C.__dict__} lists.
+     * <p>Two things set this name beside {@code __abstractmethods__} apart. {@code
+     * type_set_annotations} does ask {@code type_check_modifiable}, so a built-in type is refused in the
+     * usual words, and {@code __annotations__} deviates on the write: the reference interpreter puts a value
+     * there under {@code __annotations_cache__} when the dictionary holds no {@code __annotations__} yet, and
+     * this runtime files the name itself, so the two disagree about what a following {@code C.__dict__}
+     * lists.
      */
     private static PyGetSetDescriptor.Setter files(String name) {
         return (target, value) -> {
@@ -4138,15 +4142,36 @@ final class TypeDict {
                 throw Slots.typeError(
                         "cannot set '%s' attribute of immutable type '%s'", name, immutableName(target));
             }
-            PyStr key = PyStr.interned(name);
-            if (value == null) {
-                if (kind.namespace().remove(key) == null) {
-                    throw Slots.attributeError(name);
-                }
-                return;
-            }
-            kind.namespace().put(key, value);
+            fileInto(kind.namespace(), name, value);
         };
+    }
+
+    /**
+     * The setter of {@code __abstractmethods__}: the one name whose writer asks no gate of the type it was
+     * handed.
+     *
+     * <p>{@code type_set_abstractmethods} is the only one of {@code type}'s setters that does not begin with
+     * {@code type_check_modifiable}, so a built-in type takes the filing too — {@code
+     * type.__dict__['__abstractmethods__'].__set__(int, 1)} answers {@code None} where every other name
+     * answers {@code cannot set}, and the name then reads back out of {@code int}'s own book. The delete is
+     * the same function with nothing handed over and the same bare {@code AttributeError} when the book holds
+     * no such name, which is why {@code del C.__abstractmethods__} on a class that never set one names the
+     * attribute instead of the type.
+     */
+    private static PyGetSetDescriptor.Setter filesAnyBook(String name) {
+        return (target, value) -> fileInto(((PyType) target).namespace(), name, value);
+    }
+
+    /** The two halves every {@code files} setter ends with: take the name away, or put a value under it. */
+    private static void fileInto(PyDict book, String name, PyObject value) {
+        PyStr key = PyStr.interned(name);
+        if (value == null) {
+            if (book.remove(key) == null) {
+                throw Slots.attributeError(name);
+            }
+            return;
+        }
+        book.put(key, value);
     }
 
     /**
@@ -4169,26 +4194,6 @@ final class TypeDict {
                 throw Slots.typeError("__annotate__ must be callable or None");
             }
             file((PyClass) target, "__annotate__", value);
-        };
-    }
-
-    /**
-     * The setter of a name CPython gives no setter to at all.
-     *
-     * <p>{@code __mro__}, {@code __dict__} and {@code __text_signature__} are getsets whose {@code setter}
-     * is null, and {@code descr_set} answers that in the words of the attribute rather than of the type —
-     * and it answers it <em>for a delete too</em>, because CPython hands the same {@code NULL} value to the
-     * same function and only the fall-through to the dictionary would have taken a name away. Before that
-     * refusal a built-in type is refused in the usual words, which the reference interpreter asks first.
-     */
-    private static PyGetSetDescriptor.Setter refuses(String name) {
-        return (target, value) -> {
-            if (!(target instanceof PyClass)) {
-                throw Slots.typeError(
-                        "cannot set '%s' attribute of immutable type '%s'", name, immutableName(target));
-            }
-            throw Slots.attributeError(
-                    "attribute '%s' of 'type' objects is not writable", name);
         };
     }
 
