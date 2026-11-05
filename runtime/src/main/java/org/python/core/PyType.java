@@ -54,12 +54,19 @@ public class PyType extends PyObject {
      * It is declared before {@link #TYPE} because the two complete each other: {@code object} is an
      * instance of {@code type} and {@code type} is a subclass of {@code object}, and the second of
      * those is what makes {@code isinstance(x, object)} answer for every value.
+     *
+     * <p>{@code object_doc} ({@code Objects/typeobject.c:7993}) is the one sentence here welded to the
+     * shortest table there is: {@code object()} takes nothing, so the table is the two brackets and the
+     * read of {@code __text_signature__} is nothing but them.
      */
     public static final PyType OBJECT =
             new PyType("object", null)
                     .documented(
-                            "The base class of the class hierarchy.\n\nWhen called, it accepts no arguments"
-                                    + " and returns a new featureless\ninstance that has no instance"
+                            "object()\n"
+                                    + "--\n"
+                                    + "\n"
+                                    + "The base class of the class hierarchy.\n\nWhen called, it accepts no"
+                                    + " arguments and returns a new featureless\ninstance that has no instance"
                                     + " attributes and cannot be given any.\n");
 
     public static final PyType TYPE =
@@ -79,11 +86,21 @@ public class PyType extends PyObject {
      * two values.
      *
      * <p>Each is a plain string in the type's own dictionary, and each says what the constructor accepts
-     * before it says anything else. The integer's is transcribed exactly, including its last line: 3.14.8
-     * breaks "integer literal" across a newline and loses the {@code l}, and the dictionary holds that
-     * text, so a program that prints {@code int.__doc__} reads the broken word here too. The bool's is the
-     * one type sentence here that says a class cannot be inherited from, and {@code bool} files no
-     * {@code __init__} and no {@code __hash__} of its own to go with it.
+     * before it says anything else — but only one of the two is read as a table. {@code long_doc} opens with
+     * two usage recipes, {@code int([x]) -> integer} and {@code int(x, base=10) -> integer}, and a recipe is
+     * not a table: {@code find_signature} reaches the bracket after the name and {@code skip_signature} then
+     * looks for the rule under it, which a recipe never writes, so {@code int.__text_signature__} is
+     * {@code None} and {@code int.__doc__} is the whole text. {@code bool_doc}
+     * ({@code Objects/boolobject.c:112}) writes its rule by hand — {@code bool(object=False, /)}, then the
+     * brackets-dashes-blank-line rule, then the sentence — and so {@code bool} is one of the sixteen books
+     * here whose table is read apart from its sentence. The reference's seventeenth name with a table is
+     * {@code memoryview}, whose type this runtime has not built.
+     *
+     * <p>The integer's is transcribed exactly, including its last line: 3.14.8 breaks "integer literal"
+     * across a newline and loses the {@code l}, and the dictionary holds that text, so a program that prints
+     * {@code int.__doc__} reads the broken word here too. The bool's is the one type sentence here that says
+     * a class cannot be inherited from, and {@code bool} files no {@code __init__} and no {@code __hash__} of
+     * its own to go with it.
      */
     private static final String INT_DOC =
             "int([x]) -> integer\n"
@@ -102,20 +119,29 @@ public class PyType extends PyObject {
                     + ">>> int('0b100', base=0)\n"
                     + "4";
 
+    /** {@code bool_doc}'s table and sentence, the first of the six builtins that write their own. */
     private static final String BOOL_DOC =
-            "Returns True when the argument is true, False otherwise.\n"
+            "bool(object=False, /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Returns True when the argument is true, False otherwise.\n"
                     + "The builtins True and False are the only two instances of the class bool.\n"
                     + "The class bool is a subclass of the class int, and cannot be subclassed.";
 
     /**
-     * The one sentence {@code float_doc} writes, which is all the type says about itself.
+     * The two halves {@code float_new__doc__} ({@code Objects/clinic/floatobject.c.h:209}) writes.
      *
-     * <p>It is shorter than {@code int}'s for a reason: {@code float}'s constructor takes no base, so
-     * there is no literal grammar to describe, and the sentence names the two kinds it accepts rather than
-     * the number it returns.
+     * <p>The name is a little off: what {@code PyFloat_Type} files as its {@code tp_doc} is not
+     * {@code float_doc} but the constructor's own clinic text, whose {@code float(x=0, /)} line the type
+     * reads as its {@code __text_signature__}. The sentence is shorter than {@code int}'s for a reason:
+     * {@code float}'s constructor takes no base, so there is no literal grammar to describe, and it names
+     * the two kinds it accepts rather than the number it returns.
      */
     private static final String FLOAT_DOC =
-            "Convert a string or number to a floating-point number, if possible.";
+            "float(x=0, /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Convert a string or number to a floating-point number, if possible.";
 
     public static final PyType NONE = builtin("NoneType");
     public static final PyType NOTIMP = builtin("NotImplementedType");
@@ -130,16 +156,21 @@ public class PyType extends PyObject {
     public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF).documented(FLOAT_DOC);
 
     /**
-     * The sentence {@code complex_new__doc__} says, which is the half of it the reference reads.
+     * The two halves {@code complex_new__doc__} ({@code Objects/clinic/complexobject.c.h:93}) writes.
      *
      * <p>{@code tp_doc} holds the whole internal text, argument table and all, and {@code type} cuts the
      * table out before answering either name — the dictionary's {@code __doc__} and {@code complex.__doc__}
      * are both the sentence left behind. The four lines are the constructor's four shapes, in the order the
      * clinic's paragraph puts them, and unlike {@link #FLOAT_DOC} this one runs to a paragraph because the
-     * two halves of {@code complex(real, imag)} need naming separately.
+     * two halves of {@code complex(real, imag)} need naming separately. It is also one of the five tables of
+     * the sixteen that name no positional-only marker, so {@code complex(real=0, imag=0)} lets both names be
+     * written as keywords.
      */
     private static final String COMPLEX_DOC =
-            "Create a complex number from a string or numbers.\n"
+            "complex(real=0, imag=0)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Create a complex number from a string or numbers.\n"
                     + "\n"
                     + "If a string is given, parse it as a complex number.\n"
                     + "If a single number is given, convert it to a complex number.\n"
@@ -172,22 +203,32 @@ public class PyType extends PyObject {
                     + " - any object implementing the buffer API.\n  - an integer";
 
     /**
-     * The two sentences CPython's {@code list_doc} and {@code tuple_doc} write for these types.
+     * The two texts CPython files as {@code list___init____doc__} and {@code tuple_new__doc__}.
      *
-     * <p>Neither names a constructor the way {@link #STR_DOC} does: a list and a tuple say what they
-     * <em>are</em> — mutable, immutable — and then the one rule about the argument, which is that it has
-     * to be an iterable. Each is a plain string in the type's own dictionary, and each is the reason
-     * {@code list.__doc__} and {@code tuple.__doc__} are not the {@code None} a value type with nothing
-     * to say about itself answers.
+     * <p>Neither type writes its own {@code tp_doc}: {@code PyList_Type} files the clinic text of
+     * {@code list.__init__} ({@code Objects/clinic/listobject.c.h:398}) and {@code PyTuple_Type} that of
+     * {@code tuple.__new__} ({@code Objects/clinic/tupleobject.c.h:75}), so the constructor's table is what
+     * the type reads as its own {@code __text_signature__} — {@code (iterable=(), /)} for both, though the
+     * two sentences disagree about what that one argument does. Neither names a constructor the way
+     * {@link #STR_DOC} does: a list and a tuple say what they <em>are</em> — mutable, immutable — and then
+     * the one rule about the argument, which is that it has to be an iterable. Each is the reason
+     * {@code list.__doc__} and {@code tuple.__doc__} are not the {@code None} a value type with nothing to
+     * say about itself answers.
      */
     private static final String LIST_DOC =
-            "Built-in mutable sequence.\n"
+            "list(iterable=(), /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Built-in mutable sequence.\n"
                     + "\n"
                     + "If no argument is given, the constructor creates a new empty list.\n"
                     + "The argument must be an iterable if specified.";
 
     private static final String TUPLE_DOC =
-            "Built-in immutable sequence.\n"
+            "tuple(iterable=(), /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Built-in immutable sequence.\n"
                     + "\n"
                     + "If no argument is given, the constructor returns an empty tuple.\n"
                     + "If iterable is specified the tuple is initialized from iterable's items.\n"
@@ -220,18 +261,24 @@ public class PyType extends PyObject {
     public static final PyType LIST =
             builtin("list").flagged(SEQUENCE | MATCH_SELF).documented(LIST_DOC);
     /**
-     * The two sentences {@code set_doc} and {@code frozenset_doc} write for the pair of unique values.
+     * The two texts {@code set_doc} ({@code Objects/setobject.c:2602}) and {@code frozenset_doc} ({@code :2694})
+     * write for the pair of unique values.
      *
-     * <p>Each is one line once {@code _PyType_DocWithoutSignature} has thrown away the {@code
-     * set(iterable=(), /)} header and the {@code --} rule the clinic block puts in front of them, and they
-     * are the only two type sentences here that promise nothing about order: a set's order is an artefact
-     * of the table it is stored in, which is why everything a program can check about one is a count, a
-     * membership or a content comparison and never a position.
+     * <p>Each is one line once the table and the rule in front of it are cut away, and they are the only two
+     * type sentences here that promise nothing about order: a set's order is an artefact of the table it is
+     * stored in, which is why everything a program can check about one is a count, a membership or a content
+     * comparison and never a position. Both are written by hand in the same file as the type rather than by
+     * clinic, and both weld the same table — {@code set(iterable=(), /)} and
+     * {@code frozenset(iterable=(), /)} — which is what {@code __text_signature__} answers.
      */
-    private static final String SET_DOC = "Build an unordered collection of unique elements.";
+    private static final String SET_DOC =
+            "set(iterable=(), /)\n--\n\nBuild an unordered collection of unique elements.";
 
     private static final String FROZENSET_DOC =
-            "Build an immutable unordered collection of unique elements.";
+            "frozenset(iterable=(), /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Build an immutable unordered collection of unique elements.";
 
     public static final PyType DICT =
             builtin("dict").flagged(MAPPING | MATCH_SELF).documented(DICT_DOC);
@@ -308,15 +355,21 @@ public class PyType extends PyObject {
     /**
      * The two sentences {@code staticmethod_doc} and {@code classmethod_doc} write for the wrappers.
      *
-     * <p>Each is the whole of what Python reads as the type's {@code __doc__}, and neither carries the
-     * {@code ()} header and rule that clinic puts in front of a method's text: a wrapper type's sentence is
-     * written beside its {@code PyTypeObject} as plain prose, so {@code _PyType_DocWithoutSignature} has
-     * nothing to throw away and {@code staticmethod.__doc__} is the ten lines the docs teach with. The two
-     * end by pointing at each other — {@code staticmethod} at {@code classmethod}, {@code classmethod} at
-     * {@code staticmethod} — which is how a person reading {@code help()} finds the one they meant.
+     * <p>Each opens with the three lines clinic would have generated for it — name, one argument marked
+     * positional-only, rule under it — but no clinic wrote these: {@code funcobject.c} hand-writes the table
+     * above the prose, and that is the whole reason {@code staticmethod.__text_signature__} answers {@code
+     * (function, /)} where a type whose sentence this file transcribes without one answers {@code None}.
+     * {@code _PyType_DocWithoutSignature} cuts the three away on the way into {@code __doc__}, so what a
+     * program reads is the prose the docs teach with, and the row the dictionary files is that same text
+     * rather than a member over a field, as {@code property} files its. The two end by pointing at each
+     * other — {@code staticmethod} at {@code classmethod}, {@code classmethod} at {@code staticmethod} —
+     * which is how a person reading {@code help()} finds the one they meant.
      */
     private static final String STATICMETHOD_DOC =
-            "Convert a function to be a static method.\n\n"
+            "staticmethod(function, /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Convert a function to be a static method.\n\n"
                     + "A static method does not receive an implicit first argument.\n"
                     + "To declare a static method, use this idiom:\n\n     class C:\n"
                     + "         @staticmethod\n         def f(arg1, arg2, argN):\n"
@@ -328,7 +381,10 @@ public class PyType extends PyObject {
                     + "For a more advanced concept, see the classmethod builtin.";
 
     private static final String CLASSMETHOD_DOC =
-            "Convert a function to be a class method.\n\n"
+            "classmethod(function, /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Convert a function to be a class method.\n\n"
                     + "A class method receives the class as implicit first argument,\n"
                     + "just like an instance method receives the instance.\n"
                     + "To declare a class method, use this idiom:\n\n  class C:\n"
@@ -343,15 +399,19 @@ public class PyType extends PyObject {
     /**
      * The three members that are nothing but the descriptor protocol, each its own type.
      *
-     * <p>{@code property}'s sentence is not written beside its {@code PyTypeObject}, the way the two
-     * wrappers below it write theirs: it is {@code property_init}'s clinic text, whose first three lines are
-     * the argument table and the rule under it. {@code _PyType_DocWithoutSignature} cuts those away on the way
-     * into {@code __doc__}, which is why the value a program reads is the 750 characters below the table and
-     * not the 806 the source holds — and why the row named {@code __doc__} in the dictionary is a member over
-     * the property's own field, with nothing to do with the class's.
+     * <p>{@code property}'s sentence is not written beside its {@code PyTypeObject}, the way the two wrappers
+     * above write theirs: it is {@code property_init}'s clinic text, whose first three lines are the argument
+     * table and the rule under it, and here it is stored whole — the 805 characters the source holds, of
+     * which {@code _PyType_DocWithoutSignature} cuts 55 off the front before anything reads them. That is why
+     * the value a program reads is the 750 below the table, why {@code __text_signature__} is the 43 bracket
+     * characters with the name cut off too, and why the row named {@code __doc__} in the dictionary is a
+     * member over the property's own field, with nothing to do with the class's.
      */
     private static final String PROPERTY_DOC =
-            "Property attribute.\n"
+            "property(fget=None, fset=None, fdel=None, doc=None)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Property attribute.\n"
                     + "\n"
                     + "  fget\n"
                     + "    function to be used for getting an attribute value\n"
@@ -689,8 +749,11 @@ public class PyType extends PyObject {
      * <p>CPython keeps this text in the type's own dictionary as the {@code __doc__} entry of a static
      * type, which is what makes {@code BaseExceptionGroup.__doc__} a sentence while {@code
      * ExceptionGroup.__doc__} is {@code None} — the second type declares no doc of its own, and
-     * {@code type_getdoc} answers {@code None} rather than walking up to the first one it can find. A
-     * class Python wrote keeps the name in its namespace and is answered there, before this field.
+     * {@code type_get_doc} answers {@code None} rather than walking up to the first one it can find. A class
+     * Python wrote is still answered from its namespace, before this field, but the field holds a copy of
+     * what its body said: {@code type_get_text_signature} reads it for every type, heap or not, which is how
+     * a class whose docstring opens with an argument table reports that table while {@code __doc__} and the
+     * dictionary keep the string whole.
      */
     private String doc;
 
@@ -797,8 +860,11 @@ public class PyType extends PyObject {
     /**
      * The type's own doc, declared where the type is.
      *
-     * <p>Only the sentences a built-in type is written down with arrive here: everything a Python class
-     * says about itself is in the namespace the class statement collected.
+     * <p>A built-in type's sentence is written down beside its declaration, and a class Python wrote is
+     * copied here once, at the build: {@code type_new_impl} keeps the {@code __doc__} its body collected when
+     * that name holds a string and nothing at all when it holds anything else, and {@code type_set_doc} never
+     * writes the field again. That is why {@code C.__doc__ = text} moves the namespace and the read of the
+     * name but not the table {@link TypeDict} cuts out of this field.
      */
     PyType documented(String text) {
         doc = text;

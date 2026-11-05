@@ -309,6 +309,13 @@ final class Classes {
         }
 
         PyClass kind = new PyClass(name, bases, dict, qualified, metatype);
+        // `type_new_impl` files the sentence here rather than leaving it in the dictionary: a `__doc__` the
+        // body wrote as a string becomes the type's own text, and any other value — `None` above all, which
+        // is what a class with no docstring ends with — leaves the field empty. Nothing writes it again, so
+        // the table read off a class is cut from the text this build saw, whatever `__doc__` holds later.
+        if (dict.get(docKey) instanceof PyStr stated) {
+            kind.documented(stated.getValue());
+        }
         kind.order = linearize(kind, bases);
         addSlotDescriptors(kind, dict);
         if (!docWritten) {

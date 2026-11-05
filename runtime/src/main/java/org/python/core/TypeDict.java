@@ -968,9 +968,13 @@ final class TypeDict {
      *
      * <p>The same text two knives read: {@code reversed.__doc__} is the sentence with its argument table cut
      * off the front, and {@code reversed.__text_signature__} is nothing but the table. A type written down
-     * without one answers {@code None}, which is what every type whose sentence this runtime transcribed
-     * rather than generated still answers — {@code bool} and {@code float} carry tables in the reference and
-     * are filed here with their sentences alone.
+     * without one answers {@code None}, and the name it is looked for under is only the half of the type's
+     * name after the last dot — which is how a class nested in another reports a table its body wrote as
+     * {@code Nested(a)} and nothing at all when the same body wrote {@code Holder.Nested(a)}. Every type
+     * reaches the field, heap or not, so a class Python wrote answers from the docstring {@code type_new}
+     * copied at the build: it reports a table while {@code __doc__} and its own dictionary keep the string
+     * whole, and a later {@code X.__doc__ = text} rewrites those two but not this answer, which stays the
+     * table the text handed over when the class was made.
      */
     private static PyObject signatureOfKind(PyObject target) {
         PyType owner = (PyType) target;
