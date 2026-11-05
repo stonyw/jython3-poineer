@@ -63,7 +63,11 @@ class ReversedCursorTableTest {
     private static final List<String> OWN =
             List.of("__iter__", "__length_hint__", "__next__", "__setstate__");
 
-    /** {@code reversed_new__doc__}, the one {@code tp_doc} of the sixteen cursors that carries a table. */
+    /**
+     * {@code reversed_new__doc__}: the one {@code tp_doc} of the sixteen walking-era cursor books that carries
+     * a table — the four cursors a builtin call makes, filed in {@link CursorBuiltinTypesTest}, carry theirs
+     * too, and the fifteen walking cursors carry neither table nor sentence.
+     */
     private static final String CLINIC =
             "reversed(sequence, /)\n--\n\nReturn a reverse iterator over the values of the given sequence.";
 
@@ -383,15 +387,16 @@ class ReversedCursorTableTest {
     /**
      * The name in {@code builtins} is a type, and the type is the cursor it hands out.
      *
-     * <p>{@code map}, {@code zip}, {@code filter} and {@code enumerate} are functions with a cursor type
-     * behind them that no program can name; here the builtin <em>is</em> {@code PyReversed_Type}, so
-     * {@code type(reversed)} is {@code type}, {@code isinstance(it, reversed)} is true and the dictionary has
-     * the seven names of a type rather than the dozen of a function. Seven against the six a sequence cursor
-     * files and the five a hash cursor does, and {@code dir()} twenty-eight with the same four names a
-     * sequence cursor gains — {@code __reduce__} and {@code __doc__} being names {@code object} files
-     * already. Twenty-eight is also what a sequence cursor answers, and for the same reason: the one name
-     * more than a hash cursor is {@code __setstate__} and the one more than that is {@code __new__}, which
-     * {@code dir()} does not count twice.
+     * <p>Five of the six names that hand out a cursor are here, and the sixth is {@code iter} — the one that
+     * has no one cursor type to be, because which cursor it makes is a question about the value it was given.
+     * Of the five, {@code reversed} is the only one whose cursor a <em>source</em> also hands out. The builtin
+     * <em>is</em> {@code PyReversed_Type}, so {@code type(reversed)} is {@code type}, {@code isinstance(it,
+     * reversed)} is true and the dictionary has the seven names of a type rather than the sixteen of a {@code
+     * builtin_function_or_method}. Seven against the six a sequence cursor files and the five a hash cursor
+     * does, and {@code dir()} twenty-eight with the same four names a sequence cursor gains — {@code
+     * __reduce__} and {@code __doc__} being names {@code object} files already. Twenty-eight is also what a
+     * sequence cursor answers, and for the same reason: the one name more than a hash cursor is {@code
+     * __setstate__} and the one more than that is {@code __new__}, which {@code dir()} does not count twice.
      */
     @Test
     void theBuiltinIsTheTypeItHandsOut() {
@@ -417,7 +422,7 @@ class ReversedCursorTableTest {
         assertThat(Sequences.isSequence(value)).isFalse();
         assertThat(Slots.getAttr(value, "__doc__")).isEqualTo(PyStr.of(SENTENCE));
 
-        // Four of the sixteen: the one this call makes, and the three it hands to the sources that answer.
+        // Four of the twenty cursor books: the one this call makes, and three the sources answer with.
         assertThat(builtin(PyList.of(ONE, TWO)).getType()).isSameAs(PyType.LIST_REVERSE_ITERATOR);
         assertThat(builtin(PyRange.of(BigInteger.ZERO, THREE_BI, ONE_BI)).getType())
                 .isSameAs(PyType.RANGE_ITERATOR);
@@ -794,11 +799,12 @@ class ReversedCursorTableTest {
      * <p>{@code "O(O)n"} while the source is held and {@code "O(())"} once a step has dropped it — and the
      * second is not a payload of two items but of two where the argument list itself holds the empty tuple,
      * so what being found again makes is a cursor over nothing with no state to jump into. The callable a
-     * live payload names is the cursor's own type rather than {@code iter}, which fourteen of the other
-     * fifteen kinds do: their payloads carry the part of the source still to come, while this one is
-     * restarted by the number the state carries. The list's own reverse cursor is the fifteenth kind that
-     * names a type, and the type it names is this one — beside an empty list rather than an empty tuple,
-     * since it is the sequence it walked that comes back whatever its kind.
+     * live payload names is the cursor's own type rather than {@code iter}, which fourteen of the fifteen
+     * walking kinds do: their payloads carry the part of the source still to come, while this one is restarted
+     * by the number the state carries. The list's own reverse cursor is the fifteenth kind that names a type,
+     * and the type it names is this one — beside an empty list rather than an empty tuple, since it is the
+     * sequence it walked that comes back whatever its kind. The four cursors a builtin call makes name their
+     * own types too, and for the same reason as {@code reversed}: the builtin <em>is</em> the type.
      */
     @Test
     void thePickleHasTwoShapesAndNamesItsOwnType() {

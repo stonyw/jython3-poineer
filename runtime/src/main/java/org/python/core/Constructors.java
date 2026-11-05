@@ -92,6 +92,18 @@ final class Constructors {
         if (type == PyType.REVERSED) {
             return reversing(args, keywordNames);
         }
+        if (type == PyType.ENUMERATE) {
+            return Enumerate.calling(args, keywordNames);
+        }
+        if (type == PyType.ZIP) {
+            return BuiltinCursors.zipping(args, keywordNames);
+        }
+        if (type == PyType.MAP) {
+            return BuiltinCursors.mapping(args, keywordNames);
+        }
+        if (type == PyType.FILTER) {
+            return BuiltinCursors.filtering(args, keywordNames);
+        }
         if (type == PyType.PROPERTY) {
             return property(args, keywordNames);
         }

@@ -11,10 +11,16 @@ package org.python.core;
  * one argument of its own, which is why {@code list[1:2]} keeps a slice and prints it as one.
  *
  * <p>What this runtime does not carry is the alias's other half: CPython reads an unknown name off the
- * origin, so {@code list[int].append} is {@code list.append} and {@code list[int]()} is {@code []}, and
- * {@code dir()} of the value is the origin's. Only the names an alias answers for itself are filed here,
- * and a subscript of an alias is the refusal CPython makes too — {@code list[int]} is not itself a class
- * that can be subscripted again.
+ * origin, so {@code list[int].append} is {@code list.append} and {@code dir()} of the value is the origin's.
+ * Only the names an alias answers for itself are filed here, and a subscript of an alias is the refusal
+ * CPython makes too — {@code list[int]} is not itself a class that can be subscripted again.
+ *
+ * <p>The call is carried, and it is the half that makes an alias of {@code enumerate} worth having: {@code
+ * ga_vectorcall} ({@code genericaliasobject.c:662}) asks nothing of the arguments the alias files and hands
+ * the whole list to the origin, so {@code enumerate[int]("ab")} is the cursor {@code enumerate("ab")} makes.
+ * The one thing it does that is not a forward is {@code set_orig_class}, which writes {@code __orig_class__}
+ * onto the value it built and clears the refusal when that value will not take a new attribute — and every
+ * value an origin here makes is a builtin's, so nothing a program can read differs.
  */
 public final class PyGenericAlias extends PyObject {
 
@@ -42,6 +48,23 @@ public final class PyGenericAlias extends PyObject {
     @Override
     public PyObject getItem(PyObject key) {
         throw Slots.typeError("%s is not a generic class", repr());
+    }
+
+    /**
+     * {@code enumerate[int]("ab")}: the call the origin makes, with nothing about the alias in it.
+     *
+     * <p>The keyword names travel with the positionals exactly as they arrived, so {@code list[int](x=1)}
+     * refuses in {@code list}'s own words rather than in a sentence about an alias.
+     */
+    @Override
+    public PyObject call(PyObject[] args, PyTuple kwNames) {
+        return Slots.call(origin, args, kwNames);
+    }
+
+    /** {@code callable(list[int])}: true, because the origin is what a call of this value reaches. */
+    @Override
+    public boolean isCallable() {
+        return true;
     }
 
     @Override

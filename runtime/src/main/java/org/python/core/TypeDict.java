@@ -833,6 +833,18 @@ final class TypeDict {
             reversedTable(into);
             return;
         }
+        if (owner == PyType.ENUMERATE) {
+            enumerateTable(into);
+            return;
+        }
+        if (owner == PyType.ZIP || owner == PyType.MAP) {
+            zipMapTable(owner, into);
+            return;
+        }
+        if (owner == PyType.FILTER) {
+            filterTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -2583,22 +2595,23 @@ final class TypeDict {
     }
 
     /**
-     * The seven names the one cursor a builtin call makes for itself files.
+     * The seven names {@code reversed} files — a sequence cursor's six, and the constructor above them.
      *
      * <p>One row longer than the six a sequence cursor files and two longer than the five a hash cursor
      * does, and the row above all of them is the difference: {@code enumobject.c} writes a {@code tp_new}
-     * ({@code reversed_new}, {@code :380}) where the other fifteen cursors write a null pointer, and the
-     * builtin {@code reversed} <em>is</em> the type — its {@code tp_vectorcall} is {@code reversed_vectorcall}
-     * ({@code :423}), which is why {@code reversed(x)} and {@code reversed.__new__(reversed, x)} refuse a bad
-     * call in the same words. {@code reversediter_methods} ({@code :538}) is the three {@code
-     * method_descriptor} rows, and the two slot wrappers beside them are again {@code PyObject_SelfIter} and
-     * the file's own step.
+     * ({@code reversed_new}, {@code :380}) where the fifteen cursors that walk a source write a null
+     * pointer, and the builtin {@code reversed} <em>is</em> the type — its {@code tp_vectorcall} is {@code
+     * reversed_vectorcall} ({@code :424}), which is why {@code reversed(x)} and {@code reversed.__new__
+     * (reversed, x)} refuse a bad call in the same words. {@code reversediter_methods} ({@code :538}) is the
+     * three {@code method_descriptor} rows, and the two slot wrappers beside them are again {@code
+     * PyObject_SelfIter} and the file's own step.
      *
      * <p>Four of the seven are names {@code object} does not already file — {@code __reduce__} and {@code
      * __doc__} it does — so {@code dir()} of the cursor is twenty-eight, the same four a sequence cursor
-     * gains. The tail entry is a string rather than the {@code None} the other fifteen file, because {@code
-     * tp_doc} is the constructor's own sentence, and a value reads the very same text through it. {@code
-     * tp_dictoffset} is zero as it is for all sixteen, so {@code vars()} of a cursor is still refused.
+     * gains. The tail entry is a string rather than the {@code None} the fifteen walking cursors file,
+     * because {@code tp_doc} is the constructor's own sentence, and a value reads the very same text through
+     * it. {@code tp_dictoffset} is zero as it is for all twenty cursor books, so {@code vars()} of a cursor
+     * is still refused.
      */
     private static void reversedTable(PyDict into) {
         PyType owner = PyType.REVERSED;
@@ -2622,6 +2635,106 @@ final class TypeDict {
     private static PyObject reversedsNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.REVERSED, args, kwNames);
         return Constructors.reversing(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The six names {@code enumerate} files — the two slot wrappers, the pickle and the sentence three of
+     * its siblings share, the constructor all four share, and an alias row of its own.
+     *
+     * <p>{@code enum_methods} ({@code enumobject.c:307}) is two rows: the pickle and {@code
+     * __class_getitem__}, the latter over {@code Py_GenericAlias} with {@code METH_O|METH_CLASS} — the same
+     * shape {@code list}, {@code tuple}, {@code dict}, {@code set} and {@code frozenset} file theirs with.
+     * {@code enumerate} is the only generic of the four: {@code zip}, {@code map} and {@code filter} file no
+     * such row, so {@code enumerate[int]} builds an alias and {@code zip[int]} answers that a {@code zip} is
+     * not subscriptable. {@code dir()} is twenty-seven: the two slots and {@code __class_getitem__} are the
+     * three names {@code object} does not file — {@code __new__} and the pickle it files already, and the
+     * sentence too, though not the same one.
+     */
+    private static void enumerateTable(PyDict into) {
+        PyType owner = PyType.ENUMERATE;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::enumeratesNew);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.named("__reduce__");
+        table.genericSubscript("'enumerate' objects are generic over the type of their values");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code enumerate_new}: the clinic table, where the vectorcall path is a count by hand.
+     *
+     * <p>The two refusals a wrong call brings back differ between the spellings because the two paths are
+     * written separately in the C: {@code enumerate_vectorcall} ({@code :104}) counts its arguments itself and
+     * says {@code enumerate() missing required argument 'iterable'}, while {@code enumerate.__new__} runs
+     * {@code _PyArg_UnpackKeywords}, which names the position too. The class argument is dropped here and not
+     * there, which is the only reason the two would ever disagree about a good call.
+     */
+    private static PyObject enumeratesNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.ENUMERATE, args, kwNames);
+        return Enumerate.viaNew(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The six names {@code zip} and {@code map} file, one of them the {@code strict} the cursor keeps.
+     *
+     * <p>{@code zip_methods} ({@code bltinmodule.c:3293}) and {@code map_methods} ({@code :1612}) are the
+     * same two rows — the pickle and the restart — that the eight sequence cursors file, and not the rows the
+     * seven hash cursors file, which have no restart at all. What the restart puts back is where the two
+     * kinds differ: a sequence cursor keeps a position, and {@code reversed} keeps one, while here it is the
+     * flag. {@code strict} is state that a pickle has to carry and the argument list of {@code zip(*sources)}
+     * cannot, so {@code __reduce__} answers a third item when the flag is on and {@code __setstate__} reads it
+     * back with {@code PyObject_IsTrue}. {@code dir()} is twenty-seven: the two slots and the restart are the
+     * three names above {@code object}'s twenty-four, the constructor and the pickle being names {@code
+     * object} files already.
+     */
+    private static void zipMapTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        Method creator = owner == PyType.ZIP ? TypeDict::zipsNew : TypeDict::mapsNew;
+        table.raw("__new__", NEW_DOC, creator);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.named("__reduce__", "__setstate__");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code zip_new}: the class gates, then the same {@code *} over the sources and the flag. */
+    private static PyObject zipsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.ZIP, args, kwNames);
+        return BuiltinCursors.zipping(tail(args, kwNames), kwNames);
+    }
+
+    /** {@code map_new}: the class gates, then the same {@code function} and one source at least. */
+    private static PyObject mapsNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.MAP, args, kwNames);
+        return BuiltinCursors.mapping(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The five names {@code filter} files — one short of {@code zip} and {@code map}, and one short of
+     * {@code enumerate} for a reason that is not the same.
+     *
+     * <p>{@code filter_methods} ({@code bltinmodule.c:629}) files the pickle alone, since the predicate and
+     * the iterator in {@code filter(function, iterable)} are everything the cursor is made of: there is no
+     * flag to carry. The type is still callable and the builtin is still the type, so {@code __new__} is
+     * filed here even though {@code filter}'s {@code tp_new} ({@code filter_new}) is the one that refuses a
+     * keyword argument before it looks at anything else. {@code dir()} is twenty-six, the shortest of the
+     * four and the only one that gains just the two slot names.
+     */
+    private static void filterTable(PyDict into) {
+        PyType owner = PyType.FILTER;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::filtersNew);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.named("__reduce__");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code filter_new}: the class gates, then {@code PyArg_UnpackTuple} over exactly two. */
+    private static PyObject filtersNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.FILTER, args, kwNames);
+        return BuiltinCursors.filtering(tail(args, kwNames), kwNames);
     }
 
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */

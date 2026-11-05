@@ -531,25 +531,26 @@ public class PyType extends PyObject {
      * <p>The argument table is kept welded to the front of the sentence because {@code type_get_doc} and
      * {@code type_get_text_signature} read the two halves out of one text: {@code reversed.__doc__} is the
      * sentence with the table cut off it, and {@code reversed.__text_signature__} is nothing but the table.
-     * This is the one {@code tp_doc} of the sixteen cursors that carries a table, and the one that carries
-     * anything at all.
+     * Of the sixteen cursor books of the walking family this is the one {@code tp_doc} that carries a table,
+     * and the one that carries anything at all; the four cursors a builtin call makes below carry theirs too.
      */
     private static final String REVERSED_DOC =
             "reversed(sequence, /)\n--\n\nReturn a reverse iterator over the values of the given sequence.";
 
     /**
      * {@code reversed} itself: the name in {@code builtins} that is a type rather than a function, and the
-     * only cursor this runtime hands out that a program can make for itself.
+     * only cursor a <em>source</em> hands out that a program can make for itself.
      *
-     * <p>The fifteen other cursor types are what their sources answer, and none of them can be built from
-     * Python — {@code tp_new} is null in every one, and each refuses its own name with {@code cannot create
-     * '%s' instances}. This one has a {@code tp_new} because the call that
-     * makes it <em>is</em> the builtin: {@code reversed_vectorcall} ({@code Objects/enumobject.c:423}) is
+     * <p>The fifteen cursor types that walk a source are what their sources answer, and none of them can be
+     * built from Python — {@code tp_new} is null in every one, and each refuses its own name with {@code
+     * cannot create '%s' instances}. This one has a {@code tp_new} because the call that
+     * makes it <em>is</em> the builtin: {@code reversed_vectorcall} ({@code Objects/enumobject.c:424}) is
      * the type's own vectorcall, so {@code reversed(x)} and {@code reversed.__new__(reversed, x)} are two
      * spellings of one constructor, and the {@code __reversed__} question and the sequence test are both
-     * asked inside it ({@code :380}). That is also why the cursor is the one of the sixteen that reports a
-     * sentence of its own — {@code tp_doc} is {@code reversed_new__doc__}, the constructor's — and why its
-     * dictionary has seven names rather than the six a sequence cursor files or the five a hash cursor does.
+     * asked inside it ({@code :380}). That is also why the cursor is one of the five books of twenty that
+     * report a sentence of its own — {@code tp_doc} is {@code reversed_new__doc__}, the constructor's — and
+     * why its dictionary has seven names, the most of any cursor: the six a sequence cursor files with the
+     * constructor on top, and two more than the five a hash cursor files.
      *
      * <p>It is a cursor only for what has no cursor: a list, a range, a dict, a view and a window each answer
      * {@code __reversed__} with a type of their own, and what this one makes is the walk for a tuple, a
@@ -557,6 +558,90 @@ public class PyType extends PyObject {
      * rather than a copy of it.
      */
     public static final PyType REVERSED = builtin("reversed").documented(REVERSED_DOC);
+
+    /**
+     * The four sentences the other cursor builtins write, each with its argument table welded to the front.
+     *
+     * <p>{@code enum_new__doc__} comes from {@code enumobject.c} beside the one above; the three others are
+     * {@code zip_doc}, {@code map_doc} and {@code filter_doc}, and all four are filed as {@code tp_doc} of
+     * their own type because all four builtins <em>are</em> their types. {@code PyNativeFunction}
+     * transcribed the same texts while these names were still functions here, and a type reads the two halves
+     * apart: {@code __doc__} is the sentence with the table cut off it and {@code __text_signature__} is
+     * nothing but the table.
+     */
+    private static final String ENUMERATE_DOC =
+            "enumerate(iterable, start=0)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Return an enumerate object.\n"
+                    + "\n"
+                    + "  iterable\n"
+                    + "    an object supporting iteration\n"
+                    + "\n"
+                    + "The enumerate object yields pairs containing a count (from start, which\n"
+                    + "defaults to zero) and a value yielded by the iterable argument.\n"
+                    + "\n"
+                    + "enumerate is useful for obtaining an indexed list:\n"
+                    + "    (0, seq[0]), (1, seq[1]), (2, seq[2]), ...";
+
+    private static final String ZIP_DOC =
+            "zip(*iterables, strict=False)\n"
+                    + "--\n"
+                    + "\n"
+                    + "The zip object yields n-length tuples, where n is the number of\n"
+                    + "iterables passed as positional arguments to zip().  The i-th element\n"
+                    + "in every tuple comes from the i-th iterable argument to zip().  This\n"
+                    + "continues until the shortest argument is exhausted.\n"
+                    + "\n"
+                    + "If strict is true and one of the arguments is exhausted before the\n"
+                    + "others, raise a ValueError.\n"
+                    + "\n"
+                    + "   >>> list(zip('abcdefg', range(3), range(4)))\n"
+                    + "   [('a', 0, 0), ('b', 1, 1), ('c', 2, 2)]";
+
+    private static final String MAP_DOC =
+            "map(function, iterable, /, *iterables, strict=False)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Make an iterator that computes the function using arguments from\n"
+                    + "each of the iterables.  Stops when the shortest iterable is exhausted.\n"
+                    + "\n"
+                    + "If strict is true and one of the arguments is exhausted before the\n"
+                    + "others, raise a ValueError.";
+
+    private static final String FILTER_DOC =
+            "filter(function, iterable, /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Return an iterator yielding those items of iterable for which\n"
+                    + "function(item) is true.  If function is None, return the items that\n"
+                    + "are true.";
+
+    /**
+     * The four cursor builtins that are types, which is what makes their names askable.
+     *
+     * <p>{@code _PyBuiltin_Init} ({@code Python/bltinmodule.c:3434}) files {@code enumerate}, {@code filter},
+     * {@code map} and {@code zip} with {@code SETBUILTIN} and the type rather than with a function, so {@code
+     * type(enumerate("ab")) is enumerate} holds and a book of five or six names stands behind the value.
+     * Every one of the four files the same five rows — {@code __new__}, the two slot copies, the pickle and
+     * the constructor's own sentence — plus one name apiece for what only this cursor can carry: {@code
+     * enumerate} is the generic of the family and files {@code __class_getitem__}, while {@code zip} and
+     * {@code map} hold a flag no argument list can reach and file {@code __setstate__}. {@code filter} has
+     * neither, so its book is the five and {@code dir()} is twenty-six against the twenty-seven of the other
+     * three and the twenty-four of {@code object}. Of those five rows {@code object} files three itself, so
+     * what a book gains over its twenty-four names is the two slots and, for the first three, that one name
+     * apiece.
+     *
+     * <p>Every one of the four has a {@code tp_new}, and three of them a hand-written {@code tp_vectorcall}
+     * beside it, which is why {@code map} counts its arguments in words no clinic table wrote while {@code
+     * zip}, which has no vectorcall at all, reaches the same {@code zip_new} whichever spelling the call used.
+     * {@code enumerate} is the one where the two paths disagree: see {@link Enumerate#calling}.
+     */
+    public static final PyType ENUMERATE = builtin("enumerate").documented(ENUMERATE_DOC);
+
+    static final PyType ZIP = builtin("zip").documented(ZIP_DOC);
+    static final PyType MAP = builtin("map").documented(MAP_DOC);
+    static final PyType FILTER = builtin("filter").documented(FILTER_DOC);
 
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and

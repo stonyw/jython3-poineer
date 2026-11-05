@@ -99,7 +99,15 @@ final class Members {
             Map.entry(PyType.SET_ITERATOR, HashIterators.class),
             // The cursor `reversed` makes for a sequence with no walk of its own declares three rows, and
             // asks them before any cursor exists: `Reversed` is loaded to file them.
-            Map.entry(PyType.REVERSED, Reversed.class));
+            Map.entry(PyType.REVERSED, Reversed.class),
+            // The four cursor builtins are types, and each files its own book beside the two slot wrappers:
+            // one row for `enumerate` and `filter`, two for `zip` and `map`. `Enumerate` holds the first
+            // because its creator is hand-written; `BuiltinCursors` holds the other three because they differ
+            // only in the walks they run.
+            Map.entry(PyType.ENUMERATE, Enumerate.class),
+            Map.entry(PyType.ZIP, BuiltinCursors.class),
+            Map.entry(PyType.MAP, BuiltinCursors.class),
+            Map.entry(PyType.FILTER, BuiltinCursors.class));
 
     private final PyType owner;
 

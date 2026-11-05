@@ -289,7 +289,8 @@ class Jy3LauncherTest {
                 "113_descriptor_get.py",
                 "114_sequence_iterators.py",
                 "115_hash_iterators.py",
-                "116_reversed_cursor.py");
+                "116_reversed_cursor.py",
+                "117_cursor_builtin_types.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
