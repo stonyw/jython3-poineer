@@ -15,22 +15,36 @@ package org.python.core;
  * never to the proxy, and never to the class it started from. A classmethod therefore reports the
  * subclass, and a parent's {@code property} is computed for the child.
  *
- * <p>Nothing is writable. A super object has no dictionary and its type has no {@code tp_setattro}, so
- * every assignment — including {@code super().volume = 9} aimed at a parent's property setter — is
- * refused with {@code AttributeError: 'super' object has no attribute 'volume' and no __dict__ for
- * setting new attributes}, and the three names it does own refuse with {@code readonly attribute}.
+ * <p>Nothing is writable. A super object keeps no dictionary of its own, so every assignment — including
+ * {@code super().volume = 9} aimed at a parent's property setter — is refused with {@code AttributeError:
+ * 'super' object has no attribute 'volume' and no __dict__ for setting new attributes}. The three names it
+ * reports are {@code PyMemberDef}s marked read-only and refuse with {@code readonly attribute} and nothing
+ * else, and the sentence its type files refuses with {@code 'super' object attribute '__doc__' is
+ * read-only}.
  *
- * <p>CPython reads a second time when the walk finds nothing: it takes {@code super}'s own type's order
- * past {@code super} itself, which is {@code object}, and so hands back {@code object.__init__} bound to
- * the value — or to the proxy, when the proxy has no value. Those members are slot wrappers, and this
- * runtime models no slot wrappers at all, so a name the walk passes is refused here and {@link
- * #getAttr} answers only the few names the proxy really owns.
+ * <p>CPython reads a second time when the walk finds nothing: {@code super_getattro} ends by handing the
+ * name to {@code _PyObject_GenericGetAttrWithDict}, which walks {@code super} and then {@code object}. The
+ * nine rows of {@link TypeDict}'s {@code superTable} are what that second read answers, with {@code
+ * object}'s twenty-four behind them — which is why a proxy that has a value reads {@code object.__doc__}
+ * where one without reads {@code super}'s own four hundred and seventy-one characters. The walk gets those
+ * first whenever there is an order to walk at all, and it reaches {@code object} from any class below it.
  */
 public final class PySuper extends PyObject {
 
     /** {@code super(C)}: the class is known, the value is not, and so no order can be walked. */
     static PySuper withoutValue(PyObject type) {
         return new PySuper(asType(type), null, null);
+    }
+
+    /**
+     * {@code super.__new__(super)}: the proxy with neither half, which prints {@code NULL} twice.
+     *
+     * <p>{@code super_new} only asks the frame when it was handed no class at all, so the creator run by
+     * hand allocates and hands back — it never refuses the arguments it did not use, and never fills what
+     * it allocated. {@code super.__new__(super, int, 3)} is that same empty proxy.
+     */
+    static PySuper empty() {
+        return new PySuper(null, null, null);
     }
 
     /**
@@ -129,9 +143,9 @@ public final class PySuper extends PyObject {
         throw Slots.typeError("super() argument 1 must be a type, not %s", type.getType().name());
     }
 
-    private final PyType thisClass;
-    private final PyObject obj;
-    private final PyType startType;
+    private PyType thisClass;
+    private PyObject obj;
+    private PyType startType;
 
     private PySuper(PyType thisClass, PyObject obj, PyType startType) {
         super(PyType.SUPER);
@@ -141,10 +155,40 @@ public final class PySuper extends PyObject {
     }
 
     /**
+     * {@code super_init} run against this proxy: the three fields replaced, in place.
+     *
+     * <p>CPython fills the same object it was handed rather than building another, so the value a person
+     * held on to changes which order it walks — {@code p.__init__(Base, self)} is the way to move a proxy
+     * that was built without a value into one with one, and {@code p.__init__()} is the way to ask the
+     * frame again. A refusal leaves every field as it was, because {@code super_init_impl} only assigns
+     * once {@code supercheck} has answered.
+     */
+    void refill(PySuper built) {
+        this.thisClass = built.thisClass;
+        this.obj = built.obj;
+        this.startType = built.startType;
+    }
+
+    /** {@code __thisclass__}: the class to start at, or {@code None} while the proxy has no class either. */
+    PyObject reportedClass() {
+        return thisClass == null ? PyNone.INSTANCE : thisClass;
+    }
+
+    /** {@code __self__}: the value whose order is walked, or {@code None} when none is. */
+    PyObject reportedValue() {
+        return obj == null ? PyNone.INSTANCE : obj;
+    }
+
+    /** {@code __self_class__}: the class the walk is measured against, or {@code None} for no walk. */
+    PyObject reportedOrder() {
+        return startType == null ? PyNone.INSTANCE : startType;
+    }
+
+    /**
      * {@code proxy.name}: the first class after the starting one that names it, with its descriptor run.
      *
      * <p>Only a value gets that walk, so {@code super(C)} — which has a class and no value, and so no
-     * order to walk — reads nothing but the names below, exactly as CPython's first pass finds nothing
+     * order to walk — reads nothing but its own type's book, exactly as CPython's first pass finds nothing
      * when {@code obj} is null.
      *
      * <p>The descriptor is asked for {@link #obj} unless the proxy was built in class form, when the
@@ -152,6 +196,12 @@ public final class PySuper extends PyObject {
      * is why {@code super(Meta, Meta).__prepare__} binds {@code Meta} as the receiver of a classmethod
      * while {@code super(C, instance).name} binds the instance: {@link Descriptors} has to be told in the
      * first case that there is no instance at all, or a {@code classmethod} would report the proxy.
+     *
+     * <p>What the walk passes goes to {@link TypeDict#read}, which is {@code
+     * _PyObject_GenericGetAttrWithDict} over this type's order: the nine rows {@code super} files itself
+     * first, then the twenty-four of {@code object}. Both halves answer the same read for the proxy, so
+     * {@code super(int).__get__} is {@code super}'s own row bound to the proxy while {@code super(int,
+     * 3).__reduce__} is {@code object}'s bound to the three it was built with.
      */
     @Override
     public PyObject getAttr(String attribute) {
@@ -162,15 +212,7 @@ public final class PySuper extends PyObject {
             return ClassAttribute.read(this);
         }
         PyObject found = beyond(attribute);
-        if (found != null) {
-            return found;
-        }
-        return switch (attribute) {
-            case "__self__" -> obj == null ? PyNone.INSTANCE : obj;
-            case "__self_class__" -> startType == null ? PyNone.INSTANCE : startType;
-            case "__thisclass__" -> thisClass;
-            default -> Slots.DECLINED;
-        };
+        return found != null ? found : TypeDict.read(this, attribute);
     }
 
     /** The member {@code attribute} in the part of the order the proxy is allowed to see. */
@@ -195,39 +237,25 @@ public final class PySuper extends PyObject {
     }
 
     /**
-     * {@code s.name = value}: three names the proxy refuses itself, and the generic write for the rest.
+     * {@code s.name = value}: the generic write, with the type's dictionary deciding which wording comes.
      *
-     * <p>The three are {@code super}'s {@code PyMemberDef}s, which CPython marks read-only, so the refusal
-     * is the one that names no attribute at all. Everything else is {@link GenericAttributes}' answer, and
-     * it is the type's own dictionary that decides which wording a name gets: {@code __doc__} is filed
-     * there, so it is read-only, {@code __class__} reaches {@code object}'s getset and its type check, and
-     * a name nothing files has nowhere to go because a proxy keeps no instance dictionary.
+     * <p>The three names the proxy reports are {@code super}'s {@code PyMemberDef}s, and CPython marks them
+     * read-only, so their refusal is {@code readonly attribute} and names no attribute at all. {@code
+     * __doc__} is filed as a plain string rather than as a descriptor that writes, which is the other
+     * read-only sentence — the one that does name the attribute; {@code __class__} reaches {@code object}'s
+     * getset and its type check; and a name nothing on the order files has nowhere to go, because a proxy
+     * keeps no instance dictionary.
      */
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
-        refused(attribute);
         GenericAttributes.write(this, attribute, value);
         return PyNone.INSTANCE;
     }
 
     @Override
     public PyObject delAttr(String attribute) {
-        refused(attribute);
         GenericAttributes.delete(this, attribute);
         return PyNone.INSTANCE;
-    }
-
-    private void refused(String attribute) {
-        if (readonly(attribute)) {
-            throw Slots.attributeError("readonly attribute");
-        }
-    }
-
-    /** The three names the proxy reads for itself, and the only three it refuses a write by name. */
-    private static boolean readonly(String attribute) {
-        return attribute.equals("__self__")
-                || attribute.equals("__self_class__")
-                || attribute.equals("__thisclass__");
     }
 
     @Override
@@ -235,10 +263,18 @@ public final class PySuper extends PyObject {
         return System.identityHashCode(this);
     }
 
+    /**
+     * {@code super_repr}: the class the walk starts at, then the class of the value it walks for.
+     *
+     * <p>Each half prints {@code NULL} when the proxy does not hold it, and the two are independent: a
+     * {@code super(C)} says {@code <super: <class 'C'>, NULL>} and the proxy {@code super.__new__} makes
+     * with nothing at all says {@code <super: <class 'NULL'>, NULL>}, which is the only way that value can
+     * be seen to differ from the one {@code __init__} was later asked to fill in place.
+     */
     @Override
     public String repr() {
         return "<super: <class '"
-                + thisClass.name()
+                + (thisClass == null ? "NULL" : thisClass.name())
                 + "'>, "
                 + (startType == null ? "NULL" : "<" + startType.name() + " object>")
                 + ">";

@@ -237,6 +237,22 @@ final class TypeDict {
             "__delete__($self, instance, /)\n--\n\nDelete an attribute of instance.";
 
     /**
+     * The three sentences {@code super_members} writes beside the three fields of a proxy.
+     *
+     * <p>Each is {@code PyMemberDef} text and names the field it reads, which is the whole of what these
+     * three have to say: none of them carries a clinic table, so {@code __text_signature__} is refused by
+     * the missing name rather than answered as an empty one. Two of the three end in "may be None" because
+     * a proxy with a class and no value — the one {@code super(C)} builds — reads {@code None} for both
+     * halves of the walk, and the third says nothing of it although {@code super.__new__(super)} leaves
+     * that one empty too.
+     */
+    private static final String SUPER_CLASS_DOC = "the class invoking super()";
+
+    private static final String SUPER_SELF_DOC = "the instance invoking super(); may be None";
+
+    private static final String SUPER_ORDER_DOC = "the type of the instance invoking super(); may be None";
+
+    /**
      * The four sentences of {@code property_methods}.
      *
      * <p>The first three are written beside their functions as plain prose, with no clinic block, which is
@@ -855,6 +871,10 @@ final class TypeDict {
         }
         if (owner == PyType.ELLIPSIS) {
             ellipsisTable(into);
+            return;
+        }
+        if (owner == PyType.SUPER) {
+            superTable(into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -2844,6 +2864,112 @@ final class TypeDict {
     /** The one complaint the three boolean reads of {@code NotImplemented} all make. */
     private static PyObject notImplementedTruth() {
         throw Slots.typeError("NotImplemented should not be used in a boolean context");
+    }
+
+    /**
+     * {@code super}'s nine names: five slots, three fields and one sentence that is all recipe.
+     *
+     * <p>Four of the five are {@code add_operators}' slot wrappers — {@code tp_repr}, {@code tp_getattro},
+     * {@code tp_descr_get} and {@code tp_init} — and the fifth, {@code super_new}, is a {@code
+     * PyMethodDef} filed as a plain static, so it is the one row of the book that binds to nothing:
+     * {@code super(int, 3).__new__} is the row itself, and {@code super.__new__ is super.__new__} holds.
+     * The three fields are {@code PyMemberDef}s marked read-only, and the sentence is the type's own.
+     *
+     * <p>Only four names stand above the twenty-four of {@code object} — the three fields and {@code
+     * __get__}, which {@code super} is the one non-descriptor type to file — and the order the dictionary
+     * keeps is the struct's declaration order rather than the order a person would write: all five slots
+     * first, and {@code __self__} before {@code __self_class__} although {@code supercheck} works out the
+     * second from the first.
+     *
+     * <p>{@code super_getattro} reads its own type's book only after the walk has passed, so a proxy that
+     * was given a value answers {@code object} before it answers any of these five rows: {@code super(3)
+     * .__doc__} is the base class's sentence of a hundred and seventy-three characters, and {@code
+     * super(int).__doc__} the four hundred and seventy-one of {@code super} itself.
+     */
+    private static void superTable(PyDict into) {
+        PyType owner = PyType.SUPER;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::superNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        // `wrap_getattro` is the same wrapper for every type that files the name: it asks the receiver's
+        // own `tp_getattro`, which for a proxy is `super_getattro` and so runs the walk before the book.
+        table.wrapper("__getattribute__", GETATTR_DOC, TypeDict::objectGetAttribute);
+        table.wrapper("__get__", DESCR_GET_DOC, TypeDict::descrRead);
+        table.wrapper("__init__", INIT_DOC, TypeDict::superInit);
+        table.member("__thisclass__", SUPER_CLASS_DOC, self -> asProxy(self).reportedClass(), null);
+        table.member("__self__", SUPER_SELF_DOC, self -> asProxy(self).reportedValue(), null);
+        table.member("__self_class__", SUPER_ORDER_DOC, self -> asProxy(self).reportedOrder(), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** The proxy a member of this book was asked of, which {@code descr_check} has already vouched for. */
+    private static PySuper asProxy(PyObject self) {
+        if (self instanceof PySuper proxy) {
+            return proxy;
+        }
+        throw Slots.attributeError("readonly attribute");
+    }
+
+    /**
+     * {@code super_new}: a proxy with nothing in it, whatever the call went on to hand over.
+     *
+     * <p>{@code declaredClass} runs the two gates CPython runs before it allocates — a class, and that class
+     * below {@code super} — and then the rest of the arguments simply drop, because this creator fills no
+     * field. {@code super.__new__(super, int, 3)} therefore prints {@code NULL} twice exactly as {@code
+     * super.__new__(super)} does, and the only route to a proxy with a value is the initializer or the call
+     * that reaches it. That call asks the frame on the way in, which is {@link Constructors}'s business
+     * and not this row's: {@code super.__new__()} is refused for want of a class, not for want of a frame.
+     */
+    private static PyObject superNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.SUPER, args, kwNames);
+        return PySuper.empty();
+    }
+
+    /**
+     * {@code super_init}: the receiver filled again in place, past three gates in CPython's own order.
+     *
+     * <p>Both this row and {@link PySuper#fromFrame()} refuse the empty call with {@code RuntimeError:
+     * super(): no arguments}, and the frame is asked even when the proxy already holds a value — so {@code
+     * p.__init__()} inside a method moves the walk to the class that body's own {@code __class__} cell
+     * names, whichever class {@code p} was built with.
+     *
+     * <p>The two refusals this row shares with the constructor differ by how each of them counts. {@code
+     * super(int, 3, 4)} says {@code expected at most 2 arguments, got 3} because {@code type.__call__}
+     * reaches {@code _PyArg_CheckPositional}, while the row itself unpacks with {@code PyArg_UnpackTuple}
+     * and says {@code takes at most 2 arguments (3 given)}; and the first argument that is not a class is
+     * refused as {@code must be type} here where the constructor, checking it in {@code super_new}, has
+     * room for the article. What is the same in both is {@code supercheck}'s sentence about the second.
+     *
+     * <p>One argument is the spelling that loses the value: {@code super_init} hands {@code None} for the
+     * second slot whenever the call gave nothing, so {@code p.__init__(Base)} leaves the proxy as valueless
+     * as {@code super(Base)} and only the starting class survives. A refused call changes nothing at all,
+     * because the three fields are assigned only once {@code supercheck} has answered.
+     */
+    private static PyObject superInit(PyObject[] args, String[] kwNames, String qualified) {
+        PySuper proxy = asProxy(args[0]);
+        PyObject[] given = tail(args, kwNames);
+        if (hasKeywords(kwNames)) {
+            throw Slots.typeError("super() takes no keyword arguments");
+        }
+        if (given.length > 2) {
+            throw Slots.typeError("super() takes at most 2 arguments (%d given)", given.length);
+        }
+        if (given.length == 0) {
+            proxy.refill(PySuper.fromFrame());
+        } else if (given.length == 1) {
+            proxy.refill(PySuper.withoutValue(initType(given[0])));
+        } else {
+            proxy.refill(PySuper.of(initType(given[0]), given[1]));
+        }
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code super_init_impl}'s first gate, which names the article {@code super_new}'s version adds. */
+    private static PyType initType(PyObject type) {
+        if (type instanceof PyType kind) {
+            return kind;
+        }
+        throw Slots.typeError("super() argument 1 must be type, not %s", type.getType().name());
     }
 
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */
