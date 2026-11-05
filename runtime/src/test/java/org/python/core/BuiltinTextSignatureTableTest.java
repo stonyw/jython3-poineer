@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
  * its rule. What is pinned here is the store the two reads share. A built-in type keeps one string: the table,
  * the rule, then the sentence — and {@code __doc__} is what is left once {@code
  * _PyType_DocWithoutSignature} throws the first two away, not a second text anyone transcribed beside them.
- * Eleven of the types in {@code builtins} are written that way, and seven more open with a bracket and end
+ * Eleven of the types in {@code builtins} are written that way, and eight more open with a bracket and end
  * with an arrow, which is the shape {@code skip_signature} refuses: no rule, so no table, so the sentence
  * arrives whole.
  *
@@ -44,7 +44,7 @@ class BuiltinTextSignatureTableTest {
                     new Welded(PyType.OBJECT, "()"));
 
     /**
-     * The seven whose sentences open like a table and carry no rule, so both reads answer the same text and
+     * The eight whose sentences open like a table and carry no rule, so both reads answer the same text and
      * {@code __text_signature__} answers {@code None}.
      */
     private static final List<PyType> RECIPES =
@@ -55,7 +55,8 @@ class BuiltinTextSignatureTableTest {
                     PyType.DICT,
                     PyType.SLICE,
                     PyType.RANGE,
-                    PyType.TYPE);
+                    PyType.TYPE,
+                    PyType.SUPER);
 
     /** The three lines {@code skip_signature} looks for between a table and the sentence under it. */
     private static final String RULE = "\n--\n\n";

@@ -21,8 +21,8 @@ this does not is `memoryview`, whose type is not built yet.
 Eight more names open with a line that looks exactly like a table and is not one, because a `->` follows the
 bracket and no rule follows that: `int`, `dict`, `slice`, `str`, `bytes`, `type`, `range` and `super`. Each
 answers `None` here and in the reference, and that is what `skip_signature`'s blank-line guard and the missing
-`--` are for. `super` is left out of the rows below for a different reason: its table is `None` on both sides,
-but the sentence itself is one this runtime does not carry yet.
+`--` are for. `super` joins the rows now that the slice after this one transcribes its fourteen lines: the
+recipe reads the same on both sides and the table is still `None` on both.
 
 A class Python wrote keeps no `tp_doc` of its own — until `type_new_impl` looks in the namespace it was handed,
 copies a `__doc__` that holds a string into the field, and leaves it empty for `None` and for every other
@@ -54,7 +54,7 @@ ELEVEN = [
 CURSORS = ["reversed", "enumerate", "zip", "map", "filter"]
 
 # Sentences that open with a bracket and end with an arrow, and so carry no table at all.
-RECIPES = ["int", "dict", "slice", "str", "bytes", "type", "range"]
+RECIPES = ["int", "dict", "slice", "str", "bytes", "type", "range", "super"]
 
 
 def halves(kind):

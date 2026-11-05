@@ -678,6 +678,35 @@ public class PyType extends PyObject {
                     + "are true.";
 
     /**
+     * {@code super_doc} ({@code Objects/typeobject.c}): fourteen lines and a final newline, and the eighth
+     * book of the family that opens like a table and is not one.
+     *
+     * <p>The text starts with the name and a bracket, so {@code find_signature} hits it on the first
+     * character — and then walks fourteen lines looking for the {@code )\n--\n\n} that never comes, because
+     * what follows the recipe is prose and sample code, not a rule. {@code skip_signature} gives up, so
+     * {@code __text_signature__} answers {@code None} and {@code __doc__} answers all four hundred and
+     * seventy-one characters, indents and the trailing newline included. Two of the lines are indented by
+     * four because the sentence they finish breaks there, and the last bracket pair on line three is
+     * {@code isinstance(obj, type)}'s, not a signature's — which is the one way this text could have
+     * looked like a table and does not.
+     */
+    private static final String SUPER_DOC =
+            "super() -> same as super(__class__, <first argument>)\n"
+                    + "super(type) -> unbound super object\n"
+                    + "super(type, obj) -> bound super object; requires isinstance(obj, type)\n"
+                    + "super(type, type2) -> bound super object; requires\n"
+                    + "    issubclass(type2, type)\n"
+                    + "Typical use to call a cooperative superclass method:\n"
+                    + "class C(B):\n"
+                    + "    def meth(self, arg):\n"
+                    + "        super().meth(arg)\n"
+                    + "This works for class methods too:\n"
+                    + "class C(B):\n"
+                    + "    @classmethod\n"
+                    + "    def cmeth(cls, arg):\n"
+                    + "        super().cmeth(arg)\n";
+
+    /**
      * The four cursor builtins that are types, which is what makes their names askable.
      *
      * <p>{@code _PyBuiltin_Init} ({@code Python/bltinmodule.c:3434}) files {@code enumerate}, {@code filter},
@@ -709,7 +738,7 @@ public class PyType extends PyObject {
      * given. It is named here because {@link Interpreter} compares a loaded {@code super} against it by
      * identity, exactly as CPython compares a pointer against {@code &PySuper_Type}.
      */
-    public static final PyType SUPER = builtin("super");
+    public static final PyType SUPER = builtin("super").documented(SUPER_DOC);
 
     /**
      * {@code sys.version_info}'s own class: the one named sequence this runtime builds.
