@@ -116,7 +116,34 @@ final class Constructors {
         if (type == PyType.SUPER) {
             return superProxy(args, keywordNames);
         }
+        if (type == PyType.NONE) {
+            return theOneValue(PyNone.INSTANCE, "NoneType", args, keywordNames);
+        }
+        if (type == PyType.NOTIMP) {
+            return theOneValue(PyNotImplemented.INSTANCE, "NotImplementedType", args, keywordNames);
+        }
+        if (type == PyType.ELLIPSIS) {
+            return theOneValue(PyEllipsis.INSTANCE, "EllipsisType", args, keywordNames);
+        }
         throw Slots.notImplemented("calling '" + type.name() + "'");
+    }
+
+    /**
+     * {@code none_new}, {@code notimplemented_new} and {@code ellipsis_new}: a type with one value has no
+     * constructor arguments to take, and says so in the name of its C struct rather than in the class's.
+     *
+     * <p>The refusal is {@code excess_args}, which counts a keyword as readily as a position and so names
+     * neither — {@code NoneType(k=1)} and {@code NoneType(1)} are the same sentence. It is also the one of
+     * the three that disagrees with its own type about a name: {@code tp_name} of {@code PyEllipsis_Type} is
+     * {@code ellipsis}, which is what the dictionary, {@code __text_signature__} and the two {@code __new__}
+     * refusals all print, while this sentence prints {@code EllipsisType}.
+     */
+    private static PyObject theOneValue(
+            PyObject value, String structName, PyObject[] args, String[] kwNames) {
+        if (Arguments.positional(args, kwNames) > 0 || kwNames != null) {
+            throw Slots.typeError("%s takes no arguments", structName);
+        }
+        return value;
     }
 
     // --- the descriptor builtins ---------------------------------------------------------------

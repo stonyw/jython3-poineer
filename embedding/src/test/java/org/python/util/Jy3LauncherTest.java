@@ -292,7 +292,8 @@ class Jy3LauncherTest {
                 "116_reversed_cursor.py",
                 "117_cursor_builtin_types.py",
                 "118_constructor_tables.py",
-                "119_exception_sentences.py");
+                "119_exception_sentences.py",
+                "120_singleton_books.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

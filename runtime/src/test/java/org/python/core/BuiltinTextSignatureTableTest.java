@@ -2,11 +2,12 @@ package org.python.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * The eleven argument tables welded onto the front of a built-in type's sentence, and the copy a class
+ * The fourteen argument tables welded onto the front of a built-in type's sentence, and the copy a class
  * statement makes of its own docstring, measured against CPython 3.14.10.
  *
  * <p>Corpus case 118 reads both halves of each text from Python, down to the characters the cut leaves under
@@ -15,7 +16,10 @@ import org.junit.jupiter.api.Test;
  * _PyType_DocWithoutSignature} throws the first two away, not a second text anyone transcribed beside them.
  * Eleven of the types in {@code builtins} are written that way, and eight more open with a bracket and end
  * with an arrow, which is the shape {@code skip_signature} refuses: no rule, so no table, so the sentence
- * arrives whole.
+ * arrives whole. The three types the singleton values of {@code builtins} carry — {@code NoneType}, {@code
+ * NotImplementedType} and {@code ellipsis} — are welded under a table of nothing at all, and join the eleven
+ * here because the two knives cut them the same way, although {@code builtins} holds their one values and not
+ * the types: a program reaches each of these three through {@code type(...)}.
  *
  * <p>The other half is the copy {@code type_new_impl} makes when the namespace it is handed files {@code
  * __doc__} as a string. It happens once, at the build, and nothing writes the field again — so a class reads
@@ -28,7 +32,9 @@ class BuiltinTextSignatureTableTest {
     /** A built-in type and the bracketed half {@code __text_signature__} answers out of its sentence. */
     private record Welded(PyType kind, String table) {}
 
-    /** The eleven types whose {@code tp_doc} opens with an argument table and the rule under it. */
+    /**
+     * The eleven {@code builtins} types whose {@code tp_doc} opens with a table and the rule written under it.
+     */
     private static final List<Welded> ELEVEN =
             List.of(
                     new Welded(PyType.BOOL, "(object=False, /)"),
@@ -42,6 +48,25 @@ class BuiltinTextSignatureTableTest {
                     new Welded(PyType.CLASS_METHOD, "(function, /)"),
                     new Welded(PyType.STATIC_METHOD, "(function, /)"),
                     new Welded(PyType.OBJECT, "()"));
+
+    /**
+     * The three singleton types, whose table is the empty pair of brackets because their one value takes no
+     * argument — the same shape {@code object} was welded with, and cut by the same two knives.
+     */
+    private static final List<Welded> SENTINELS =
+            List.of(
+                    new Welded(PyType.NONE, "()"),
+                    new Welded(PyType.NOTIMP, "()"),
+                    new Welded(PyType.ELLIPSIS, "()"));
+
+    /** The fourteen texts that carry both halves. */
+    private static final List<Welded> WELDED = welded();
+
+    private static List<Welded> welded() {
+        List<Welded> all = new ArrayList<>(ELEVEN);
+        all.addAll(SENTINELS);
+        return List.copyOf(all);
+    }
 
     /**
      * The eight whose sentences open like a table and carry no rule, so both reads answer the same text and
@@ -88,7 +113,7 @@ class BuiltinTextSignatureTableTest {
 
     @Test
     void oneStringCarriesTheTableTheRuleAndTheSentence() {
-        for (Welded welded : ELEVEN) {
+        for (Welded welded : WELDED) {
             assertThat(welded.kind().docText())
                     .as("%s keeps its table above its own sentence", welded.kind().name())
                     .startsWith(welded.kind().name() + welded.table() + RULE);
@@ -97,7 +122,7 @@ class BuiltinTextSignatureTableTest {
 
     @Test
     void theTwoReadsCutOneText() {
-        for (Welded welded : ELEVEN) {
+        for (Welded welded : WELDED) {
             String stored = welded.kind().docText();
             assertThat(PyNativeFunction.signatureOf(welded.kind().name(), stored))
                     .as("%s answers nothing but the table", welded.kind().name())
@@ -110,7 +135,7 @@ class BuiltinTextSignatureTableTest {
 
     @Test
     void bothReadsAnswerThroughTheTypeItself() {
-        for (Welded welded : ELEVEN) {
+        for (Welded welded : WELDED) {
             assertThat(Slots.getAttr(welded.kind(), "__text_signature__"))
                     .as("%s reports its table to a program", welded.kind().name())
                     .isEqualTo(PyStr.of(welded.table()));

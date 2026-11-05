@@ -845,6 +845,18 @@ final class TypeDict {
             filterTable(into);
             return;
         }
+        if (owner == PyType.NONE) {
+            noneTypeTable(into);
+            return;
+        }
+        if (owner == PyType.NOTIMP) {
+            notImplementedTable(into);
+            return;
+        }
+        if (owner == PyType.ELLIPSIS) {
+            ellipsisTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -2741,6 +2753,99 @@ final class TypeDict {
         return BuiltinCursors.filtering(tail(args, kwNames), kwNames);
     }
 
+    /**
+     * {@code NoneType}'s own dictionary: the eleven names the singleton's type files.
+     *
+     * <p>Nine of them are the slot wrappers {@code type_new} copies out of {@code object} for a static type
+     * that writes its own {@code tp_as_richcompare} — which is why {@code dir(type(None))} is the twenty-five
+     * the reference answers and not the twenty-four a type with one row reaches. {@code __bool__} is the tenth
+     * and the only one that is not inherited: {@code none_bool} answers for the value outright, and the row
+     * cannot be reached the way the other nine are, because binding a wrapper to {@code None} by hand is the
+     * same as binding it to nothing at all — {@code NoneType.__dict__['__bool__'].__get__(None)} complains
+     * {@code __get__(None, None) is invalid}.
+     *
+     * <p>The order is the slots' own rather than the one a person would write: {@code __hash__}, then the six
+     * of {@code tp_richcompare}, then {@code nb_bool}, then the sentence. {@code NotImplementedType} files the
+     * same truth row in the same place in that order — directly after its {@code __repr__} — and reaches it
+     * with six fewer names, because it files no comparison of its own.
+     */
+    private static void noneTypeTable(PyDict into) {
+        PyType owner = PyType.NONE;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::noneNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, (args, kw, q) -> identity(args, CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, (args, kw, q) -> identity(args, CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, (args, kw, q) -> identity(args, CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, (args, kw, q) -> identity(args, CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, (args, kw, q) -> identity(args, CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, (args, kw, q) -> identity(args, CompareOp.GE));
+        table.wrapper("__bool__", TRUTH_DOC, args -> PyBool.FALSE);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code none_new}: the class gates, and then nothing at all is asked of the arguments. */
+    private static PyObject noneNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.NONE, args, kwNames);
+        return Constructors.instantiate(
+                PyType.NONE, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
+    }
+
+    /**
+     * {@code NotImplementedType}'s five names, and the tenth {@code __bool__} of the family.
+     *
+     * <p>Here the truth row does not answer: {@code notimplemented_bool} raises {@code TypeError} with the
+     * sentence every boolean read of the singleton reaches, so the row and {@code bool(NotImplemented)} are
+     * the same complaint in the same words. {@code __reduce__} is a {@code PyMethodDef} and says nothing —
+     * a null sentence, which is the table alone as the read hands it out.
+     */
+    private static void notImplementedTable(PyDict into) {
+        PyType owner = PyType.NOTIMP;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::notImplementedNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__bool__", TRUTH_DOC, args -> notImplementedTruth());
+        table.method("__reduce__", "__reduce__($self, /)\n--\n\n", args -> PyStr.of("NotImplemented"));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code notimplemented_new}: the class gates, then the one value again. */
+    private static PyObject notImplementedNew(
+            PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.NOTIMP, args, kwNames);
+        return Constructors.instantiate(
+                PyType.NOTIMP, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
+    }
+
+    /**
+     * {@code ellipsis}'s four names — the one book of the three that files no {@code __bool__} at all.
+     *
+     * <p>{@code Ellipsis} is true the way every object without a truth slot is, which is why the reference's
+     * {@code dir(type(Ellipsis))} is the plain twenty-four and the two rows this one adds over {@code
+     * ellipsis.__new__} and {@code __doc__} are a {@code __reduce__} and a {@code __repr__} of its own.
+     */
+    private static void ellipsisTable(PyDict into) {
+        PyType owner = PyType.ELLIPSIS;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::ellipsisNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.method("__reduce__", "__reduce__($self, /)\n--\n\n", args -> PyStr.of("Ellipsis"));
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code ellipsis_new}: the class gates, then the one value again. */
+    private static PyObject ellipsisNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.ELLIPSIS, args, kwNames);
+        return Constructors.instantiate(
+                PyType.ELLIPSIS, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
+    }
+
+    /** The one complaint the three boolean reads of {@code NotImplemented} all make. */
+    private static PyObject notImplementedTruth() {
+        throw Slots.typeError("NotImplemented should not be used in a boolean context");
+    }
+
     /** {@code long_repr}: the digits of the value, which a bool is asked for as the integer it stands for. */
     private static PyObject integerRepr(PyObject[] args) {
         return PyStr.of(Numbers.asInteger(args[0]).toString());
@@ -4116,14 +4221,18 @@ final class TypeDict {
     /**
      * {@code object.__eq__} and its five siblings: identity, and nothing else.
      *
-     * <p>{@code object_richcompare} answers equality out of the pointer and declines the four orderings,
-     * so a program that calls {@code object.__lt__(3, 4)} by hand gets {@code NotImplemented} and the
-     * complaint about two ints from the operator that called it.
+     * <p>{@code base_object_richcompare} answers equality out of the pointer when the two are one object and
+     * <em>declines</em> it otherwise, so {@code object.__eq__(3, 4)} hands back {@code NotImplemented} beside
+     * {@code 3 == 4}, which is what makes the row of {@code type(None)} and a hand-written class agree that
+     * the answer to a comparison with something else is not no but not-theirs. The four orderings are declined
+     * outright, and only {@code __ne__} answers a bool: it is the one of the six that CPython does not route
+     * through the fallback, so a program that calls {@code object.__lt__(3, 4)} by hand gets {@code
+     * NotImplemented} and the complaint about two ints from the operator that called it.
      */
     private static PyObject identity(PyObject[] args, CompareOp cmp) {
         boolean same = args[0] == (args.length > 1 ? args[1] : null);
         return switch (cmp) {
-            case EQ -> PyBool.of(same);
+            case EQ -> same ? PyBool.TRUE : PyNotImplemented.INSTANCE;
             case NE -> PyBool.of(!same);
             default -> PyNotImplemented.INSTANCE;
         };

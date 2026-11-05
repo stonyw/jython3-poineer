@@ -143,9 +143,36 @@ public class PyType extends PyObject {
                     + "\n"
                     + "Convert a string or number to a floating-point number, if possible.";
 
-    public static final PyType NONE = builtin("NoneType");
-    public static final PyType NOTIMP = builtin("NotImplementedType");
-    public static final PyType ELLIPSIS = builtin("ellipsis");
+    /**
+     * The three sentences the three singleton types file with an empty argument table welded in front.
+     *
+     * <p>{@code NoneType()} is the whole of the table: a type with one value has nothing to take. The rule
+     * under it is what lets {@code type_get_text_signature} answer {@code '()'} while {@code __doc__} keeps
+     * only the sentence — the same two knives that cut the eleven constructor tables of slice 68, reaching
+     * three more types, and the reason these three sentences are one line long with nothing at the end.
+     */
+    private static final String NONE_DOC =
+            "NoneType()\n" + "--\n" + "\n" + "The type of the None singleton.";
+
+    /** {@code NotImplementedType}'s own sentence, welded the same way. */
+    private static final String NOT_IMPLEMENTED_DOC =
+            "NotImplementedType()\n" + "--\n" + "\n" + "The type of the NotImplemented singleton.";
+
+    /**
+     * {@code ellipsis}'s own sentence — the one of the three whose table is cut under a name the type does
+     * not answer at {@code __name__}.
+     *
+     * <p>The cutter looks for the last component of {@code tp_name} and that is {@code ellipsis}, while the
+     * creator's refusal for an excess argument names the C struct instead and says {@code EllipsisType takes
+     * no arguments}. One text, two names, and neither read borrows the other's.
+     */
+    private static final String ELLIPSIS_DOC =
+            "ellipsis()\n" + "--\n" + "\n" + "The type of the Ellipsis singleton.";
+
+    public static final PyType NONE = builtin("NoneType").documented(NONE_DOC);
+    public static final PyType NOTIMP =
+            builtin("NotImplementedType").documented(NOT_IMPLEMENTED_DOC);
+    public static final PyType ELLIPSIS = builtin("ellipsis").documented(ELLIPSIS_DOC);
     public static final PyType INT = builtin("int").flagged(MATCH_SELF).documented(INT_DOC);
     /**
      * {@code bool} is a subtype of {@code int}, not merely compatible with it:
