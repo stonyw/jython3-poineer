@@ -125,6 +125,52 @@ final class Wordcode implements CodeInstructions {
     }
 
     /**
+     * One branch: the unit the jumping instruction sits at, and the two units its two ways go on from.
+     *
+     * <p>Measured in code units, like everything else here; the caller that answers Python doubles the three.
+     */
+    record Branch(int sourceUnit, int fallthroughUnit, int jumpUnit) {}
+
+    /**
+     * The branches {@code co_branches()} reports, in code units rather than the bytes Python is answered in.
+     *
+     * Four opcodes can go two ways, and each names three units: itself, where falling through begins and
+     * where jumping begins. Falling through is not the unit behind the jump for two of them — a
+     * {@code POP_JUMP_IF_*} leaves a {@code NOT_TAKEN} in its own place, which carries on the line the test
+     * was written on rather than the block under it, and a {@code FOR_ITER} leaves the whole loop body. Its
+     * target is the {@code END_FOR} the compiler writes at the loop's exit and the {@code POP_ITER} behind
+     * that, so the branch's own way on is two units further than the jump's.
+     *
+     * <p>{@code END_ASYNC_FOR} is the one read backwards: its argument names the {@code END_SEND} it returns
+     * to rather than where it goes, so the branch <em>starts</em> further along the array than it lands, two
+     * units of {@code END_SEND} and {@code NOT_TAKEN} in front of where it lands. A jump that has only one
+     * way — {@code JUMP_FORWARD}, {@code JUMP_BACKWARD}, {@code SEND} — is not a branch and emits nothing,
+     * and nothing here comes from the line or exception tables: the rows are a reading of the code array and
+     * of the cache widths beside it alone.
+     */
+    java.util.List<Branch> branches() {
+        java.util.List<Branch> rows = new java.util.ArrayList<>();
+        for (int i = 0; i < opcodes.length; i++) {
+            int opcode = opcodes[i];
+            int unit = units[i];
+            int arg = args[i];
+            int next = unit + 1 + InlineCaches.of(opcode);
+            switch (opcode) {
+                case Opcodes.FOR_ITER -> rows.add(new Branch(unit, next, next + arg + 2));
+                case Opcodes.POP_JUMP_IF_FALSE,
+                        Opcodes.POP_JUMP_IF_TRUE,
+                        Opcodes.POP_JUMP_IF_NONE,
+                        Opcodes.POP_JUMP_IF_NOT_NONE ->
+                        rows.add(new Branch(unit, next + 1, next + arg));
+                case Opcodes.END_ASYNC_FOR ->
+                        rows.add(new Branch(next - arg, next - arg + 2, next));
+                default -> {}
+            }
+        }
+        return rows;
+    }
+
+    /**
      * {@inheritDoc}
      *
      * The offset is measured from the unit after this instruction <em>and its whole cache</em>,

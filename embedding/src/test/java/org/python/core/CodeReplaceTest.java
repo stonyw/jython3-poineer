@@ -23,7 +23,7 @@ import org.python.front.cpython314.Cpython314Compiler;
  * come before any converter has looked, and what the builder makes of the eighteen once they are in hand.
  * Every one of those answers is an agreement, so what is pinned here is the rest: the three answers this
  * runtime gives to a line table no compiler wrote, the {@code SystemError} whose sentence the reference opens
- * with the C file it came from, the two rows the book still does not have, and the equality that used to ask
+ * with the C file it came from, the one row the book still does not have, and the equality that used to ask
  * an interpreter's question in the middle of a comparison.
  *
  * <p>Two differences are not reachable from a script in either direction. {@code co_filename}, {@code
@@ -336,23 +336,22 @@ class CodeReplaceTest {
         alike(changed(swapped, "co_exceptiontable", octets()), plain);
     }
 
-    /** The book has the two rows now, and still lacks the constructor and the branch report. */
+    /** The book has the two rows now, and still lacks the constructor beside the branch report it filed. */
     @Test
-    void theBookFilesThirtyFiveRowsWhereTheReferenceFilesThirtySeven() throws IOException {
+    void theBookFilesThirtySixRowsWhereTheReferenceFilesThirtySeven() throws IOException {
         PyObject code = codeOf("fn");
 
-        assertThat(filed()).hasSize(35);
+        assertThat(filed()).hasSize(36);
         assertThat(entry("replace")).isNotNull();
         assertThat(entry("__replace__")).isNotNull();
+        assertThat(entry("co_branches")).isNotNull();
         assertThat(entry("__new__")).isNull();
-        assertThat(entry("co_branches")).isNull();
-        // The reference answers 50 names here; the two it has and this has not are the same two rows.
+        // The names a script sees are already the reference's fifty: __new__ comes in from object.
         List<String> published = new ArrayList<>();
         for (PyObject name : Dirs.itemsOf(code)) {
             published.add(((PyStr) name).getValue());
         }
-        assertThat(published).hasSize(49);
-        assertThat(published).contains("replace", "__replace__");
-        assertThat(published).doesNotContain("co_branches");
+        assertThat(published).hasSize(50);
+        assertThat(published).contains("replace", "__replace__", "co_branches", "__new__");
     }
 }

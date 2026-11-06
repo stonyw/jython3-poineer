@@ -13,20 +13,19 @@ import org.junit.jupiter.api.io.TempDir;
 import org.python.front.cpython314.Cpython314Compiler;
 
 /**
- * The twenty-three rows {@code code} files, measured against CPython 3.14.10.
+ * The twenty-four rows {@code code} files, measured against CPython 3.14.10.
  *
  * <p>Corpus case 123 reads every one of these rows from Python and prints the refusal each of them makes
  * in the words the reference makes it. What is pinned here is the store underneath: the order the rows are
  * filed in, the kind each is filed as, the fact that the row a walk reaches off the class and the row in
  * the book are one object, and which of them outranks a dictionary a code object does not have.
  *
- * <p>The reference files thirty-seven rows in this book, and this runtime files thirty-five of them since
- * {@code 125_code_replace.py}: the fourteen storage names, the six computed tables, the two position reads,
- * the eight rows copied out of the slots and the four method rows beside them. The two left are the
- * constructor and {@code co_branches}, which is why {@code len(vars(code))} and {@code dir(code)} are not
- * printed by the case and are not counted here either. What is pinned below is the store underneath those
- * rows: the order they are filed in, the kind each is filed as, and which of them outranks a dictionary a
- * code object does not have.
+ * <p>The reference files thirty-seven rows in this book, and this runtime files thirty-six of them since
+ * {@code 126_code_branches.py}: the fourteen storage names, the six computed tables, the three cursors, the
+ * eight rows copied out of the slots and the five method rows beside them. The one left is the constructor,
+ * which is why {@code len(vars(code))} and {@code dir(code)} are not printed by the cases and are not counted
+ * here either. What is pinned below is the store underneath those rows: the order they are filed in, the kind
+ * each is filed as, and which of them outranks a dictionary a code object does not have.
  *
  * <p>Two kinds of refusal survive here that a single sentence would lose: a {@code PyMemberDef} marked
  * read-only answers four syllables and names nothing, and a getset whose {@code gd_set} is {@code NULL}
@@ -55,6 +54,7 @@ class CodeStorageHalfTest {
                     "__ge__",
                     "__sizeof__",
                     "co_lines",
+                    "co_branches",
                     "co_positions",
                     "replace",
                     "_varname_from_oparg",
@@ -109,12 +109,14 @@ class CodeStorageHalfTest {
                     "co_freevars",
                     "co_code");
 
-    private static final List<String> METHODS = List.of("co_lines", "co_positions");
+    private static final List<String> METHODS =
+            List.of("co_lines", "co_branches", "co_positions");
 
-    /** The twenty rows this case is about: the storage half, the two position reads and the sentence. */
+    /** The twenty-four rows this case is about: the storage half, the three cursors and the sentence. */
     private static final List<String> STORAGE =
             List.of(
                     "co_lines",
+                    "co_branches",
                     "co_positions",
                     "co_argcount",
                     "co_posonlyargcount",
@@ -138,11 +140,8 @@ class CodeStorageHalfTest {
                     "co_code",
                     "__doc__");
 
-    /** The rows this runtime has no body for yet, and so does not file at all. */
-    private static final List<String> NOT_FILED = List.of("__new__", "co_branches");
-
-    /** The one method name CPython files and this runtime refuses as read-only without filing. */
-    private static final List<String> UNFILED_METHODS = List.of("co_branches");
+    /** The one row this runtime has no body for yet, and so does not file at all. */
+    private static final List<String> NOT_FILED = List.of("__new__");
 
     private static final String SENTENCE = "Create a code object.  Not for the faint of heart.";
 
@@ -223,9 +222,9 @@ class CodeStorageHalfTest {
     }
 
     @Test
-    void theBookFilesThirtyFiveRowsInTheReferenceOrder() {
+    void theBookFilesThirtySixRowsInTheReferenceOrder() {
         assertThat(filed()).isEqualTo(BOOK);
-        assertThat(filed()).hasSize(35);
+        assertThat(filed()).hasSize(36);
         for (String row : NOT_FILED) {
             assertThat(entry(row)).as(row).isNull();
         }
@@ -260,7 +259,7 @@ class CodeStorageHalfTest {
     }
 
     @Test
-    void theTwoPositionRowsAreMethodsAndBothNameTheirOwnTable() {
+    void theThreeCursorRowsAreMethodsAndEachNamesItsOwnTable() {
         for (String method : METHODS) {
             assertThat(entry(method).getType().name()).isEqualTo("method_descriptor");
             assertThat(entry(method).repr()).isEqualTo("<method '" + method + "' of 'code' objects>");
@@ -275,7 +274,7 @@ class CodeStorageHalfTest {
 
     /**
      * The twenty storage rows are data descriptors, so {@link GenericAttributes} runs them before it looks
-     * for a dictionary; the two position rows and the sentence are not, and only outrank one because nothing
+     * for a dictionary; the three cursor rows and the sentence are not, and only outrank one because nothing
      * below them answers. The ten slot rows of {@code 124_code_slot_rows.py} are not either, and are the
      * next list below.
      */
@@ -387,11 +386,12 @@ class CodeStorageHalfTest {
     }
 
     /**
-     * A method row cannot be replaced because a {@code method_descriptor} has no writing half, and the one
-     * CPython files but this runtime does not is refused the same way rather than as missing.
+     * A method row cannot be replaced because a {@code method_descriptor} has no writing half, and the read
+     * that finds it is the one that says so: the row outranks the dictionary a code object does not have, so
+     * the refusal names the attribute rather than the missing one.
      */
     @Test
-    void aMethodIsRefusedAsReadWhetherTheBookFilesItOrNot() throws IOException {
+    void aMethodIsRefusedAsReadByTheRowThatIsFiledForIt() throws IOException {
         PyObject fn = codeOf("fn");
 
         for (String method : METHODS) {
@@ -401,12 +401,6 @@ class CodeStorageHalfTest {
             refuses(
                     "AttributeError: 'code' object attribute '" + method + "' is read-only",
                     () -> Slots.delAttr(fn, method));
-        }
-        for (String method : UNFILED_METHODS) {
-            assertThat(entry(method)).as(method).isNull();
-            refuses(
-                    "AttributeError: 'code' object attribute '" + method + "' is read-only",
-                    () -> Slots.setAttr(fn, method, ONE));
         }
     }
 
@@ -429,7 +423,7 @@ class CodeStorageHalfTest {
 
     @Test
     void theClassRefusesItsOwnRows() {
-        for (String row : List.of("co_argcount", "co_code", "co_lines", "__doc__")) {
+        for (String row : List.of("co_argcount", "co_code", "co_lines", "co_branches", "__doc__")) {
             refuses(
                     "TypeError: cannot set '" + row + "' attribute of immutable type 'code'",
                     () -> Slots.setAttr(PyType.CODE, row, ONE));

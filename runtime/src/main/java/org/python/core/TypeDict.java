@@ -2547,22 +2547,23 @@ final class TypeDict {
     }
 
     /**
-     * The thirty-three rows {@code code} files: eight copied out of the slots it fills, four from its method
+     * The thirty-six rows {@code code} files: eight copied out of the slots it fills, seven from its method
      * table, the twenty of its storage, and its sentence.
      *
      * <p>Three C lists and one generated table. {@code add_operators} writes the eight wrappers first, from
      * {@code tp_repr}, {@code tp_hash} and the single {@code tp_richcompare} that becomes six names; {@code
-     * code_methods} then files {@code __sizeof__}, the two position iterators and {@code dis}'s private
-     * {@code _varname_from_oparg}. The rest of the split between the two C lists is the split between a field
-     * and a computation: the fourteen of {@code code_members} are offsets the object already holds — six
-     * counts, three name runs, the file, the two names and the line it opens on, and the two byte tables the
-     * format stores outright — while the six of {@code code_getseters} are made by the read: {@code co_code}
-     * and {@code _co_code_adaptive} out of the instruction array, {@code co_lnotab} out of the line runs, and
-     * the three name runs of the localsplus block. Every one of the twenty reads through the value's own
-     * attribute slot, so the row and the attribute answer one question the same way, and a name the format
-     * keeps is asked of the reader that unmarshalled it.
+     * code_methods} then files {@code __sizeof__}, the three cursors and {@code dis}'s private {@code
+     * _varname_from_oparg}, with {@code replace} and its private twin beside them. The rest of the split
+     * between the two C lists is the split between a field and a computation: the fourteen of {@code
+     * code_members} are offsets the object already holds — six counts, three name runs, the file, the two
+     * names and the line it opens on, and the two byte tables the format stores outright — while the six of
+     * {@code code_getseters} are made by the read: {@code co_code} and {@code _co_code_adaptive} out of the
+     * instruction array, {@code co_lnotab} out of the line runs, and the three name runs of the localsplus
+     * block. Every one of the twenty reads through the value's own attribute slot, so the row and the
+     * attribute answer one question the same way, and a name the format keeps is asked of the reader that
+     * unmarshalled it.
      *
-     * <p>None of the thirty-three can be written, and the three kinds say so in two sentences. A member is
+     * <p>None of the thirty-six can be written, and the three kinds say so in two sentences. A member is
      * {@code Py_READONLY} and complains {@code readonly attribute} of a write and of a delete alike, because
      * {@code member_set} is the slot both halves run; a getset whose {@code gd_set} is {@code NULL} still owns
      * the name — {@code PyDescr_IsData} asks the descriptor's own type for a writing slot and this kind always
@@ -2570,15 +2571,13 @@ final class TypeDict {
      * pointer handed nothing; and a row with no writing half of its own, of either family above it, is refused
      * one level up by {@code _PyObject_GenericSetAttrWithDict}'s rule that a value with no dictionary to put
      * the name in calls the attribute read-only. Reached through the type rather than through one of its
-     * values, all thirty-three are refused a level further up still, by {@code type_setattro}'s rule that a
+     * values, all thirty-six are refused a level further up still, by {@code type_setattro}'s rule that a
      * static type has no attributes to set.
      *
-     * <p>What is left below them is the four rows this runtime has no body for: {@code code.__new__} and
-     * {@code replace()} with its private twin {@code __replace__}, which would have to rebuild the table from
-     * eighteen keyword-only fields, and {@code co_branches()}, which would have to know what the
-     * instrumentation counts as a branch — thirty-seven rows in all. The sentence is {@code tp_doc} whole:
-     * four lines of eighteen fields, the most the clinic ever welded here, and the reason a code object can be
-     * rebuilt by hand field by field.
+     * <p>What is left below them is the one row this runtime has no body for: {@code code.__new__}, which would
+     * have to rebuild the table from eighteen keyword-only fields with no receiver to take their format from —
+     * thirty-seven rows in all. The sentence is {@code tp_doc} whole: four lines of eighteen fields, the most
+     * the clinic ever welded here, and the reason a code object can be rebuilt by hand field by field.
      */
     private static void codeTable(PyDict into) {
         PyType owner = PyType.CODE;
@@ -2594,6 +2593,7 @@ final class TypeDict {
         table.named(
                 "__sizeof__",
                 "co_lines",
+                "co_branches",
                 "co_positions",
                 "replace",
                 "_varname_from_oparg",

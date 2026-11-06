@@ -19,12 +19,14 @@ import java.io.ByteArrayOutputStream;
  * a script that prints the exception text of each refusal sees it, and it is the {@link TypeDict} table that
  * files both kinds, so the sentence a write raises comes from the row rather than from anything here.
  *
- * <p>What is not here is what CPython's {@code code} also publishes and this runtime cannot answer yet:
- * {@code co_branches()}, which would have to know which jumps the instrumentation considers branches, and
- * the live specialization state {@code _co_code_adaptive} shows, which this runtime never writes and so
- * answers as the plain instruction array. They are refused as missing or answered as the same bytes. The two
- * position reads — {@code co_lines()} and {@code co_positions()} — are here, and are what a Stage-B report
- * would draw a caret from: the report this slice leaves behind still names a line and nothing beside it.
+ * <p>What is not here is the one name of CPython's that answers what a running interpreter writes into a code
+ * array: {@code _co_code_adaptive} is the instruction stream plus the specialization its caches have settled
+ * on, and this runtime writes no cache, so the name answers the plain bytes {@code co_code} does. {@code
+ * co_branches()} is the other read that the instrumentation's own C file suggests this runtime cannot answer,
+ * and it can: which six opcodes have two ways is a property of an array no monitor has ever touched, so its
+ * rows are here beside the two position reads. Three cursors then, over what the front-end decoded, and the
+ * positions are what a Stage-B report would draw a caret from — the report this runtime leaves behind still
+ * names a line and nothing beside it.
  *
  * <p>Beside those names, two rows answer a slot rather than a function of their own, and what they run is
  * here for that reason. {@code __sizeof__} measures a C struct this runtime has no half of; {@code
@@ -95,9 +97,9 @@ public final class CodeMembers {
     private static final int WORD = 8;
 
     /**
-     * The six methods {@code code} declares.
+     * The seven methods {@code code} declares.
      *
-     * <p>A member table rather than six more cases in {@link #getAttr}, because the table is what decides
+     * <p>A member table rather than seven more cases in {@link #getAttr}, because the table is what decides
      * the shape of the answer: CPython reads {@code co.co_lines} out of the type's method table and binds it,
      * so an argument is complained about with the type's name in front — {@code code.co_lines() takes no
      * arguments (1 given)} — while {@code code.co_lines} without a code object is the unbound descriptor that
@@ -106,7 +108,8 @@ public final class CodeMembers {
      *
      * <p>The four beside them are the rows of {@code code_methods} that need no code object's format to
      * answer. {@code __sizeof__} is registered with no {@code ml_doc} at all, so its table comes from its
-     * {@code METH_NOARGS} and its sentence is {@code None}. {@code _varname_from_oparg} is the one row here
+     * {@code METH_NOARGS} and its sentence is {@code None} — the way the three cursors are registered too,
+     * each of them over a C function that only starts a walk. {@code _varname_from_oparg} is the one row here
      * that clinic parsed rather than hand-registered: its text carries its table and its warning, its two
      * arity refusals name the function without the type in front of them, and its converter is a C {@code
      * int}. {@code replace} and {@code __replace__} are one function filed twice, and the only route this
@@ -117,6 +120,11 @@ public final class CodeMembers {
             .addNoArgument(
                     "co_lines",
                     self -> PyIterator.of(PyType.LINE_ITERATOR, ((PyCode) self).lineRanges().elements()))
+            .addNoArgument(
+                    "co_branches",
+                    self ->
+                            PyIterator.of(
+                                    PyType.BRANCHES_ITERATOR, ((PyCode) self).branches().elements()))
             .addNoArgument(
                     "co_positions",
                     self ->
@@ -456,38 +464,25 @@ public final class CodeMembers {
     /**
      * {@code co.name = value} and {@code del co.name}, which is the same refusal either way.
      *
-     * <p>The two wordings that remain are CPython's own: a name the type files as a row — a wrapper, a
-     * method or one of the twenty storage names — is refused by that row or by the read-only branch of
-     * {@link GenericAttributes}, which says the same sentence in its own words, while the three names this
-     * runtime has no row for are refused here because a walk that finds nothing on the class goes on to look
-     * for a dictionary instead. A name nobody files at all is left to that same walk, which reads the type's
-     * own dictionary and so calls {@code __doc__} read-only, reaches {@code object}'s getset for {@code
-     * __class__}, and says there is no dictionary for a name nothing files.
+     * <p>The two wordings that remain are CPython's own, and this runtime reaches both of them the way the
+     * reference does: a name the type files as a row — a wrapper, a method or one of the twenty storage names
+     * — is refused by that row or by the read-only branch of {@link GenericAttributes}, which says the same
+     * sentence in its own words, and the walk that finds nothing on the class goes on to look for a dictionary
+     * instead. A name nobody files at all is left to that same walk, which reads the type's own dictionary and
+     * so calls {@code __doc__} read-only, reaches {@code object}'s getset for {@code __class__}, and says there
+     * is no dictionary for a name nothing files.
+     *
+     * <p>The methods are the reason the walk has to be the one that answers: a row with no writing half is
+     * found by the lookup before the dictionary is reached, so {@code co.co_branches = 1} is called read-only
+     * rather than missing, exactly as the reference calls it.
      *
      * @throws PyRaise always, either with the wording of the table the name is in or as the generic refusal
      */
     public static void refuse(PyObject code, String name, PyObject value) {
-        if (method(name)) {
-            throw Slots.attributeError(
-                    "'code' object attribute '" + name + "' is read-only");
-        }
         if (value == null) {
             GenericAttributes.delete(code, name);
         } else {
             GenericAttributes.write(code, name, value);
         }
-    }
-
-    /**
-     * The methods {@code code} publishes, which a write reaches through the type and so cannot replace.
-     *
-     * <p>{@code co_lines}, {@code co_positions}, {@code __sizeof__}, {@code _varname_from_oparg}, {@code
-     * replace} and {@code __replace__} are filed as rows now and answer their own refusal, so they are not
-     * named here; the one left is {@code co_branches}, which CPython's {@code code_methods} table files as a
-     * {@code PyMethodDef} row and which a program therefore meets with the sentence for a read-only attribute
-     * rather than with a missing one.
-     */
-    private static boolean method(String name) {
-        return name.equals("co_branches");
     }
 }

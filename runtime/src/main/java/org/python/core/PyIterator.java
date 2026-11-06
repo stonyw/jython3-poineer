@@ -91,6 +91,12 @@ public abstract class PyIterator extends PyObject {
      * than the tuple, because {@code type(co.co_lines())} names the run and not a {@code tuple}. CPython
      * keeps a pointer into the table and steps one entry at a time; this keeps an index into the values
      * and cannot tell the difference from the outside, since neither iterator can be rewound.
+     *
+     * <p>{@code co_branches()} is the third, and the only one of the three that reads no table: it walks the
+     * code array for the opcodes with two ways. CPython gives it its own {@code PyTypeObject} all the same,
+     * and writes the same {@code tp_name} into that one as into the line cursor's, so the name Python prints
+     * cannot tell those two apart either — which is why the type is asked for here rather than worked out
+     * from the values.
      */
     public static PyIterator of(PyType type, PyObject[] items) {
         return new FixedIterator(type, items);
@@ -119,8 +125,8 @@ public abstract class PyIterator extends PyObject {
     /**
      * A cursor over values that were decoded before it was made.
      *
-     * <p>Its own type, and its own repr, because CPython's two uses of this are {@code line_iterator} and
-     * {@code positions_iterator} rather than {@code iterator} — a program that prints the type of what
+     * <p>Its own type, and its own repr, because CPython's three uses of this are {@code line_iterator} twice
+     * over and {@code positions_iterator}, never {@code iterator} — a program that prints the type of what
      * {@code co_lines()} answered is the only way to tell them apart, and both reprs carry an address no
      * differential test compares.
      */

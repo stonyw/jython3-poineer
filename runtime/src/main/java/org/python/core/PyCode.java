@@ -132,6 +132,23 @@ public interface PyCode {
     PyTuple positions();
 
     /**
+     * {@code co_branches()}: the two ways each instruction that can go two ways goes on.
+     *
+     * <p>Each item is CPython's triple of offsets — the jumping instruction itself, the one falling through
+     * begins at and the one jumping begins at — all three counted in bytes the way a traceback counts them and
+     * {@code co_lines()} ranges by them, so an instruction this names is one a frame can be standing on. Only
+     * the opcodes with two ways are in it: a loop's {@code FOR_ITER}, the four {@code POP_JUMP_IF_*} tests and
+     * an {@code END_ASYNC_FOR}, which reads backwards to the {@code END_SEND} it returns to and so names a
+     * source further along its own array than the way it lands. A jump with one way is not a branch, so none
+     * of the plain {@code JUMP_*} opcodes are in it however far they go.
+     *
+     * <p>Which instructions these are is a reading of the code array and of the widths the front-end left
+     * behind each opcode, which is why the walk is the front-end's; the running of a body never consults it,
+     * since the interpreter already knows where its own jumps land.
+     */
+    PyTuple branches();
+
+    /**
      * The handler that covers the instruction at {@code index}, or null where nothing guards it.
      *
      * <p>An exception is answered here by a table rather than by a block stack: when a frame has one to

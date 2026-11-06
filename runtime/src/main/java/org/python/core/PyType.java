@@ -522,6 +522,17 @@ public class PyType extends PyObject {
 
     /** The positions sibling of {@link #LINE_ITERATOR}, one item per instruction rather than per run. */
     public static final PyType POSITIONS_ITERATOR = builtin("positions_iterator");
+
+    /**
+     * {@code type(co.co_branches())} — a type of its own that CPython names {@code line_iterator} anyway.
+     *
+     * <p>{@code _PyBranchesIterator} is a second {@code PyTypeObject} with the first one's {@code tp_name},
+     * the same two fields the line cursor's struct has and a different {@code tp_iternext}, and nothing about
+     * it is deliberate: the branches iterator was written beside the line one and copied its name. So this
+     * runtime's two are distinct objects that print alike, exactly as the reference's do — {@code type(a) is
+     * type(b)} is false between them, {@code isinstance} with it, and {@code __name__} the same.
+     */
+    public static final PyType BRANCHES_ITERATOR = builtin("line_iterator");
     /**
      * What calling a generator function answers: {@code type(gen)} is {@code generator}, and the name is
      * not in {@code builtins}, so {@code generator} is unreachable from Python — same as CPython, where

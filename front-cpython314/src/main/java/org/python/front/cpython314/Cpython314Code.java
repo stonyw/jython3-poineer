@@ -460,6 +460,29 @@ public final class Cpython314Code extends PyObject implements PyCode {
                 PyInt.of(2 * startUnit), PyInt.of(2 * endUnit), offset(line));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>CPython's iterator walks the code array a unit at a time, de-instrumenting each unit it lands on and
+     * stepping over the caches behind it, and names three offsets for the six opcodes that have two ways —
+     * which is the walk {@link Wordcode#branches()} does, on the units this reader already decoded rather than
+     * over the array again. The doubling to bytes is the same one {@code co_lines()} and a traceback are
+     * answered with, and nothing here is capped to the length of {@code co_code}: a target the compiler never
+     * wrote is still the number CPython's arithmetic says, and this answers the same one.
+     */
+    @Override
+    public PyTuple branches() {
+        List<PyObject> rows = new ArrayList<>();
+        for (Wordcode.Branch branch : instructions.branches()) {
+            rows.add(
+                    PyTuple.of(
+                            PyInt.of(2 * branch.sourceUnit()),
+                            PyInt.of(2 * branch.fallthroughUnit()),
+                            PyInt.of(2 * branch.jumpUnit())));
+        }
+        return PyTuple.of(rows.toArray(new PyObject[0]));
+    }
+
     /** CPython's {@code _source_offset_converter}: the marker for a range that names nothing is {@code None}. */
     private static PyObject offset(int value) {
         return value < 0 ? PyNone.INSTANCE : PyInt.of(value);
