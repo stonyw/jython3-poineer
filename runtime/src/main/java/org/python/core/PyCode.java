@@ -154,4 +154,70 @@ public interface PyCode {
      * @param pushLasti whether to push the raising instruction's offset below the exception
      */
     record Handler(int targetIndex, int stackLevel, boolean pushLasti) {}
+
+    /**
+     * The eighteen values a code object is built from, in the order and with the types CPython's own builder
+     * takes them: six counts, the instruction stream, the two tables of values and of names, the three runs
+     * of locals, the file and the two names, the line the body opens on, and the two byte tables.
+     *
+     * <p>The three byte runs are here as the octets a format writes rather than as anything read from them,
+     * which is the one place {@link PyCode} carries a format's own bytes: a builder has to be handed what a
+     * reader produced, and {@code co_code}, {@code co_linetable} and {@code co_exceptiontable} are what
+     * {@link PyCode#instructions()}, {@code co_lines()} and {@link PyCode#handlerFor} were decoded from.
+     * {@link #newCode} is the only reader of these three, and the one route to it is {@code replace()}, so
+     * the two ends of that trade are a front-end's and nothing in the interpreter has to look at a byte.
+     *
+     * @param argCount {@code co_argcount}, the parameters a call binds by position
+     * @param posOnlyArgCount {@code co_posonlyargcount}, of those, the ones with no name
+     * @param kwOnlyArgCount {@code co_kwonlyargcount}, the parameters after {@code *}
+     * @param nLocals {@code co_nlocals}, the count the three name runs are checked against
+     * @param stackSize {@code co_stacksize}, the deepest the body pushes
+     * @param flags {@code co_flags}, the bits that say what kind of body this is
+     * @param code {@code co_code}, the instruction stream in the format's own packing
+     * @param constants {@code co_consts}
+     * @param names {@code co_names}
+     * @param varNames {@code co_varnames}, the names that are plain locals
+     * @param freeVars {@code co_freevars}, the cells this scope reads from outside
+     * @param cellVars {@code co_cellvars}, the cells this scope makes for others
+     * @param fileName {@code co_filename}
+     * @param name {@code co_name}
+     * @param qualName {@code co_qualname}
+     * @param firstLine {@code co_firstlineno}
+     * @param lineTable {@code co_linetable}, the positions as one format packs them
+     * @param exceptionTable {@code co_exceptiontable}, the handlers as one format packs them
+     */
+    record Fields(
+            int argCount,
+            int posOnlyArgCount,
+            int kwOnlyArgCount,
+            int nLocals,
+            int stackSize,
+            int flags,
+            PyBytes code,
+            PyTuple constants,
+            PyTuple names,
+            PyTuple varNames,
+            PyTuple freeVars,
+            PyTuple cellVars,
+            String fileName,
+            String name,
+            String qualName,
+            int firstLine,
+            PyBytes lineTable,
+            PyBytes exceptionTable) {}
+
+    /**
+     * A code object in this one's format, built from {@code fields}.
+     *
+     * <p>CPython's builder is a C function that every front-end reaches the same way; a {@link PyCode} has
+     * to answer for it because the values that make a table are the values of whichever table this object
+     * was read from, and the runtime that copies one — {@code code.replace()} — cannot name a class in a
+     * module it may never load. The receiver is therefore only the route to the format, and everything it
+     * holds is asked for again through {@code fields}.
+     *
+     * <p>What the C works out from these values is the localsplus array, and what it refuses is whatever
+     * the values cannot make: the refusals are its own, in its own order, because a program that builds a
+     * table by hand hears the reference's sentence rather than a Java one.
+     */
+    PyCode newCode(Fields fields);
 }

@@ -2591,7 +2591,13 @@ final class TypeDict {
         table.wrapper("__ne__", NE_DOC, codeComparing(CompareOp.NE));
         table.wrapper("__gt__", GT_DOC, codeComparing(CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, codeComparing(CompareOp.GE));
-        table.named("__sizeof__", "co_lines", "co_positions", "_varname_from_oparg");
+        table.named(
+                "__sizeof__",
+                "co_lines",
+                "co_positions",
+                "replace",
+                "_varname_from_oparg",
+                "__replace__");
         table.member("co_argcount", self -> self.getAttr("co_argcount"));
         table.member("co_posonlyargcount", self -> self.getAttr("co_posonlyargcount"));
         table.member("co_kwonlyargcount", self -> self.getAttr("co_kwonlyargcount"));

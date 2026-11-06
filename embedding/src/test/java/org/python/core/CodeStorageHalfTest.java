@@ -20,13 +20,13 @@ import org.python.front.cpython314.Cpython314Compiler;
  * filed in, the kind each is filed as, the fact that the row a walk reaches off the class and the row in
  * the book are one object, and which of them outranks a dictionary a code object does not have.
  *
- * <p>The reference files thirty-seven rows in this book, and this runtime files thirty-three of them since
- * {@code 124_code_slot_rows.py}: the fourteen storage names, the six computed tables, the two position
- * reads, the eight rows copied out of the slots and the two method rows beside them. The four left are the
- * constructor, {@code co_branches} and the two {@code replace}s, which is why {@code len(vars(code))} and
- * {@code dir(code)} are not printed by the case and are not counted here either. What is pinned below is
- * the store underneath those rows: the order they are filed in, the kind each is filed as, and which of
- * them outranks a dictionary a code object does not have.
+ * <p>The reference files thirty-seven rows in this book, and this runtime files thirty-five of them since
+ * {@code 125_code_replace.py}: the fourteen storage names, the six computed tables, the two position reads,
+ * the eight rows copied out of the slots and the four method rows beside them. The two left are the
+ * constructor and {@code co_branches}, which is why {@code len(vars(code))} and {@code dir(code)} are not
+ * printed by the case and are not counted here either. What is pinned below is the store underneath those
+ * rows: the order they are filed in, the kind each is filed as, and which of them outranks a dictionary a
+ * code object does not have.
  *
  * <p>Two kinds of refusal survive here that a single sentence would lose: a {@code PyMemberDef} marked
  * read-only answers four syllables and names nothing, and a getset whose {@code gd_set} is {@code NULL}
@@ -56,7 +56,9 @@ class CodeStorageHalfTest {
                     "__sizeof__",
                     "co_lines",
                     "co_positions",
+                    "replace",
                     "_varname_from_oparg",
+                    "__replace__",
                     "co_argcount",
                     "co_posonlyargcount",
                     "co_kwonlyargcount",
@@ -137,11 +139,10 @@ class CodeStorageHalfTest {
                     "__doc__");
 
     /** The rows this runtime has no body for yet, and so does not file at all. */
-    private static final List<String> NOT_FILED =
-            List.of("__new__", "co_branches", "replace", "__replace__");
+    private static final List<String> NOT_FILED = List.of("__new__", "co_branches");
 
-    /** The three method names CPython files and this runtime refuses as read-only without filing. */
-    private static final List<String> UNFILED_METHODS = List.of("co_branches", "replace", "__replace__");
+    /** The one method name CPython files and this runtime refuses as read-only without filing. */
+    private static final List<String> UNFILED_METHODS = List.of("co_branches");
 
     private static final String SENTENCE = "Create a code object.  Not for the faint of heart.";
 
@@ -222,9 +223,9 @@ class CodeStorageHalfTest {
     }
 
     @Test
-    void theBookFilesThirtyThreeRowsInTheReferenceOrder() {
+    void theBookFilesThirtyFiveRowsInTheReferenceOrder() {
         assertThat(filed()).isEqualTo(BOOK);
-        assertThat(filed()).hasSize(33);
+        assertThat(filed()).hasSize(35);
         for (String row : NOT_FILED) {
             assertThat(entry(row)).as(row).isNull();
         }
@@ -386,8 +387,8 @@ class CodeStorageHalfTest {
     }
 
     /**
-     * A method row cannot be replaced because a {@code method_descriptor} has no writing half, and the five
-     * CPython files but this runtime does not are refused the same way rather than as missing.
+     * A method row cannot be replaced because a {@code method_descriptor} has no writing half, and the one
+     * CPython files but this runtime does not is refused the same way rather than as missing.
      */
     @Test
     void aMethodIsRefusedAsReadWhetherTheBookFilesItOrNot() throws IOException {

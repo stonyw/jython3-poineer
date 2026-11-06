@@ -1,6 +1,7 @@
 package org.python.front.cpython314;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.python.core.CodeInstructions;
 import org.python.core.CodeMembers;
@@ -10,8 +11,10 @@ import org.python.core.PyCode;
 import org.python.core.PyInt;
 import org.python.core.PyNone;
 import org.python.core.PyObject;
+import org.python.core.PyStr;
 import org.python.core.PyTuple;
 import org.python.core.PyType;
+import org.python.core.Slots;
 
 /**
  * A code object as read from a CPython 3.14 marshal stream.
@@ -24,8 +27,15 @@ public final class Cpython314Code extends PyObject implements PyCode {
 
     /** Bit flags in a localsplus kind byte, from CPython's pycore_code.h. */
     private static final int CO_FAST_LOCAL = 0x20;
+
     private static final int CO_FAST_CELL = 0x40;
     private static final int CO_FAST_FREE = 0x80;
+
+    /** {@code sizeof(_Py_CODEUNIT)}: the width an instruction stream has to come in. */
+    private static final int CODE_UNIT_WIDTH = 2;
+
+    /** {@code PyErr_BadInternalCall}, which the reference spells out with the C line it was reached from. */
+    private static final String BAD_INTERNAL_CALL = "bad argument to internal function";
 
     private final int argCount;
     private final int posOnlyArgCount;
@@ -86,6 +96,148 @@ public final class Cpython314Code extends PyObject implements PyCode {
         this.exceptionTable = exceptionTable.getValue();
         this.instructions = Wordcode.decode(codeArray, this.lineTable, firstLine);
         this.handlers = ExceptionTable.parse(this.exceptionTable);
+    }
+
+    /**
+     * {@code PyUnstable_Code_NewWithPosOnlyArgs} for this format: the localsplus array the three name runs
+     * make, then what the C refuses before it allocates, then the constructor the reader of a {@code .pyc}
+     * already uses.
+     *
+     * <p>The array is the one thing here that is worked out rather than copied. A cell whose name is also a
+     * local takes no slot of its own — the local's kind byte gains the cell bit and the count the array
+     * ends up with shrinks by one — which is why {@code co_varnames} and {@code co_cellvars} can name the
+     * same thing and why {@code _varname_from_oparg} reaches further than {@code co_nlocals} counts. A free
+     * variable never merges: it names nothing this scope declares, and its slot is always its own.
+     *
+     * <p>Three of the C's refusals are unrepresentable here rather than skipped: its {@code
+     * PyErr_BadInternalCall} half that asks whether the three runs are tuples at all, since Java handed
+     * them over as {@link PyTuple}s, and its {@code co_code larger than INT_MAX} half, since no Java array
+     * is that long. What is skipped is {@code CO_FAST_HIDDEN}: the C walks the instruction stream for
+     * {@code LOAD_FAST_AND_CLEAR} only in a body that is not optimized, and the bit it sets belongs to no
+     * name and no count this runtime reads back.
+     *
+     * <p>One refusal is this route's own. The reference never looks at {@code co_linetable} or {@code
+     * co_exceptiontable} while it builds — it keeps the bytes and decodes them per read, tolerating
+     * whatever it finds — and this reader decodes them here, because the runs {@code co_lines()} and {@code
+     * co_positions()} answer are what it made of those bytes. A copy that hands over a table no compiler
+     * wrote therefore hears the reader's own complaint as a {@code ValueError} where the reference would
+     * answer a line range; what the two then say about the same bytes is the difference of record, and the
+     * reader's refusals are {@code LineTableTest}'s to pin.
+     */
+    @Override
+    public PyCode newCode(PyCode.Fields fields) {
+        PyTuple varNames = fields.varNames();
+        PyTuple cellVars = fields.cellVars();
+        PyTuple freeVars = fields.freeVars();
+        PyObject[] plusNames = new PyObject[varNames.size() + cellVars.size() + freeVars.size()];
+        byte[] plusKinds = new byte[plusNames.length];
+        int slot = 0;
+        for (PyObject name : varNames.getArray()) {
+            plusNames[slot] = name;
+            plusKinds[slot++] = CO_FAST_LOCAL;
+        }
+        for (PyObject name : cellVars.getArray()) {
+            int merged = indexOf(varNames, name);
+            if (merged >= 0) {
+                plusKinds[merged] |= CO_FAST_CELL;
+                continue;
+            }
+            plusNames[slot] = name;
+            plusKinds[slot++] = CO_FAST_CELL;
+        }
+        for (PyObject name : freeVars.getArray()) {
+            plusNames[slot] = name;
+            plusKinds[slot++] = (byte) CO_FAST_FREE;
+        }
+        PyObject[] plus = Arrays.copyOf(plusNames, slot);
+        int stackSize = fields.stackSize();
+        int flags = fields.flags();
+
+        if (fields.argCount() < fields.posOnlyArgCount() || stackSize < 0 || flags < 0) {
+            throw Slots.systemError(BAD_INTERNAL_CALL);
+        }
+        byte[] code = fields.code().getValue();
+        if (code.length % CODE_UNIT_WIDTH != 0) {
+            throw Slots.valueError("code: co_code is malformed");
+        }
+        // The C's own arithmetic: the counts have to leave room for the parameters the flags name.
+        int nplainlocals =
+                countKinds(plusKinds, slot, CO_FAST_LOCAL)
+                        - fields.argCount()
+                        - fields.kwOnlyArgCount()
+                        - ((flags & PyCode.CO_VARARGS) != 0 ? 1 : 0)
+                        - ((flags & PyCode.CO_VARKEYWORDS) != 0 ? 1 : 0);
+        if (nplainlocals < 0) {
+            throw Slots.valueError("code: co_varnames is too small");
+        }
+        if (fields.nLocals() != varNames.size()) {
+            throw Slots.valueError("code: co_nlocals != len(co_varnames)");
+        }
+        requireStrings(fields.names().getArray());
+        requireStrings(plus);
+        // init_code refuses to build a frame that cannot hold a value.
+        if (stackSize == 0) {
+            stackSize = 1;
+        }
+        try {
+            return new Cpython314Code(
+                    fields.argCount(),
+                    fields.posOnlyArgCount(),
+                    fields.kwOnlyArgCount(),
+                    stackSize,
+                    flags,
+                    fields.code(),
+                    fields.constants(),
+                    fields.names(),
+                    PyTuple.of(plus),
+                    PyBytes.wrap(Arrays.copyOf(plusKinds, slot)),
+                    fields.fileName(),
+                    fields.name(),
+                    fields.qualName(),
+                    fields.firstLine(),
+                    fields.lineTable(),
+                    fields.exceptionTable());
+        } catch (MarshalFormatException refused) {
+            throw Slots.valueError(refused.getMessage());
+        }
+    }
+
+    /** The first slot {@link PyTuple#at} holds that is this name, or -1 for a name the run does not have. */
+    private static int indexOf(PyTuple names, PyObject name) {
+        for (int i = 0; i < names.size(); i++) {
+            if (names.at(i).equals(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** How many of the first {@code slots} kinds carry this bit, which is what {@code co_nlocals} counts. */
+    private static int countKinds(byte[] kinds, int slots, int bit) {
+        int count = 0;
+        for (int i = 0; i < slots; i++) {
+            if ((kinds[i] & bit) != 0) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * {@code intern_strings}: the two runs a code object indexes by name have to hold nothing else.
+     *
+     * <p>The C asks this after it has worked out everything else, so a name run with a number in it is a
+     * {@code SystemError} rather than a {@code TypeError}: nothing that reads a code object expects to have
+     * to check, and a hand-built table is the only way to make one that does not hold. The C's own test is
+     * {@code PyUnicode_CheckExact}, so a {@code str} subclass is refused there and would pass here — a
+     * difference nothing reaches yet, since {@code class X(str)} is not implemented.
+     */
+    private static void requireStrings(PyObject[] names) {
+        for (PyObject name : names) {
+            if (!(name instanceof PyStr)) {
+                throw Slots.systemError("non-string found in code slot");
+            }
+        }
     }
 
     @Override
@@ -151,7 +303,7 @@ public final class Cpython314Code extends PyObject implements PyCode {
     /** {@code Py_SIZE(co)}: the units the wire format wrote, which is {@code co_code} two octets at a time. */
     @Override
     public int unitCount() {
-        return codeArray.length / 2;
+        return codeArray.length / CODE_UNIT_WIDTH;
     }
 
     /**

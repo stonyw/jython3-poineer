@@ -20,13 +20,11 @@ import java.io.ByteArrayOutputStream;
  * files both kinds, so the sentence a write raises comes from the row rather than from anything here.
  *
  * <p>What is not here is what CPython's {@code code} also publishes and this runtime cannot answer yet:
- * {@code co_branches()}, which would have to know which jumps the instrumentation considers branches;
- * {@code replace()} and {@code __replace__()}, which would have to rebuild the table from eighteen
- * keyword-only fields; and the live specialization state {@code _co_code_adaptive} shows, which this runtime
- * never writes and so answers as the plain instruction array. They are refused as missing or answered as the
- * same bytes. The two position reads — {@code co_lines()} and {@code co_positions()} — are here, and are what
- * a Stage-B report would draw a caret from: the report this slice leaves behind still names a line and
- * nothing beside it.
+ * {@code co_branches()}, which would have to know which jumps the instrumentation considers branches, and
+ * the live specialization state {@code _co_code_adaptive} shows, which this runtime never writes and so
+ * answers as the plain instruction array. They are refused as missing or answered as the same bytes. The two
+ * position reads — {@code co_lines()} and {@code co_positions()} — are here, and are what a Stage-B report
+ * would draw a caret from: the report this slice leaves behind still names a line and nothing beside it.
  *
  * <p>Beside those names, two rows answer a slot rather than a function of their own, and what they run is
  * here for that reason. {@code __sizeof__} measures a C struct this runtime has no half of; {@code
@@ -41,6 +39,46 @@ public final class CodeMembers {
     private static final String VARNAME_DOC =
             "($self, /, oparg)\n--\n\n(internal-only) Return the local variable name for the given oparg."
                     + "\n\nWARNING: this method is for internal use only and may change or go\naway.";
+
+    /** {@code code_replace}'s clinic text, whose table {@code @text_signature} wrote rather than the flags. */
+    private static final String REPLACE_DOC =
+            "replace($self, /, **changes)\n--\n\nReturn a copy of the code object with new values for the"
+                    + " specified fields.";
+
+    /** The same function registered a second time, with the sentence {@code code_methods} hands it. */
+    private static final String REPLACED_DOC =
+            "__replace__($self, /, **changes)\n--\n\nThe same as replace().";
+
+    /**
+     * The eighteen names {@code code_replace} takes, in the order its clinic table converts them.
+     *
+     * <p>The order is the one a program feels when two of its values are wrong at once: {@code
+     * co_consts=-1} is complained about as a tuple before {@code co_names=-1} is reached, and the seven
+     * counts' {@code must be a positive integer} refusals come only after every converter has run.
+     */
+    private static final String[] FIELDS = {
+        "co_argcount",
+        "co_posonlyargcount",
+        "co_kwonlyargcount",
+        "co_nlocals",
+        "co_stacksize",
+        "co_flags",
+        "co_firstlineno",
+        "co_code",
+        "co_consts",
+        "co_names",
+        "co_varnames",
+        "co_freevars",
+        "co_cellvars",
+        "co_filename",
+        "co_name",
+        "co_qualname",
+        "co_linetable",
+        "co_exceptiontable"
+    };
+
+    /** How many of the eighteen clinic reads into a C {@code int}, and therefore refuses a negative one. */
+    private static final int COUNTS = 7;
 
     /**
      * The two numbers {@code code_sizeof} multiplies and adds, and the word it rounds the sum up to.
@@ -57,20 +95,22 @@ public final class CodeMembers {
     private static final int WORD = 8;
 
     /**
-     * The four methods {@code code} declares.
+     * The six methods {@code code} declares.
      *
-     * <p>A member table rather than four more cases in {@link #getAttr}, because the table is what decides
+     * <p>A member table rather than six more cases in {@link #getAttr}, because the table is what decides
      * the shape of the answer: CPython reads {@code co.co_lines} out of the type's method table and binds it,
      * so an argument is complained about with the type's name in front — {@code code.co_lines() takes no
      * arguments (1 given)} — while {@code code.co_lines} without a code object is the unbound descriptor that
      * takes the receiver as its first argument and refuses one of another type. Both shapes come from {@link
      * Members} and from nothing else here.
      *
-     * <p>The two beside them are the rows of {@code code_methods} that need no code object's format to answer.
-     * {@code __sizeof__} is registered with no {@code ml_doc} at all, so its table comes from its {@code
-     * METH_NOARGS} and its sentence is {@code None}. {@code _varname_from_oparg} is the one row here that
-     * clinic parsed rather than hand-registered: its text carries its table and its warning, its two arity
-     * refusals name the function without the type in front of them, and its converter is a C {@code int}.
+     * <p>The four beside them are the rows of {@code code_methods} that need no code object's format to
+     * answer. {@code __sizeof__} is registered with no {@code ml_doc} at all, so its table comes from its
+     * {@code METH_NOARGS} and its sentence is {@code None}. {@code _varname_from_oparg} is the one row here
+     * that clinic parsed rather than hand-registered: its text carries its table and its warning, its two
+     * arity refusals name the function without the type in front of them, and its converter is a C {@code
+     * int}. {@code replace} and {@code __replace__} are one function filed twice, and the only route this
+     * runtime has to a code object's constructor.
      */
     private static final Members METHODS = Members.of(PyType.CODE)
             .addNoArgument("__sizeof__", self -> PyInt.of(sizeOf((PyCode) self)))
@@ -85,7 +125,9 @@ public final class CodeMembers {
             .add(
                     "_varname_from_oparg",
                     VARNAME_DOC,
-                    (self, args, kwNames) -> localName((PyCode) self, args, kwNames));
+                    (self, args, kwNames) -> localName((PyCode) self, args, kwNames))
+            .add("replace", REPLACE_DOC, (self, args, kwNames) -> replace(self, args, kwNames))
+            .add("__replace__", REPLACED_DOC, (self, args, kwNames) -> replace(self, args, kwNames));
 
     private CodeMembers() {
     }
@@ -224,6 +266,101 @@ public final class CodeMembers {
     }
 
     /**
+     * {@code code_replace}: eighteen keyword-only fields, each defaulting to the receiver's own value, then
+     * the builder of whichever format that receiver was read from.
+     *
+     * <p>The defaults are read as attributes rather than from the C's struct fields, which is what makes one
+     * route serve both {@code replace} and the {@code __replace__} that copy machinery looks for: a code
+     * object's eighteen names are answered by {@link #getAttr} and by the front-end underneath it, and the
+     * three runs a nested scope shares are derived from the localsplus array exactly as {@code
+     * get_localsplus_names} derives them. {@code co_code} is the one default the C works for rather than
+     * copies — {@code _PyCode_GetCode} unzips the specialized array — and this runtime hands out the plain
+     * instruction stream, which is what that call answers in an interpreter that has specialized nothing.
+     *
+     * <p>Two of the C's steps are named rather than copied. Its audit hook runs before the builder, and this
+     * runtime has no audit machinery to write to; its {@code co_filename} and {@code co_name} are {@code
+     * unicode} converters that keep the object handed over, and the {@link PyCode} interface answers the
+     * three names as Java strings, so a {@code str} subclass is flattened here and kept there — which is a
+     * difference nothing can reach yet, since {@code class X(str)} is not implemented and the {@code
+     * SystemError} the C raises for a subclass inside {@code co_names} has the same wall in front of it.
+     *
+     * <p>{@code co_stacksize} is the one field whose answer is not what was given: {@code init_code} refuses
+     * to build a frame that cannot hold a value, so nought comes back as one.
+     */
+    private static PyObject replace(PyObject code, PyObject[] args, String[] kwNames) {
+        PyObject[] given = Arguments.unpackKeywords("replace", args, kwNames, FIELDS, 0, 0);
+        int[] counts = new int[COUNTS];
+        PyObject[] values = new PyObject[FIELDS.length - COUNTS];
+        for (int at = 0; at < FIELDS.length; at++) {
+            PyObject value = given[at] == null ? code.getAttr(FIELDS[at]) : given[at];
+            if (at < COUNTS) {
+                counts[at] = Numbers.cInteger(value);
+            } else {
+                values[at - COUNTS] = kept(FIELDS[at], value, at);
+            }
+        }
+        for (int at = 0; at < COUNTS; at++) {
+            if (counts[at] < 0) {
+                throw Slots.valueError("%s must be a positive integer", FIELDS[at]);
+            }
+        }
+        PyCode.Fields fields =
+                new PyCode.Fields(
+                        counts[0],
+                        counts[1],
+                        counts[2],
+                        counts[3],
+                        counts[4],
+                        counts[5],
+                        (PyBytes) values[0],
+                        (PyTuple) values[1],
+                        (PyTuple) values[2],
+                        (PyTuple) values[3],
+                        (PyTuple) values[4],
+                        (PyTuple) values[5],
+                        text(values[6]),
+                        text(values[7]),
+                        text(values[8]),
+                        counts[6],
+                        (PyBytes) values[9],
+                        (PyBytes) values[10]);
+        return (PyObject) ((PyCode) code).newCode(fields);
+    }
+
+    /**
+     * {@code object(subclass_of=…)} and {@code unicode} for one of the eleven: the value, or the sentence
+     * {@code _PyArg_BadArgument} writes with the parameter's own name in it.
+     *
+     * <p>The types are checked in the order the clinic table declares them, which is what makes {@code
+     * replace(co_names=-1, co_consts=-1)} complain about {@code co_consts} — the earlier of the two — even
+     * though the call named the other one first.
+     */
+    private static PyObject kept(String field, PyObject value, int at) {
+        String kind = switch (at) {
+            case 7, 16, 17 -> "bytes";
+            case 8, 9, 10, 11, 12 -> "tuple";
+            default -> "str";
+        };
+        Class<?> type =
+                switch (kind) {
+                    case "bytes" -> PyBytes.class;
+                    case "tuple" -> PyTuple.class;
+                    default -> PyStr.class;
+                };
+        if (!type.isInstance(value)) {
+            throw Slots.typeError(
+                    "replace() argument '%s' must be %s, not %s",
+                    field, kind, value.getType().name());
+        }
+        return value;
+    }
+
+    /** One of the three names, which the {@link PyCode} interface answers as text rather than as an object. */
+    private static String text(PyObject value) {
+        return ((PyStr) value).getValue();
+    }
+
+    /**
      * {@code code_richcompare}: the two equalities, and only between two code objects.
      *
      * <p>The four orderings decline whatever they are asked, so {@code CODE < CODE} is the {@code TypeError}
@@ -231,14 +368,17 @@ public final class CodeMembers {
      * answered — which is what makes {@code CODE == 3} {@code False} out of the operator's fallback to
      * identity while {@code CODE.__eq__(3)} hands the refusal back as the value {@code NotImplemented}.
      *
-     * <p>Two of the C's thirteen questions are not answerable from the {@link PyCode} interface, and this walk
-     * substitutes the decoded form of each: the C compares {@code co_linetable} and {@code co_exceptiontable}
-     * as the octet runs one format writes, and here the line table is the runs of {@code co_lines()} together
-     * with the quadruples of {@code co_positions()} and the exception table is the handler every instruction
-     * is asked for. Two front-ends that pack one answer differently are therefore equal here where the
-     * reference would call them unequal. {@code co_consts} has the same gap in a smaller shape: the C keys
-     * every constant first, so {@code 0} and {@code False} never pass for each other and a bytes constant is
-     * never compared against a string, while this asks {@code ==} of the values themselves.
+     * <p>Two of the C's thirteen questions are not answerable from the {@link PyCode} interface as the C
+     * answers them, and this walk reaches each by the route this runtime has. The C compares {@code
+     * co_linetable} as the octet run one format writes, and here it is the runs of {@code co_lines()}
+     * together with the quadruples of {@code co_positions()} — two front-ends that pack one answer
+     * differently are therefore equal here where the reference would call them unequal. {@code co_consts} has
+     * the same gap in a smaller shape: the C keys every constant first with {@code _PyCode_ConstantKey}, so
+     * {@code 0} and {@code False} never pass for each other and a bytes constant is never compared against a
+     * string, while this asks {@code ==} of the values themselves. The exception table is answered as the C
+     * answers it, on the octets the front-end hands out under that name, and that is the one table here that
+     * can be weighed without asking what it means: decoding it is the interpreter's own question, and only
+     * something unwinding through the body that wrote the rows has to answer it.
      */
     public static PyObject compare(CompareOp cmp, PyObject left, PyObject right) {
         if ((cmp != CompareOp.EQ && cmp != CompareOp.NE)
@@ -267,7 +407,7 @@ public final class CodeMembers {
                 && sameItems(left.localNames(), right.localNames())
                 && sameItems(left.lineRanges(), right.lineRanges())
                 && sameItems(left.positions(), right.positions())
-                && sameHandlers(left, right);
+                && sameExceptionTable(left, right);
     }
 
     /** The two streams instruction by instruction, with the unit offset each one sits at beside them. */
@@ -298,17 +438,19 @@ public final class CodeMembers {
         return true;
     }
 
-    /** The exception table read the way the interpreter reads it: one handler per instruction. */
-    private static boolean sameHandlers(PyCode left, PyCode right) {
-        int steps = left.instructions().length();
-        for (int i = 0; i < steps; i++) {
-            PyCode.Handler one = left.handlerFor(i);
-            PyCode.Handler two = right.handlerFor(i);
-            if (one == null || two == null ? one != two : !one.equals(two)) {
-                return false;
-            }
-        }
-        return true;
+    /**
+     * The exception table as the C compares it: the packed bytes, not what they mean to an interpreter.
+     *
+     * <p>Reaching them is the front-end's own answer to {@code co_exceptiontable}, which decision D2 keeps
+     * there because only the reader that unpacked them can say what one is. Walking the handlers instead
+     * would ask that reader to decode a table some other body wrote, and a row naming a unit no instruction
+     * of this body starts at is a complaint the C never hears — it only ever compares the bytes it was given.
+     */
+    private static boolean sameExceptionTable(PyCode left, PyCode right) {
+        return Slots.compareTrue(
+                CompareOp.EQ,
+                Slots.getAttr((PyObject) left, "co_exceptiontable"),
+                Slots.getAttr((PyObject) right, "co_exceptiontable"));
     }
 
     /**
@@ -339,16 +481,13 @@ public final class CodeMembers {
     /**
      * The methods {@code code} publishes, which a write reaches through the type and so cannot replace.
      *
-     * <p>{@code co_lines}, {@code co_positions}, {@code __sizeof__} and {@code _varname_from_oparg} are filed
-     * as rows now and answer their own refusal, so they are not named here; the three left are the ones this
-     * runtime has no body for yet — {@code co_branches}, {@code replace} and {@code __replace__}, which
-     * CPython's {@code code_methods} table files as {@code PyMethodDef} rows and which a program therefore
-     * meets with the sentence for a read-only attribute rather than with a missing one.
+     * <p>{@code co_lines}, {@code co_positions}, {@code __sizeof__}, {@code _varname_from_oparg}, {@code
+     * replace} and {@code __replace__} are filed as rows now and answer their own refusal, so they are not
+     * named here; the one left is {@code co_branches}, which CPython's {@code code_methods} table files as a
+     * {@code PyMethodDef} row and which a program therefore meets with the sentence for a read-only attribute
+     * rather than with a missing one.
      */
     private static boolean method(String name) {
-        return switch (name) {
-            case "co_branches", "replace", "__replace__" -> true;
-            default -> false;
-        };
+        return name.equals("co_branches");
     }
 }

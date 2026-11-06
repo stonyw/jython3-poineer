@@ -641,6 +641,18 @@ public final class Slots {
     }
 
     /**
+     * {@code PyErr_BadInternalCall} and {@code intern_strings}: the two refusals of a C API that says the
+     * caller handed it something no caller should.
+     *
+     * <p>The reference names the C file and line the call came from, which is where the difference between
+     * the two builds shows: {@code jy3} says only what was refused. Both of them are unreachable from
+     * Python except by building a code object by hand, which is the one thing that reads this back.
+     */
+    public static PyRaise systemError(String message) {
+        return PyRaise.raise(ExceptionTypes.SYSTEM_ERROR, message);
+    }
+
+    /**
      * An allocation Java would have failed at anyway, raised before asking for it.
      *
      * CPython's {@code MemoryError} comes out of a failed {@code malloc} and carries no message; an
