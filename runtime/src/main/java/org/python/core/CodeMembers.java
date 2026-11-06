@@ -21,26 +21,59 @@ import java.io.ByteArrayOutputStream;
  *
  * <p>What is not here is what CPython's {@code code} also publishes and this runtime cannot answer yet:
  * {@code co_branches()}, which would have to know which jumps the instrumentation considers branches;
- * {@code replace()}, which would have to rebuild the table from eighteen keyword-only fields; the two private
- * names {@code dis} reads; and the live specialization state {@code _co_code_adaptive} shows, which this
- * runtime never writes and so answers as the plain instruction array. They are refused as missing or answered
- * as the same bytes. The two position reads — {@code co_lines()} and {@code co_positions()} — are here, and
- * are what a Stage-B report would draw a caret from: the report this slice leaves behind still names a line
- * and nothing beside it.
+ * {@code replace()} and {@code __replace__()}, which would have to rebuild the table from eighteen
+ * keyword-only fields; and the live specialization state {@code _co_code_adaptive} shows, which this runtime
+ * never writes and so answers as the plain instruction array. They are refused as missing or answered as the
+ * same bytes. The two position reads — {@code co_lines()} and {@code co_positions()} — are here, and are what
+ * a Stage-B report would draw a caret from: the report this slice leaves behind still names a line and
+ * nothing beside it.
+ *
+ * <p>Beside those names, two rows answer a slot rather than a function of their own, and what they run is
+ * here for that reason. {@code __sizeof__} measures a C struct this runtime has no half of; {@code
+ * tp_richcompare} is one C function filed under six names and is the only thing in this family that asks
+ * whether two code objects hold the same body. Both are stated in the reference's own arithmetic and
+ * measured against it rather than reproduced from it, because a code object here has no layout and its two
+ * tables have whatever shape the front-end that read them gives them.
  */
 public final class CodeMembers {
 
+    /** {@code code_varname_from_oparg}'s clinic text: the table, then the warning that is all of its doc. */
+    private static final String VARNAME_DOC =
+            "($self, /, oparg)\n--\n\n(internal-only) Return the local variable name for the given oparg."
+                    + "\n\nWARNING: this method is for internal use only and may change or go\naway.";
+
     /**
-     * The two methods {@code code} declares.
+     * The two numbers {@code code_sizeof} multiplies and adds, and the word it rounds the sum up to.
      *
-     * <p>A member table rather than two more cases in {@link #getAttr}, because the table is what decides
-     * the shape of the answer: CPython reads {@code co.co_lines} out of the type's method table and binds
-     * it, so an argument is complained about with the type's name in front — {@code code.co_lines() takes
-     * no arguments (1 given)} — while {@code code.co_lines} without a code object is the unbound
-     * descriptor that takes the receiver as its first argument and refuses one of another type. Both
-     * shapes come from {@link Members} and from nothing else here.
+     * <p>{@code offsetof(PyCodeObject, co_code_adaptive)} is {@code tp_basicsize} and {@code
+     * sizeof(_Py_CODEUNIT)} is {@code tp_itemsize}, both of them properties of a C build of 3.14 rather than
+     * of anything the {@link PyCode} interface answers; {@code __sizeof__} is measured against them because
+     * no other answer would be the reference's, which is the same choice {@code int}'s {@code __sizeof__}
+     * makes about a {@code PyLongObject}.
+     */
+    private static final int CODE_HEADER = 208;
+
+    private static final int UNIT_WIDTH = 2;
+    private static final int WORD = 8;
+
+    /**
+     * The four methods {@code code} declares.
+     *
+     * <p>A member table rather than four more cases in {@link #getAttr}, because the table is what decides
+     * the shape of the answer: CPython reads {@code co.co_lines} out of the type's method table and binds it,
+     * so an argument is complained about with the type's name in front — {@code code.co_lines() takes no
+     * arguments (1 given)} — while {@code code.co_lines} without a code object is the unbound descriptor that
+     * takes the receiver as its first argument and refuses one of another type. Both shapes come from {@link
+     * Members} and from nothing else here.
+     *
+     * <p>The two beside them are the rows of {@code code_methods} that need no code object's format to answer.
+     * {@code __sizeof__} is registered with no {@code ml_doc} at all, so its table comes from its {@code
+     * METH_NOARGS} and its sentence is {@code None}. {@code _varname_from_oparg} is the one row here that
+     * clinic parsed rather than hand-registered: its text carries its table and its warning, its two arity
+     * refusals name the function without the type in front of them, and its converter is a C {@code int}.
      */
     private static final Members METHODS = Members.of(PyType.CODE)
+            .addNoArgument("__sizeof__", self -> PyInt.of(sizeOf((PyCode) self)))
             .addNoArgument(
                     "co_lines",
                     self -> PyIterator.of(PyType.LINE_ITERATOR, ((PyCode) self).lineRanges().elements()))
@@ -48,7 +81,11 @@ public final class CodeMembers {
                     "co_positions",
                     self ->
                             PyIterator.of(
-                                    PyType.POSITIONS_ITERATOR, ((PyCode) self).positions().elements()));
+                                    PyType.POSITIONS_ITERATOR, ((PyCode) self).positions().elements()))
+            .add(
+                    "_varname_from_oparg",
+                    VARNAME_DOC,
+                    (self, args, kwNames) -> localName((PyCode) self, args, kwNames));
 
     private CodeMembers() {
     }
@@ -151,15 +188,139 @@ public final class CodeMembers {
     }
 
     /**
+     * {@code code_sizeof}: {@code _PyObject_VAR_SIZE} over this body's unit count.
+     *
+     * <p>The reference adds nothing else, because {@code co_extra} is the instrumentation's and this runtime
+     * never runs it — a code object that has been traced in CPython reports a larger number than the same
+     * object reports here, and the difference is the caches the interpreter grew over its instructions.
+     */
+    private static long sizeOf(PyCode code) {
+        long raw = CODE_HEADER + (long) UNIT_WIDTH * code.unitCount();
+        return (raw + WORD - 1) & -(long) WORD;
+    }
+
+    /**
+     * {@code code._varname_from_oparg(oparg)}: the name of the frame slot that oparg indexes.
+     *
+     * <p>Clinic asks its one positional parameter before its converter looks at anything, which is what makes
+     * {@code _varname_from_oparg(index=0)} complain about the argument that never arrived rather than about
+     * the name nobody has, and both of its arity sentences name the function with no type in front of them.
+     * The converter is the narrowest one in CPython — {@code oparg: int} is a C {@code int}, so {@code 2 **
+     * 70} overflows it where a wide {@code __index__} would have been accepted by a {@code Py_ssize_t}. What
+     * the number indexes is {@code co_localsplusnames}, one slot wider than {@code co_varnames} wherever a
+     * cell or a free variable exists, and {@code PyTuple_GetItem} answers a position past either end of it in
+     * that tuple's own words.
+     */
+    private static PyObject localName(PyCode code, PyObject[] args, String[] kwNames) {
+        PyObject[] given =
+                Arguments.unpackKeywords(
+                        "_varname_from_oparg", args, kwNames, new String[] {"oparg"}, 1, 1);
+        int oparg = Numbers.cInteger(given[0]);
+        PyTuple names = code.localNames();
+        if (oparg < 0 || oparg >= names.size()) {
+            throw Slots.indexError("tuple index out of range");
+        }
+        return names.at(oparg);
+    }
+
+    /**
+     * {@code code_richcompare}: the two equalities, and only between two code objects.
+     *
+     * <p>The four orderings decline whatever they are asked, so {@code CODE < CODE} is the {@code TypeError}
+     * naming both types while {@code CODE == CODE} answers, and a non-code operand is declined rather than
+     * answered — which is what makes {@code CODE == 3} {@code False} out of the operator's fallback to
+     * identity while {@code CODE.__eq__(3)} hands the refusal back as the value {@code NotImplemented}.
+     *
+     * <p>Two of the C's thirteen questions are not answerable from the {@link PyCode} interface, and this walk
+     * substitutes the decoded form of each: the C compares {@code co_linetable} and {@code co_exceptiontable}
+     * as the octet runs one format writes, and here the line table is the runs of {@code co_lines()} together
+     * with the quadruples of {@code co_positions()} and the exception table is the handler every instruction
+     * is asked for. Two front-ends that pack one answer differently are therefore equal here where the
+     * reference would call them unequal. {@code co_consts} has the same gap in a smaller shape: the C keys
+     * every constant first, so {@code 0} and {@code False} never pass for each other and a bytes constant is
+     * never compared against a string, while this asks {@code ==} of the values themselves.
+     */
+    public static PyObject compare(CompareOp cmp, PyObject left, PyObject right) {
+        if ((cmp != CompareOp.EQ && cmp != CompareOp.NE)
+                || !(left instanceof PyCode one)
+                || !(right instanceof PyCode two)) {
+            return PyNotImplemented.INSTANCE;
+        }
+        return PyBool.of(cmp == CompareOp.EQ ? agrees(one, two) : !agrees(one, two));
+    }
+
+    /**
+     * The C's walk in its own order: the name, the five numbers, the size, the instruction stream, then the
+     * tables — and any one of them disagreeing ends it.
+     */
+    private static boolean agrees(PyCode left, PyCode right) {
+        return left.name().equals(right.name())
+                && left.argCount() == right.argCount()
+                && left.posOnlyArgCount() == right.posOnlyArgCount()
+                && left.kwOnlyArgCount() == right.kwOnlyArgCount()
+                && left.flags() == right.flags()
+                && left.firstLine() == right.firstLine()
+                && left.unitCount() == right.unitCount()
+                && sameInstructions(left.instructions(), right.instructions())
+                && sameItems(left.constants(), right.constants())
+                && sameItems(left.names(), right.names())
+                && sameItems(left.localNames(), right.localNames())
+                && sameItems(left.lineRanges(), right.lineRanges())
+                && sameItems(left.positions(), right.positions())
+                && sameHandlers(left, right);
+    }
+
+    /** The two streams instruction by instruction, with the unit offset each one sits at beside them. */
+    private static boolean sameInstructions(CodeInstructions left, CodeInstructions right) {
+        if (left.length() != right.length()) {
+            return false;
+        }
+        for (int i = 0; i < left.length(); i++) {
+            if (left.opcodeAt(i) != right.opcodeAt(i)
+                    || left.argAt(i) != right.argAt(i)
+                    || left.unitOffsetAt(i) != right.unitOffsetAt(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code PyObject_RichCompareBool} over the items of two tuples, which is what the C's own walk does. */
+    private static boolean sameItems(PyTuple left, PyTuple right) {
+        if (left.size() != right.size()) {
+            return false;
+        }
+        for (int i = 0; i < left.size(); i++) {
+            if (!Slots.compareTrue(CompareOp.EQ, left.at(i), right.at(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The exception table read the way the interpreter reads it: one handler per instruction. */
+    private static boolean sameHandlers(PyCode left, PyCode right) {
+        int steps = left.instructions().length();
+        for (int i = 0; i < steps; i++) {
+            PyCode.Handler one = left.handlerFor(i);
+            PyCode.Handler two = right.handlerFor(i);
+            if (one == null || two == null ? one != two : !one.equals(two)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * {@code co.name = value} and {@code del co.name}, which is the same refusal either way.
      *
-     * <p>The two wordings that remain are CPython's own: a name the type files as a method — and the two
-     * this runtime has not filed yet — is refused because a {@code method_descriptor} has no writing half,
-     * while the twenty storage names are refused by their own rows, since {@link GenericAttributes} finds a
-     * member or a getset on the class before it looks for a dictionary and runs what it finds. A name nobody
-     * files is left to that same walk, which reads the type's own dictionary and so calls {@code __doc__}
-     * read-only, reaches {@code object}'s getset for {@code __class__}, and says there is no dictionary for a
-     * name nothing files.
+     * <p>The two wordings that remain are CPython's own: a name the type files as a row — a wrapper, a
+     * method or one of the twenty storage names — is refused by that row or by the read-only branch of
+     * {@link GenericAttributes}, which says the same sentence in its own words, while the three names this
+     * runtime has no row for are refused here because a walk that finds nothing on the class goes on to look
+     * for a dictionary instead. A name nobody files at all is left to that same walk, which reads the type's
+     * own dictionary and so calls {@code __doc__} read-only, reaches {@code object}'s getset for {@code
+     * __class__}, and says there is no dictionary for a name nothing files.
      *
      * @throws PyRaise always, either with the wording of the table the name is in or as the generic refusal
      */
@@ -178,15 +339,15 @@ public final class CodeMembers {
     /**
      * The methods {@code code} publishes, which a write reaches through the type and so cannot replace.
      *
-     * <p>{@code co_lines} and {@code co_positions} are filed as rows and answer their own refusal, so they
-     * are not named here; the five left are the ones this runtime has no body for yet — {@code co_branches},
-     * {@code replace}, {@code __replace__}, {@code __sizeof__} and {@code _varname_from_oparg}, which
+     * <p>{@code co_lines}, {@code co_positions}, {@code __sizeof__} and {@code _varname_from_oparg} are filed
+     * as rows now and answer their own refusal, so they are not named here; the three left are the ones this
+     * runtime has no body for yet — {@code co_branches}, {@code replace} and {@code __replace__}, which
      * CPython's {@code code_methods} table files as {@code PyMethodDef} rows and which a program therefore
      * meets with the sentence for a read-only attribute rather than with a missing one.
      */
     private static boolean method(String name) {
         return switch (name) {
-            case "co_branches", "replace", "__replace__", "__sizeof__", "_varname_from_oparg" -> true;
+            case "co_branches", "replace", "__replace__" -> true;
             default -> false;
         };
     }

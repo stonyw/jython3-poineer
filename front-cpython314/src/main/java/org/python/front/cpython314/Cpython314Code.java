@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.python.core.CodeInstructions;
 import org.python.core.CodeMembers;
+import org.python.core.CompareOp;
 import org.python.core.PyBytes;
 import org.python.core.PyCode;
 import org.python.core.PyInt;
@@ -145,6 +146,12 @@ public final class Cpython314Code extends PyObject implements PyCode {
     @Override
     public CodeInstructions instructions() {
         return instructions;
+    }
+
+    /** {@code Py_SIZE(co)}: the units the wire format wrote, which is {@code co_code} two octets at a time. */
+    @Override
+    public int unitCount() {
+        return codeArray.length / 2;
     }
 
     /**
@@ -352,6 +359,18 @@ public final class Cpython314Code extends PyObject implements PyCode {
     @Override
     public long hash() {
         return System.identityHashCode(this);
+    }
+
+    /**
+     * {@code code_richcompare}, which is the six comparison names of {@code code}'s dictionary.
+     *
+     * <p>The walk is {@link CodeMembers}'s, and so is the deviation it has to make: the C compares the two
+     * byte tables outright, and a code object read from this format answers what they say rather than how
+     * they are packed.
+     */
+    @Override
+    public PyObject richCompare(CompareOp cmp, PyObject other) {
+        return CodeMembers.compare(cmp, this, other);
     }
 
     /**

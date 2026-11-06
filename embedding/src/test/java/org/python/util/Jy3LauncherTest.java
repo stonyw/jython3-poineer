@@ -296,7 +296,8 @@ class Jy3LauncherTest {
                 "120_singleton_books.py",
                 "121_super_book.py",
                 "122_getset_write_half.py",
-                "123_code_storage_half.py");
+                "123_code_storage_half.py",
+                "124_code_slot_rows.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

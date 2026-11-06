@@ -20,14 +20,13 @@ import org.python.front.cpython314.Cpython314Compiler;
  * filed in, the kind each is filed as, the fact that the row a walk reaches off the class and the row in
  * the book are one object, and which of them outranks a dictionary a code object does not have.
  *
- * <p>The reference files thirty-seven rows in this book, and this runtime files twenty-three of them: the
- * fourteen storage names, the six computed tables, the two position reads and the sentence. The fourteen
- * left are the constructor, the eight comparison and repr wrappers, and the six method rows that would each
- * need a body of their own — {@code co_branches}, {@code replace}, {@code __replace__}, {@code __sizeof__}
- * and {@code _varname_from_oparg} — which is why {@code len(vars(code))} and {@code dir(code)} are not
- * printed by the case and are not counted here either. The five method names are still refused with the
- * sentence for a read-only attribute rather than with a missing one, and that is the part of their behaviour
- * this slice can land without their bodies.
+ * <p>The reference files thirty-seven rows in this book, and this runtime files thirty-three of them since
+ * {@code 124_code_slot_rows.py}: the fourteen storage names, the six computed tables, the two position
+ * reads, the eight rows copied out of the slots and the two method rows beside them. The four left are the
+ * constructor, {@code co_branches} and the two {@code replace}s, which is why {@code len(vars(code))} and
+ * {@code dir(code)} are not printed by the case and are not counted here either. What is pinned below is
+ * the store underneath those rows: the order they are filed in, the kind each is filed as, and which of
+ * them outranks a dictionary a code object does not have.
  *
  * <p>Two kinds of refusal survive here that a single sentence would lose: a {@code PyMemberDef} marked
  * read-only answers four syllables and names nothing, and a getset whose {@code gd_set} is {@code NULL}
@@ -46,8 +45,18 @@ class CodeStorageHalfTest {
     /** The rows the book files, in the order the reference files its thirty-seven. */
     private static final List<String> BOOK =
             List.of(
+                    "__repr__",
+                    "__hash__",
+                    "__lt__",
+                    "__le__",
+                    "__eq__",
+                    "__ne__",
+                    "__gt__",
+                    "__ge__",
+                    "__sizeof__",
                     "co_lines",
                     "co_positions",
+                    "_varname_from_oparg",
                     "co_argcount",
                     "co_posonlyargcount",
                     "co_kwonlyargcount",
@@ -100,27 +109,39 @@ class CodeStorageHalfTest {
 
     private static final List<String> METHODS = List.of("co_lines", "co_positions");
 
+    /** The twenty rows this case is about: the storage half, the two position reads and the sentence. */
+    private static final List<String> STORAGE =
+            List.of(
+                    "co_lines",
+                    "co_positions",
+                    "co_argcount",
+                    "co_posonlyargcount",
+                    "co_kwonlyargcount",
+                    "co_stacksize",
+                    "co_flags",
+                    "co_nlocals",
+                    "co_consts",
+                    "co_names",
+                    "co_filename",
+                    "co_name",
+                    "co_qualname",
+                    "co_firstlineno",
+                    "co_linetable",
+                    "co_exceptiontable",
+                    "co_lnotab",
+                    "_co_code_adaptive",
+                    "co_varnames",
+                    "co_cellvars",
+                    "co_freevars",
+                    "co_code",
+                    "__doc__");
+
     /** The rows this runtime has no body for yet, and so does not file at all. */
     private static final List<String> NOT_FILED =
-            List.of(
-                    "__new__",
-                    "__repr__",
-                    "__hash__",
-                    "__lt__",
-                    "__le__",
-                    "__eq__",
-                    "__ne__",
-                    "__gt__",
-                    "__ge__",
-                    "__sizeof__",
-                    "co_branches",
-                    "replace",
-                    "__replace__",
-                    "_varname_from_oparg");
+            List.of("__new__", "co_branches", "replace", "__replace__");
 
-    /** The five method names CPython files and this runtime refuses as read-only without filing. */
-    private static final List<String> UNFILED_METHODS =
-            List.of("co_branches", "replace", "__replace__", "__sizeof__", "_varname_from_oparg");
+    /** The three method names CPython files and this runtime refuses as read-only without filing. */
+    private static final List<String> UNFILED_METHODS = List.of("co_branches", "replace", "__replace__");
 
     private static final String SENTENCE = "Create a code object.  Not for the faint of heart.";
 
@@ -201,9 +222,9 @@ class CodeStorageHalfTest {
     }
 
     @Test
-    void theBookFilesTwentyThreeRowsInTheReferenceOrder() {
+    void theBookFilesThirtyThreeRowsInTheReferenceOrder() {
         assertThat(filed()).isEqualTo(BOOK);
-        assertThat(filed()).hasSize(23);
+        assertThat(filed()).hasSize(33);
         for (String row : NOT_FILED) {
             assertThat(entry(row)).as(row).isNull();
         }
@@ -253,14 +274,18 @@ class CodeStorageHalfTest {
 
     /**
      * The twenty storage rows are data descriptors, so {@link GenericAttributes} runs them before it looks
-     * for a dictionary; a method row and the sentence are not, and only outrank one because nothing below
-     * them answers.
+     * for a dictionary; the two position rows and the sentence are not, and only outrank one because nothing
+     * below them answers. The ten slot rows of {@code 124_code_slot_rows.py} are not either, and are the
+     * next list below.
      */
     @Test
     void theFieldsAndTheTablesOutrankAndTheMethodsDoNot() {
-        for (String row : BOOK) {
-            boolean data = !row.equals("__doc__") && !METHODS.contains(row);
+        for (String row : STORAGE) {
+            boolean data = MEMBERS.contains(row) || GETSETS.contains(row);
             assertThat(Descriptors.writes(entry(row))).as(row).isEqualTo(data);
+        }
+        for (String row : List.of("__repr__", "__hash__", "__eq__", "__sizeof__", "_varname_from_oparg")) {
+            assertThat(Descriptors.writes(entry(row))).as(row).isFalse();
         }
     }
 
@@ -278,7 +303,7 @@ class CodeStorageHalfTest {
     /** {@code code.co_argcount} is the row in the book; only a value gets the number underneath. */
     @Test
     void theRowReadOffTheClassIsTheRowInTheBook() {
-        for (String row : BOOK) {
+        for (String row : STORAGE) {
             if (row.equals("__doc__")) {
                 assertThat(Slots.getAttr(PyType.CODE, row)).isEqualTo(entry(row));
             } else {

@@ -93,6 +93,16 @@ public interface PyCode {
     CodeInstructions instructions();
 
     /**
+     * How many code units the body occupies, inline caches and all, which is CPython's {@code Py_SIZE(co)}.
+     *
+     * <p>Two names of {@code code} answer it and nothing else can: {@code __sizeof__} multiplies it by the
+     * width of a unit to measure a struct this runtime does not have, and {@code code_richcompare} compares
+     * it before it compares the units themselves. {@link #instructions()} counts the instructions a driver
+     * runs, which is a smaller number wherever an opcode has a cache behind it.
+     */
+    int unitCount();
+
+    /**
      * {@code co_lines()}: the source line of every run of instructions.
      *
      * <p>Each item is CPython's triple — the instruction offset the run starts at, the one it ends at,
