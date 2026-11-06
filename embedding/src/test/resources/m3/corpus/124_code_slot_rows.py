@@ -19,8 +19,8 @@ rather than a fallback — the decline is the answer the row gives.
 
 `__sizeof__` counts a C struct this runtime has no layout for, so its answer is the reference's arithmetic
 read off this one: the header the struct has before the instructions begin, two octets for each code unit,
-and the whole rounded up to a word. `dir(code)` and `vars(code)` are not counted: this runtime files ten of
-the seventeen names those two would carry, and the seven left are the next cases. Nothing here prints a
+and the whole rounded up to a word. `dir(code)` and `vars(code)` are not counted: the book filled out to its
+thirty-seven rows in `127_code_new.py`, and that case counts them. Nothing here prints a
 `hash()` value either — `code_hash` scrambles in a string hash, which the interpreter randomizes per run.
 
 The one row that cannot be answered from `co_varnames` is `_varname_from_oparg`: it reads the localsplus

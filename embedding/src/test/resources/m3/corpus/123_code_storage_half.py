@@ -27,9 +27,9 @@ runtime has no warning machinery, so its stderr can never match — the pairs th
 `LegacyLineTableTest` instead. `_co_code_adaptive` is asked only as a row, never as a value, because the tail
 of the reference's answer is the memory of a specializing interpreter this one does not have.
 
-`vars(code)` is not counted and `dir(code)` is not printed whole: this runtime files twenty-three of the
-thirty-seven rows, so those two counts are a difference of record rather than of measurement. The names
-below are asked one at a time, which is how a program asks them anyway.
+`vars(code)` is not counted and `dir(code)` is not printed whole: the book reached its thirty-seven rows in
+`127_code_new.py`, which is the case that counts them. The names below are asked one at a time, which is how
+a program asks them anyway.
 """
 
 

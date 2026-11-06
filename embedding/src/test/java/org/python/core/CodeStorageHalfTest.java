@@ -20,12 +20,13 @@ import org.python.front.cpython314.Cpython314Compiler;
  * filed in, the kind each is filed as, the fact that the row a walk reaches off the class and the row in
  * the book are one object, and which of them outranks a dictionary a code object does not have.
  *
- * <p>The reference files thirty-seven rows in this book, and this runtime files thirty-six of them since
- * {@code 126_code_branches.py}: the fourteen storage names, the six computed tables, the three cursors, the
- * eight rows copied out of the slots and the five method rows beside them. The one left is the constructor,
- * which is why {@code len(vars(code))} and {@code dir(code)} are not printed by the cases and are not counted
- * here either. What is pinned below is the store underneath those rows: the order they are filed in, the kind
- * each is filed as, and which of them outranks a dictionary a code object does not have.
+ * <p>The reference files thirty-seven rows in this book, and since {@code 127_code_new.py} this runtime files
+ * all thirty-seven: the constructor at the head of it, the fourteen storage names, the six computed tables,
+ * the three cursors, the eight rows copied out of the slots and the five method rows beside them. {@code
+ * len(vars(code))} therefore counts one more row than it did, while {@code dir(code)} still counts fifty
+ * names, because the constructor came in from {@code object} and so joins the name list without joining it
+ * for the first time. What is pinned below is the store underneath those rows: the order they are filed in,
+ * the kind each is filed as, and which of them outranks a dictionary a code object does not have.
  *
  * <p>Two kinds of refusal survive here that a single sentence would lose: a {@code PyMemberDef} marked
  * read-only answers four syllables and names nothing, and a getset whose {@code gd_set} is {@code NULL}
@@ -44,6 +45,7 @@ class CodeStorageHalfTest {
     /** The rows the book files, in the order the reference files its thirty-seven. */
     private static final List<String> BOOK =
             List.of(
+                    "__new__",
                     "__repr__",
                     "__hash__",
                     "__lt__",
@@ -140,9 +142,6 @@ class CodeStorageHalfTest {
                     "co_code",
                     "__doc__");
 
-    /** The one row this runtime has no body for yet, and so does not file at all. */
-    private static final List<String> NOT_FILED = List.of("__new__");
-
     private static final String SENTENCE = "Create a code object.  Not for the faint of heart.";
 
     private static final String TABLE =
@@ -222,12 +221,10 @@ class CodeStorageHalfTest {
     }
 
     @Test
-    void theBookFilesThirtySixRowsInTheReferenceOrder() {
+    void theBookFilesThirtySevenRowsInTheReferenceOrder() {
         assertThat(filed()).isEqualTo(BOOK);
-        assertThat(filed()).hasSize(36);
-        for (String row : NOT_FILED) {
-            assertThat(entry(row)).as(row).isNull();
-        }
+        assertThat(filed()).hasSize(37);
+        assertThat(entry("__new__")).isNotNull();
         assertThat(PyType.CODE.bases()).containsExactly(PyType.OBJECT);
     }
 

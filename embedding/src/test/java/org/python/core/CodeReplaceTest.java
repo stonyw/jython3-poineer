@@ -23,8 +23,8 @@ import org.python.front.cpython314.Cpython314Compiler;
  * come before any converter has looked, and what the builder makes of the eighteen once they are in hand.
  * Every one of those answers is an agreement, so what is pinned here is the rest: the three answers this
  * runtime gives to a line table no compiler wrote, the {@code SystemError} whose sentence the reference opens
- * with the C file it came from, the one row the book still does not have, and the equality that used to ask
- * an interpreter's question in the middle of a comparison.
+ * with the C file it came from, the name list that stays at fifty while the book grows to thirty-seven rows,
+ * and the equality that used to ask an interpreter's question in the middle of a comparison.
  *
  * <p>Two differences are not reachable from a script in either direction. {@code co_filename}, {@code
  * co_name} and {@code co_qualname} are {@code unicode} converters that keep the object they are handed, while
@@ -256,23 +256,17 @@ class CodeReplaceTest {
     }
 
     /**
-     * The one refusal whose sentence this runtime cannot copy: the reference opens it with the C file and
-     * line the assertion named in {@code code_replace} came from.
+     * The one refusal whose sentence this runtime used to leave out half of: {@code PyErr_BadInternalCall}
+     * opens with the C file and line it was written at, and the builder now quotes that whole.
      */
     @Test
     void thePositionOnlyCountWiderThanTheArgumentsIsNamedForItsFileByTheReference() throws IOException {
         PyObject code = codeOf("fn");
         PyObject wide = changed(code, "co_argcount", PyInt.of(1));
 
-        // The reference answers `SystemError: Objects/codeobject.c:465: bad argument to internal function`.
         refuses(
-                "SystemError: bad argument to internal function",
+                "SystemError: Objects/codeobject.c:465: bad argument to internal function",
                 () -> changed(wide, "co_posonlyargcount", THREE));
-        assertThatThrownBy(() -> changed(wide, "co_posonlyargcount", THREE))
-                .isInstanceOfSatisfying(
-                        PyRaise.class,
-                        raised ->
-                                assertThat(raised.getMessage()).doesNotContain("codeobject.c"));
     }
 
     /**
@@ -336,16 +330,16 @@ class CodeReplaceTest {
         alike(changed(swapped, "co_exceptiontable", octets()), plain);
     }
 
-    /** The book has the two rows now, and still lacks the constructor beside the branch report it filed. */
+    /** The book has all three rows now, and the name list beside them still counts fifty. */
     @Test
-    void theBookFilesThirtySixRowsWhereTheReferenceFilesThirtySeven() throws IOException {
+    void theBookFilesThirtySevenRowsWhereTheNameListStaysAtFifty() throws IOException {
         PyObject code = codeOf("fn");
 
-        assertThat(filed()).hasSize(36);
+        assertThat(filed()).hasSize(37);
         assertThat(entry("replace")).isNotNull();
         assertThat(entry("__replace__")).isNotNull();
         assertThat(entry("co_branches")).isNotNull();
-        assertThat(entry("__new__")).isNull();
+        assertThat(entry("__new__")).isNotNull();
         // The names a script sees are already the reference's fifty: __new__ comes in from object.
         List<String> published = new ArrayList<>();
         for (PyObject name : Dirs.itemsOf(code)) {

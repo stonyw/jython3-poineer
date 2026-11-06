@@ -28,12 +28,13 @@ import java.io.ByteArrayOutputStream;
  * positions are what a Stage-B report would draw a caret from — the report this runtime leaves behind still
  * names a line and nothing beside it.
  *
- * <p>Beside those names, two rows answer a slot rather than a function of their own, and what they run is
+ * <p>Beside those names, three rows answer a slot rather than a function of their own, and what they run is
  * here for that reason. {@code __sizeof__} measures a C struct this runtime has no half of; {@code
  * tp_richcompare} is one C function filed under six names and is the only thing in this family that asks
- * whether two code objects hold the same body. Both are stated in the reference's own arithmetic and
- * measured against it rather than reproduced from it, because a code object here has no layout and its two
- * tables have whatever shape the front-end that read them gives them.
+ * whether two code objects hold the same body; and {@code __new__} is the class's own creator, the one row of
+ * its thirty-seven with no code object in front of it to take a code format from. All three are stated in the
+ * reference's own arithmetic and measured against it rather than reproduced from it, because a code object
+ * here has no layout and its two tables have whatever shape the front-end that read them gives them.
  */
 public final class CodeMembers {
 
@@ -113,7 +114,8 @@ public final class CodeMembers {
      * that clinic parsed rather than hand-registered: its text carries its table and its warning, its two
      * arity refusals name the function without the type in front of them, and its converter is a C {@code
      * int}. {@code replace} and {@code __replace__} are one function filed twice, and the only route this
-     * runtime has to a code object's constructor.
+     * runtime has to a code object's builder that has a code object to take its format from; {@link
+     * #construct} is the route that has none.
      */
     private static final Members METHODS = Members.of(PyType.CODE)
             .addNoArgument("__sizeof__", self -> PyInt.of(sizeOf((PyCode) self)))
@@ -271,6 +273,145 @@ public final class CodeMembers {
             throw Slots.indexError("tuple index out of range");
         }
         return names.at(oparg);
+    }
+
+    /**
+     * {@code code_new}: eighteen fields read in clinic's own order, then the builder of the format this
+     * interpreter is running.
+     *
+     * <p>Two refusals come before any value is looked at, and both name the class rather than the row: the
+     * keyword check, because every one of the eighteen is positional-only, and the count check, whose
+     * minimum is sixteen because {@code freevars} and {@code cellvars} are the two fields the table gives a
+     * default. {@code code(15)} and {@code code(x=1)} are therefore refused in that order whichever way the
+     * call was made, and {@code code.__new__(code, x=1)} reaches the same two sentences after the four gates
+     * {@link TypeDict} runs before it hands the tail over.
+     *
+     * <p>What follows is the order the generated C converts in, and it is the order a program with two wrong
+     * values hears one of them: six counts read into a C {@code int} — so a float is refused as {@code
+     * 'float' object cannot be interpreted as an integer} and {@code 2 ** 70} overflows — then the three
+     * bytes and four tuples and three strings of the middle, then the fourteenth count, then the two tables.
+     * The types are named by position, {@code code() argument 7 must be bytes, not str}, which is what
+     * {@code replace} does not have to say because its parameters are keywords. Only after all that do
+     * {@code code_new}'s own four refusals come, in the order its body reads them, and then the four name
+     * runs are checked for holding nothing but strings — a refusal the C makes here, in its own words, and
+     * never again in {@code intern_strings}, which is why the {@code SystemError} that names a non-string in
+     * a code slot answers only a copy made with {@code replace()}.
+     *
+     * <p>The builder is the one thing this route has no receiver for, and a {@link PyCode} is where decision
+     * D2 keeps the format. The frame that made the call answers for one: its code object came from whichever
+     * front-end this interpreter is running, and asking it is the same trade {@code super()} with no
+     * arguments and a class body's {@code __module__} already make. Reached from Java with no frame running
+     * there is no format to name, which is a case no Python program can fall into.
+     *
+     * <p>Three steps of the C are not here. Its audit hook runs before the four refusals, and this runtime
+     * writes no audit events; the copy {@code validate_and_copy_tuple} makes of each name run is left out,
+     * because a name run of this runtime is derived afresh on every read and so has no identity for the
+     * copy to change; and the guard on the keyword refusal — {@code type == &PyCode_Type ||
+     * type->tp_init == PyCode_Type.tp_init} — is a question only a subclass of {@code code} can ask, and
+     * none is buildable here.
+     */
+    public static PyObject construct(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("code()", kwNames);
+        Arguments.between("code", args, kwNames, 16, 18);
+        int argCount = Numbers.cInteger(args[0]);
+        int posOnlyArgCount = Numbers.cInteger(args[1]);
+        int kwOnlyArgCount = Numbers.cInteger(args[2]);
+        int nLocals = Numbers.cInteger(args[3]);
+        int stackSize = Numbers.cInteger(args[4]);
+        int flags = Numbers.cInteger(args[5]);
+        PyBytes code = (PyBytes) argument(7, "bytes", args[6]);
+        PyTuple constants = (PyTuple) argument(8, "tuple", args[7]);
+        PyTuple names = (PyTuple) argument(9, "tuple", args[8]);
+        PyTuple varNames = (PyTuple) argument(10, "tuple", args[9]);
+        PyStr fileName = (PyStr) argument(11, "str", args[10]);
+        PyStr name = (PyStr) argument(12, "str", args[11]);
+        PyStr qualName = (PyStr) argument(13, "str", args[12]);
+        int firstLine = Numbers.cInteger(args[13]);
+        PyBytes lineTable = (PyBytes) argument(15, "bytes", args[14]);
+        PyBytes exceptionTable = (PyBytes) argument(16, "bytes", args[15]);
+        int given = Arguments.positional(args, kwNames);
+        PyTuple freeVars = given < 17 ? PyTuple.of() : (PyTuple) argument(17, "tuple", args[16]);
+        PyTuple cellVars = given < 18 ? PyTuple.of() : (PyTuple) argument(18, "tuple", args[17]);
+        negative("argcount", argCount);
+        negative("posonlyargcount", posOnlyArgCount);
+        negative("kwonlyargcount", kwOnlyArgCount);
+        negative("nlocals", nLocals);
+        nameTuple(names);
+        nameTuple(varNames);
+        nameTuple(freeVars);
+        nameTuple(cellVars);
+        Frame caller = Interpreter.currentFrame();
+        if (caller == null) {
+            throw Slots.systemError("code.__new__() outside a running frame has no code format to build");
+        }
+        return (PyObject)
+                caller
+                        .code()
+                        .newCode(
+                                new PyCode.Fields(
+                                        argCount,
+                                        posOnlyArgCount,
+                                        kwOnlyArgCount,
+                                        nLocals,
+                                        stackSize,
+                                        flags,
+                                        code,
+                                        constants,
+                                        names,
+                                        varNames,
+                                        freeVars,
+                                        cellVars,
+                                        fileName.getValue(),
+                                        name.getValue(),
+                                        qualName.getValue(),
+                                        firstLine,
+                                        lineTable,
+                                        exceptionTable));
+    }
+
+    /** {@code code_new}'s own four refusals, made after every converter of the eighteen has run. */
+    private static void negative(String count, int value) {
+        if (value < 0) {
+            throw Slots.valueError("code: %s must not be negative", count);
+        }
+    }
+
+    /**
+     * {@code validate_and_copy_tuple}: the four name runs hold strings and nothing else.
+     *
+     * <p>The sentence names no parameter, which is what makes it a different complaint from {@link
+     * #argument}'s — the run's own contents are what the C found fault with, and it reaches this after the
+     * whole clinic table has converted, so {@code code(*values, names=(1,))} with a bad {@code co_code}
+     * hears about the code first. An item that is a {@code str} <em>subclass</em> passes the check and is
+     * flattened to an exact string there; nothing here can build one, since {@code class X(str)} is not
+     * implemented.
+     */
+    private static void nameTuple(PyTuple names) {
+        for (PyObject item : names.getArray()) {
+            if (!(item instanceof PyStr)) {
+                throw Slots.typeError(
+                        "name tuples must contain only strings, not '%s'",
+                        item.getType().filedName());
+            }
+        }
+    }
+
+    /**
+     * {@code _PyArg_BadArgument("code", "argument N", kind, value)} for one of the twelve the clinic table
+     * checks rather than converts.
+     */
+    private static PyObject argument(int at, String kind, PyObject value) {
+        Class<?> type =
+                switch (kind) {
+                    case "bytes" -> PyBytes.class;
+                    case "tuple" -> PyTuple.class;
+                    default -> PyStr.class;
+                };
+        if (!type.isInstance(value)) {
+            throw Slots.typeError(
+                    "code() argument %d must be %s, not %s", at, kind, value.getType().filedName());
+        }
+        return value;
     }
 
     /**

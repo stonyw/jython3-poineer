@@ -2547,23 +2547,30 @@ final class TypeDict {
     }
 
     /**
-     * The thirty-six rows {@code code} files: eight copied out of the slots it fills, seven from its method
-     * table, the twenty of its storage, and its sentence.
+     * The thirty-seven rows {@code code} files: the one its {@code tp_new} slot installs, eight copied out of
+     * the slots it fills, seven from its method table, the twenty of its storage, and its sentence.
      *
-     * <p>Three C lists and one generated table. {@code add_operators} writes the eight wrappers first, from
-     * {@code tp_repr}, {@code tp_hash} and the single {@code tp_richcompare} that becomes six names; {@code
-     * code_methods} then files {@code __sizeof__}, the three cursors and {@code dis}'s private {@code
-     * _varname_from_oparg}, with {@code replace} and its private twin beside them. The rest of the split
-     * between the two C lists is the split between a field and a computation: the fourteen of {@code
-     * code_members} are offsets the object already holds — six counts, three name runs, the file, the two
-     * names and the line it opens on, and the two byte tables the format stores outright — while the six of
-     * {@code code_getseters} are made by the read: {@code co_code} and {@code _co_code_adaptive} out of the
-     * instruction array, {@code co_lnotab} out of the line runs, and the three name runs of the localsplus
-     * block. Every one of the twenty reads through the value's own attribute slot, so the row and the
-     * attribute answer one question the same way, and a name the format keeps is asked of the reader that
+     * <p>Three C lists, one generated table and one row no list writes. {@code add_operators} writes the
+     * eight wrappers first, from {@code tp_repr}, {@code tp_hash} and the single {@code tp_richcompare} that
+     * becomes six names; {@code code_methods} then files {@code __sizeof__}, the three cursors and {@code
+     * dis}'s private {@code _varname_from_oparg}, with {@code replace} and its private twin beside them. The
+     * rest of the split between the two C lists is the split between a field and a computation: the fourteen
+     * of {@code code_members} are offsets the object already holds — six counts, three name runs, the file,
+     * the two names and the line it opens on, and the two byte tables the format stores outright — while the
+     * six of {@code code_getseters} are made by the read: {@code co_code} and {@code _co_code_adaptive} out
+     * of the instruction array, {@code co_lnotab} out of the line runs, and the three name runs of the
+     * localsplus block. Every one of the twenty reads through the value's own attribute slot, so the row and
+     * the attribute answer one question the same way, and a name the format keeps is asked of the reader that
      * unmarshalled it.
      *
-     * <p>None of the thirty-six can be written, and the three kinds say so in two sentences. A member is
+     * <p>The {@code __new__} at the head of the dictionary is written by no list at all: {@code
+     * update_one_slot} installs {@code tp_new_wrapper} over a type's {@code tp_new} whenever the MRO finds
+     * one, which is why {@code code.__new__} is a {@code builtin_function_or_method} bound to the type rather
+     * than a method descriptor bound to a value, why its own sentence is the generic one about creating an
+     * object rather than the eighteen fields, and why it is the first name of thirty-seven while the eight
+     * wrappers copied out of slots follow it.
+     *
+     * <p>None of the thirty-seven can be written, and the three kinds say so in two sentences. A member is
      * {@code Py_READONLY} and complains {@code readonly attribute} of a write and of a delete alike, because
      * {@code member_set} is the slot both halves run; a getset whose {@code gd_set} is {@code NULL} still owns
      * the name — {@code PyDescr_IsData} asks the descriptor's own type for a writing slot and this kind always
@@ -2571,17 +2578,20 @@ final class TypeDict {
      * pointer handed nothing; and a row with no writing half of its own, of either family above it, is refused
      * one level up by {@code _PyObject_GenericSetAttrWithDict}'s rule that a value with no dictionary to put
      * the name in calls the attribute read-only. Reached through the type rather than through one of its
-     * values, all thirty-six are refused a level further up still, by {@code type_setattro}'s rule that a
-     * static type has no attributes to set.
+     * values, all thirty-seven are refused a level further up still, by {@code type_setattro}'s rule that a
+     * static type has no attributes to set — the one sentence for the {@code __new__} row as for every other
+     * name, since a fresh creator would change what every code object in the process is built by.
      *
-     * <p>What is left below them is the one row this runtime has no body for: {@code code.__new__}, which would
-     * have to rebuild the table from eighteen keyword-only fields with no receiver to take their format from —
-     * thirty-seven rows in all. The sentence is {@code tp_doc} whole: four lines of eighteen fields, the most
-     * the clinic ever welded here, and the reason a code object can be rebuilt by hand field by field.
+     * <p>The class's own sentence is {@code tp_doc} whole: four lines of eighteen fields, the most the clinic
+     * ever welded here, and the reason a code object can be rebuilt by hand field by field. What {@code
+     * code.__new__} answers with those eighteen is {@link CodeMembers#construct}, and the reason it is the
+     * only row of these thirty-seven whose body lives outside this table is that a constructor has no
+     * receiver to take a code format from — see the frame it asks instead.
      */
     private static void codeTable(PyDict into) {
         PyType owner = PyType.CODE;
         Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::codeNew);
         table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
         table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
         table.wrapper("__lt__", LT_DOC, codeComparing(CompareOp.LT));
@@ -2624,6 +2634,25 @@ final class TypeDict {
     /** {@code code_richcompare}: two answers, and only between two code objects. */
     private static Method codeComparing(CompareOp cmp) {
         return (args, kwNames, qualified) -> CodeMembers.compare(cmp, args[0], args[1]);
+    }
+
+    /**
+     * {@code code_new} over a {@code tp_new_wrapper}: the class gates, then the eighteen fields.
+     *
+     * <p>The four refusals {@link #declaredClass} makes come before anything of {@code code_new}'s, and all
+     * four name {@code code} rather than the class handed over: {@code code.__new__(int, …)} is told that
+     * {@code int} is not a subtype of {@code code}, and {@code code.__new__(code)} — one argument, and the
+     * wrapper has consumed it — is told that {@code code} expected at least sixteen. What is left after the
+     * gates is the same eighteen the type itself takes when it is called, which is what makes {@code
+     * CodeType(*fields)} and {@code CodeType.__new__(CodeType, *fields)} one answer.
+     *
+     * <p>The third gate can never be the one that refuses here, because nothing is a subtype of {@code code}:
+     * the class leaves {@code Py_TPFLAGS_BASETYPE} unset, so {@code class Sub(code)} is refused before a
+     * class is ever built, and no subclass exists whose creator the fourth gate could compare.
+     */
+    private static PyObject codeNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.CODE, args, kwNames);
+        return CodeMembers.construct(tail(args, kwNames), kwNames);
     }
 
     /**

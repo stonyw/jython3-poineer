@@ -116,6 +116,9 @@ final class Constructors {
         if (type == PyType.SUPER) {
             return superProxy(args, keywordNames);
         }
+        if (type == PyType.CODE) {
+            return CodeMembers.construct(args, keywordNames);
+        }
         if (type == PyType.NONE) {
             return theOneValue(PyNone.INSTANCE, "NoneType", args, keywordNames);
         }

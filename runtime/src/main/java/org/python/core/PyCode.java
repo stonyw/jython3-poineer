@@ -181,8 +181,9 @@ public interface PyCode {
      * which is the one place {@link PyCode} carries a format's own bytes: a builder has to be handed what a
      * reader produced, and {@code co_code}, {@code co_linetable} and {@code co_exceptiontable} are what
      * {@link PyCode#instructions()}, {@code co_lines()} and {@link PyCode#handlerFor} were decoded from.
-     * {@link #newCode} is the only reader of these three, and the one route to it is {@code replace()}, so
-     * the two ends of that trade are a front-end's and nothing in the interpreter has to look at a byte.
+     * {@link #newCode} is the only reader of these three, and the two routes to it are {@code replace()} and
+     * {@code code.__new__()}, so the two ends of that trade are a front-end's and nothing in the interpreter
+     * has to look at a byte.
      *
      * @param argCount {@code co_argcount}, the parameters a call binds by position
      * @param posOnlyArgCount {@code co_posonlyargcount}, of those, the ones with no name
@@ -230,7 +231,10 @@ public interface PyCode {
      * to answer for it because the values that make a table are the values of whichever table this object
      * was read from, and the runtime that copies one — {@code code.replace()} — cannot name a class in a
      * module it may never load. The receiver is therefore only the route to the format, and everything it
-     * holds is asked for again through {@code fields}.
+     * holds is asked for again through {@code fields}. The one caller that has no code object at all is {@code
+     * code.__new__}, and it asks the calling frame for its code object, which is the same trade {@code
+     * super()} with no arguments makes: the interpreter running the call is the only witness of which
+     * front-end built the bodies it is running.
      *
      * <p>What the C works out from these values is the localsplus array, and what it refuses is whatever
      * the values cannot make: the refusals are its own, in its own order, because a program that builds a

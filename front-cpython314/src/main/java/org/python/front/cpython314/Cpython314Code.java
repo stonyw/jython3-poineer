@@ -34,8 +34,9 @@ public final class Cpython314Code extends PyObject implements PyCode {
     /** {@code sizeof(_Py_CODEUNIT)}: the width an instruction stream has to come in. */
     private static final int CODE_UNIT_WIDTH = 2;
 
-    /** {@code PyErr_BadInternalCall}, which the reference spells out with the C line it was reached from. */
-    private static final String BAD_INTERNAL_CALL = "bad argument to internal function";
+    /** {@code PyErr_BadInternalCall}, with the C line the macro was written at, as the reference prints it. */
+    private static final String BAD_INTERNAL_CALL =
+            "Objects/codeobject.c:465: bad argument to internal function";
 
     private final int argCount;
     private final int posOnlyArgCount;

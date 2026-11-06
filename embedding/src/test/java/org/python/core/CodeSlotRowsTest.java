@@ -19,8 +19,8 @@ import org.python.front.cpython314.Cpython314Compiler;
  * here is what a script cannot reach: that the six comparison names are one slot and so one Java method,
  * that equality walks the decoded tables rather than the object, and that {@code __sizeof__} counts the
  * units a front-end read rather than the instructions a driver runs. The three cursor rows of the same
- * table are {@code 123_code_storage_half.py}'s and {@code 126_code_branches.py}'s, and the row still
- * unfiled — the constructor — is the last of the type's own.
+ * table are {@code 123_code_storage_half.py}'s and {@code 126_code_branches.py}'s, and the constructor that
+ * closes the type's own rows is {@code 127_code_new.py}'s and {@link CodeConstructorTest}'s.
  *
  * <p>Two of those answers are measured rather than copied. {@code code_richcompare} compares the raw {@code
  * co_linetable} and {@code co_exceptiontable} bytes and keys constants with {@code _PyCode_ConstantKey};
@@ -48,9 +48,6 @@ class CodeSlotRowsTest {
     /** The six names that are one slot, in the order the book files them. */
     private static final List<String> COMPARISONS =
             List.of("__lt__", "__le__", "__eq__", "__ne__", "__gt__", "__ge__");
-
-    /** The row CPython files and this runtime still refuses as missing. */
-    private static final List<String> NOT_FILED = List.of("__new__");
 
     private static final PyObject THREE = PyInt.of(3);
 
@@ -150,18 +147,16 @@ class CodeSlotRowsTest {
     }
 
     @Test
-    void theTenSlotsComeFirstAndTheTwoRowsLeftAreStillMissing() {
+    void theConstructorComesFirstAndThenTheTenSlotsOfTheCopy() {
         List<String> book = filed();
 
-        assertThat(book.subList(0, 8)).containsExactlyElementsOf(WRAPPERS);
-        assertThat(book.subList(8, 15))
+        assertThat(book.subList(1, 9)).containsExactlyElementsOf(WRAPPERS);
+        assertThat(book.subList(9, 16))
                 .containsExactly(
                         "__sizeof__", "co_lines", "co_branches", "co_positions", "replace",
                         "_varname_from_oparg", "__replace__");
-        assertThat(book).hasSize(36);
-        for (String row : NOT_FILED) {
-            assertThat(entry(row)).as(row).isNull();
-        }
+        assertThat(book).hasSize(37);
+        assertThat(entry("__new__")).isNotNull();
     }
 
     @Test
