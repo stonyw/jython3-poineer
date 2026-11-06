@@ -835,6 +835,10 @@ final class TypeDict {
             rangeTable(into);
             return;
         }
+        if (owner == PyType.CODE) {
+            codeTable(into);
+            return;
+        }
         if (owner == PyType.RANGE_ITERATOR
                 || owner == PyType.LONG_RANGE_ITERATOR
                 || isSequenceCursor(owner)) {
@@ -2540,6 +2544,60 @@ final class TypeDict {
     private static PyObject rangesNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.RANGE, args, kwNames);
         return Constructors.ranging(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The twenty storage rows {@code code} files, above the two position methods and below its sentence.
+     *
+     * <p>Two C lists, and the split between them is the split between a field and a computation: the
+     * fourteen of {@code code_members} are offsets the object already holds — six counts, three name runs,
+     * the file, the two names and the line it opens on, and the two byte tables the format stores outright —
+     * while the six of {@code code_getseters} are made by the read: {@code co_code} and {@code
+     * _co_code_adaptive} out of the instruction array, {@code co_lnotab} out of the line runs, and the three
+     * name runs of the localsplus block. Every one of the twenty reads through the value's own attribute
+     * slot, so the row and the attribute answer one question the same way, and a name the format keeps is
+     * asked of the reader that unmarshalled it.
+     *
+     * <p>None of the twenty can be written, and the two kinds say so in two sentences. A member is {@code
+     * Py_READONLY} and complains {@code readonly attribute} of a write and of a delete alike, because {@code
+     * member_set} is the slot both halves run; a getset whose {@code gd_set} is {@code NULL} still owns the
+     * name — {@code PyDescr_IsData} asks the descriptor's own type for a writing slot and this kind always
+     * has one — so it says {@code attribute 'X' of 'code' objects is not writable} for both halves, the same
+     * pointer handed nothing. Reached through the type rather than through one of its values, all twenty are
+     * refused one level up, by {@code type_setattro}'s rule that a static type has no attributes to set.
+     *
+     * <p>The two methods above them and the seven still missing below them are what a program cannot read
+     * yet: {@code code.__new__}, the eight slot wrappers and {@code __sizeof__}, {@code co_branches()},
+     * {@code replace()}, {@code __replace__} and {@code dis}'s {@code _varname_from_oparg} — thirty-seven
+     * rows in all, of which this runtime files twenty-three. The sentence is {@code tp_doc} whole: four lines
+     * of eighteen fields, the most the clinic ever welded here, and the reason a code object can be rebuilt
+     * by hand field by field.
+     */
+    private static void codeTable(PyDict into) {
+        PyType owner = PyType.CODE;
+        Table table = new Table(owner, into);
+        table.named("co_lines", "co_positions");
+        table.member("co_argcount", self -> self.getAttr("co_argcount"));
+        table.member("co_posonlyargcount", self -> self.getAttr("co_posonlyargcount"));
+        table.member("co_kwonlyargcount", self -> self.getAttr("co_kwonlyargcount"));
+        table.member("co_stacksize", self -> self.getAttr("co_stacksize"));
+        table.member("co_flags", self -> self.getAttr("co_flags"));
+        table.member("co_nlocals", self -> self.getAttr("co_nlocals"));
+        table.member("co_consts", self -> self.getAttr("co_consts"));
+        table.member("co_names", self -> self.getAttr("co_names"));
+        table.member("co_filename", self -> self.getAttr("co_filename"));
+        table.member("co_name", self -> self.getAttr("co_name"));
+        table.member("co_qualname", self -> self.getAttr("co_qualname"));
+        table.member("co_firstlineno", self -> self.getAttr("co_firstlineno"));
+        table.member("co_linetable", self -> self.getAttr("co_linetable"));
+        table.member("co_exceptiontable", self -> self.getAttr("co_exceptiontable"));
+        table.getset("co_lnotab", null, self -> self.getAttr("co_lnotab"), null);
+        table.getset("_co_code_adaptive", null, self -> self.getAttr("_co_code_adaptive"), null);
+        table.getset("co_varnames", null, self -> self.getAttr("co_varnames"), null);
+        table.getset("co_cellvars", null, self -> self.getAttr("co_cellvars"), null);
+        table.getset("co_freevars", null, self -> self.getAttr("co_freevars"), null);
+        table.getset("co_code", null, self -> self.getAttr("co_code"), null);
+        table.value("__doc__", docValue(owner));
     }
 
     /**

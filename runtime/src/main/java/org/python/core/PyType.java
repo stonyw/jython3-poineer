@@ -341,7 +341,27 @@ public class PyType extends PyObject {
                     + " extended slicing (e.g. a[0:10:2]).";
 
     public static final PyType SLICE = builtin("slice").documented(SLICE_DOC);
-    public static final PyType CODE = builtin("code");
+
+    /**
+     * {@code code_doc}: the eighteen-field constructor table welded in front of the ten words.
+     *
+     * <p>The clinic files {@code code_new}'s argument list as the {@code tp_doc} of the type it constructs,
+     * and this is the one sentence here whose table runs to four lines and names two fields with a default of
+     * their own — {@code freevars=()} and {@code cellvars=()} — while the sixteen names before them must all
+     * arrive. Two knives read the text apart: {@code code.__doc__} is the ten words below the rule and
+     * {@code code.__text_signature__} is the four lines above it, which is what a help page and an editor's
+     * call tip each ask for.
+     */
+    private static final String CODE_DOC =
+            "(argcount, posonlyargcount, kwonlyargcount, nlocals, stacksize,\n"
+                    + "     flags, codestring, constants, names, varnames, filename, name,\n"
+                    + "     qualname, firstlineno, linetable, exceptiontable, freevars=(),\n"
+                    + "     cellvars=(), /)\n"
+                    + "--\n"
+                    + "\n"
+                    + "Create a code object.  Not for the faint of heart.";
+
+    public static final PyType CODE = builtin("code").documented(CODE_DOC);
     /**
      * {@code sys.exc_info()[2]} and {@code e.__traceback__}.
      *

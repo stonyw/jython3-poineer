@@ -314,11 +314,17 @@ public final class Cpython314Code extends PyObject implements PyCode {
      * {@code co_code} is the instruction stream in the same front-end's packing; every other name is a
      * number, a tuple, or a string the {@link PyCode} interface already answers, and {@link CodeMembers}
      * holds those so that a native parser can publish the same surface without copying this class.
+     *
+     * <p>{@code _co_code_adaptive} is a known deviation. CPython hands out the instruction array followed
+     * by the inline caches that the specializing interpreter writes into it — a longer answer whose tail is
+     * the memory of what each opcode has seen — and this runtime has no specializing interpreter to fill
+     * that tail. It therefore answers the plain instruction array, which is what the same bytes would be in
+     * an interpreter that had run nothing yet.
      */
     @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
-            case "co_code" -> PyBytes.wrap(codeArray);
+            case "co_code", "_co_code_adaptive" -> PyBytes.wrap(codeArray);
             case "co_linetable" -> PyBytes.wrap(lineTable);
             case "co_exceptiontable" -> PyBytes.wrap(exceptionTable);
             default -> CodeMembers.getAttr(this, attribute);

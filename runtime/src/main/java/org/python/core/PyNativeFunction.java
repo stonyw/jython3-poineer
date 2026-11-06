@@ -455,11 +455,17 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * one.
      *
      * <p>Only the last component of a dotted name counts — a doc written for {@code bytes.upper} is looked
-     * for as {@code upper} — and the name must be followed straight by the opening bracket.
+     * for as {@code upper} — and the name must be followed straight by the opening bracket. The name itself
+     * is optional: the C function tests the bracket at the very front before it tests the name, which is how
+     * {@code code}'s text is read as a table although nothing above it says {@code code}. A text with neither
+     * is prose, and both halves of the pair read it whole.
      */
     private static int signatureStart(String name, String internal) {
         if (internal == null) {
             return -1;
+        }
+        if (!internal.isEmpty() && internal.charAt(0) == '(') {
+            return 0;
         }
         int dot = name.lastIndexOf('.');
         String last = dot < 0 ? name : name.substring(dot + 1);
