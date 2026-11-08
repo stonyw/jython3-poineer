@@ -413,10 +413,52 @@ public final class PyRuntime {
         sys.set("builtin_module_names",
                 PyTuple.of(PyStr.of("builtins"), PyStr.of("sys")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
-        sys.set("getdefaultencoding", PyNativeFunction.positional(
-                "getdefaultencoding", args -> PyStr.of("utf-8")));
-        sys.set("exc_info", PyNativeFunction.positional("exc_info", args -> excInfo()));
-        sys.set("exit", new PyNativeFunction("exit", PyRuntime::systemExit));
+        sys.set("getdefaultencoding", noArguments(
+                "getdefaultencoding", () -> PyStr.of("utf-8"),
+                "getdefaultencoding($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the current default encoding used by the Unicode implementation."));
+        sys.set(
+                "exc_info",
+                noArguments(
+                        "exc_info",
+                        PyRuntime::excInfo,
+                        "exc_info($module, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return current exception information: (type, value, traceback).\n"
+                                + "\n"
+                                + "Return information about the most recent exception caught by an except\n"
+                                + "clause in the current stack frame or in an older stack frame."));
+        // COPY_SYS_ATTR files the original a second time under the doubled name, and files the very same
+        // object: `sys.__displayhook__ is sys.displayhook` reads true at startup, and keeps reading true of
+        // the second name after a program has replaced the first.
+        PyObject displayhook =
+                new PyNativeFunction("displayhook", PyRuntime::displayhook)
+                        .documented(
+                                "displayhook($module, object, /)\n"
+                                        + "--\n"
+                                        + "\n"
+                                        + "Print an object to sys.stdout and also save it in builtins._");
+        sys.set("displayhook", displayhook);
+        sys.set("__displayhook__", displayhook);
+        sys.set(
+                "exit",
+                new PyNativeFunction("exit", PyRuntime::systemExit)
+                        .documented(
+                                "exit($module, status=None, /)\n"
+                                        + "--\n"
+                                        + "\n"
+                                        + "Exit the interpreter by raising SystemExit(status).\n"
+                                        + "\n"
+                                        + "If the status is omitted or None, it defaults to zero (i.e.,"
+                                        + " success).\n"
+                                        + "If the status is an integer, it will be used as the system exit"
+                                        + " status.\n"
+                                        + "If it is another kind of object, it will be printed and the"
+                                        + " system\n"
+                                        + "exit status will be one (i.e., failure)."));
         // COPY_SYS_ATTR gives the two names the one object, so `sys.excepthook is sys.__excepthook__`
         // reads true until a script replaces the first of them — and then keeps reading true of the
         // second, which still holds this object.
@@ -469,6 +511,63 @@ public final class PyRuntime {
     }
 
     /**
+     * {@code sys.displayhook}: what the interpreter shows for the last expression, asked for by name.
+     *
+     * <p>{@code sys_displayhook} (Python/sysmodule.c:751) does five things, in an order a program can see.
+     * It reads the builtins module first, before it looks at the value at all. {@code None} is not a result
+     * worth showing, and a {@code None} leaves both the stream and the saved name untouched. Any other value
+     * is saved as {@code None} first — the C comment gives the reason, "Before, set '_' to None to avoid
+     * recursion", for a value whose own {@code __repr__} reads {@code _} back — and only then is {@code
+     * sys.stdout} required: a stdout deleted, or replaced by {@code None}, is the same refusal rather than
+     * silence. The repr and the newline are two separate calls to {@code write}, and the value is saved last,
+     * which is why a value whose repr refuses is the one value {@code _} never gets.
+     */
+    private static PyObject displayhook(PyObject[] args, String[] kwNames) {
+        Arguments.exactlyOne("sys.displayhook()", args, kwNames);
+        PyObject builtins = importModule("builtins");
+        PyObject value = args[0];
+        if (value == PyNone.INSTANCE) {
+            return PyNone.INSTANCE;
+        }
+        Slots.setAttr(builtins, "_", PyNone.INSTANCE);
+        PyObject stream = sysAttribute("stdout");
+        if (stream == null || stream == PyNone.INSTANCE) {
+            throw Slots.runtimeError("lost sys.stdout");
+        }
+        // `PyFile_WriteObject(o, outf, 0)` writes the repr — quoted, for a string — and the newline that
+        // follows it is a second, separate call with the one character printed raw.
+        write(stream, value.repr());
+        write(stream, "\n");
+        Slots.setAttr(builtins, "_", value);
+        return PyNone.INSTANCE;
+    }
+
+    /** One {@code sys.stdout.write} of a line of text, reached through the stream's own member. */
+    private static void write(PyObject stream, String text) {
+        Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of(text)}, null);
+    }
+
+    /**
+     * A {@code METH_NOARGS} member of {@code sys}, with the sentence its clinic row carries.
+     *
+     * <p>The calling convention refuses both kinds of argument before the body is entered, and names the
+     * function as module and name while doing it: {@code sys.exc_info(1)} is "takes no arguments (1 given)"
+     * and {@code sys.exc_info(x=1)} is "takes no keyword arguments". {@link
+     * PyNativeFunction#positional} files only the second of those, and a row whose table is {@code
+     * ($module, /)} has no room for the first either.
+     */
+    private static PyNativeFunction noArguments(
+            String name, java.util.function.Supplier<PyObject> body, String internal) {
+        return new PyNativeFunction(
+                        name,
+                        (args, kwNames) -> {
+                            Arguments.none("sys." + name + "()", args, kwNames);
+                            return body.get();
+                        })
+                .documented(internal);
+    }
+
+    /**
      * {@code sys.exc_info()}: the handled exception as a {@code (type, value, traceback)} triple.
      *
      * <p>The third is the traceback the exception travelled in on, which is the one thing a handler can
@@ -500,6 +599,9 @@ public final class PyRuntime {
      * has empty arguments while {@code sys.exit((1, 2))} keeps the pair as one.
      */
     private static PyObject systemExit(PyObject[] args, String[] kwNames) {
+        // `METH_FASTCALL` with no keyword flag: the calling machine refuses the named argument before
+        // `sys_exit` ever runs `_PyArg_CheckPositional`, so `sys.exit(x=1)` never reaches the exit at all.
+        Arguments.noKeywords("sys.exit()", kwNames);
         Arguments.atMost("exit", args, kwNames, 1);
         PyObject[] given = args.length == 0 || args[0] == PyNone.INSTANCE ? new PyObject[0] : args;
         throw PyRaise.of((PyBaseException) Slots.call(ExceptionTypes.SYSTEM_EXIT, given, null));
