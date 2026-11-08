@@ -839,6 +839,12 @@ final class TypeDict {
             codeTable(into);
             return;
         }
+        if (owner == PyType.LINE_ITERATOR
+                || owner == PyType.POSITIONS_ITERATOR
+                || owner == PyType.BRANCHES_ITERATOR) {
+            locationCursorTable(owner, into);
+            return;
+        }
         if (owner == PyType.RANGE_ITERATOR
                 || owner == PyType.LONG_RANGE_ITERATOR
                 || isSequenceCursor(owner)) {
@@ -2653,6 +2659,34 @@ final class TypeDict {
     private static PyObject codeNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.CODE, args, kwNames);
         return CodeMembers.construct(tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * The three rows each of the three location cursors files for itself — and nothing beside them.
+     *
+     * <p>{@code _PyLineIterator}, {@code _PyPositionsIterator} ({@code Objects/codeobject.c:1421} and {@code
+     * :1518}) and {@code _PyBranchesIterator} ({@code Python/instrumentation.c:3155}) are written the same
+     * way: no {@code tp_methods}, no {@code tp_members}, no {@code tp_getset}, no {@code tp_doc} and no
+     * {@code tp_new}. So the book is the two slot copies that {@code update_one_slot} makes from {@code
+     * tp_iter} and {@code tp_iternext} — {@code PyObject_SelfIter} and the file's own step, the same pair the
+     * other sixteen cursor books here copy — and the {@code __doc__} entry that a zero {@code tp_doc} leaves
+     * as the value {@code None}. Two of the three names are not ones {@code object} files, which is why {@code
+     * dir()} of one is twenty-six against {@code object}'s twenty-four rather than the twenty-eight a sequence
+     * cursor reaches: those eight have a {@code PyMethodDef} table, and a walk over a code object's locations
+     * has no estimate to give, no pickle to make and nothing to put back.
+     *
+     * <p>What the two slot rows answer is the cursor's own walk, so {@code it.__next__()} raises the end where
+     * {@code FOR_ITER} would simply stop, and {@code type(it).__iter__(it)} hands back the cursor it was given
+     * — the same identity {@code iter(it)} has. Reading the row from the other one of the two types that share
+     * the name {@code line_iterator} is refused in a sentence that says that name twice, which is only
+     * CPython's {@code check_self} comparing the type rather than the name; the runtime's two types are as
+     * distinct as the reference's, so the sentence reads the same way here.
+     */
+    private static void locationCursorTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.value("__doc__", docValue(owner));
     }
 
     /**

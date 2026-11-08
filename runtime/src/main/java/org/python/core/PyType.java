@@ -514,14 +514,15 @@ public class PyType extends PyObject {
     /**
      * {@code type(co.co_lines())} and {@code type(co.co_positions())}.
      *
-     * <p>Neither name is reachable from Python, and neither type has a method of its own: each is a
-     * cursor into one code object's locations, which is why CPython gives it an {@code iternext} and no
-     * sequence protocol. What a program can see of the difference between the two is the type's name.
+     * <p>Neither name is reachable from Python, and neither type has a method of its own: each is a cursor
+     * into one code object's locations, which is why CPython gives it an {@code iternext} and no sequence
+     * protocol. What a program can see of the difference between the two is the type's name. Their {@code
+     * tp_new} is null in both, as it is in the fifteen other cursors, so neither can be called.
      */
-    public static final PyType LINE_ITERATOR = builtin("line_iterator");
+    public static final PyType LINE_ITERATOR = builtin("line_iterator").withoutNew();
 
     /** The positions sibling of {@link #LINE_ITERATOR}, one item per instruction rather than per run. */
-    public static final PyType POSITIONS_ITERATOR = builtin("positions_iterator");
+    public static final PyType POSITIONS_ITERATOR = builtin("positions_iterator").withoutNew();
 
     /**
      * {@code type(co.co_branches())} — a type of its own that CPython names {@code line_iterator} anyway.
@@ -530,9 +531,11 @@ public class PyType extends PyObject {
      * the same two fields the line cursor's struct has and a different {@code tp_iternext}, and nothing about
      * it is deliberate: the branches iterator was written beside the line one and copied its name. So this
      * runtime's two are distinct objects that print alike, exactly as the reference's do — {@code type(a) is
-     * type(b)} is false between them, {@code isinstance} with it, and {@code __name__} the same.
+     * type(b)} is false between them, {@code isinstance} with it, and {@code __name__} the same. The name it
+     * copied is also the one its refusals print, which is how {@code type(co.co_branches()).__next__(
+     * co.co_lines())} says that a {@code line_iterator} is not a {@code line_iterator}.
      */
-    public static final PyType BRANCHES_ITERATOR = builtin("line_iterator");
+    public static final PyType BRANCHES_ITERATOR = builtin("line_iterator").withoutNew();
     /**
      * What calling a generator function answers: {@code type(gen)} is {@code generator}, and the name is
      * not in {@code builtins}, so {@code generator} is unreachable from Python — same as CPython, where
@@ -974,8 +977,9 @@ public class PyType extends PyObject {
      * {@code Py_TPFLAGS_DISALLOW_INSTANTIATION}: this type's {@code tp_new} is a null pointer.
      *
      * <p>A type declared this way exists only as what another class's work hands out — {@code
-     * sys.version_info}, the three windows a dict opens, and the seven kinds the class system is made of,
-     * from {@code builtin_function_or_method} and {@code method-wrapper} down to the five descriptors. The
+     * sys.version_info}, the three windows a dict opens, the cursors that walk a sequence, a hash table or a
+     * code object's locations, and the seven kinds the class system is made of, from {@code
+     * builtin_function_or_method} and {@code method-wrapper} down to the five descriptors. The
      * refusal comes before any argument is read, and every route reaches it from the same slot: {@code
      * type_call} looks at the slot before it looks at the arguments, and {@code object_new} and {@code
      * tp_new_wrapper} look at it for the class they were handed — which is how {@code dict_keys()}, {@code

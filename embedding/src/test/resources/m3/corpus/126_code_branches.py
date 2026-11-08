@@ -13,8 +13,8 @@ The cursor is the oddity of the family. CPython's branches iterator is a second 
 one's name, so `type(co.co_branches())` prints `line_iterator` and yet is neither `is` nor `isinstance` of
 `type(co.co_lines())`; both are one-shot, neither has a `__length_hint__` to ask for a count, and the walk
 resumes where it stopped rather than from the top. What the three cursors' own dictionaries hold is not
-measured here: this runtime files no rows in a cursor's book yet, which is a face of the cursors rather than
-of the row that hands them out, and the unit case names the difference.
+measured here, since it is a face of the cursors rather than of the row that hands them out:
+`128_cursor_books.py` reads those three books, the two slot rows and the null sentence beside them.
 
 The rows are worth printing at their widest, because a jump past 255 code units is written with an
 `EXTENDED_ARG` in front of it and the folded distance is what the row answers: the body under the last heading

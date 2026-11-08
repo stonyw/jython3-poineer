@@ -300,7 +300,8 @@ class Jy3LauncherTest {
                 "124_code_slot_rows.py",
                 "125_code_replace.py",
                 "126_code_branches.py",
-                "127_code_new.py");
+                "127_code_new.py",
+                "128_cursor_books.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

@@ -23,13 +23,11 @@ import org.python.front.cpython314.Cpython314Compiler;
  * code object whose line table has been emptied from under it, and a jump past 255 units answered as the one
  * folded distance the array splits across two bytes.
  *
- * <p>The cursor is pinned beside them, and so is the one face of it this runtime does not answer.
- * CPython's branches iterator is a second {@code PyTypeObject} carrying the first one's {@code tp_name}, so
- * the three cursors are three types with two names between them — a fact about the types rather than about
- * the row that hands them out. Each of the three then files one row in its own book where the reference
- * files three: {@code __iter__} and {@code __next__} are missing from all of them alike. That gap is older
- * than this slice, belongs to the cursors and not to {@code co_branches()}, and is named below rather than
- * closed by it.
+ * <p>The cursor is pinned beside them. CPython's branches iterator is a second {@code PyTypeObject} carrying
+ * the first one's {@code tp_name}, so the three cursors are three types with two names between them — a fact
+ * about the types rather than about the row that hands them out. Each of the three files three rows in its own
+ * book, the two slots and the null sentence beside them, which is what slice 78 landed and {@link
+ * CursorBooksTest} measures; this case keeps the book pinned from the row's side as well.
  *
  * <p>The tests live in this module for the reason {@link CodeStorageHalfTest} gives: a code object is only
  * worth reading once something compiled it, and decision D2 keeps the compiler out of {@code org.python.
@@ -387,20 +385,20 @@ class CodeBranchRowsTest {
     }
 
     /**
-     * The deviation, named rather than closed: each of the three cursors files {@code __doc__} in its own
-     * book and nothing else, where the reference files {@code __iter__} and {@code __next__} beside it. All
-     * three answer alike, which is what makes this a face of the cursors rather than of this row.
+     * The book the row's cursor keeps: the two slots beside the sentence, which is all the reference declares
+     * for it, and the three rows a sequence cursor files beside those still absent. {@link CursorBooksTest}
+     * pins the book at length; this pins it from the row's side, since the row is what hands the cursor out.
      */
     @Test
-    void aCursorFilesItsSentenceInItsOwnBookAndRefusesTheTwoRowsBesideIt() throws IOException {
+    void aCursorFilesItsTwoSlotsBesideItsSentenceAndNothingElse() throws IOException {
         for (PyType cursor :
                 List.of(PyType.LINE_ITERATOR, PyType.BRANCHES_ITERATOR, PyType.POSITIONS_ITERATOR)) {
             List<String> filed = new ArrayList<>();
             for (PyObject key : TypeDict.declared(cursor).keys()) {
                 filed.add(((PyStr) key).getValue());
             }
-            assertThat(filed).as(cursor.name()).containsExactly("__doc__");
-            for (String row : List.of("__iter__", "__next__")) {
+            assertThat(filed).as(cursor.name()).containsExactly("__iter__", "__next__", "__doc__");
+            for (String row : List.of("__length_hint__", "__reduce__", "__setstate__")) {
                 assertThat(TypeDict.declared(cursor).get(PyStr.interned(row)))
                         .as(cursor.name() + " files no " + row)
                         .isNull();
@@ -408,15 +406,15 @@ class CodeBranchRowsTest {
         }
 
         PyObject branches = Slots.call(Slots.getAttr(codeOf("jump"), "co_branches"), new PyObject[0], null);
-        assertThatThrownBy(() -> Slots.getAttr(branches, "__next__"))
+        assertThat(Slots.getAttr(branches, "__next__").getType().name()).isEqualTo("method-wrapper");
+        assertThat(walked(branches)).isEqualTo(items(((PyCode) codeOf("jump")).branches()));
+        assertThatThrownBy(() -> Slots.getAttr(branches, "__length_hint__"))
                 .isInstanceOfSatisfying(
                         PyRaise.class,
                         raised ->
                                 assertThat(raised)
                                         .hasMessage(
                                                 "AttributeError: 'line_iterator' object has no"
-                                                        + " attribute '__next__'"));
-        // The walk itself answers, which is the half of the cursor this runtime does have.
-        assertThat(walked(branches)).isNotEmpty();
+                                                        + " attribute '__length_hint__'"));
     }
 }
