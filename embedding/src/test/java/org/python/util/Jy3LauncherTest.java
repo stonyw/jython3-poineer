@@ -302,7 +302,8 @@ class Jy3LauncherTest {
                 "126_code_branches.py",
                 "127_code_new.py",
                 "128_cursor_books.py",
-                "129_displayhook_and_sentences.py");
+                "129_displayhook_and_sentences.py",
+                "130_print_stream_and_pieces.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

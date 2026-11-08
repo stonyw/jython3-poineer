@@ -602,19 +602,30 @@ final class Builtins {
      * is why {@code print(1, "a")} prints {@code 1 a} rather than setting a separator. Giving {@code
      * None} for {@code sep} or {@code end} is not "print nothing" but "print the default", which is
      * what the two look like when they are simply absent.
+     *
+     * <p>{@code builtin_print_impl} (Python/bltinmodule.c:2231) settles the stream before it looks at the
+     * separator: a call that names no {@code file} reads {@code sys.stdout} there and then, so a name that
+     * has been deleted is refused as {@code lost sys.stdout} before anyone notices that {@code sep} was an
+     * integer, and a name that is {@code None} answers without writing anything — the one state where
+     * {@code print} is quieter than {@code sys.displayhook}, which refuses it. Naming a {@code file} skips
+     * the read entirely, and {@code file=None} is the same call as naming nothing. What follows is one
+     * {@code write} per argument and one per separator — an empty separator is written, not skipped — then
+     * one for the ending, then {@code flush} once those are done. The value of an argument is turned into
+     * text as it is reached, which is why an argument that refuses mid-call leaves the ones before it, and
+     * the separator that was written ahead of it, already on the stream.
      */
     private static PyObject print(PyObject[] args, String[] kwNames) {
         int positional = Arguments.positional(args, kwNames);
-        String separator = " ";
-        String ending = "\n";
+        PyObject separator = PyNone.INSTANCE;
+        PyObject ending = PyNone.INSTANCE;
         PyObject target = PyNone.INSTANCE;
         boolean flush = false;
         if (kwNames != null) {
             for (int i = 0; i < kwNames.length; i++) {
                 PyObject value = args[positional + i];
                 switch (kwNames[i]) {
-                    case "sep" -> separator = printed("sep", value, " ");
-                    case "end" -> ending = printed("end", value, "\n");
+                    case "sep" -> separator = value;
+                    case "end" -> ending = value;
                     case "file" -> target = value;
                     case "flush" -> flush = Slots.truth(value);
                     default -> throw Slots.typeError(
@@ -622,31 +633,58 @@ final class Builtins {
                 }
             }
         }
-        StringBuilder line = new StringBuilder();
+        if (target == PyNone.INSTANCE) {
+            target = PyRuntime.sysAttribute("stdout");
+            if (target == null) {
+                throw Slots.runtimeError("lost sys.stdout");
+            }
+            if (target == PyNone.INSTANCE) {
+                return PyNone.INSTANCE;
+            }
+        }
+        PyObject between = printed("sep", separator, DEFAULT_SEPARATOR);
+        PyObject after = printed("end", ending, DEFAULT_ENDING);
         for (int i = 0; i < positional; i++) {
             if (i > 0) {
-                line.append(separator);
+                write(target, between);
             }
-            line.append(args[i].str());
+            write(target, args[i]);
         }
-        line.append(ending);
-        PyObject stream = target == PyNone.INSTANCE ? PyRuntime.stdout() : target;
-        // The stream is used through its attributes, not its class, which is what both `file=` with
-        // any object that can write and `print(x, file=1)`'s AttributeError depend on.
-        Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of(line.toString())}, null);
+        write(target, after);
         if (flush) {
-            Slots.call(Slots.getAttr(stream, "flush"), new PyObject[0], null);
+            Slots.call(Slots.getAttr(target, "flush"), new PyObject[0], null);
         }
         return PyNone.INSTANCE;
     }
 
-    /** {@code sep} and {@code end}, where {@code None} means the parameter's own default. */
-    private static String printed(String name, PyObject value, String fallback) {
+    /** The two defaults, which {@code sep=None} and {@code end=None} also answer with. */
+    private static final PyStr DEFAULT_SEPARATOR = PyStr.of(" ");
+
+    private static final PyStr DEFAULT_ENDING = PyStr.of("\n");
+
+    /**
+     * One {@code PyFile_WriteObject} with {@code Py_PRINT_RAW}: the value's own text, handed to the
+     * stream's {@code write} as its own call. The stream is reached through its attributes rather than
+     * its class, which is what both {@code file=} with any object that can write and {@code print(x,
+     * file=1)}'s {@code AttributeError} depend on.
+     */
+    private static void write(PyObject stream, PyObject value) {
+        Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of(value.str())}, null);
+    }
+
+    /**
+     * {@code sep} and {@code end}, where {@code None} means the parameter's own default.
+     *
+     * <p>The value is kept as it was given rather than read out as a Java string, because the reference
+     * writes it through {@code PyObject_Str}: a {@code str} subclass that has written its own {@code
+     * __str__} is printed as that answers, not as the characters it holds.
+     */
+    private static PyObject printed(String name, PyObject value, PyObject fallback) {
         if (value == PyNone.INSTANCE) {
             return fallback;
         }
-        if (value instanceof PyStr s) {
-            return s.getValue();
+        if (value instanceof PyStr) {
+            return value;
         }
         throw Slots.typeError(
                 "%s must be None or a string, not %s", name, value.getType().name());
