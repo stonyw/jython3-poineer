@@ -7,8 +7,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
-import java.util.Set;
 import java.util.function.IntPredicate;
 
 /**
@@ -23,15 +21,12 @@ import java.util.function.IntPredicate;
  *
  * Codecs are a short, deliberate list. Java's own charsets cover UTF-8, UTF-16 and latin-1, which is
  * everything the marshal reader and ordinary scripts need; a refused encoding prints CPython's
- * {@code LookupError} rather than guessing at one this runtime does not have.
+ * {@code LookupError} rather than guessing at one this runtime does not have. Encoding a text is
+ * {@link Encoder}'s, decoding a run of octets is below.
  */
 public final class PyBytes extends PyObject {
 
     public static final PyBytes EMPTY = new PyBytes(new byte[0]);
-
-    /** The codecs this slice answers, under their hyphen- and case-free names. */
-    private static final Set<String> CODECS =
-            Set.of("utf8", "utf8sig", "ascii", "latin1", "utf16", "utf16le", "utf16be");
 
     private final byte[] value;
 
@@ -72,53 +67,21 @@ public final class PyBytes extends PyObject {
     /**
      * {@code s.encode(encoding, errors)}.
      *
-     * The position a codec error reports is a code-point index while a Java string is a UTF-16 array, so
-     * the {@code ascii} and {@code latin-1} tests walk code points and count them. The substitution
-     * handlers are M4: an encoding this runtime has but a mode it does not is refused rather than
-     * silently made strict.
+     * <p>The walk belongs to {@link Encoder}: which characters a codec will not write, how far the refusal
+     * reaches, and what the named handlers answer instead. {@code bytes(s, encoding, errors)} comes to the
+     * same place, because CPython routes both through {@code PyUnicode_AsEncodedString}.
      */
     public static PyBytes encodeText(String text, String encoding, String errors) {
-        String name = codec(encoding);
-        requireStrict(errors, "str.encode");
-        return switch (name) {
-            case "utf8" -> PyBytes.wrap(PyHash.encodeUtf8(text));
-            case "utf8sig" -> PyBytes.wrap(concat(
-                    new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF}, PyHash.encodeUtf8(text)));
-            case "ascii" -> {
-                int[] run = unencodable(text, 0x7f);
-                if (run != null) {
-                    throw Slots.unicodeEncode(
-                            "ascii", text, run[0], run[1], "ordinal not in range(128)");
-                }
-                yield PyBytes.of(text.getBytes(StandardCharsets.US_ASCII));
-            }
-            case "latin1" -> {
-                int[] run = unencodable(text, 0xff);
-                if (run != null) {
-                    throw Slots.unicodeEncode(
-                            "latin-1", text, run[0], run[1], "ordinal not in range(256)");
-                }
-                byte[] out = new byte[text.length()];
-                for (int i = 0; i < out.length; i++) {
-                    out[i] = (byte) text.charAt(i);
-                }
-                yield PyBytes.wrap(out);
-            }
-            case "utf16" -> PyBytes.wrap(concat(
-                    new byte[] {(byte) 0xff, (byte) 0xfe},
-                    text.getBytes(StandardCharsets.UTF_16LE)));
-            case "utf16be" -> PyBytes.of(text.getBytes(StandardCharsets.UTF_16BE));
-            default -> PyBytes.of(text.getBytes(StandardCharsets.UTF_16LE));
-        };
+        return Encoder.encode(text, encoding, errors);
     }
 
     /** {@code b.decode(encoding, errors)}. */
     public String decodeText(String encoding, String errors) {
         String name = codec(encoding);
-        requireStrict(errors, "bytes.decode");
+        requireStrict(errors);
         return switch (name) {
-            case "utf8" -> new String(value, StandardCharsets.UTF_8);
-            case "utf8sig" -> new String(
+            case "utf_8" -> new String(value, StandardCharsets.UTF_8);
+            case "utf_8_sig" -> new String(
                     value.length >= 3 ? Arrays.copyOfRange(value, 3, value.length) : value,
                     StandardCharsets.UTF_8);
             case "ascii" -> {
@@ -130,61 +93,35 @@ public final class PyBytes extends PyObject {
                 }
                 yield new String(value, StandardCharsets.US_ASCII);
             }
-            case "latin1" -> {
+            case "latin_1" -> {
                 StringBuilder out = new StringBuilder(value.length);
                 for (byte b : value) {
                     out.append((char) (b & 0xff));
                 }
                 yield out.toString();
             }
-            case "utf16be" -> new String(value, StandardCharsets.UTF_16BE);
+            case "utf_16_be" -> new String(value, StandardCharsets.UTF_16BE);
             default -> new String(value, StandardCharsets.UTF_16);
         };
     }
 
+    /** {@code codecs.lookup}, shared with the encoding half: the same seven names. */
     private static String codec(String encoding) {
-        String name = encoding.toLowerCase(Locale.ROOT)
-                .replace("-", "")
-                .replace("_", "")
-                .replace(" ", "");
-        if (!CODECS.contains(name)) {
-            throw Slots.lookupError("unknown encoding: " + encoding);
-        }
-        return name;
-    }
-
-    private static void requireStrict(String errors, String what) {
-        if (!"strict".equals(errors)) {
-            throw Slots.notImplemented(what + " error handler " + errors);
-        }
+        return Encoder.codec(encoding);
     }
 
     /**
-     * {@code charmap_encode}'s run: {@code [start, end)} over the code points a codec cannot write, counted
-     * in code points because that is what the exception carries and what its sentence prints.
+     * The one handler {@link #decodeText} answers, still.
      *
-     * <p>The run closes at the first character the codec can write, which is why {@code 'aéé'} is one error
-     * over {@code 1-3} rather than two over {@code 1} and {@code 2}, while {@code 'éab'} is {@code 0-1} and
-     * never reaches the character two places later.
+     * <p>An octet run that does not decode is a different animal from a character that will not encode: a
+     * decode handler reads off the failing bytes, and its {@code backslashreplace} writes {@code \x..} for an
+     * octet where the encoder writes {@code \x..} for a character. So the substitution names stay refused
+     * here, in this runtime's own words, until the decode half is written.
      */
-    private static int[] unencodable(String text, int limit) {
-        int start = -1;
-        int end = 0;
-        int at = 0;
-        for (int i = 0; i < text.length(); ) {
-            int codePoint = text.codePointAt(i);
-            if (codePoint > limit) {
-                if (start < 0) {
-                    start = at;
-                }
-                end = at + 1;
-            } else if (start >= 0) {
-                break;
-            }
-            at++;
-            i += Character.charCount(codePoint);
+    private static void requireStrict(String errors) {
+        if (!"strict".equals(errors)) {
+            throw Slots.notImplemented("bytes.decode error handler " + errors);
         }
-        return start < 0 ? null : new int[] {start, end};
     }
 
     private static byte[] concat(byte[] head, byte[] body) {

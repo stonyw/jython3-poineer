@@ -1081,13 +1081,24 @@ public final class PyStr extends PyObject {
         return text;
     }
 
-    /** A named parameter of its own method, which CPython names in the refusal. */
+    /**
+     * A named parameter of its own method, which CPython names in the refusal.
+     *
+     * <p>The wording is {@code _PyArg_BadArgument} (Python/getargs.c:622), and that function makes {@code
+     * None} the one value whose type is not named: {@code encode("ascii", None)} says {@code not None}, where
+     * {@code encode("ascii", 7)} says {@code not int}. Both parameters of {@code encode} are Clinic {@code
+     * str} converters, so a name with a null character in it is refused as a value error before the codec is
+     * looked for.
+     */
     private static String named(PyObject value, String method, String parameter) {
         String text = Numbers.asText(value);
         if (text == null) {
             throw Slots.typeError(
                     "%s() argument '%s' must be str, not %s",
-                    method, parameter, value.getType().name());
+                    method, parameter, Slots.argumentName(value));
+        }
+        if (text.indexOf('\0') >= 0) {
+            throw Slots.valueError("embedded null character");
         }
         return text;
     }

@@ -603,24 +603,13 @@ final class Builtins {
      * the escape its width asks for. Everything below that is handed on as it stands, control characters
      * included, which is why a raw newline written by a program's own {@code __repr__} is still a newline in
      * the answer, while {@code repr} of that answer escapes it.
+     *
+     * <p>The walk is {@link Encoder}'s rather than a loop of this function's own, so the escapes {@code
+     * ascii()} writes and the escapes {@code "é".encode("ascii", "backslashreplace")} writes are the same
+     * escapes; a lone surrogate in a hand-written {@code __repr__} earns the same six characters either way.
      */
     private static PyObject asciiText(PyObject value) {
-        String text = value.repr();
-        StringBuilder escaped = new StringBuilder(text.length());
-        for (int at = 0; at < text.length(); ) {
-            int point = text.codePointAt(at);
-            at += Character.charCount(point);
-            if (point < 0x80) {
-                escaped.appendCodePoint(point);
-            } else if (point <= 0xFF) {
-                escaped.append(String.format("\\x%02x", point));
-            } else if (point <= 0xFFFF) {
-                escaped.append(String.format("\\u%04x", point));
-            } else {
-                escaped.append(String.format("\\U%08x", point));
-            }
-        }
-        return PyStr.of(escaped.toString());
+        return PyStr.of(Encoder.asciiEscaped(value.repr()));
     }
 
     /**

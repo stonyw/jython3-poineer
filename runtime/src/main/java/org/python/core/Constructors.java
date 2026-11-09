@@ -918,30 +918,54 @@ final class Constructors {
                 "str() argument '%s' must be str, not %s", name, value.getType().name());
     }
 
+    /** {@code bytes()}'s three parameters, the first of them positional-only. */
+    private static final String[] BYTES_NAMES = {"", "encoding", "errors"};
+
+    /**
+     * {@code bytes_new_impl} (Objects/bytesobject.c:2766).
+     *
+     * <p>The three parameters are Clinic's {@code str} converters, and a converter is what decides that
+     * {@code None} is not nothing: {@code bytes("x", None)} is refused as {@code bytes() argument
+     * 'encoding' must be str, not None}, while {@code bytes("x")} — which says nothing about an encoding —
+     * is the one that reaches the impl with {@code encoding == NULL} and answers {@code string argument
+     * without an encoding}. A name that arrives twice is refused by the parser before any converter looks at
+     * it, and so is a fourth argument of any kind.
+     *
+     * <p>What the impl then asks, in this order: whether an encoding was given at all, whether the source is
+     * text, and whether only an errors was given. The two sentences that name no argument are CPython's, and
+     * which of the pair a call earns depends on the source — {@code bytes("abc", errors="ignore")} is the
+     * string's complaint about the missing encoding, {@code bytes(3, errors="ignore")} and
+     * {@code bytes(b"x", errors="ignore")} are the "without a string argument" that says the source was never
+     * a string.
+     */
     private static PyObject bytes(PyObject[] args, String[] kwNames) {
-        if (kwNames != null) {
-            throw Slots.typeError(
-                    "bytes() got an unexpected keyword argument '%s'", kwNames[0]);
-        }
-        if (args.length > 3) {
-            throw Slots.typeError("bytes() takes at most 3 arguments (%d given)", args.length);
-        }
-        if (args.length > 1) {
-            codecArgument("encoding", args[1]);
-            if (args.length > 2) {
-                codecArgument("errors", args[2]);
+        PyObject[] given =
+                Arguments.parameters("bytes", args, kwNames, BYTES_NAMES, new PyObject[0], 0);
+        String codec = codecArgument("encoding", given[1]);
+        String mode = codecArgument("errors", given[2]);
+        PyObject value = given[0];
+        if (value == null) {
+            if (codec != null || mode != null) {
+                throw Slots.typeError(
+                        codec != null
+                                ? "encoding without a string argument"
+                                : "errors without a string argument");
             }
-        }
-        if (args.length == 0) {
             return PyBytes.EMPTY;
         }
-        PyObject value = args[0];
-        if (value instanceof PyStr s) {
-            if (args.length == 1 || args[1] == PyNone.INSTANCE) {
-                throw Slots.typeError("string argument without an encoding");
+        boolean textual = value instanceof PyStr;
+        if (codec != null) {
+            if (!(value instanceof PyStr text)) {
+                throw Slots.typeError("encoding without a string argument");
             }
-            String mode = args.length > 2 ? ((PyStr) args[2]).getValue() : "strict";
-            return PyBytes.encodeText(s.getValue(), ((PyStr) args[1]).getValue(), mode);
+            return PyBytes.encodeText(text.getValue(), codec, mode == null ? "strict" : mode);
+        }
+        if (mode != null) {
+            throw Slots.typeError(
+                    textual ? "string argument without an encoding" : "errors without a string argument");
+        }
+        if (textual) {
+            throw Slots.typeError("string argument without an encoding");
         }
         Long count = askedForOctets(value);
         if (count != null) {
@@ -1021,12 +1045,30 @@ final class Constructors {
 
     private static final BigInteger BYTE_LIMIT = BigInteger.valueOf(255);
 
-    private static void codecArgument(String name, PyObject value) {
-        if (value instanceof PyStr || value == PyNone.INSTANCE) {
-            return;
+    /**
+     * Clinic's {@code str} converter over one of {@code bytes()}'s two codec names.
+     *
+     * <p>Absent is not the same as {@code None}: the null this returns means the parameter was never
+     * mentioned, and only a value that was mentioned is asked whether it is text. The {@code embedded null
+     * character} refusal is the converter's too, made after the type check and before the codec is named.
+     */
+    private static String codecArgument(String name, PyObject value) {
+        if (value == null) {
+            return null;
         }
-        throw Slots.typeError(
-                "bytes() argument '%s' must be str, not %s", name, value.getType().name());
+        if (!(value instanceof PyStr text)) {
+            throw Slots.typeError(
+                    "bytes() argument '%s' must be str, not %s", name, Slots.argumentName(value));
+        }
+        return noNullByte(text.getValue());
+    }
+
+    /** The {@code strlen} test of a Clinic {@code str} converter, made on the text it just read. */
+    private static String noNullByte(String value) {
+        if (value.indexOf('\0') >= 0) {
+            throw Slots.valueError("embedded null character");
+        }
+        return value;
     }
 
     /** The text of a {@code str} or {@code bytes} argument, or null when the value is neither. */
