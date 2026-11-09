@@ -2,13 +2,16 @@ package org.python.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.python.util.Jy3Process.Result;
 
@@ -308,6 +311,80 @@ class Jy3LauncherTest {
                 "132_input_and_the_line_it_reads.py",
                 "133_encode_handlers_and_the_runs_they_answer_for.py",
                 "134_decode_handlers_and_the_octets_they_answer_for.py");
+    }
+
+    /**
+     * M3 slice 85's stream face: the scripts whose questions are asked of {@code sys.stdin}, so both
+     * children get the same pipe and the same closed descriptor at the end of it.
+     *
+     * <p>The pipe is the case, not an accident of plumbing. Asked of a regular file, {@code seek} and
+     * {@code tell} answer with a position and this runtime has no raw layer to ask; asked of a pipe both
+     * sides refuse in the same words, so the refusals themselves are what is compared — as are the
+     * characters a read answers when the octets under them stop halfway through a line.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("m3PipeCorpus")
+    void anM3CorpusScriptReadsItsPipeExactlyAsCpythonReadsIt(
+            String scriptName, byte[] pipe) throws Exception {
+        Path script = write(scriptName, resource("m3/corpus/" + scriptName));
+
+        Result reference =
+                Jy3Process.runWithOctets(
+                        work, cpythonCommand(), List.of(script.toString()), pipe);
+        Result jy3 =
+                Jy3Process.runWithOctets(
+                        work, Jy3Process.jy3Command(), List.of(script.toString()), pipe);
+
+        assertThat(jy3.exit()).as("%s exit", scriptName).isEqualTo(reference.exit());
+        assertThat(jy3.out()).as("%s stdout", scriptName).isEqualTo(reference.out());
+        assertThat(jy3.err()).as("%s stderr", scriptName).isEqualTo(reference.err());
+    }
+
+    private static List<Arguments> m3PipeCorpus() {
+        return List.of(
+                Arguments.of("135_stream_reads_and_the_position_refusals.py", STDIN_OCTETS));
+    }
+
+    /**
+     * The pipe case 135 reads: eleven whole lines and a twelfth that no terminator follows.
+     *
+     * <p>The six {@code '\r'} characters inside are ordinary text — five of them sit before a line's own
+     * terminator and one ends {@code three} in the middle of a line — because the stream was opened with
+     * {@code newline='\n'} and translates nothing, and the octet counts differ from the character counts
+     * on purpose: a snake is four octets and a backslash-escaped accent two, so the reads that the script
+     * makes in four-octet chunks answer in units the chunks cannot cut. The last two lines are not text at
+     * all — a lone {@code 0xc3} that no continuation octet follows, and an {@code 0xe2} whose three-octet
+     * run stops at two — which is why this is an array of octets rather than a string.
+     */
+    private static final byte[] STDIN_OCTETS =
+            octets(
+                    "one\r\n",
+                    "two\r\n",
+                    "three\rcaf\u00e9\r\n",
+                    "\ud83d\udc0dx\n",
+                    "abc\ud83d\udc0d\ud83d\udc0ddef\n",
+                    "six\r\n",
+                    "seven\n",
+                    "eight\n",
+                    "nine\r\n",
+                    "tail\r\n",
+                    "bad",
+                    new byte[] {(byte) 0xc3},
+                    "afer\n",
+                    "mid",
+                    new byte[] {(byte) 0xe2, (byte) 0x82});
+
+    /** UTF-8 text and raw octets, end to end, which is what a pipe carries. */
+    private static byte[] octets(Object... parts) {
+        ByteArrayOutputStream pipe = new ByteArrayOutputStream();
+        for (Object part : parts) {
+            if (part instanceof String text) {
+                pipe.writeBytes(text.getBytes(StandardCharsets.UTF_8));
+            } else {
+                pipe.writeBytes((byte[]) part);
+            }
+        }
+        return pipe.toByteArray();
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

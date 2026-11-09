@@ -48,12 +48,25 @@ public final class Jy3Process {
 
     public static Result run(
             Path work, List<String> command, List<String> arguments, String input) throws Exception {
+        return runWithOctets(
+                work, command, arguments, input == null ? null : input.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The same, with the descriptor's contents given as octets rather than as text.
+     *
+     * <p>A Java {@code String} cannot hold a byte sequence that is not valid UTF-8, and the stream cases
+     * ask what a pipe does with exactly that, so they hand over the octets themselves. A null means the
+     * program's stdin is closed without a word, which is the same thing the text form does with null.
+     */
+    public static Result runWithOctets(
+            Path work, List<String> command, List<String> arguments, byte[] input) throws Exception {
         List<String> line = new ArrayList<>(command);
         line.addAll(arguments);
         Process process =
                 new ProcessBuilder(line).directory(work.toFile()).redirectErrorStream(false).start();
         if (input != null) {
-            process.getOutputStream().write(input.getBytes(StandardCharsets.UTF_8));
+            process.getOutputStream().write(input);
         }
         process.getOutputStream().close();
         String out = read(process.getInputStream());

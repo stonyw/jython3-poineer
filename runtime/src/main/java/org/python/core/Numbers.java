@@ -322,6 +322,38 @@ final class Numbers {
     }
 
     /**
+     * {@code _Py_convert_optional_to_ssize_t}: a size that may also be {@code None}.
+     *
+     * <p>Clinic declares {@code read}'s size and {@code readlines}' hint as {@code Py_ssize_t(accept=
+     * {int, NoneType})} and hands both to one function in {@code modsupport.c}. Three routes, and only the
+     * middle one reads the value: {@code None} leaves the caller's default standing, anything that can be
+     * an index is converted by {@code PyNumber_AsSsize_t(..., PyExc_OverflowError)} — which overflows by
+     * naming the asked value's type, {@code cannot fit 'int' into an index-sized integer} — and everything
+     * else is refused without being asked, in a sentence none of the other converters of this family
+     * writes.
+     *
+     * <p>A float is refused rather than narrowed, because the gate is {@code _PyIndex_Check} and a float
+     * files no {@code __index__}: {@code readlines(1.5)} says {@code argument should be integer or None,
+     * not 'float'} where {@code readline(1.5)} — plain {@code Py_ssize_t}, {@link #size} — says {@code
+     * 'float' object cannot be interpreted as an integer}.
+     */
+    static long optionalSize(PyObject value, long whenNone) {
+        if (value instanceof PyNone) {
+            return whenNone;
+        }
+        if (!isIndex(value)) {
+            throw Slots.typeError(
+                    "argument should be integer or None, not '%s'", value.getType().filedName());
+        }
+        BigInteger number = asIndex(value);
+        if (number.bitLength() > 63) {
+            throw Slots.overflowError(
+                    "cannot fit '%s' into an index-sized integer", value.getType().filedName());
+        }
+        return number.longValue();
+    }
+
+    /**
      * Whether an integer of any size is one Java can hold in an {@code int}, which is what a Python
      * index has to be before it can address anything.
      */

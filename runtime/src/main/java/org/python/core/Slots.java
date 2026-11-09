@@ -549,15 +549,29 @@ public final class Slots {
     }
 
     /**
-     * {@code OSError} with a sentence and no errno, which is what the two refusals of a stream that is
-     * open but going the wrong way read.
+     * {@code OSError} with a sentence and no errno, which is what a descriptor that simply fails reports.
      *
-     * <p>CPython raises {@code io.UnsupportedOperation} there — a type of the {@code io} module, which
-     * this runtime has not built, and a subclass of both {@code OSError} and {@code ValueError}. The
-     * message it carries is the same either way, and only the type's name is missing.
+     * <p>The reference gets its errno from the system call that failed; this runtime reads through Java,
+     * which hands back an exception rather than a number, so the sentence carries only what went wrong.
+     * A stream that is open but going the wrong way does not report here — see {@link
+     * #unsupportedOperation}.
      */
     public static PyRaise osError(String format, Object... args) {
         return PyRaise.raise(ExceptionTypes.OS_ERROR, text(format, args));
+    }
+
+    /**
+     * {@code io.UnsupportedOperation} with a sentence and no errno: the refusal of a stream asked to do
+     * what its own kind cannot.
+     *
+     * <p>{@code _PyIO_raise_error} and {@code _unsupported} in {@code _io} raise this for {@code
+     * "not readable"}, {@code "underlying stream is not seekable"} and the bare {@code "truncate"} a
+     * read-only buffer answers. It is a subclass of both {@code OSError} and {@code ValueError}, so a
+     * program that caught either by those names still catches it — which is how the reference's own test
+     * suite reads these three sentences.
+     */
+    public static PyRaise unsupportedOperation(String format, Object... args) {
+        return PyRaise.raise(ExceptionTypes.UNSUPPORTED_OPERATION, text(format, args));
     }
 
     public static PyRaise keyError(PyObject missing) {

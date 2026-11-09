@@ -11,9 +11,9 @@ package org.python.core;
  * <p>Every sentence this file declares is the {@code tp_doc} the exception's own C file writes down,
  * copied whole. None of these types has an argument table, so the two knives read one text and disagree
  * about nothing: {@code __text_signature__} answers {@code None} and {@code __doc__} answers what is
- * written here, and the dictionary row is the same string a third time. The one class left without a
- * {@code documented} call is {@code ExceptionGroup}, whose {@code tp_doc} CPython leaves {@code NULL} —
- * the only built-in type that answers {@code None} on either side.
+ * written here, and the dictionary row is the same string a third time. The two classes left without a
+ * {@code documented} call are {@code ExceptionGroup} and {@code UnsupportedOperation}, whose {@code
+ * tp_doc} CPython leaves {@code NULL} — the only exception types here that answer {@code None}.
  */
 public final class ExceptionTypes {
 
@@ -233,6 +233,18 @@ public final class ExceptionTypes {
 
     public static final PyType CONNECTION_RESET_ERROR =
             child("ConnectionResetError", CONNECTION_ERROR).documented("Connection reset.");
+
+    /**
+     * What a stream says when the question is legitimate but this stream cannot answer it.
+     *
+     * <p>An exception type CPython files outside {@code builtins}: under {@code io}, its {@code tp_doc} is
+     * a bare {@code NULL} — so {@code UnsupportedOperation.__doc__} answers {@code None} — and it inherits
+     * from both {@code OSError} and {@code ValueError} so {@code except} clauses written against either
+     * catch it. A sentence raised this way prints with no errno prefix, the same as any {@code OSError}
+     * built from one argument.
+     */
+    public static final PyType UNSUPPORTED_OPERATION =
+            child("UnsupportedOperation", OS_ERROR, VALUE_ERROR).filedUnder("io.UnsupportedOperation");
 
     /**
      * {@code Warning} and the eleven categories {@code warnings.warn} sorts a message by.
