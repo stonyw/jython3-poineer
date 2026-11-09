@@ -1,7 +1,5 @@
 package org.python.core;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -37,12 +35,16 @@ import java.util.function.Supplier;
  * descriptor is a pipe or a file, because the loops reassemble what the reads hand out; only the
  * position questions below notice the difference.
  *
- * <p>There is no buffered or raw layer beneath this stream, and that is where the reading face stops
- * matching. {@code seekable()} asks the buffer, and there is no buffer to ask, so it answers False
- * everywhere and {@code seek} and {@code tell} refuse with {@code underlying stream is not seekable} —
- * which is what the reference says of a pipe, and not what it says of a redirected file. {@code
- * truncate} reaches the buffer's own refusal for a reading stream, {@code truncate}, and for a writing
- * one the reference reaches the descriptor and answers an errno this runtime cannot ask for.
+ * <p>Under a reading stream are the two layers the reference puts there: {@code sys.stdin.buffer} is a
+ * {@link PyBufferedReader} over a {@link PyFileIO}, and this stream asks them rather than the descriptor.
+ * The chunk loop goes through {@code buffer.read1} and a whole read through {@code buffer.read}, so the
+ * octets arrive a storeful at a time rather than a request at a time; {@code readable}, {@code writable},
+ * {@code seekable}, {@code isatty}, {@code fileno}, {@code flush}, {@code close}, {@code name} and
+ * {@code closed} all forward, and the refusals they pick up on the way down — the descriptor's {@code
+ * raw stream has been detached}, the {@code I/O operation on closed file} — are the sentences this stream
+ * answers with. {@code seekable} is also remembered, because {@code seek} and {@code tell} consult the
+ * memory rather than the buffer: on the pipe this runtime reads from it is False, so they refuse
+ * {@code underlying stream is not seekable} even after the buffer below has been detached.
  *
  * <p>{@code _io._IOBase} gives every stream a dictionary of its own, and the interpreter's stream
  * creation files {@code mode} in it before the object reaches {@code sys}. That is where the stream's
@@ -62,26 +64,24 @@ public final class PyStream extends PyIterator {
     private static final String CLOSED_GETTER = "I/O operation on closed file";
 
     /** The rows {@code _io} files as getsets with no setter, which refuse in the first sentence. */
-    private static final Set<String> NOT_WRITABLE = Set.of("name", "closed", "errors", "newlines");
+    private static final Set<String> NOT_WRITABLE =
+            Set.of("name", "closed", "errors", "newlines", "buffer");
 
     /** The rows {@code _io} files as {@code Py_READONLY} members, which refuse by the field alone. */
     private static final Set<String> READ_ONLY = Set.of("encoding", "line_buffering", "write_through");
 
-    /**
-     * The most octets one read of the descriptor is asked for, however big the chunk the stream was
-     * told to use.
-     *
-     * <p>{@code _CHUNK_SIZE} is a writable field of the reference's stream and a program may set it to
-     * {@code 2 ** 40}, which the reference hands to {@code read()} on the raw descriptor. That read
-     * allocates the buffer inside {@code FileIO}, and a Java array of the same request is allocated
-     * here — so the request is cut to what one read of any descriptor is worth anyway, since the loops
-     * above reassemble the text whatever size each read came back with.
-     */
-    private static final int MAX_RAW_READ = 1 << 16;
+    /** What {@code CHECK_ATTACHED} says once the stream has handed its buffer over. */
+    private static final String DETACHED = "underlying buffer has been detached";
 
     private final String name;
     private final PrintStream out;
-    private final InputStream in;
+
+    /** The two layers under a reading stream, and nothing at all under a writing one. */
+    private final PyBufferedReader buffer;
+
+    /** {@code self->raw}: the descriptor the buffer rests on, cached to ask it about closedness. */
+    private final PyFileIO raw;
+
     private final String errors;
     private final boolean lineBuffered;
     private final int fd;
@@ -89,6 +89,10 @@ public final class PyStream extends PyIterator {
     /** {@code _IOBase.__dict__}: the one dictionary this stream's own attributes are kept in. */
     private final PyDict dictionary = PyDict.empty();
 
+    /** {@code self->detached}: whether this stream has handed its buffer over. */
+    private boolean detached;
+
+    /** The writing stream's own flag, which is what it has instead of the descriptor's. */
     private boolean closed;
 
     /** {@code _CHUNK_SIZE}: how many octets a read of the descriptor is worth asking for. */
@@ -112,19 +116,23 @@ public final class PyStream extends PyIterator {
         super(TYPE);
         this.name = name;
         this.out = new PrintStream(target, autoFlush, StandardCharsets.UTF_8);
-        this.in = null;
+        this.buffer = null;
+        this.raw = null;
         this.errors = errors;
         this.lineBuffered = autoFlush;
         this.fd = fd;
         declareMode("w");
     }
 
-    /** {@code sys.stdin}: the same descriptor type, reading. */
+    /** {@code sys.stdin}: the same descriptor type, reading, over the two layers it asks. */
     PyStream(String name, InputStream source, int fd, String errors) {
         super(TYPE);
         this.name = name;
         this.out = null;
-        this.in = source;
+        this.buffer = new PyBufferedReader(new PyFileIO(name, source, fd, false));
+        // `_textiowrapper_detect_buffer_attributes` caches the descriptor as the answer to `closed`, and
+        // keeps answering from the cache after the buffer has been detached from it.
+        this.raw = this.buffer.descriptor();
         this.errors = errors;
         this.lineBuffered = false;
         this.fd = fd;
@@ -145,36 +153,84 @@ public final class PyStream extends PyIterator {
     }
 
     public void flush() {
-        if (reading()) {
-            // A reading stream has nothing of its own to drain, and the reference answers None for it.
-            return;
+        if (!reading()) {
+            out.flush();
         }
-        out.flush();
     }
 
     private boolean reading() {
-        return in != null;
+        return buffer != null;
     }
 
-    /** {@code CHECK_CLOSED}, the guard every method of the stream itself runs first. */
-    private void checkOpen() {
-        if (closed) {
+    /** {@code buffer_access_safe} and {@code CHECK_ATTACHED}: the buffer, if this stream still has one. */
+    private PyBufferedReader attached() {
+        if (detached) {
+            throw Slots.valueError(DETACHED);
+        }
+        return buffer;
+    }
+
+    /** {@code buffer_getattr} and {@code buffer_callmethod_*}: the question asked of the buffer. */
+    private PyObject askBuffer(String row, PyObject[] args) {
+        return Slots.call(Slots.getAttr(attached(), row), args, null);
+    }
+
+    /** {@code _PyFile_Flush(self)}: this stream's own {@code flush} row, reached through Python. */
+    private void flushSelf() {
+        Slots.call(Slots.getAttr(this, "flush"), new PyObject[0], null);
+    }
+
+    /**
+     * {@code CHECK_CLOSED}'s question, which is the shortcut of {@code _PyIOBase_check_closed}: the
+     * descriptor cached out of {@code buffer.raw}, and not the buffer's answer.
+     *
+     * <p>The two differ in one direction only. A buffer that has been detached from its own descriptor
+     * still leaves this stream asking the descriptor, so {@code tell} and {@code seek} reach the memory
+     * below rather than the refusal of the layer between.
+     */
+    private boolean isClosed() {
+        return reading() ? raw.closedFlag() : closed;
+    }
+
+    /** {@code _PyIOBase_check_closed}: the derived attribute, which is the buffer's answer. */
+    private void checkVirtual() {
+        if (Slots.truth(closedValue())) {
             throw Slots.valueError(CLOSED);
         }
     }
 
-    /** The same guard as the getters and the descriptor questions use, which drops the full stop. */
+    /** What reading {@code s.closed} answers, from whichever layer the reference reads it. */
+    private PyObject closedValue() {
+        return reading() ? Slots.getAttr(attached(), "closed") : PyBool.of(closed);
+    }
+
+    /** {@code CHECK_CLOSED}, the guard every method of the stream itself runs first. */
+    private void checkOpen() {
+        if (isClosed()) {
+            throw Slots.valueError(CLOSED);
+        }
+    }
+
+    /** The same guard as the rows that refuse with no full stop, which is the writing stream's own. */
     private void checkGetter() {
-        if (closed) {
+        if (isClosed()) {
             throw Slots.valueError(CLOSED_GETTER);
         }
     }
 
-    /** The guard of the reading methods: the stream's own, then the direction. */
+    /** The guard of the reading methods: attached, then open, then the direction. */
     private void checkReadable() {
+        checkAttached();
         checkOpen();
         if (!reading()) {
             throw Slots.unsupportedOperation("not readable");
+        }
+    }
+
+    /** {@code CHECK_ATTACHED}, the guard of every row that reaches the text or the buffer at all. */
+    private void checkAttached() {
+        if (detached) {
+            throw Slots.valueError(DETACHED);
         }
     }
 
@@ -207,6 +263,7 @@ public final class PyStream extends PyIterator {
             throw Slots.typeError(
                     "write() argument must be str, not %s", Slots.argumentName(text));
         }
+        checkAttached();
         checkOpen();
         if (reading()) {
             throw Slots.unsupportedOperation("not writable");
@@ -368,31 +425,22 @@ public final class PyStream extends PyIterator {
         return at < 0 ? -1 : pending.codePointCount(0, at + 1);
     }
 
+    /** {@code buffer.read1(n)}: the octets one chunk is built from, however the store holds them. */
     private byte[] readOctets(long wanted) {
-        byte[] buffer = new byte[(int) Math.min(Math.max(wanted, 1), MAX_RAW_READ)];
-        try {
-            int got = in.read(buffer);
-            return got <= 0 ? new byte[0] : Arrays.copyOf(buffer, got);
-        } catch (IOException refusal) {
-            // The reference answers an I/O failure with an errno, which this runtime has no way to ask
-            // the descriptor for, so the sentence carries only what went wrong.
-            throw Slots.osError("reading error");
-        }
+        return octetsOf(askBuffer("read1", new PyObject[] {PyInt.of(wanted)}));
     }
 
-    /** The rest of the descriptor, which is the {@code buffer.read()} a whole-file {@code read()} does. */
+    /** {@code buffer.read()}: the rest of the store and of the descriptor under it. */
     private byte[] readAllOctets() {
-        ByteArrayOutputStream all = new ByteArrayOutputStream();
-        byte[] buffer = new byte[MAX_RAW_READ];
-        try {
-            int got;
-            while ((got = in.read(buffer)) > 0) {
-                all.write(buffer, 0, got);
-            }
-        } catch (IOException refusal) {
-            throw Slots.osError("reading error");
+        return octetsOf(askBuffer("read", new PyObject[0]));
+    }
+
+    /** The one answer a chunk can be built from, which is the sentence the reference writes for any other. */
+    private static byte[] octetsOf(PyObject answer) {
+        if (!(answer instanceof PyBytes octets)) {
+            throw Slots.osError("read() should return bytes");
         }
-        return all.toByteArray();
+        return octets.getValue();
     }
 
     /**
@@ -457,53 +505,113 @@ public final class PyStream extends PyIterator {
         return text.substring(text.offsetByCodePoints(0, from), text.offsetByCodePoints(0, end));
     }
 
+    /**
+     * {@code s.close()}: attached, then asked of the buffer whether there is anything left to close, then
+     * the stream's own flush, then the buffer's.
+     *
+     * <p>Nothing here sets a flag of this stream's: a reading stream has no closedness of its own, and
+     * after {@code s.detach()} the very first guard is the one that refuses. A writing stream keeps its
+     * own flag because it has no layer under it to keep one for it.
+     */
     private PyObject closeAnswer() {
+        checkAttached();
+        if (reading()) {
+            if (Slots.truth(Slots.getAttr(attached(), "closed"))) {
+                return PyNone.INSTANCE;
+            }
+            flushSelf();
+            return askBuffer("close", new PyObject[0]);
+        }
         if (closed) {
             return PyNone.INSTANCE;
         }
         closed = true;
-        if (!reading()) {
-            flush();
-        }
+        flush();
         return PyNone.INSTANCE;
     }
 
+    /** {@code s.detach()}: the flush first, and then the buffer is no longer this stream's to ask. */
+    private PyObject detachAnswer() {
+        // `_PyFile_Flush(self)` runs before `buffer_access_safe`, so a buffer the program has detached
+        // below this stream is refused by the flush's own question rather than by this row's.
+        flushSelf();
+        checkAttached();
+        if (!reading()) {
+            // A writing stream has no buffer of its own in this runtime to hand over: see the deviation
+            // note in PLAN-progress.md.
+            throw Slots.unsupportedOperation("detach");
+        }
+        detached = true;
+        return buffer;
+    }
+
+    /** {@code readable}, which is the buffer's answer and never this stream's direction. */
     private PyObject readableAnswer() {
-        if (closed && reading()) {
-            throw Slots.valueError(CLOSED_GETTER);
+        if (reading()) {
+            return askBuffer("readable", new PyObject[0]);
         }
-        return PyBool.of(reading());
-    }
-
-    private PyObject writableAnswer() {
-        if (closed && !reading()) {
-            throw Slots.valueError(CLOSED_GETTER);
-        }
-        return PyBool.of(!reading());
-    }
-
-    /** {@code seekable}, which is the buffer's answer: here there is no buffer, so it is always False. */
-    private PyObject seekableAnswer() {
         checkGetter();
         return PyBool.FALSE;
     }
 
+    private PyObject writableAnswer() {
+        if (reading()) {
+            return askBuffer("writable", new PyObject[0]);
+        }
+        checkGetter();
+        return PyBool.TRUE;
+    }
+
+    /** {@code seekable}, which is asked of the buffer and answered False by the descriptor below it. */
+    private PyObject seekableAnswer() {
+        if (reading()) {
+            return askBuffer("seekable", new PyObject[0]);
+        }
+        checkGetter();
+        return PyBool.FALSE;
+    }
+
+    /** {@code isatty}, which is the descriptor's answer about the terminal it was opened from. */
+    private PyObject isattyAnswer() {
+        if (reading()) {
+            return askBuffer("isatty", new PyObject[0]);
+        }
+        checkGetter();
+        return PyBool.of(isTty());
+    }
+
+    private PyObject filenoAnswer() {
+        if (reading()) {
+            return askBuffer("fileno", new PyObject[0]);
+        }
+        checkGetter();
+        return PyInt.of(fd);
+    }
+
+    /**
+     * {@code tell} and {@code seek}'s shared refusal, which comes out of the memory of the buffer's
+     * {@code seekable} rather than out of the buffer: the two rows ask {@code self->seekable}, and this
+     * stream is built on a pipe that answered False when it was asked.
+     */
     private PyObject tellAnswer() {
+        checkAttached();
         checkOpen();
         throw Slots.unsupportedOperation("underlying stream is not seekable");
     }
 
     private static final Members METHODS = Members.of(TYPE)
             .addOne("write", (self, text) -> ((PyStream) self).write(text))
-            // The row is _IOBase's, and a METH_O refusal names the class that files it.
+            // The row is _IOBase's: it asks the derived `closed` attribute, and each line through the
+            // `write` attribute, so either of the two may be a name the program filed itself.
             .add("writelines", (self, args, kwNames) -> {
                 Arguments.exactlyOne("_IOBase.writelines()", args, kwNames);
                 PyStream stream = (PyStream) self;
-                stream.checkOpen();
+                stream.checkVirtual();
                 PyIterator lines = Slots.iterator(args[0]);
+                PyObject write = Slots.getAttr(self, "write");
                 PyObject line;
                 while ((line = lines.nextOrNull()) != null) {
-                    stream.write(line);
+                    Slots.call(write, new PyObject[] {line}, null);
                 }
                 return PyNone.INSTANCE;
             })
@@ -535,8 +643,7 @@ public final class PyStream extends PyIterator {
                 if (args.length > 1) {
                     Numbers.size(args[1]);
                 }
-                stream.checkOpen();
-                throw Slots.unsupportedOperation("underlying stream is not seekable");
+                return stream.tellAnswer();
             })
             .addNoArgument("tell", self -> ((PyStream) self).tellAnswer())
             .add("truncate", (self, args, kwNames) -> {
@@ -545,28 +652,34 @@ public final class PyStream extends PyIterator {
                 PyStream stream = (PyStream) self;
                 // The position is passed on unconverted, because it only ever reaches a stream that can
                 // truncate. What runs first is the flush this row does before asking the buffer.
-                stream.checkOpen();
-                throw Slots.unsupportedOperation("truncate");
+                stream.checkAttached();
+                stream.flushSelf();
+                if (!stream.reading()) {
+                    throw Slots.unsupportedOperation("truncate");
+                }
+                return stream.askBuffer(
+                        "truncate", new PyObject[] {args.length == 0 ? PyNone.INSTANCE : args[0]});
             })
             .addNoArgument("flush", self -> {
                 PyStream stream = (PyStream) self;
+                stream.checkAttached();
                 stream.checkOpen();
-                stream.flush();
+                if (stream.reading()) {
+                    stream.askBuffer("flush", new PyObject[0]);
+                } else {
+                    stream.flush();
+                }
                 return PyNone.INSTANCE;
             })
             .addNoArgument("close", self -> ((PyStream) self).closeAnswer())
-            .addNoArgument(
-                    "isatty",
-                    self -> {
-                        ((PyStream) self).checkGetter();
-                        return PyBool.of(((PyStream) self).isTty());
-                    })
+            .addNoArgument("detach", self -> ((PyStream) self).detachAnswer())
+            .addNoArgument("isatty", self -> ((PyStream) self).isattyAnswer())
             .addNoArgument("writable", self -> ((PyStream) self).writableAnswer())
             .addNoArgument("readable", self -> ((PyStream) self).readableAnswer())
             .addNoArgument("seekable", self -> ((PyStream) self).seekableAnswer())
             .add("_checkClosed", (self, args, kwNames) -> {
                 Arguments.none("_IOBase._checkClosed()", args, kwNames);
-                ((PyStream) self).checkOpen();
+                ((PyStream) self).checkVirtual();
                 return PyNone.INSTANCE;
             })
             .add(
@@ -598,7 +711,14 @@ public final class PyStream extends PyIterator {
                                             "not writable",
                                             args,
                                             kwNames,
-                                            () -> ((PyStream) self).writableAnswer()));
+                                            () -> ((PyStream) self).writableAnswer()))
+            // `_io` files this row as `_PyIOBase_cannot_pickle` on all three classes, so no stream of the
+            // three looks picklable — and it names the class the row was reached through, which is not the
+            // `object.__getstate__` that a stream with no row of its own falls back to.
+            .add("__getstate__", (self, args, kwNames) -> {
+                Arguments.none("TextIOWrapper.__getstate__()", args, kwNames);
+                throw Slots.typeError("cannot pickle 'TextIOWrapper' instances");
+            });
 
     private boolean isTty() {
         // Java reports one console for the process; CPython asks each descriptor. Which descriptor is
@@ -609,7 +729,9 @@ public final class PyStream extends PyIterator {
     /** {@code iter(sys.stdin)}: this stream is its own cursor, and a closed one is not iterable. */
     @Override
     public PyObject iterator() {
-        checkOpen();
+        // The guard is `_IOBase`'s, so it asks this stream's own `closed` attribute rather than the
+        // descriptor under it — which is what makes a detached buffer refuse the iteration.
+        checkVirtual();
         return this;
     }
 
@@ -629,25 +751,40 @@ public final class PyStream extends PyIterator {
     @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
+            // The four rows that ask only of the stream itself, whatever the layer below it says.
             case "encoding" -> PyStr.of("utf-8");
             case "errors" -> PyStr.of(errors);
-            case "name" -> PyStr.of(name);
-            case "closed" -> PyBool.of(closed);
             case "line_buffering" -> PyBool.of(lineBuffered);
             case "write_through" -> PyBool.FALSE;
+            case "name" -> reading() ? Slots.getAttr(attached(), "name") : PyStr.of(name);
+            case "closed" -> closedValue();
+            case "buffer" -> {
+                if (!reading()) {
+                    // A writing stream has no buffer of its own in this runtime, so the row that would
+                    // report one is the AttributeError of a name that was never filed: see the deviation
+                    // note in PLAN-progress.md.
+                    yield Members.find(this, attribute);
+                }
+                yield attached();
+            }
             // The reference works this out as it reads, and universal newlines is what would fill it in.
             // sys.stdin is opened with newline='\n', so no line ending is ever translated and none is
             // ever found.
-            case "newlines" -> PyNone.INSTANCE;
-            case "_CHUNK_SIZE" -> PyInt.of(chunkSize);
+            case "newlines" -> {
+                checkAttached();
+                yield PyNone.INSTANCE;
+            }
+            case "_CHUNK_SIZE" -> {
+                checkAttached();
+                yield PyInt.of(chunkSize);
+            }
             case "fileno" -> new PyNativeFunction("fileno", (args, kwNames) -> {
                 Arguments.none("fileno", args, kwNames);
-                checkGetter();
-                return PyInt.of(fd);
+                return filenoAnswer();
             });
             case "__enter__" -> new PyNativeFunction("__enter__", (args, kwNames) -> {
                 Arguments.none("_IOBase.__enter__()", args, kwNames);
-                checkOpen();
+                checkVirtual();
                 return this;
             });
             // The reference's exit row takes the exception it is handed and pays no attention to it,
@@ -689,6 +826,9 @@ public final class PyStream extends PyIterator {
     public PyObject setAttr(String attribute, PyObject value) {
         writeRefused(attribute);
         if (attribute.equals("_CHUNK_SIZE")) {
+            // CHECK_ATTACHED_INT comes before the conversion, so a detached stream refuses an uncountable
+            // value with the attachment sentence rather than with the TypeError of the conversion.
+            checkAttached();
             long size = Numbers.count(value);
             if (size <= 0) {
                 throw Slots.valueError("a strictly positive integer is required");
@@ -730,14 +870,33 @@ public final class PyStream extends PyIterator {
 
     @Override
     public String repr() {
-        // The name and the mode are read as attributes, which is why rewriting the mode in the dictionary
-        // rewrites this line, and why a stream whose mode entry has been deleted loses the field altogether.
+        PyObject name;
+        try {
+            name = Slots.getAttr(this, "name");
+        } catch (PyRaise refused) {
+            // The name is read through the buffer, and only the two sentences that mean there is no name
+            // to read are cleared: the ValueError of a stream whose buffer has gone, and the AttributeError
+            // of the layer below that lost the entry its constructor filed. A mode that refuses is not
+            // cleared, and neither is any other name.
+            if (!isUnnamed(refused)) {
+                throw refused;
+            }
+            name = null;
+        }
+        // The mode is read as an attribute too, which is why rewriting the dictionary entry rewrites this
+        // line, and why deleting it loses the field altogether.
         PyObject mode = dictionary.get(PyStr.interned("mode"));
-        return "<_io.TextIOWrapper name="
-                + Slots.repr(PyStr.of(name))
+        return "<_io.TextIOWrapper"
+                + (name == null ? "" : " name=" + Slots.repr(name))
                 + (mode == null ? "" : " mode=" + Slots.repr(mode))
                 + " encoding="
                 + Slots.repr(PyStr.of("utf-8"))
                 + ">";
+    }
+
+    /** Whether a refusal of the repr's name question is one of the two that only say there is no name. */
+    private static boolean isUnnamed(PyRaise refused) {
+        PyType kind = refused.value().getType();
+        return kind == ExceptionTypes.VALUE_ERROR || kind == ExceptionTypes.ATTRIBUTE_ERROR;
     }
 }

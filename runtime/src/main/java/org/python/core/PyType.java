@@ -511,6 +511,89 @@ public class PyType extends PyObject {
     public static final PyType GENERIC_ALIAS =
             builtin("GenericAlias").filedUnder("types.GenericAlias");
 
+    /** The five sentences {@code _io} writes above its five classes, transcribed from the reference. */
+
+    private static final String IOBASE_DOC =
+            "The abstract base class for all I/O classes.\n\nThis class provides dummy "
+                    + "implementations for many methods that\nderived classes can override selectively; the "
+                    + "default implementations\nrepresent a file that cannot be read, written or "
+                    + "seeked.\n\nEven though IOBase does not declare read, readinto, or write because\ntheir "
+                    + "signatures will vary, implementations and clients should\nconsider those methods part of "
+                    + "the interface. Also, implementations\nmay raise UnsupportedOperation when operations "
+                    + "they do not support are\ncalled.\n\nThe basic type used for binary data read from or "
+                    + "written to a file is\nbytes. Other bytes-like objects are accepted as method arguments "
+                    + "too.\nIn some cases (such as readinto), a writable object is required. Text\nI/O classes "
+                    + "work with str data.\n\nNote that calling any method (except additional calls to "
+                    + "close(),\nwhich are ignored) on a closed stream should raise a ValueError.\n\nIOBase "
+                    + "(and its subclasses) support the iterator protocol, meaning\nthat an IOBase object can "
+                    + "be iterated over yielding the lines in a\nstream.\n\nIOBase also supports the "
+                    + ":keyword:`with` statement. In this example,\nfp is closed after the suite of the with "
+                    + "statement is complete:\n\nwith open('spam.txt', 'r') as fp:\n    fp.write('Spam and "
+                    + "eggs!')\n";
+
+    private static final String BUFFERED_IOBASE_DOC =
+            "Base class for buffered IO objects.\n\nThe main difference with RawIOBase is that the "
+                    + "read() method\nsupports omitting the size argument, and does not have a "
+                    + "default\nimplementation that defers to readinto().\n\nIn addition, read(), readinto() "
+                    + "and write() may raise\nBlockingIOError if the underlying raw stream is in "
+                    + "non-blocking\nmode and not ready; unlike their raw counterparts, they will never\nreturn "
+                    + "None.\n\nA typical implementation should not inherit from a RawIOBase\nimplementation, "
+                    + "but wrap one.\n";
+
+    private static final String RAW_IOBASE_DOC =
+            "Base class for raw binary I/O.";
+
+    private static final String BUFFERED_READER_DOC =
+            "Create a new buffered reader using the given readable raw IO object.";
+
+    private static final String FILE_IO_DOC =
+            "Open a file.\n\nThe mode can be 'r' (default), 'w', 'x' or 'a' for reading,\nwriting, "
+                    + "exclusive creation or appending.  The file will be created\nif it doesn't exist when "
+                    + "opened for writing or appending; it will be\ntruncated when opened for writing.  A "
+                    + "FileExistsError will be raised\nif it already exists when opened for creating.  Opening "
+                    + "a file for\ncreating implies writing so this mode behaves in a similar way to\n'w'.  Add "
+                    + "a '+' to the mode to allow simultaneous reading and\nwriting.\n\nA custom opener can be "
+                    + "used by passing a callable as *opener*.\nThe underlying file descriptor for the file "
+                    + "object is then obtained\nby calling opener with (*name*, *flags*).  *opener* must "
+                    + "return\nan open file descriptor (passing os.open as *opener* results in\nfunctionality "
+                    + "similar to passing None).";
+
+    /**
+     * The four {@code _io} classes a stream is built out of, and the two of them {@code sys.stdin} rests on.
+     *
+     * <p>{@code _io} is one abstract class per layer of its own: {@code _IOBase} holds what every stream
+     * answers — the closed flag, the direction questions, the two iterations and the four {@code _check}
+     * rows — and {@code _BufferedIOBase} and {@code _RawIOBase} are the empty markers between it and the
+     * concrete readers, present so that {@code BufferedReader.__mro__} names four classes and
+     * {@code isinstance} has something to ask. They are declared here rather than beside
+     * {@link PyStream#TYPE} because all five sit in one chain, and a chain cannot be initialised from its
+     * ends in either order.
+     */
+    public static final PyType IO_BASE =
+            declare("_IOBase", OBJECT).filedUnder("_io._IOBase").documented(IOBASE_DOC);
+
+    /** The marker between {@link #IO_BASE} and the readers of octets. */
+    public static final PyType BUFFERED_IO_BASE =
+            declare("_BufferedIOBase", IO_BASE)
+                    .filedUnder("_io._BufferedIOBase")
+                    .documented(BUFFERED_IOBASE_DOC);
+
+    /** The marker between {@link #IO_BASE} and the descriptors. */
+    public static final PyType RAW_IO_BASE =
+            declare("_RawIOBase", IO_BASE)
+                    .filedUnder("_io._RawIOBase")
+                    .documented(RAW_IOBASE_DOC);
+
+    /** {@code type(sys.stdin.buffer)}: the octet store that sits over {@link #FILE_IO}. */
+    public static final PyType BUFFERED_READER =
+            declare("BufferedReader", BUFFERED_IO_BASE)
+                    .filedUnder("_io.BufferedReader")
+                    .documented(BUFFERED_READER_DOC);
+
+    /** {@code type(sys.stdin.buffer.raw)}: the descriptor itself, read one {@code read(2)} at a time. */
+    public static final PyType FILE_IO =
+            declare("FileIO", RAW_IO_BASE).filedUnder("_io.FileIO").documented(FILE_IO_DOC);
+
     /**
      * {@code type(co.co_lines())} and {@code type(co.co_positions())}.
      *
@@ -1123,6 +1206,8 @@ public class PyType extends PyObject {
                 || this == STATIC_METHOD
                 || this == CLASS_METHOD
                 || this == PyStream.TYPE
+                || this == BUFFERED_READER
+                || this == FILE_IO
                 || matches(ExceptionTypes.BASE_EXCEPTION);
     }
 

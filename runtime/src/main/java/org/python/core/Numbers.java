@@ -429,6 +429,23 @@ final class Numbers {
     }
 
     /**
+     * A number CPython reads into a C {@code long}: the width a {@code lseek} position is asked for.
+     *
+     * <p>{@code FileIO.seek} converts its position inside {@code portable_lseek}, after the descriptor has
+     * already been asked whether it is open at all, and a C {@code long} is what the system call takes. On
+     * this platform the word is as wide as the one {@link #size} reads into, so only the sentence that
+     * names it differs: {@code raw.seek(2 ** 70)} overflows as {@code C long} where {@code read(2 ** 70)}
+     * overflows as {@code index-sized}.
+     */
+    static long cLong(PyObject value) {
+        BigInteger number = asIndex(value);
+        if (number.bitLength() > 63) {
+            throw Slots.overflowError("Python int too large to convert to C long");
+        }
+        return number.longValue();
+    }
+
+    /**
      * {@code PyNumber_AsSsize_t(value, NULL)}: the clipping form, which refuses nothing for width.
      *
      * <p>A bound that no machine word holds is read as the widest one that does, which is why

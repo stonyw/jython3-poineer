@@ -314,13 +314,14 @@ class Jy3LauncherTest {
     }
 
     /**
-     * M3 slice 85's stream face: the scripts whose questions are asked of {@code sys.stdin}, so both
-     * children get the same pipe and the same closed descriptor at the end of it.
+     * M3 slices 85 and 86's stream face: the scripts whose questions are asked of {@code sys.stdin}, so
+     * both children get the same pipe and the same closed descriptor at the end of it.
      *
      * <p>The pipe is the case, not an accident of plumbing. Asked of a regular file, {@code seek} and
      * {@code tell} answer with a position and this runtime has no raw layer to ask; asked of a pipe both
      * sides refuse in the same words, so the refusals themselves are what is compared — as are the
-     * characters a read answers when the octets under them stop halfway through a line.
+     * characters a read answers when the octets under them stop halfway through a line, and the number of
+     * octets a {@code read} of the descriptor hands back when the reader above it wanted more.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("m3PipeCorpus")
@@ -342,7 +343,8 @@ class Jy3LauncherTest {
 
     private static List<Arguments> m3PipeCorpus() {
         return List.of(
-                Arguments.of("135_stream_reads_and_the_position_refusals.py", STDIN_OCTETS));
+                Arguments.of("135_stream_reads_and_the_position_refusals.py", STDIN_OCTETS),
+                Arguments.of("136_the_two_layers_under_a_reading_stream.py", LAYERS_OCTETS));
     }
 
     /**
@@ -373,6 +375,29 @@ class Jy3LauncherTest {
                     "afer\n",
                     "mid",
                     new byte[] {(byte) 0xe2, (byte) 0x82});
+
+    /**
+     * The pipe case 136 reads: eight short lines, 41 octets, and no terminator on the last one.
+     *
+     * <p>Nothing here is astral or misencoded — the text layer reads plain ASCII — because this case is
+     * about how the octets are divided rather than what they decode to. The sizes are chosen so that a
+     * read of the store and a read of the descriptor answer different numbers: the first {@code read1(4)}
+     * asks the descriptor for four octets and answers {@code b'one\r'}, so the {@code raw.read(4)} under
+     * it is the *next* four and answers {@code b'\ntwo'}, and the {@code peek(1)} below those reaches the
+     * end of the pipe in one trip and answers the 33 octets left. The line with no terminator is what a
+     * {@code readall} of a dry descriptor, and an {@code iter} that has nothing to hand back, are asked to
+     * agree about.
+     */
+    private static final byte[] LAYERS_OCTETS =
+            octets(
+                    "one\r\n",
+                    "two\r\n",
+                    "three\n",
+                    "four\n",
+                    "five\n",
+                    "six\n",
+                    "seven\n",
+                    "eight");
 
     /** UTF-8 text and raw octets, end to end, which is what a pipe carries. */
     private static byte[] octets(Object... parts) {

@@ -107,7 +107,12 @@ final class Members {
             Map.entry(PyType.ENUMERATE, Enumerate.class),
             Map.entry(PyType.ZIP, BuiltinCursors.class),
             Map.entry(PyType.MAP, BuiltinCursors.class),
-            Map.entry(PyType.FILTER, BuiltinCursors.class));
+            Map.entry(PyType.FILTER, BuiltinCursors.class),
+            // The two binary layers under `sys.stdin` file their rows beside their values, so a question
+            // asked of the type — `BufferedReader.peek` — is answerable the same way as one asked of the
+            // stream itself.
+            Map.entry(PyType.BUFFERED_READER, PyBufferedReader.class),
+            Map.entry(PyType.FILE_IO, PyFileIO.class));
 
     private final PyType owner;
 

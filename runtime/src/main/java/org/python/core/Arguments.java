@@ -63,6 +63,29 @@ final class Arguments {
     }
 
     /**
+     * {@code _PyArg_CheckPositional} over a parameter list that cannot be named at all.
+     *
+     * <p>A keyword fills nothing here, so {@code FileIO.write(data=b'x')} is counted as no arguments at all
+     * and answers the too-few sentence — and the too-few sentence of a method whose minimum is its maximum
+     * says {@code exactly}: {@code write() takes exactly 1 positional argument (0 given)}. The too-many
+     * half keeps the ordinary qualifier and drops the word {@code positional}, because a count that
+     * overshoots is about the arguments, not about how they arrived: {@code write(b'a', b'b')} is
+     * {@code write() takes at most 1 argument (2 given)}.
+     */
+    static void onlyPositional(String name, PyObject[] args, String[] kwNames, int wanted) {
+        int given = positional(args, kwNames);
+        if (given > wanted) {
+            throw Slots.typeError(
+                    "%s() takes at most %d argument%s (%d given)", name, wanted, plural(wanted), given);
+        }
+        if (given < wanted) {
+            throw Slots.typeError(
+                    "%s() takes exactly %d positional argument%s (%d given)",
+                    name, wanted, plural(wanted), given);
+        }
+    }
+
+    /**
      * {@code _PyArg_UnpackStack}'s three messages, chosen by how the method declares itself.
      *
      * A method with one bound says "at most" or "at least"; a method whose minimum is its maximum
