@@ -41,6 +41,7 @@ public final class PyRuntime {
     private static PyModule main;
     private static PyStream stdout;
     private static PyStream stderr;
+    private static PyStream stdin;
     private static final Map<String, PyObject> modules = new LinkedHashMap<>();
 
     /**
@@ -91,6 +92,8 @@ public final class PyRuntime {
         stderr = new PyStream("<stderr>",
                 new PrintStream(new FileOutputStream(FileDescriptor.err)), 2,
                 "backslashreplace", true);
+        // `input` reads this one, and `PyFile_GetLine` asks it for a line rather than the descriptor.
+        stdin = new PyStream("<stdin>", System.in, 0, "surrogateescape");
 
         builtins = Builtins.namespace();
         sysModule = buildSys();
@@ -151,6 +154,11 @@ public final class PyRuntime {
     public static PyStream stderr() {
         startup();
         return stderr;
+    }
+
+    public static PyStream stdin() {
+        startup();
+        return stdin;
     }
 
     /**
@@ -391,9 +399,14 @@ public final class PyRuntime {
 
     private static PyModule buildSys() {
         PyModule sys = new PyModule("sys");
+        // COPY_SYS_ATTR gives the three standard files a second name each, and the second name is the
+        // same object: `sys.stdin is sys.__stdin__` reads true at startup and keeps reading true of the
+        // second name after a program has replaced the first.
+        sys.set("stdin", stdin);
+        sys.set("__stdin__", stdin);
         sys.set("stdout", stdout);
-        sys.set("stderr", stderr);
         sys.set("__stdout__", stdout);
+        sys.set("stderr", stderr);
         sys.set("__stderr__", stderr);
         sys.set("platform", PyStr.of(System.getProperty("os.name", "unknown")
                 .toLowerCase(java.util.Locale.ROOT)));

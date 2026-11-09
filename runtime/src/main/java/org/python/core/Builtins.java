@@ -195,6 +195,21 @@ final class Builtins {
                                 + "    a file-like object (stream); defaults to the current sys.stdout.\n"
                                 + "  flush\n"
                                 + "    whether to forcibly flush the stream."));
+        put(out, "input", new PyNativeFunction("input", Builtins::input)
+                .documented(
+                        "input($module, prompt='', /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Read a string from standard input.  The trailing newline is"
+                                + " stripped.\n"
+                                + "\n"
+                                + "The prompt string, if given, is printed to standard output without"
+                                + " a\n"
+                                + "trailing newline before reading input.\n"
+                                + "\n"
+                                + "If the user hits EOF (*nix: Ctrl-D, Windows: Ctrl-Z+Return), raise\n"
+                                + "EOFError.\n"
+                                + "On *nix systems, readline is used if available."));
         put(out, "len", unary("len", value -> Slots.length(value))
                 .documented(
                         "len($module, obj, /)\n"
@@ -726,6 +741,115 @@ final class Builtins {
         }
         throw Slots.typeError(
                 "%s must be None or a string, not %s", name, value.getType().name());
+    }
+
+    // --- input -----------------------------------------------------------------------------
+
+    /**
+     * {@code input(prompt='')}.
+     *
+     * <p>{@code builtin_input_impl} (Python/bltinmodule.c:2335) settles the three names before it asks
+     * anything of them, and the order is the one a program can see: {@code stdin}, then {@code stdout},
+     * then {@code stderr}, each missing or {@code None} refused as {@code lost sys.<name>} with nothing
+     * yet called. What follows is one flush of {@code stderr}, whose refusal is dropped, then
+     * {@code stdin.fileno()} — this runtime never reads a terminal through the {@code readline} library,
+     * so the answer decides nothing, but it is still read, and the two refusals of reading it are kept:
+     * a value no integer can be made of, and one too wide for a C long. Then the prompt, then a flush of
+     * {@code stdout} that is also dropped, then the line.
+     *
+     * <p>Both flushes come before the read and after the write, and the prompt is written as
+     * {@code print} writes — its {@code str}, through the stream's own {@code write} — which is why a
+     * stream with no {@code write} is refused before the prompt has been looked at, and why
+     * {@code input()} with no prompt writes nothing yet still flushes.
+     */
+    private static PyObject input(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("input()", kwNames);
+        Arguments.atMost("input", args, kwNames, 1);
+        PyObject prompt = Arguments.positional(args, kwNames) == 0 ? null : args[0];
+        PyObject fin = streamNamed("stdin");
+        PyObject fout = streamNamed("stdout");
+        PyObject ferr = streamNamed("stderr");
+        flushed(ferr);
+        ttyTest(fin);
+        if (prompt != null) {
+            write(fout, prompt);
+        }
+        flushed(fout);
+        return readLine(fin);
+    }
+
+    /** {@code _PySys_GetRequiredAttr}: the name is read from {@code sys}, and both absences are one error. */
+    private static PyObject streamNamed(String name) {
+        PyObject stream = PyRuntime.sysAttribute(name);
+        if (stream == null || stream == PyNone.INSTANCE) {
+            throw Slots.runtimeError("lost sys." + name);
+        }
+        return stream;
+    }
+
+    /** {@code _PyFile_Flush}, whose failure the caller clears: a stream may refuse to flush quietly. */
+    private static void flushed(PyObject stream) {
+        try {
+            Slots.call(Slots.getAttr(stream, "flush"), new PyObject[0], null);
+        } catch (PyRaise refusal) {
+            // dropped, as it is in the reference — the read goes ahead whatever the flush answered.
+        }
+    }
+
+    /** {@code tty = fd == fileno(stdin) && isatty(fd)}: the answer is read and then discarded. */
+    private static void ttyTest(PyObject stream) {
+        PyObject answer;
+        try {
+            answer = Slots.call(Slots.getAttr(stream, "fileno"), new PyObject[0], null);
+        } catch (PyRaise refusal) {
+            // A stream with no fileno, or one that refuses the question, is cleared and left non-tty.
+            return;
+        }
+        // The conversion is outside the clearing, because these refusals are the ones kept: a float
+        // answers `PyLong_AsLong` with what it cannot be read as, and a number wider than a C long
+        // overflows before the comparison is ever made.
+        BigInteger descriptor = Numbers.asIndex(answer);
+        if (descriptor.bitLength() >= Long.SIZE) {
+            throw Slots.overflowError("Python int too large to convert to C long");
+        }
+    }
+
+    /**
+     * {@code PyFile_GetLine(fin, -1)}: one call of {@code readline} with no arguments, and the newline
+     * it ended the line with is the only character taken off.
+     *
+     * <p>An answer with no newline in it is handed back as the very object that answered, and an answer
+     * that has one is cut down to a fresh string or octet run — which is observable for a subclass,
+     * whose {@code type} the reference drops as it cuts and keeps as it does not. An empty answer is the
+     * end of the descriptor and is refused, and anything that is neither text nor octets is refused by
+     * the unpacking rather than by the caller.
+     */
+    private static PyObject readLine(PyObject stream) {
+        PyObject answer = Slots.call(Slots.getAttr(stream, "readline"), new PyObject[0], null);
+        if (answer instanceof PyStr text) {
+            String value = text.getValue();
+            if (value.isEmpty()) {
+                throw atEof();
+            }
+            return value.charAt(value.length() - 1) == '\n'
+                    ? PyStr.of(value.substring(0, value.length() - 1))
+                    : answer;
+        }
+        if (answer instanceof PyBytes octets) {
+            byte[] value = octets.getValue();
+            if (value.length == 0) {
+                throw atEof();
+            }
+            return value[value.length - 1] == '\n'
+                    ? PyBytes.of(java.util.Arrays.copyOf(value, value.length - 1))
+                    : answer;
+        }
+        throw Slots.typeError("object.readline() returned non-string");
+    }
+
+    /** The one message {@code EOFError} is raised with here, by {@code input} and by nothing else. */
+    private static PyRaise atEof() {
+        return PyRaise.raise(ExceptionTypes.EOF_ERROR, "EOF when reading a line");
     }
 
     // --- iteration and sequences -----------------------------------------------------------

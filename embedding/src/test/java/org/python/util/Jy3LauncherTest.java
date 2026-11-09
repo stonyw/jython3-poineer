@@ -304,7 +304,8 @@ class Jy3LauncherTest {
                 "128_cursor_books.py",
                 "129_displayhook_and_sentences.py",
                 "130_print_stream_and_pieces.py",
-                "131_ascii_repr_rewritten.py");
+                "131_ascii_repr_rewritten.py",
+                "132_input_and_the_line_it_reads.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

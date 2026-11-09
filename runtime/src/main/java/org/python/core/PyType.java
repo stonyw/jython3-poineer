@@ -1109,6 +1109,12 @@ public class PyType extends PyObject {
      * staticmethod(f).__dict__} holds after one call of {@code sm_init}. {@code property} is the third of
      * the family and keeps none: its struct has no dictionary, which is why {@code p.__dict__} is the
      * {@code AttributeError} it is while {@code p.fget} is a field.
+     *
+     * <p>The text stream joins them last, and is the only one of these a program never makes for itself:
+     * {@code _io} gives every stream a dictionary, and the interpreter's own stream creation files
+     * {@code mode} in it before the object reaches {@code sys}. That entry is where {@code s.mode} is read
+     * from — no member of that name is declared for the type — and so where a program can write it. See
+     * {@link PyStream}.
      */
     boolean hasValueDict() {
         return this == TYPE
@@ -1116,6 +1122,7 @@ public class PyType extends PyObject {
                 || this == FUNCTION
                 || this == STATIC_METHOD
                 || this == CLASS_METHOD
+                || this == PyStream.TYPE
                 || matches(ExceptionTypes.BASE_EXCEPTION);
     }
 

@@ -548,6 +548,18 @@ public final class Slots {
         return PyRaise.raise(ExceptionTypes.INDEX_ERROR, text(format, args));
     }
 
+    /**
+     * {@code OSError} with a sentence and no errno, which is what the two refusals of a stream that is
+     * open but going the wrong way read.
+     *
+     * <p>CPython raises {@code io.UnsupportedOperation} there — a type of the {@code io} module, which
+     * this runtime has not built, and a subclass of both {@code OSError} and {@code ValueError}. The
+     * message it carries is the same either way, and only the type's name is missing.
+     */
+    public static PyRaise osError(String format, Object... args) {
+        return PyRaise.raise(ExceptionTypes.OS_ERROR, text(format, args));
+    }
+
     public static PyRaise keyError(PyObject missing) {
         return PyRaise.of(new PyBaseException(ExceptionTypes.KEY_ERROR, new PyObject[] {missing}));
     }
