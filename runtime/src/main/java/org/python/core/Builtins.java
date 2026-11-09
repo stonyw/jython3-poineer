@@ -284,6 +284,18 @@ final class Builtins {
                                 + "--\n"
                                 + "\n"
                                 + "Return a Unicode string of one character with ordinal i; 0 <= i <= 0x10ffff."));
+        put(out, "ascii", unary("ascii", Builtins::asciiText)
+                // The book spells each marker with two backslashes, as the clinic block writes it.
+                .documented(
+                        "ascii($module, obj, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return an ASCII-only representation of an object.\n"
+                                + "\n"
+                                + "As repr(), return a string containing a printable representation of an\n"
+                                + "object, but escape the non-ASCII characters in the string returned by\n"
+                                + "repr() using \\\\x, \\\\u or \\\\U escapes. This generates a string similar\n"
+                                + "to that returned by repr() in Python 2."));
         put(out, "bin", unary("bin", value -> PyStr.of(radix(value, 2, "0b")))
                 .documented(
                         "bin($module, number, /)\n"
@@ -568,6 +580,32 @@ final class Builtins {
      */
     private static BigInteger integerOrRefusal(PyObject value) {
         return Numbers.asIndex(value);
+    }
+
+    /**
+     * {@code PyObject_ASCII} (Objects/object.c:840): the repr of the value, then that same text as the
+     * encoder's {@code backslashreplace} handler writes it — every character above {@code 0x7f} replaced by
+     * the escape its width asks for. Everything below that is handed on as it stands, control characters
+     * included, which is why a raw newline written by a program's own {@code __repr__} is still a newline in
+     * the answer, while {@code repr} of that answer escapes it.
+     */
+    private static PyObject asciiText(PyObject value) {
+        String text = value.repr();
+        StringBuilder escaped = new StringBuilder(text.length());
+        for (int at = 0; at < text.length(); ) {
+            int point = text.codePointAt(at);
+            at += Character.charCount(point);
+            if (point < 0x80) {
+                escaped.appendCodePoint(point);
+            } else if (point <= 0xFF) {
+                escaped.append(String.format("\\x%02x", point));
+            } else if (point <= 0xFFFF) {
+                escaped.append(String.format("\\u%04x", point));
+            } else {
+                escaped.append(String.format("\\U%08x", point));
+            }
+        }
+        return PyStr.of(escaped.toString());
     }
 
     /**
