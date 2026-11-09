@@ -19,10 +19,10 @@ import java.util.function.IntPredicate;
  * breaks are {@code \n}, {@code \r} and the pair between them, and their case folds a to z — which
  * is why {@code b'\xff'.upper()} is still {@code b'\xff'} where {@code chr(255).upper()} is not.
  *
- * Codecs are a short, deliberate list. Java's own charsets cover UTF-8, UTF-16 and latin-1, which is
- * everything the marshal reader and ordinary scripts need; a refused encoding prints CPython's
- * {@code LookupError} rather than guessing at one this runtime does not have. Encoding a text is
- * {@link Encoder}'s, decoding a run of octets is below.
+ * Codecs are a short, deliberate list: seven of them, in {@link Encoder} and {@link Decoder}, and a refused
+ * name prints CPython's {@code LookupError} rather than guessing at one this runtime does not have. Neither
+ * half borrows a Java charset, because a charset that accepts what the reference refuses answers the
+ * differentials no one thinks to ask about.
  */
 public final class PyBytes extends PyObject {
 
@@ -75,53 +75,15 @@ public final class PyBytes extends PyObject {
         return Encoder.encode(text, encoding, errors);
     }
 
-    /** {@code b.decode(encoding, errors)}. */
-    public String decodeText(String encoding, String errors) {
-        String name = codec(encoding);
-        requireStrict(errors);
-        return switch (name) {
-            case "utf_8" -> new String(value, StandardCharsets.UTF_8);
-            case "utf_8_sig" -> new String(
-                    value.length >= 3 ? Arrays.copyOfRange(value, 3, value.length) : value,
-                    StandardCharsets.UTF_8);
-            case "ascii" -> {
-                for (int i = 0; i < value.length; i++) {
-                    if ((value[i] & 0xff) > 0x7f) {
-                        throw Slots.unicodeDecode(
-                                "ascii", value, i, i + 1, "ordinal not in range(128)");
-                    }
-                }
-                yield new String(value, StandardCharsets.US_ASCII);
-            }
-            case "latin_1" -> {
-                StringBuilder out = new StringBuilder(value.length);
-                for (byte b : value) {
-                    out.append((char) (b & 0xff));
-                }
-                yield out.toString();
-            }
-            case "utf_16_be" -> new String(value, StandardCharsets.UTF_16BE);
-            default -> new String(value, StandardCharsets.UTF_16);
-        };
-    }
-
-    /** {@code codecs.lookup}, shared with the encoding half: the same seven names. */
-    private static String codec(String encoding) {
-        return Encoder.codec(encoding);
-    }
-
     /**
-     * The one handler {@link #decodeText} answers, still.
+     * {@code b.decode(encoding, errors)}.
      *
-     * <p>An octet run that does not decode is a different animal from a character that will not encode: a
-     * decode handler reads off the failing bytes, and its {@code backslashreplace} writes {@code \x..} for an
-     * octet where the encoder writes {@code \x..} for a character. So the substitution names stay refused
-     * here, in this runtime's own words, until the decode half is written.
+     * <p>The walk belongs to {@link Decoder}: which octets a codec will not read, how far the refusal reaches,
+     * and what the named handlers answer instead. {@code bytes(s, encoding, errors)} and {@code str(b,
+     * encoding, errors)} come to the same place, because CPython routes all of them through the same decoder.
      */
-    private static void requireStrict(String errors) {
-        if (!"strict".equals(errors)) {
-            throw Slots.notImplemented("bytes.decode error handler " + errors);
-        }
+    public String decodeText(String encoding, String errors) {
+        return Decoder.decode(value, encoding, errors);
     }
 
     private static byte[] concat(byte[] head, byte[] body) {
@@ -300,11 +262,12 @@ public final class PyBytes extends PyObject {
                 return PyInt.of(occurrences(text, octetOrRun(args[0]), from, to));
             })
             .add("decode", (self, args, kwNames) -> {
-                Arguments.between("decode", args, kwNames, 0, 2);
                 PyObject[] parameters =
-                        Arguments.fill("bytes.decode", args, kwNames, CODE_NAMES, CODE_DEFAULTS);
+                        Arguments.parameters(
+                                "decode", args, kwNames, CODE_NAMES, CODE_DEFAULTS, 0);
                 return PyStr.of(((PyBytes) self).decodeText(
-                        Slots.str(parameters[0]), Slots.str(parameters[1])));
+                        PyStr.named(parameters[0], "decode", "encoding"),
+                        PyStr.named(parameters[1], "decode", "errors")));
             })
             .add("endswith", (self, args, kwNames) -> edge(self, args, kwNames, "endswith", false))
             .add("expandtabs", (self, args, kwNames) -> PyBytes.wrap(expanded(

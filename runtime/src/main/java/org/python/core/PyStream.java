@@ -169,7 +169,7 @@ public final class PyStream extends PyObject {
                 // ask the descriptor for, so the sentence carries only what went wrong.
                 throw Slots.osError("reading error");
             }
-            String text = new String(line.toByteArray(), StandardCharsets.UTF_8);
+            String text = Decoder.decode(line.toByteArray(), "utf-8", errors);
             if (ended && text.endsWith("\r")) {
                 text = text.substring(0, text.length() - 1) + "\n";
             }

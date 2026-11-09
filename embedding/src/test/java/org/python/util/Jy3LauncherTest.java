@@ -306,7 +306,8 @@ class Jy3LauncherTest {
                 "130_print_stream_and_pieces.py",
                 "131_ascii_repr_rewritten.py",
                 "132_input_and_the_line_it_reads.py",
-                "133_encode_handlers_and_the_runs_they_answer_for.py");
+                "133_encode_handlers_and_the_runs_they_answer_for.py",
+                "134_decode_handlers_and_the_octets_they_answer_for.py");
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {

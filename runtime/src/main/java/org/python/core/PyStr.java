@@ -1086,11 +1086,12 @@ public final class PyStr extends PyObject {
      *
      * <p>The wording is {@code _PyArg_BadArgument} (Python/getargs.c:622), and that function makes {@code
      * None} the one value whose type is not named: {@code encode("ascii", None)} says {@code not None}, where
-     * {@code encode("ascii", 7)} says {@code not int}. Both parameters of {@code encode} are Clinic {@code
-     * str} converters, so a name with a null character in it is refused as a value error before the codec is
-     * looked for.
+     * {@code encode("ascii", 7)} says {@code not int}. Both parameters of {@code encode} and of {@code
+     * bytes.decode} are Clinic {@code str} converters, so a name with a null character in it is refused as a
+     * value error before the codec is looked for; {@code decode} asks the same two questions with its own name
+     * in the sentence.
      */
-    private static String named(PyObject value, String method, String parameter) {
+    static String named(PyObject value, String method, String parameter) {
         String text = Numbers.asText(value);
         if (text == null) {
             throw Slots.typeError(

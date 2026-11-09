@@ -352,7 +352,12 @@ final class Encoder {
         return codePoint >= 0xD800 && codePoint <= 0xDFFF;
     }
 
-    /** The registry's own answer to a name: the seven it files, and the one this runtime has no table for. */
+    /**
+     * The registry's own answer to a name: the seven it files, and the one this runtime has no table for.
+     *
+     * <p>The refusal clips the name the way {@code "%.400s"} does, so a handler named with 405 characters is
+     * complained about with the first 400 of them; {@code unknown encoding} below carries no such clip.
+     */
     private static Handler named(String errors) {
         return switch (errors) {
             case "strict" -> Handler.STRICT;
@@ -364,8 +369,13 @@ final class Encoder {
             case "surrogatepass" -> Handler.SURROGATEPASS;
             case "namereplace" -> throw Slots.notImplemented(
                     "str.encode error handler namereplace");
-            default -> throw Slots.lookupError("unknown error handler name '" + errors + "'");
+            default -> throw Slots.lookupError("unknown error handler name '" + clipped(errors) + "'");
         };
+    }
+
+    /** {@code %.400s}: how much of a handler's name the registry's complaint carries. */
+    static String clipped(String name) {
+        return name.length() <= 400 ? name : name.substring(0, 400);
     }
 
     /**
