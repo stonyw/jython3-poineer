@@ -324,7 +324,8 @@ class Jy3LauncherTest {
                 "166_memoryview_readonly_methods.py",
                 "167_utf32_charmap_and_unicode_escape.py",
                 "168_namereplace_and_the_name_table.py",
-                "169_template_strings.py");
+                "169_template_strings.py",
+                "170_deferred_annotations.py");
     }
 
     /**

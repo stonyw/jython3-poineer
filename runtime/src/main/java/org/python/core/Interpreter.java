@@ -215,6 +215,17 @@ public final class Interpreter {
                         frame.push(taken);
                         break;
                     }
+                    case Opcodes.LOAD_FROM_DICT_OR_GLOBALS: {
+                        // A class body's PEP 649 annotate function reads the names it spells through
+                        // the dictionary the body was filling, so a name the metaclass supplied beats
+                        // the module's: the dictionary is asked first, and globals — then builtins —
+                        // answer only what it does not hold.
+                        PyDict written = (PyDict) frame.pop();
+                        String name = frame.name(arg);
+                        PyObject taken = written.get(PyStr.interned(name));
+                        frame.push(taken != null ? taken : lookupGlobal(frame, name));
+                        break;
+                    }
 
                     // --- moving values on the stack ----------------------------------------
                     //
@@ -251,6 +262,13 @@ public final class Interpreter {
                         break;
                     }
                     case Opcodes.STORE_FAST:
+                        frame.setSlot(arg, frame.pop());
+                        break;
+                    case Opcodes.STORE_FAST_MAYBE_NULL:
+                        // The inlined-comprehension cleanup restores a slot that may have held nothing:
+                        // the value popped here can be the null `LOAD_FAST_AND_CLEAR` left behind, and
+                        // writing it back is the whole instruction — the slot is not read again unless
+                        // the name was bound before the comprehension stole it.
                         frame.setSlot(arg, frame.pop());
                         break;
                     case Opcodes.STORE_FAST_LOAD_FAST: {

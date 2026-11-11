@@ -43,6 +43,18 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
     private PyCell[] closure = new PyCell[0];
     private PyDict attributes;
 
+    /** The PEP 649 annotate function, or null when the compiler attached none. */
+    private PyObject annotate;
+
+    /**
+     * What {@link #annotate} answered for {@code Format.VALUE}, kept the first time it is asked.
+     *
+     * <p>CPython caches it in {@code func_annotations} rather than in the function's dictionary, which
+     * is why {@code f.__annotations__} does not make {@code f.__dict__} grow, and why two reads hand
+     * out the same dictionary.
+     */
+    private PyDict annotations;
+
     PyFunction(PyCode code, PyDict globals) {
         super(PyType.FUNCTION);
         this.code = code;
@@ -82,8 +94,13 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case KW_DEFAULTS -> kwDefaults = mapping(value, "kwdefaults");
             case CLOSURE -> closure = cells(value);
             case ANNOTATE -> {
-                // Kept as a live attribute is what PEP 649 wants; deferred annotations are M3, so the
-                // annotate function is accepted and dropped rather than silently misapplied.
+                // The compiler builds the annotate function's code object under the bare name
+                // `__annotate__`; CPython's SET_FUNCTION_ATTRIBUTE gives it the qualified name its
+                // owner spells, which is what `f.__annotate__.__qualname__` reports.
+                if (value instanceof PyFunction annotator) {
+                    annotator.qualName = PyStr.of(qualName.str() + ".__annotate__");
+                }
+                annotate = value;
             }
             case ANNOTATIONS -> throw Slots.notImplemented(
                     "the old-style __annotations__ attribute");
@@ -407,6 +424,8 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
                     : PyTuple.of(closure.clone());
             case "__dict__" -> attributes();
             case "__globals__" -> globals;
+            case "__annotate__" -> annotate == null ? PyNone.INSTANCE : annotate;
+            case "__annotations__" -> annotations();
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> {
@@ -441,6 +460,35 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
         }
         return attributes;
     }
+
+    /**
+     * {@code f.__annotations__}: the annotate function run at {@code Format.VALUE}, once.
+     *
+     * <p>A function the compiler attached no annotate function to has no annotations and answers a
+     * fresh empty dictionary, which is also what a body with no annotations at all compiles to.
+     */
+    private PyDict annotations() {
+        if (annotations == null) {
+            PyObject computed = annotate == null
+                    ? PyDict.empty()
+                    : annotate.call(new PyObject[] {PyInt.of(VALUE_FORMAT)}, null);
+            if (!(computed instanceof PyDict dict)) {
+                throw Slots.typeError(
+                        "__annotate__ returned non-dict of type '%s'",
+                        computed.getType().filedName());
+            }
+            annotations = dict;
+        }
+        return annotations;
+    }
+
+    /**
+     * {@code annotationlib.Format.VALUE}, the format {@code __annotations__} asks an annotate function
+     * for. The compiler's own guard refuses every number above {@code
+     * VALUE_WITH_FAKE_GLOBALS} with {@code NotImplementedError}, so this is the only one the runtime
+     * ever spells itself.
+     */
+    static final int VALUE_FORMAT = 1;
 
     @Override
     public String repr() {

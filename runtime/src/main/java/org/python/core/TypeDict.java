@@ -1082,7 +1082,7 @@ final class TypeDict {
         table.getset("__dict__", null, TypeDict::dictOf, null);
         table.getset("__doc__", null, TypeDict::docOf, writes("__doc__"));
         table.getset("__text_signature__", null, TypeDict::signatureOfKind, null);
-        table.getset("__annotations__", null, TypeDict::annotationsOf, files("__annotations__"));
+        table.getset("__annotations__", null, TypeDict::annotationsOf, writesAnnotations());
         table.getset("__annotate__", null, TypeDict::annotateOf, writesAnnotate());
         table.getset("__type_params__", null, TypeDict::typeParamsOf, writes("__type_params__"));
     }
@@ -5121,18 +5121,56 @@ final class TypeDict {
     /** {@code type.__annotations__}: the dictionary the body filled, made empty when nothing was annotated. */
     private static PyObject annotationsOf(PyObject target) {
         PyType kind = (PyType) target;
-        PyStr key = PyStr.interned("__annotations__");
-        PyObject filed = kind.namespace().get(key);
+        PyObject filed = kind.namespace().get(PyStr.interned("__annotations_cache__"));
         if (filed != null) {
             return filed;
+        }
+        PyObject written = kind.namespace().get(PyStr.interned("__annotations__"));
+        if (written != null) {
+            return written;
         }
         if (!(kind instanceof PyClass)) {
             throw Slots.typeError(
                     "type object '%s' has no attribute '__annotations__'", kind.filedName());
         }
-        PyDict built = PyDict.empty();
-        kind.namespace().put(key, built);
+        // PEP 649: the body left an annotate function, not a dictionary, and the dictionary is made
+        // when it is first asked for — then kept, which is why the second read hands out the same one.
+        PyObject annotate = annotateOf(kind);
+        PyObject built = annotate == PyNone.INSTANCE
+                ? PyDict.empty()
+                : annotate.call(new PyObject[] {PyInt.of(PyFunction.VALUE_FORMAT)}, null);
+        if (!(built instanceof PyDict)) {
+            throw Slots.typeError(
+                    "__annotate__ returned non-dict of type '%s'", built.getType().filedName());
+        }
+        kind.namespace().put(PyStr.interned("__annotations_cache__"), built);
         return built;
+    }
+
+    /**
+     * {@code type.__annotations__ = ...}: the reference keeps the written dictionary under {@code
+     * __annotations_cache__} and forgets the annotate function, so the next read answers what was
+     * written rather than what the body could compute.
+     */
+    private static PyGetSetDescriptor.Setter writesAnnotations() {
+        return (target, value) -> {
+            if (!(target instanceof PyClass kind)) {
+                throw Slots.typeError(
+                        "cannot set '__annotations__' attribute of immutable type '%s'",
+                        immutableName(target));
+            }
+            PyStr cache = PyStr.interned("__annotations_cache__");
+            if (value == null) {
+                // `type_del_annotations` removes the cache only; a class that was never read and never
+                // written has nothing to remove, and the reference reports the ordinary read failure.
+                if (kind.namespace().remove(cache) == null) {
+                    throw Slots.attributeError("__annotations__");
+                }
+                return;
+            }
+            kind.namespace().put(cache, value);
+            kind.namespace().put(PyStr.interned("__annotate_func__"), PyNone.INSTANCE);
+        };
     }
 
     /**
@@ -5308,7 +5346,9 @@ final class TypeDict {
             if (value != PyNone.INSTANCE && !Slots.isCallable(value)) {
                 throw Slots.typeError("__annotate__ must be callable or None");
             }
-            file((PyClass) target, "__annotate__", value);
+            PyClass kind = (PyClass) target;
+            kind.namespace().put(PyStr.interned("__annotate_func__"), value);
+            kind.namespace().remove(PyStr.interned("__annotations_cache__"));
         };
     }
 
@@ -5367,8 +5407,15 @@ final class TypeDict {
             throw Slots.typeError(
                     "type object '%s' has no attribute '__annotate__'", kind.filedName());
         }
-        PyObject filed = kind.namespace().get(PyStr.interned("__annotate__"));
-        return filed == null ? PyNone.INSTANCE : filed;
+        PyStr key = PyStr.interned("__annotate_func__");
+        PyObject filed = kind.namespace().get(key);
+        if (filed == null) {
+            // The read files the empty answer, which is how a class with nothing annotated comes to
+            // carry the name at all.
+            kind.namespace().put(key, PyNone.INSTANCE);
+            return PyNone.INSTANCE;
+        }
+        return filed;
     }
 
     /**
