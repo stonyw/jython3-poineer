@@ -318,6 +318,17 @@ public final class PyRuntime {
                 "No module named '" + dotted + "'");
     }
 
+    /**
+     * The module already filed under {@code dotted}, or {@code null}.
+     *
+     * <p>{@code get_annotations(..., eval_str=True)} reads a class's globals through {@code sys.modules},
+     * and a name that was never imported must not be created by that read.
+     */
+    static PyObject existingModule(String dotted) {
+        startup();
+        return modules.get(dotted);
+    }
+
     /** Install a finder, in order of preference: the first that answers wins. */
     public static synchronized void addModuleFinder(ModuleFinder finder) {
         startup();

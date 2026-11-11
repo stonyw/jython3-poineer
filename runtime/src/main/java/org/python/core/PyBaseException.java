@@ -211,6 +211,19 @@ public class PyBaseException extends PyObject {
     }
 
     /**
+     * {@code SyntaxError_init}'s first slot for an error the runtime raises rather than one a caller builds.
+     *
+     * <p>{@code _PyErr_SetString(SyntaxError, msg)} calls the class, so the initialiser copies the message
+     * into {@code msg} and {@code str(e)} answers it. An error made by {@link PyRaise#raise} skips that
+     * initialiser, and this is the one field it would have filled.
+     */
+    void asSyntaxMessage(String message) {
+        if (takesSyntaxFields()) {
+            syntaxMessage = PyStr.of(message);
+        }
+    }
+
+    /**
      * {@code _PyObject_SetAttributeErrorContext}: the two members a failed member read leaves behind, hung
      * on the error after its message has been chosen.
      */

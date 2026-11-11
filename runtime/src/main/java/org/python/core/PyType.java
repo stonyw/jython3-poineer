@@ -192,6 +192,9 @@ public class PyType extends PyObject {
     public static final PyType FORMAT = subclass("Format", INT)
             .inModule("annotationlib")
             .enumeration();
+
+    /** {@code annotationlib.ForwardRef}, the unresolved-name value of the {@code FORWARDREF} format. */
+    public static final PyType FORWARD_REF = builtin("ForwardRef").inModule("annotationlib");
     public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF).documented(FLOAT_DOC);
 
     /**
@@ -1439,6 +1442,9 @@ public class PyType extends PyObject {
      */
     @Override
     public PyObject getAttr(String attribute) {
+        if (enumeration && attribute.equals("__members__")) {
+            return PyMappingProxy.of(PyFormat.members());
+        }
         return switch (attribute) {
             case "__name__", "__qualname__" -> PyStr.of(name);
             case "__module__" -> PyStr.of(moduleName());
@@ -1651,6 +1657,13 @@ public class PyType extends PyObject {
      */
     @Override
     public PyObject getItem(PyObject key) {
+        if (enumeration) {
+            PyObject member = PyFormat.members().get(key);
+            if (member == null) {
+                throw Slots.keyError(key);
+            }
+            return member;
+        }
         PyObject fromMeta = Specials.invoke(this, "__getitem__", key);
         if (fromMeta != Slots.DECLINED) {
             return fromMeta;
@@ -1659,6 +1672,60 @@ public class PyType extends PyObject {
         return generic == Slots.DECLINED
                 ? Slots.DECLINED
                 : Slots.call(generic, new PyObject[] {key}, null);
+    }
+
+    /**
+     * The metatype half of an enumeration: {@code len(Format)}, {@code iter(Format)} and
+     * {@code Format.VALUE in Format} are reads of {@code EnumType}, not of {@code type}.
+     *
+     * <p>Only {@code Format} is an enumeration in this runtime, and each answer is the one
+     * {@code enum.EnumType} gives: members in declaration order, four of them, and a containment that also
+     * accepts a member's value — {@code 1 in Format} is true because {@code Format} is an {@code IntEnum}.
+     */
+    @Override
+    public PyObject length() {
+        if (enumeration) {
+            return PyInt.of(PyFormat.members().size());
+        }
+        return super.length();
+    }
+
+    @Override
+    public PyObject iterator() {
+        if (enumeration) {
+            return PyTuple.of(PyFormat.members().values()).iterator();
+        }
+        return super.iterator();
+    }
+
+    @Override
+    public PyObject contains(PyObject item) {
+        if (enumeration) {
+            for (PyObject member : PyFormat.members().values()) {
+                if (Slots.compareTrue(CompareOp.EQ, item, member)) {
+                    return PyBool.TRUE;
+                }
+            }
+            return PyBool.FALSE;
+        }
+        return super.contains(item);
+    }
+
+    /** An enumeration class is a mapping in read only: {@code Format['VALUE'] = 1} is refused. */
+    @Override
+    public PyObject setItem(PyObject key, PyObject value) {
+        if (enumeration) {
+            throw Slots.typeError("'EnumType' object does not support item assignment");
+        }
+        return super.setItem(key, value);
+    }
+
+    @Override
+    public PyObject delItem(PyObject key) {
+        if (enumeration) {
+            throw Slots.typeError("'EnumType' object does not support item deletion");
+        }
+        return super.delItem(key);
     }
 
     /**

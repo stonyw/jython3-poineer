@@ -51,6 +51,9 @@ final class Constructors {
         if (type == PyType.FORMAT) {
             return PyFormat.called(args, keywordNames);
         }
+        if (type == PyType.FORWARD_REF) {
+            return PyForwardRef.called(args, keywordNames);
+        }
         if (type == PyType.FLOAT) {
             return floating(args, keywordNames);
         }

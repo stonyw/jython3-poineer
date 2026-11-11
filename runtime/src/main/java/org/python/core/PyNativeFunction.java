@@ -291,6 +291,9 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
             // sentence was transcribed and whichever half of it a person asks for.
             case "__doc__" -> docOf(name, doc);
             case "__text_signature__" -> signatureOf(name, doc);
+            // `m_module`: the module whose table files this function sets it, and every method a read
+            // makes — bound or declared by a type — answers None, as CPython's methodobject.c does.
+            case "__module__" -> module != null ? module : PyNone.INSTANCE;
             case "__self__" -> receiver != null
                     ? receiver
                     : declaredBy != null

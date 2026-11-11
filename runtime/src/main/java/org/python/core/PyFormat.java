@@ -12,12 +12,13 @@ import java.util.Map;
  * is {@link PyType#FORMAT}, which is what makes {@code Format.VALUE == 1} true, makes a member a usable
  * dictionary key beside the integer it equals, and makes arithmetic on one hand back a plain {@code int}.
  *
- * <p>What it does not carry is {@code EnumType}: {@code Format["VALUE"]}, {@code list(Format)} and
- * {@code Format.__members__} are not here, and neither is the machinery that builds a second enum. The four
- * members exist as constants, and the class dictionary files them as values so that {@code Format.VALUE}
- * and {@code Format.VALUE.STRING} both resolve. A write to {@code name} or {@code value} is refused in the
- * words CPython's {@code Enum} uses; any other name is kept on the member, because an enum member has a
- * {@code __dict__} and CPython lets one be written.
+ * <p>The metatype's share of {@code EnumType} is carried by {@link PyType#FORMAT} itself: subscripting,
+ * iteration, length and containment read {@link #members()}, which keeps the four members in declaration
+ * order, and {@code __members__} is a mapping proxy over that table. The four members exist as constants,
+ * and the class dictionary files them as values so that {@code Format.VALUE} and {@code Format.VALUE.STRING}
+ * both resolve. A write to {@code name} or {@code value} is refused in the words CPython's {@code Enum}
+ * uses; any other name is kept on the member, because an enum member has a {@code __dict__} and CPython
+ * lets one be written.
  */
 final class PyFormat extends PyInt {
 
@@ -53,6 +54,27 @@ final class PyFormat extends PyInt {
 
     /** The names an enum member accepts beyond its two own, as CPython's {@code Enum} does. */
     private final Map<String, PyObject> extras = new LinkedHashMap<>();
+
+    /**
+     * The member table, keyed by name, in the order the type declares the members.
+     *
+     * <p>This is what the metatype answers {@code __members__} with, and the dictionary
+     * {@code Format['VALUE']} reads: one insertion-ordered table rather than one per read, because a
+     * mapping proxy over a fresh copy would disagree with the last write to a member's own dictionary.
+     */
+    private static PyDict members;
+
+    /** The names and members of {@link #VALUES}, in declaration order. */
+    static PyDict members() {
+        if (members == null) {
+            PyDict table = PyDict.empty();
+            for (PyFormat member : VALUES) {
+                table.put(PyStr.interned(member.name), member);
+            }
+            members = table;
+        }
+        return members;
+    }
 
     private PyFormat(String name, long value) {
         super(BigInteger.valueOf(value), PyType.FORMAT);
@@ -130,10 +152,16 @@ final class PyFormat extends PyInt {
     @Override
     public PyObject getAttr(String attribute) {
         switch (attribute) {
-            case "name":
+            case "name", "_name_":
                 return PyStr.interned(name);
-            case "value":
+            case "value", "_value_":
                 return PyInt.of(value);
+            case "_sort_order_":
+                return PyInt.of(sortOrder());
+            case "__objclass__":
+                return PyType.FORMAT;
+            case "__dict__":
+                return PyMappingProxy.of(memberNamespace());
             default:
                 PyObject extra = extras.get(attribute);
                 if (extra != null) {
@@ -141,6 +169,35 @@ final class PyFormat extends PyInt {
                 }
                 return Members.find(this, attribute);
         }
+    }
+
+    /**
+     * {@code vars(m)}: the four entries {@code Enum} files on every member, then whatever was written.
+     *
+     * <p>The reference keeps these in the member's instance dictionary and exposes it through a mapping
+     * proxy, so {@code vars(Format.VALUE)} reads {@code _value_}, {@code _name_}, {@code __objclass__} and
+     * {@code _sort_order_} before any name a caller added.
+     */
+    private PyDict memberNamespace() {
+        PyDict dictionary = PyDict.empty();
+        dictionary.put(PyStr.interned("_value_"), PyInt.of(value));
+        dictionary.put(PyStr.interned("_name_"), PyStr.interned(name));
+        dictionary.put(PyStr.interned("__objclass__"), PyType.FORMAT);
+        dictionary.put(PyStr.interned("_sort_order_"), PyInt.of(sortOrder()));
+        for (Map.Entry<String, PyObject> entry : extras.entrySet()) {
+            dictionary.put(PyStr.interned(entry.getKey()), entry.getValue());
+        }
+        return dictionary;
+    }
+
+    /** This member's position in the declaration order, which is its {@code _sort_order_}. */
+    private int sortOrder() {
+        for (int i = 0; i < VALUES.length; i++) {
+            if (VALUES[i] == this) {
+                return i;
+            }
+        }
+        return VALUES.length;
     }
 
     /**

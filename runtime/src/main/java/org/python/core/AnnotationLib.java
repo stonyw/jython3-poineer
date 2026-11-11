@@ -13,11 +13,13 @@ import java.util.Map;
  * refuses {@code STRING}, the {@code VALUE} dictionary is stringified, which is the answer CPython's own
  * fallback gives.
  *
- * <p>What is not carried is named rather than faked. {@code ForwardRef} and {@code call_evaluate_function}
- * do not exist here, so {@code __all__} lists only the six names this module can answer. {@code FORWARDREF}
- * falls back on {@code VALUE} rather than wrapping names in forward references, and {@code eval_str} is
- * accepted and ignored because this runtime has no {@code eval}. A caller that needs one of those is told
- * in this paragraph, not by a plausible wrong answer.
+ * <p>What is not carried is named rather than faked. {@code VALUE_WITH_FAKE_GLOBALS} is refused at the
+ * door, so the string fallback answers the {@code VALUE} dictionary stringified rather than re-running the
+ * annotate function against rewritten globals, and {@code FORWARDREF} falls back on {@code VALUE} the same
+ * way. {@code eval_str=True} evaluates each string annotation through {@link AnnotationEval}, which reads
+ * names, attribute paths, subscripts, constants and parentheses — the shapes an annotation is normally
+ * written with — and refuses every operator, including the {@code X | Y} union spelling. A caller that
+ * needs one of those wider behaviours is told in this paragraph, not by a plausible wrong answer.
  */
 final class AnnotationLib {
 
@@ -27,6 +29,8 @@ final class AnnotationLib {
     private static final String[] GET_NAMES = {"obj", "globals", "locals", "eval_str", "format"};
 
     private static final String[] CALL_NAMES = {"annotate", "format", "owner", "_is_evaluate"};
+
+    private static final String[] EVALUATE_NAMES = {"evaluate", "format", "owner"};
 
     private static final String[] NAMESPACE_NAMES = {"namespace"};
 
@@ -42,9 +46,12 @@ final class AnnotationLib {
         module.set("__doc__", PyStr.of(DOC));
         module.set("__package__", PyStr.of(""));
         module.set("Format", PyType.FORMAT);
+        module.set("ForwardRef", PyType.FORWARD_REF);
         module.set("get_annotations", new PyNativeFunction("get_annotations", AnnotationLib::getAnnotations));
         module.set("call_annotate_function",
                 new PyNativeFunction("call_annotate_function", AnnotationLib::callAnnotateFunctionCalled));
+        module.set("call_evaluate_function",
+                new PyNativeFunction("call_evaluate_function", AnnotationLib::callEvaluateFunctionCalled));
         module.set("annotations_to_string",
                 new PyNativeFunction("annotations_to_string", AnnotationLib::annotationsToStringCalled));
         module.set("type_repr", new PyNativeFunction("type_repr", AnnotationLib::typeReprCalled));
@@ -54,10 +61,12 @@ final class AnnotationLib {
                         AnnotationLib::getAnnotateFromClassNamespace));
         module.set("__all__", PyList.of(new PyObject[] {
             PyStr.of("Format"),
-            PyStr.of("annotations_to_string"),
+            PyStr.of("ForwardRef"),
             PyStr.of("call_annotate_function"),
+            PyStr.of("call_evaluate_function"),
             PyStr.of("get_annotate_from_class_namespace"),
             PyStr.of("get_annotations"),
+            PyStr.of("annotations_to_string"),
             PyStr.of("type_repr")
         }));
         return module;
@@ -66,6 +75,7 @@ final class AnnotationLib {
     // --- get_annotations -------------------------------------------------------------------
 
     private static PyObject getAnnotations(PyObject[] args, String[] kwNames) {
+        requireArguments("get_annotations", args, kwNames, "obj");
         PyObject[] values = Arguments.unpackKeywords("get_annotations", args, kwNames, GET_NAMES, 1, 1);
         PyObject obj = values[0];
         PyObject evalStr = values[3];
@@ -98,9 +108,116 @@ final class AnnotationLib {
         if (((PyDict) annotations).size() == 0) {
             return PyDict.empty();
         }
-        // `eval_str` asks for the strings to be evaluated, which this runtime cannot do; the copy is the
-        // `eval_str=False` answer, and the module's docstring names the gap.
-        return copy((PyDict) annotations);
+        return evaluate
+                ? evaluateStrings(obj, (PyDict) annotations, values[1], values[2])
+                : copy((PyDict) annotations);
+    }
+
+    /**
+     * {@code eval_str=True}: every string annotation evaluated, every other value kept as it is.
+     *
+     * <p>The caller's {@code globals} and {@code locals} win; a missing one is filled from the object, as
+     * CPython's own {@code get_annotations} does before it walks the dictionary.
+     */
+    private static PyObject evaluateStrings(
+            PyObject obj, PyDict annotations, PyObject globals, PyObject locals) {
+        PyObject[] namespaces = namespacesOf(obj);
+        if (globals == null || globals == PyNone.INSTANCE) {
+            globals = namespaces[0];
+        }
+        if (locals == null || locals == PyNone.INSTANCE) {
+            locals = namespaces[1];
+        }
+        PyDict evaluated = PyDict.empty();
+        for (Map.Entry<PyObject, PyObject> entry : annotations.getItems().entrySet()) {
+            PyObject value = entry.getValue();
+            evaluated.put(entry.getKey(),
+                    value instanceof PyStr text
+                            ? AnnotationEval.evaluate(text.getValue(), globals, locals)
+                            : value);
+        }
+        return evaluated;
+    }
+
+    /**
+     * The namespaces an evaluation of strings against {@code owner} uses when the caller gave none.
+     *
+     * <p>A module's dictionary is its own; a class reads its module's globals and a copy of its namespace,
+     * which is what lets an annotation written in a class body see the class's own names; a function reads
+     * the globals it was compiled in. Following {@code __wrapped__} and unwrapping a
+     * {@code functools.partial} is the reference's extra step and is not carried here.
+     */
+    static PyObject[] namespacesOf(PyObject owner) {
+        PyObject globals = null;
+        PyObject locals = null;
+        if (owner instanceof PyModule module) {
+            globals = module.dictionary();
+        } else if (owner instanceof PyType) {
+            PyObject moduleName = Slots.findAttr(owner, "__module__");
+            if (moduleName instanceof PyStr name) {
+                PyObject home = PyRuntime.existingModule(name.getValue());
+                if (home instanceof PyModule found) {
+                    globals = found.dictionary();
+                }
+            }
+            PyObject namespace = Slots.findAttr(owner, "__dict__");
+            if (namespace instanceof PyMappingProxy window) {
+                locals = window.copied();
+            }
+        } else if (Slots.isCallable(owner)) {
+            globals = Slots.findAttr(owner, "__globals__");
+        }
+        return new PyObject[] {globals, locals};
+    }
+
+    /**
+     * The refusal a Python function gives when required arguments are missing.
+     *
+     * <p>{@link Arguments#unpackKeywords} is modelled on CPython's C argument parser, whose sentence names
+     * the position; these functions are written in Python in the reference, so a caller reads the sentence
+     * a Python function gives instead.
+     */
+    private static void requireArguments(
+            String function, PyObject[] args, String[] kwNames, String... required) {
+        int positional = Arguments.positional(args, kwNames);
+        java.util.List<String> missing = new java.util.ArrayList<>();
+        for (int i = 0; i < required.length; i++) {
+            boolean byPosition = i < positional;
+            boolean byName = named(kwNames, required[i]);
+            if (byPosition && byName) {
+                return; // `unpackKeywords` reports the duplicate in the parser's own words.
+            }
+            if (!byPosition && !byName) {
+                missing.add(required[i]);
+            }
+        }
+        if (missing.isEmpty()) {
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < missing.size(); i++) {
+            if (i > 0) {
+                names.append(i == missing.size() - 1
+                        ? (missing.size() > 2 ? ", and " : " and ")
+                        : ", ");
+            }
+            names.append('\'').append(missing.get(i)).append('\'');
+        }
+        throw Slots.typeError(
+                "%s() missing %d required positional argument%s: %s",
+                function, missing.size(), missing.size() == 1 ? "" : "s", names);
+    }
+
+    /** Whether {@code kwNames} carries {@code name}. */
+    private static boolean named(String[] kwNames, String name) {
+        if (kwNames != null) {
+            for (String keyword : kwNames) {
+                if (name.equals(keyword)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -214,8 +331,19 @@ final class AnnotationLib {
     // --- call_annotate_function -------------------------------------------------------------
 
     private static PyObject callAnnotateFunctionCalled(PyObject[] args, String[] kwNames) {
+        requireArguments("call_annotate_function", args, kwNames, "annotate", "format");
         PyObject[] values = Arguments.unpackKeywords(
                 "call_annotate_function", args, kwNames, CALL_NAMES, 2, 2);
+        // `owner` and `_is_evaluate` name state that only the stringifier paths read, and those paths are
+        // answered from the `VALUE` dictionary here; the two names are parsed and dropped.
+        return callAnnotateFunction(values[0], values[1]);
+    }
+
+    /** {@code call_evaluate_function(evaluate, format, *, owner=None)}: the same call, for an evaluation. */
+    private static PyObject callEvaluateFunctionCalled(PyObject[] args, String[] kwNames) {
+        requireArguments("call_evaluate_function", args, kwNames, "evaluate", "format");
+        PyObject[] values = Arguments.unpackKeywords(
+                "call_evaluate_function", args, kwNames, EVALUATE_NAMES, 2, 2);
         return callAnnotateFunction(values[0], values[1]);
     }
 
