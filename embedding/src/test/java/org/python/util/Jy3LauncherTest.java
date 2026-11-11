@@ -316,8 +316,8 @@ class Jy3LauncherTest {
     }
 
     /**
-     * M3 slices 85 and 86's stream face: the scripts whose questions are asked of {@code sys.stdin}, so
-     * both children get the same pipe and the same closed descriptor at the end of it.
+     * M3 slices 85, 86 and 89's stream face: the scripts whose questions are asked of {@code sys.stdin},
+     * so both children get the same pipe and the same closed descriptor at the end of it.
      *
      * <p>The pipe is the case, not an accident of plumbing. Asked of a regular file, {@code seek} and
      * {@code tell} answer with a position and this runtime has no raw layer to ask; asked of a pipe both
@@ -346,7 +346,11 @@ class Jy3LauncherTest {
     private static List<Arguments> m3PipeCorpus() {
         return List.of(
                 Arguments.of("135_stream_reads_and_the_position_refusals.py", STDIN_OCTETS),
-                Arguments.of("136_the_two_layers_under_a_reading_stream.py", LAYERS_OCTETS));
+                Arguments.of("136_the_two_layers_under_a_reading_stream.py", LAYERS_OCTETS),
+                Arguments.of("139_reconfigure_newlines_translate_and_the_guard.py", TRANSLATE_OCTETS),
+                Arguments.of("140_reconfigure_newlines_keep_and_the_reads_around_them.py", KEEP_OCTETS),
+                Arguments.of("141_reconfigure_crlf_and_the_last_character.py", CRLF_OCTETS),
+                Arguments.of("142_reconfigure_cr_and_the_lines_it_cuts.py", CR_OCTETS));
     }
 
     /**
@@ -400,6 +404,42 @@ class Jy3LauncherTest {
                     "six\n",
                     "seven\n",
                     "eight");
+
+    /**
+     * The pipe case 139 reads: three endings inside seventeen octets, the last of them a '\r' with nothing
+     * after it.
+     *
+     * <p>The stream is read in three-octet chunks, so the first {@code '\r\n'} is cut in two and the pair
+     * only appears once the second chunk is in front of the held character, and the middle {@code '\r\r\n'}
+     * is two endings in a row. The trailing '\r' is the one with no next character at all: at the end of the
+     * descriptor it is a lone ending rather than half of a pair.
+     */
+    private static final byte[] TRANSLATE_OCTETS = octets("ab\r\ncd\r\r\nlast\r");
+
+    /**
+     * The pipe case 140 reads: the same shorthand without a trailing return, at a two-octet chunk size.
+     *
+     * <p>The counting reads cross both a chunk boundary and a held '\r', which is where a count in
+     * characters and a count in octets part company: the held character is not a character of the answer
+     * until the chunk after it says which ending it belongs to.
+     */
+    private static final byte[] KEEP_OCTETS = octets("a\rb\r\nc\nd");
+
+    /**
+     * The pipe case 141 reads: a pair, a lone return before a pair, and a lone return at the end.
+     *
+     * <p>Only {@code '\r\n'} ends a line here, so the first '\r' of {@code '\r\r\n'} is text and the
+     * trailing '\r' of the pipe is text too — the end of the descriptor leaves nothing to pair it with.
+     */
+    private static final byte[] CRLF_OCTETS = octets("ab\r\ncd\r\r\nef\r");
+
+    /**
+     * The pipe case 142 reads: one ending of each kind, at a two-octet chunk size.
+     *
+     * <p>With {@code '\r'} the only ending, the second line both begins with the '\n' of a pair and ends on
+     * a '\r' of its own, which is the shape that tells a single-character mode apart from the pair.
+     */
+    private static final byte[] CR_OCTETS = octets("a\rb\r\nc\n");
 
     /** UTF-8 text and raw octets, end to end, which is what a pipe carries. */
     private static byte[] octets(Object... parts) {

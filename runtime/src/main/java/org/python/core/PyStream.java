@@ -35,6 +35,18 @@ import java.util.function.Supplier;
  * descriptor is a pipe or a file, because the loops reassemble what the reads hand out; only the
  * position questions below notice the difference.
  *
+ * <p>{@code reconfigure(newline=...)} is what moves the stream off that opening setting, and it is the
+ * only way, because the reference locks the three fields while there is decoded text the program has not
+ * taken: the guard is the decoded buffer rather than a "has ever read" flag, which is why {@code read(0)}
+ * leaves the stream reconfigurable, and why a stream drained to the end of its descriptor can be
+ * reconfigured again. The four values mean what {@code textio.c} says they mean. {@code None}
+ * translates both '\r' and '\r\n' to '\n' as the text arrives; {@code ''} also recognises all three
+ * endings but hands them back as they were spelled; {@code '\n'}, {@code '\r'} and {@code '\r\n'}
+ * recognise only themselves and translate nothing. A '\r' that ends a chunk is held back rather than
+ * guessed at, because the octet after it decides whether the ending is '\r' or '\r\n', and the same pass
+ * fills in {@code newlines}: the endings a universal mode has met, reported in the reference's fixed order
+ * rather than in the order they arrived.
+ *
  * <p>Under a reading stream are the two layers the reference puts there: {@code sys.stdin.buffer} is a
  * {@link PyBufferedReader} over a {@link PyFileIO}, and this stream asks them rather than the descriptor.
  * The chunk loop goes through {@code buffer.read1} and a whole read through {@code buffer.read}, so the
@@ -158,6 +170,29 @@ public final class PyStream extends PyIterator {
     private double bytesPerChar;
 
     /**
+     * {@code self->readnl}: which ending ends a line. Null is the universal mode that translates, the empty
+     * string the universal mode that keeps what it was given, and anything else is the one ending the
+     * stream was opened with — {@code sys.stdin} starts with {@code "\n"}.
+     */
+    private String newline = "\n";
+
+    /** {@code self->seen_newlines}: one bit per ending met in a universal mode, in the reference's order. */
+    private int seenNewlines;
+
+    /**
+     * Whether the stream holds decoded characters the program has not taken yet — the reference's
+     * {@code decoded_chars != NULL}, which is the condition {@code reconfigure} asks about.
+     *
+     * <p>It is not a "has ever read" flag: the reference creates the buffer with the first chunk and
+     * throws it away the moment a read finds the end of the descriptor, so a stream drained to EOF can be
+     * reconfigured again. Reading nothing at all ({@code read(0)}) never creates it either.
+     */
+    private boolean hasDecoded;
+
+    /** A '\r' the last chunk ended on, held back because only the next character can tell what it is. */
+    private boolean carriedReturn;
+
+    /**
      * @param autoFlush whether the descriptor is drained on every newline, which is what a terminal
      *     gets and a pipe does not
      */
@@ -240,6 +275,14 @@ public final class PyStream extends PyIterator {
      * gives. What the newline may be is the four values {@code textio.c} accepts, and anything else is the
      * {@code ValueError} it raises.
      *
+     * <p>The guard that comes before all of that is the decoded buffer: while the stream holds text the
+     * program has not taken, the three fields the decoder works from cannot move, and the reference says so
+     * in one sentence whatever the value was — the same sentence for an identical encoding, for an explicit
+     * {@code None}, and for a newline that is not legal at all. The two flags and a call with no keywords
+     * are still allowed, and so is {@code reconfigure(encoding=None)}: a value that is not given is not a
+     * change. Draining the descriptor drops the buffer, so the lock is a property of what is held rather
+     * than of what has happened.
+     *
      * <p>What follows is {@code CHECK_ATTACHED}, then {@code CHECK_CLOSED}, then the codec lookup — the
      * reference asks the registry for the name but stores the name the program gave, so {@code
      * encoding='LATIN-1'} reads back in that spelling — and finally the flush that is the second half of the
@@ -256,15 +299,21 @@ public final class PyStream extends PyIterator {
                         0);
         String newEncoding = optionalText(values[0], "encoding");
         String newErrors = optionalText(values[1], "errors");
-        String newline = optionalText(values[2], "newline");
+        String newNewline = optionalText(values[2], "newline");
+        boolean newlineGiven = values[2] != null;
         Boolean newLineBuffering = optionalCount(values[3]);
         Boolean newWriteThrough = optionalCount(values[4]);
-        if (newline != null
-                && !newline.isEmpty()
-                && !newline.equals("\n")
-                && !newline.equals("\r")
-                && !newline.equals("\r\n")) {
-            throw Slots.valueError("illegal newline value: %s", newline);
+        if (hasDecoded && (newEncoding != null || newErrors != null || newlineGiven)) {
+            throw Slots.unsupportedOperation(
+                    "It is not possible to set the encoding or newline of stream after the first read");
+        }
+        if (newlineGiven
+                && newNewline != null
+                && !newNewline.isEmpty()
+                && !newNewline.equals("\n")
+                && !newNewline.equals("\r")
+                && !newNewline.equals("\r\n")) {
+            throw Slots.valueError("illegal newline value: %s", newNewline);
         }
         checkAttached();
         checkOpen();
@@ -279,6 +328,9 @@ public final class PyStream extends PyIterator {
         }
         if (newErrors != null) {
             errors = newErrors;
+        }
+        if (newlineGiven) {
+            newline = newNewline;
         }
         if (newLineBuffering != null) {
             lineBuffered = newLineBuffering;
@@ -413,7 +465,11 @@ public final class PyStream extends PyIterator {
     private PyObject read(long wanted) {
         checkReadable();
         if (wanted < 0) {
-            return PyStr.of(take(-1) + decode(readAllOctets(), true));
+            String rest = take(-1) + settle(decode(readAllOctets(), true), true);
+            // The whole read runs the descriptor dry, and the reference drops the decoded buffer at the
+            // end of it, which is why the stream is reconfigurable again afterwards.
+            hasDecoded = false;
+            return PyStr.of(rest);
         }
         StringBuilder answer = new StringBuilder();
         long remaining = wanted;
@@ -474,8 +530,10 @@ public final class PyStream extends PyIterator {
      * before the chunk is cut, so a limit that lands inside a line ends the line there and leaves the
      * rest — terminator included — for the next read of the same line.
      *
-     * <p>The terminator is the '\n' the stream was opened with, and only that: a '\r' is text like any
-     * other character, so {@code 'a\rb\n'} is one line of five characters.
+     * <p>The terminator is whatever {@code readnl} says it is, so a stream opened with {@code newline='\n'}
+     * — which is how {@code sys.stdin} starts — ends only on a '\n' and treats a '\r' as ordinary text,
+     * while a universal mode ends on any of the three. The chunk has already been settled by the time the
+     * scan runs, so a '\r\n' cut between two chunks has been put back together here.
      */
     private String readlineText(long limit) {
         checkReadable();
@@ -527,11 +585,97 @@ public final class PyStream extends PyIterator {
         long wanted = sizeHint > 0 ? (long) (Math.max(bytesPerChar, 1.0) * sizeHint) : 0;
         byte[] octets = readOctets(Math.max(chunkSize, wanted));
         boolean atEnd = octets.length == 0;
-        String text = decode(octets, atEnd);
+        hasDecoded = !atEnd;
+        String text = settle(decode(octets, atEnd), atEnd);
         int characters = characters(text);
         bytesPerChar = characters > 0 ? (double) octets.length / characters : 0.0;
         replacePending(text);
         return !(atEnd && characters == 0);
+    }
+
+    /** Whether this stream is in one of the two universal modes, which are the ones that look at endings. */
+    private boolean universal() {
+        return newline == null || newline.isEmpty();
+    }
+
+    /**
+     * {@code translate_newlines}: the chunk as {@code readnl} says it should be read.
+     *
+     * <p>A chunk that ends on a '\r' is not translated yet: the character after it decides whether the
+     * ending is a lone '\r' or the first half of a '\r\n', and that character is in the next chunk. The
+     * held '\r' is put in front of it on arrival, which is why the pair is only ever looked at whole.
+     * Nothing is held back at the end of the descriptor — there is no next character, so the '\r' is an
+     * ending of its own.
+     */
+    private String settle(String text, boolean atEnd) {
+        if (holdsReturn()) {
+            if (carriedReturn) {
+                text = "\r" + text;
+                carriedReturn = false;
+            }
+            if (!atEnd && text.endsWith("\r")) {
+                text = text.substring(0, text.length() - 1);
+                carriedReturn = true;
+            }
+        }
+        if (!universal()) {
+            return text;
+        }
+        noteEndings(text);
+        return newline == null ? text.replace("\r\n", "\n").replace('\r', '\n') : text;
+    }
+
+    /**
+     * Whether a chunk's closing '\r' has to wait for the character after it.
+     *
+     * <p>The two universal modes hold it because the decoder they run through does; the {@code "\r\n"}
+     * mode holds it because the line scan refuses to take a '\r' it cannot pair, which is the same answer
+     * arrived at from the other side. The single-character modes and the default {@code "\n"} never need
+     * to: a '\r' is text to them, and where it is cannot change what ends a line.
+     */
+    private boolean holdsReturn() {
+        return universal() || "\r\n".equals(newline);
+    }
+
+    /** Fills in {@code seen_newlines} from the chunk, before {@code None} is allowed to rewrite it. */
+    private void noteEndings(String text) {
+        for (int at = 0; at < text.length(); at++) {
+            char unit = text.charAt(at);
+            if (unit == '\r') {
+                if (at + 1 < text.length() && text.charAt(at + 1) == '\n') {
+                    seenNewlines |= 4;
+                    at++;
+                } else {
+                    seenNewlines |= 1;
+                }
+            } else if (unit == '\n') {
+                seenNewlines |= 2;
+            }
+        }
+    }
+
+    /** {@code s.newlines}: the endings a universal mode has met, in the reference's fixed order. */
+    private PyObject newlinesAnswer() {
+        checkAttached();
+        return switch (seenNewlines) {
+            case 0 -> PyNone.INSTANCE;
+            case 1 -> PyStr.of("\r");
+            case 2 -> PyStr.of("\n");
+            case 4 -> PyStr.of("\r\n");
+            default -> {
+                PyList found = PyList.empty();
+                if ((seenNewlines & 1) != 0) {
+                    found.add(PyStr.of("\r"));
+                }
+                if ((seenNewlines & 2) != 0) {
+                    found.add(PyStr.of("\n"));
+                }
+                if ((seenNewlines & 4) != 0) {
+                    found.add(PyStr.of("\r\n"));
+                }
+                yield PyTuple.of(found.getItems().toArray(new PyObject[0]));
+            }
+        };
     }
 
     /** {@code decoded_chars} and its cursor reset, which is what a consumed chunk leaves behind. */
@@ -549,10 +693,33 @@ public final class PyStream extends PyIterator {
         return answer;
     }
 
-    /** Where the line ends in the current chunk, counted as the reference counts it: up to and including. */
+    /**
+     * Where the line ends in the current chunk, counted as the reference counts it: up to and including.
+     *
+     * <p>Which endings count is what {@code readnl} says. The two universal modes take all three, and a
+     * '\r' that is followed by a '\n' is the longer ending rather than two.
+     */
     private int terminator(int from) {
-        int at = pending.indexOf('\n', pending.offsetByCodePoints(0, from));
-        return at < 0 ? -1 : pending.codePointCount(0, at + 1);
+        int start = pending.offsetByCodePoints(0, from);
+        if ("\r\n".equals(newline)) {
+            int at = pending.indexOf("\r\n", start);
+            return at < 0 ? -1 : pending.codePointCount(0, at + 2);
+        }
+        if (newline != null && !newline.isEmpty()) {
+            int at = pending.indexOf(newline.charAt(0), start);
+            return at < 0 ? -1 : pending.codePointCount(0, at + 1);
+        }
+        for (int at = start; at < pending.length(); at++) {
+            char unit = pending.charAt(at);
+            if (unit == '\n') {
+                return pending.codePointCount(0, at + 1);
+            }
+            if (unit == '\r') {
+                boolean paired = at + 1 < pending.length() && pending.charAt(at + 1) == '\n';
+                return pending.codePointCount(0, paired ? at + 2 : at + 1);
+            }
+        }
+        return -1;
     }
 
     /** {@code buffer.read1(n)}: the octets one chunk is built from, however the store holds them. */
@@ -903,13 +1070,10 @@ public final class PyStream extends PyIterator {
                 }
                 yield attached();
             }
-            // The reference works this out as it reads, and universal newlines is what would fill it in.
-            // sys.stdin is opened with newline='\n', so no line ending is ever translated and none is
-            // ever found.
-            case "newlines" -> {
-                checkAttached();
-                yield PyNone.INSTANCE;
-            }
+            // The reference works this out as it reads, which is why the answer is the set of endings the
+            // chunks have actually carried rather than anything the opening mode predicts: a stream that
+            // has read nothing answers None even in a universal mode.
+            case "newlines" -> newlinesAnswer();
             case "_CHUNK_SIZE" -> {
                 checkAttached();
                 yield PyInt.of(chunkSize);
