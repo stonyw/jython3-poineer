@@ -3,6 +3,7 @@ package org.python.core;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.util.Arrays;
 import java.util.Set;
 
@@ -24,10 +25,11 @@ import java.util.Set;
  * descriptor falls back to the number it was opened from, the two reprs above lose their name field, and
  * a read of the name reports the AttributeError of the object that owns it rather than of the one asked.
  *
- * <p>The refusals are the ones a descriptor that cannot write and cannot seek gives. {@code write} and
- * {@code truncate} answer {@code io.UnsupportedOperation} because the mode has no 'w' in it, and {@code
- * seek} and {@code tell} reach the operating system, which answers {@code ESPIPE} — errno 29, quoted in
- * the reference's own words since Java reports no errno of its own.
+ * <p>The refusals are the ones the mode string asks for. A descriptor without a write flag answers
+ * {@code io.UnsupportedOperation} from {@code write} and {@code truncate}, and one without a read flag
+ * answers {@code File not open for reading} from the reads; a file opened by {@code open()} positions and
+ * extends, while the pipe {@code stdin} reads from has no position and answers {@code ESPIPE} — errno 29,
+ * quoted in the reference's own words since Java reports no errno of its own.
  *
  * <p>What a value is converted to, and when, is the other half of the face. Clinic runs first, so {@code
  * read('x')} and {@code seek(0, 'x')} are refused as types on a descriptor that has been closed, while
@@ -43,6 +45,16 @@ public final class PyFileIO extends PyIOStream {
     private static final int ESPIPE = 29;
 
     private final InputStream in;
+
+    /**
+     * The descriptor behind a file {@code open()} made, which answers both halves of the traffic.
+     *
+     * <p>{@code stdin} arrives as an {@link InputStream} and stays one: a pipe cannot be positioned, and
+     * the few rows below that say so are the ones the reference answers with {@code ESPIPE}. A file can,
+     * so it arrives here instead, whichever flags its mode string carried.
+     */
+    private final RandomAccessFile file;
+
     private final int fd;
 
     private boolean closed;
@@ -50,11 +62,49 @@ public final class PyFileIO extends PyIOStream {
     /** {@code closefd}, which is False for the three streams the interpreter builds itself. */
     private final boolean closefd;
 
+    /** The three facts the mode string decides, which the rows below answer instead of assuming. */
+    private final boolean readable;
+    private final boolean writable;
+
+    /** Whether every {@code write} seeks to the end first, which is what {@code 'a'} asks the kernel for. */
+    private final boolean appending;
+
+    /** What {@code raw.mode} reports: the flags, not the spelling the caller used. */
+    private final String mode;
+
     PyFileIO(String name, InputStream source, int fd, boolean closefd) {
+        this(name, source, null, fd, closefd, true, false, false, "rb");
+    }
+
+    PyFileIO(
+            String name,
+            RandomAccessFile file,
+            boolean readable,
+            boolean writable,
+            boolean appending,
+            String mode) {
+        this(name, null, file, -1, true, readable, writable, appending, mode);
+    }
+
+    private PyFileIO(
+            String name,
+            InputStream source,
+            RandomAccessFile file,
+            int fd,
+            boolean closefd,
+            boolean readable,
+            boolean writable,
+            boolean appending,
+            String mode) {
         super(PyType.FILE_IO);
         this.in = source;
+        this.file = file;
         this.fd = fd;
         this.closefd = closefd;
+        this.readable = readable;
+        this.writable = writable;
+        this.appending = appending;
+        this.mode = mode;
         // The constructor files the name in the dictionary rather than in a slot, which is where a read
         // of `raw.name` and every repr above this one look for it.
         attributeStore().put(PyStr.interned("name"), PyStr.of(name));
@@ -89,12 +139,15 @@ public final class PyFileIO extends PyIOStream {
      */
     byte[] octets(long wanted) {
         checkGetter();
+        if (!readable) {
+            throw Slots.unsupportedOperation("File not open for reading");
+        }
         if (wanted <= 0) {
             return new byte[0];
         }
         byte[] buffer = new byte[(int) Math.min(wanted, MAX_READ)];
         try {
-            int got = in.read(buffer);
+            int got = file == null ? in.read(buffer) : file.read(buffer);
             return got <= 0 ? new byte[0] : Arrays.copyOf(buffer, got);
         } catch (IOException refusal) {
             throw Slots.osError("reading error");
@@ -164,14 +217,47 @@ public final class PyFileIO extends PyIOStream {
      * the descriptor is looked at before the mode is.
      */
     private PyObject write(PyObject data) {
-        if (!(data instanceof PyBytes)) {
-            // The buffer converter names the type that arrived without quoting it, which is `a bytes-like
-            // object is required, not 'str'` with the quotes the message itself carries.
-            throw Slots.typeError(
-                    "a bytes-like object is required, not '%s'", Slots.argumentName(data));
-        }
+        byte[] octets = octetsToWrite(data);
         checkGetter();
-        throw Slots.unsupportedOperation("File not open for writing");
+        if (!writable) {
+            throw Slots.unsupportedOperation("File not open for writing");
+        }
+        writeOctets(octets);
+        return PyInt.of(octets.length);
+    }
+
+    /**
+     * One write to the descriptor, which is the half the buffer above it calls directly.
+     *
+     * <p>An append mode is the kernel's {@code O_APPEND} read from Java side: every write moves the
+     * position to the end first, so a {@code seek} between two writes changes nothing about where the
+     * second one lands. The reference gets that from the flag itself; here it is the one line below.
+     */
+    void writeOctets(byte[] octets) {
+        checkGetter();
+        if (!writable) {
+            throw Slots.unsupportedOperation("File not open for writing");
+        }
+        try {
+            if (appending) {
+                file.seek(file.length());
+            }
+            file.write(octets);
+        } catch (IOException refusal) {
+            throw Slots.osError("writing error");
+        }
+    }
+
+    /** The buffer converter, which names the type that arrived without quoting it again. */
+    static byte[] octetsToWrite(PyObject data) {
+        if (data instanceof PyBytes bytes) {
+            return bytes.getValue();
+        }
+        if (data instanceof PyByteArray bytes) {
+            return bytes.raw();
+        }
+        throw Slots.typeError(
+                "a bytes-like object is required, not '%s'", Slots.argumentName(data));
     }
 
     /**
@@ -188,7 +274,11 @@ public final class PyFileIO extends PyIOStream {
         closed = true;
         if (closefd) {
             try {
-                in.close();
+                if (file == null) {
+                    in.close();
+                } else {
+                    file.close();
+                }
             } catch (IOException ignored) {
                 // The answer is the Python one; a descriptor the JVM already lost cannot change it.
             }
@@ -207,17 +297,36 @@ public final class PyFileIO extends PyIOStream {
     private PyObject seek(PyObject[] args, String[] kwNames) {
         Arguments.noKeywords("FileIO.seek()", kwNames);
         Arguments.between("seek", args, kwNames, 1, 2);
-        if (args.length > 1) {
-            Numbers.cInteger(args[1]);
-        }
+        int whence = args.length > 1 ? Numbers.cInteger(args[1]) : 0;
         checkGetter();
-        Numbers.cLong(args[0]);
-        throw illegalSeek();
+        long offset = Numbers.cLong(args[0]);
+        if (file == null) {
+            throw illegalSeek();
+        }
+        try {
+            long target = switch (whence) {
+                case 0 -> offset;
+                case 1 -> file.getFilePointer() + offset;
+                case 2 -> file.length() + offset;
+                default -> throw Slots.valueError("whence value %d unsupported", whence);
+            };
+            file.seek(target);
+            return PyInt.of(target);
+        } catch (IOException refusal) {
+            throw Slots.osError("seek");
+        }
     }
 
     private PyObject tell() {
         checkGetter();
-        throw illegalSeek();
+        if (file == null) {
+            throw illegalSeek();
+        }
+        try {
+            return PyInt.of(file.getFilePointer());
+        } catch (IOException refusal) {
+            throw Slots.osError("telling position");
+        }
     }
 
     /** {@code ESPIPE} in the words the reference uses, since Java reports no errno of its own. */
@@ -230,7 +339,39 @@ public final class PyFileIO extends PyIOStream {
 
     private PyObject seekable() {
         checkGetter();
-        return PyBool.FALSE;
+        return PyBool.of(file != null);
+    }
+
+    /**
+     * {@code raw.truncate(size)}: the size is a positional-only default of None, which means the current
+     * position, and the refusal a descriptor with no 'w' answers comes before the value is converted.
+     */
+    private PyObject truncate(PyObject[] args, String[] kwNames) {
+        PyObject[] slots =
+                Arguments.parameters(
+                        "truncate",
+                        args,
+                        kwNames,
+                        new String[] {"_"},
+                        new PyObject[] {PyNone.INSTANCE},
+                        0);
+        checkGetter();
+        if (!writable || file == null) {
+            throw Slots.unsupportedOperation("File not open for writing");
+        }
+        try {
+            long size =
+                    slots[0] == null || slots[0] instanceof PyNone
+                            ? file.getFilePointer()
+                            : Numbers.optionalSize(slots[0], -1);
+            long position = file.getFilePointer();
+            file.setLength(size);
+            // The reference keeps the position even when it now sits past the new end.
+            file.seek(position);
+            return PyInt.of(size);
+        } catch (IOException refusal) {
+            throw Slots.osError("truncate");
+        }
     }
 
     /** {@code fileno}: the descriptor number, which is the one thing here a Java runtime knows exactly. */
@@ -271,27 +412,17 @@ public final class PyFileIO extends PyIOStream {
             // Clinic hands this one an unconverted `object`: the closed and mode refusals come first, so
             // `truncate('x')` is the mode sentence rather than the type one the reference only reaches
             // on a descriptor opened for writing.
-            .add("truncate", (self, args, kwNames) -> {
-                Arguments.parameters(
-                        "truncate",
-                        args,
-                        kwNames,
-                        new String[] {"_"},
-                        new PyObject[] {PyNone.INSTANCE},
-                        0);
-                ((PyFileIO) self).checkGetter();
-                throw Slots.unsupportedOperation("File not open for writing");
-            })
+            .add("truncate", (self, args, kwNames) -> ((PyFileIO) self).truncate(args, kwNames))
             .add("seek", (self, args, kwNames) -> ((PyFileIO) self).seek(args, kwNames))
             .addNoArgument("tell", self -> ((PyFileIO) self).tell())
             .addNoArgument("seekable", self -> ((PyFileIO) self).seekable())
             .addNoArgument("readable", self -> {
                 ((PyFileIO) self).checkGetter();
-                return PyBool.TRUE;
+                return PyBool.of(((PyFileIO) self).readable);
             })
             .addNoArgument("writable", self -> {
                 ((PyFileIO) self).checkGetter();
-                return PyBool.FALSE;
+                return PyBool.of(((PyFileIO) self).writable);
             })
             .addNoArgument("fileno", self -> ((PyFileIO) self).fileno())
             .addNoArgument("isatty", self -> ((PyFileIO) self).isatty())
@@ -378,7 +509,7 @@ public final class PyFileIO extends PyIOStream {
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "closed" -> PyBool.of(closed);
-            case "mode" -> PyStr.of("rb");
+            case "mode" -> PyStr.of(mode);
             case "closefd" -> PyBool.of(closefd);
             // `_blksize` is the block size `fstat` answers for the descriptor, which Java reports no
             // equivalent of; the row is not filed here, so reading it is the AttributeError it would be
@@ -402,7 +533,9 @@ public final class PyFileIO extends PyIOStream {
         PyObject name = attributeStore().get(PyStr.interned("name"));
         return "<_io.FileIO "
                 + (name == null ? "fd=" + fd : "name=" + Slots.repr(name))
-                + " mode='rb' closefd="
+                + " mode='"
+                + mode
+                + "' closefd="
                 + (closefd ? "True" : "False")
                 + ">";
     }

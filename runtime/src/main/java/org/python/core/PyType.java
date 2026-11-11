@@ -673,6 +673,12 @@ public class PyType extends PyObject {
     private static final String BUFFERED_READER_DOC =
             "Create a new buffered reader using the given readable raw IO object.";
 
+    private static final String BUFFERED_WRITER_DOC =
+            "Create a new buffered writer using the given writable raw IO object.";
+
+    private static final String BUFFERED_RANDOM_DOC =
+            "Create a new buffered random reader/writer using the given readable and writable raw IO object.";
+
     private static final String FILE_IO_DOC =
             "Open a file.\n\nThe mode can be 'r' (default), 'w', 'x' or 'a' for reading,\nwriting, "
                     + "exclusive creation or appending.  The file will be created\nif it doesn't exist when "
@@ -721,6 +727,18 @@ public class PyType extends PyObject {
             declare("BufferedReader", BUFFERED_IO_BASE)
                     .filedUnder("_io.BufferedReader")
                     .documented(BUFFERED_READER_DOC);
+
+    /** {@code type(open(name, 'wb'))}: the same store over a descriptor opened the other way round. */
+    public static final PyType BUFFERED_WRITER =
+            declare("BufferedWriter", BUFFERED_IO_BASE)
+                    .filedUnder("_io.BufferedWriter")
+                    .documented(BUFFERED_WRITER_DOC);
+
+    /** {@code type(open(name, 'w+b'))}: one store that answers both directions. */
+    public static final PyType BUFFERED_RANDOM =
+            declare("BufferedRandom", BUFFERED_IO_BASE)
+                    .filedUnder("_io.BufferedRandom")
+                    .documented(BUFFERED_RANDOM_DOC);
 
     /** {@code type(sys.stdin.buffer.raw)}: the descriptor itself, read one {@code read(2)} at a time. */
     public static final PyType FILE_IO =
@@ -1379,6 +1397,8 @@ public class PyType extends PyObject {
                 || this == CLASS_METHOD
                 || this == PyStream.TYPE
                 || this == BUFFERED_READER
+                || this == BUFFERED_WRITER
+                || this == BUFFERED_RANDOM
                 || this == FILE_IO
                 || this == IO_BASE
                 || this == TEXT_IO_BASE

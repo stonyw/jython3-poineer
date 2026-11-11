@@ -177,19 +177,54 @@ class Jy3LauncherTest {
     }
 
     /**
-     * Slice 105's corpus script, which needs files to open.
+     * Slice 105's corpus script, whose two fixtures it now writes itself.
      *
-     * <p>It is not in the list above because this runtime has no write mode yet: the two fixtures have
-     * to exist before either interpreter starts, so the working directory is prepared here. The text
-     * one carries all three endings and the binary one carries an octet that is not UTF-8, which is
-     * what the translation and the descriptor layer are asked about.
+     * <p>The names are removed before each interpreter starts, because a script cannot delete them —
+     * this runtime has no {@code os} module. The text fixture carries all three endings and the binary
+     * one carries an octet that is not UTF-8, which is what the translation and the descriptor layer
+     * are asked about.
      */
     @Test
     void anOpenScriptAnswersExactlyAsCpythonAnswers() throws Exception {
-        write("open_text.txt", "a\r\nb\rc\nd\n");
-        Files.write(work.resolve("open_bin.dat"), new byte[] {0x00, 0x01, 0x7f, (byte) 0xff});
+        answersExactlyAsCpythonCleaning(
+                "m3/corpus", "174_open.py", "open_text.txt", "open_bin.dat");
+    }
 
-        answersExactlyAsCpython("m3/corpus", "174_open.py");
+    /**
+     * Slice 106's corpus script: every writing mode, plus the layers under it.
+     *
+     * <p>The list is longer for two reasons. A script creates many files, and {@code x} asks whether a
+     * name exists, so the leftovers of the reference run would change the answer the second run gets;
+     * they are therefore removed before each interpreter starts and before the comparison.
+     */
+    @Test
+    void anOpenWriteScriptAnswersExactlyAsCpythonAnswers() throws Exception {
+        answersExactlyAsCpythonCleaning(
+                "m3/corpus",
+                "175_open_write.py",
+                "w_text.txt",
+                "x_text.txt",
+                "dup_x.bin",
+                "lines.txt",
+                "w_bin.bin",
+                "seed_r.bin",
+                "seed_a.bin",
+                "seed_w.bin",
+                "brand.bin",
+                "bare.bin",
+                "lined.txt",
+                "sized.txt",
+                "latin.txt",
+                "utf8.txt",
+                "ascii.txt",
+                "nl_default.txt",
+                "nl_keep.txt",
+                "nl_lf.txt",
+                "nl_cr.txt",
+                "nl_crlf.txt",
+                "closed.bin",
+                "closed.txt",
+                "pairs.txt");
     }
 
     private static List<String> m3Corpus() {
@@ -579,6 +614,35 @@ class Jy3LauncherTest {
         assertThat(jy3.exit()).as("%s exit", scriptName).isEqualTo(reference.exit());
         assertThat(jy3.out()).as("%s stdout", scriptName).isEqualTo(reference.out());
         assertThat(jy3.err()).as("%s stderr", scriptName).isEqualTo(reference.err());
+    }
+
+    /**
+     * The comparison above, with the names a corpus script writes removed before each interpreter.
+     *
+     * <p>Two things need the extra passes. A script cannot remove what it wrote, because this runtime
+     * has no {@code os} module, and {@code x} asks whether a name exists, so the reference's leftovers
+     * would change the answer the second run gets. The last pass leaves the temporary directory as it
+     * began.
+     */
+    private void answersExactlyAsCpythonCleaning(
+            String folder, String scriptName, String... leftovers) throws Exception {
+        Path script = write(scriptName, resource(folder + "/" + scriptName));
+
+        deleteLeftovers(leftovers);
+        Result reference = Jy3Process.run(work, cpythonCommand(), List.of(script.toString()), null);
+        deleteLeftovers(leftovers);
+        Result jy3 = jy3(script);
+        deleteLeftovers(leftovers);
+
+        assertThat(jy3.exit()).as("%s exit", scriptName).isEqualTo(reference.exit());
+        assertThat(jy3.out()).as("%s stdout", scriptName).isEqualTo(reference.out());
+        assertThat(jy3.err()).as("%s stderr", scriptName).isEqualTo(reference.err());
+    }
+
+    private void deleteLeftovers(String... names) throws Exception {
+        for (String name : names) {
+            Files.deleteIfExists(work.resolve(name));
+        }
     }
 
     /**

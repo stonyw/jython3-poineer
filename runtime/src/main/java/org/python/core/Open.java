@@ -1,7 +1,10 @@
 package org.python.core;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
 
 /**
  * The {@code open} builtin: {@code _io}'s argument layer over the stream classes this runtime already
@@ -23,9 +26,13 @@ import java.io.FileNotFoundException;
  * {@code buffering=0} asked for the descriptor itself. A size above one is accepted and ignored — the
  * layer is the same, only the chunk the reference would read is larger.
  *
- * <p>Only reading is wired. {@code w}, {@code x}, {@code a} and {@code +} are refused by name, as are
- * a descriptor number, a bytes path and an opener. The reference opens all of those; the deviation is
- * recorded in {@code PLAN-progress.md} rather than half-built here.
+ * <p>Every mode is wired: {@code r}, {@code w}, {@code x} and {@code a}, each with or without
+ * {@code +}, in text or binary. The caller's spelling is what a text stream reports as {@code mode},
+ * while a binary stream reports the flags {@code FileIO} derived from them — {@code w+b} reads back
+ * {@code 'rb+'}, {@code a+b} {@code 'ab+'}, {@code xb} {@code 'xb'} — because that is the string the
+ * reference files. A descriptor number, a bytes path and an opener are still refused by name; the
+ * reference opens all of those, and the deviation is recorded in {@code PLAN-progress.md} rather than
+ * half-built here.
  */
 final class Open {
 
@@ -98,16 +105,17 @@ final class Open {
         if (opener != null && opener != PyNone.INSTANCE) {
             checkOpener(opener, path);
         }
-        if (!parsed.readOnly()) {
-            throw Slots.notImplemented("open() in mode '" + mode + "'");
-        }
 
-        PyFileIO raw = descriptor(path);
+        String ioMode = ioMode(parsed);
+        PyFileIO raw = descriptor(path, parsed, ioMode);
         if (parsed.binary) {
-            return buffering == 0 ? raw : new PyBufferedReader(raw);
+            return buffering == 0
+                    ? raw
+                    : new PyBufferedReader(
+                            raw, bufferType(parsed), parsed.readable(), parsed.writable());
         }
         try {
-            return text(raw, path, buffering, encoding, errors, newline, mode);
+            return text(raw, path, buffering, encoding, errors, newline, mode, parsed);
         } catch (RuntimeException failure) {
             raw.close();
             throw failure;
@@ -216,23 +224,72 @@ final class Open {
     }
 
     /**
-     * The {@link PyFileIO} under the read: a {@link FileInputStream} wearing the reference's three
-     * layers of refusal.
+     * The {@link PyFileIO} under the stream, opened the way the mode string asks.
      *
-     * <p>The descriptor number is {@code -1}, because the JVM hands out no such number; the stream
-     * still answers {@code name}, {@code mode} and {@code closefd} as a {@code FileIO} does.
+     * <p>A read-only mode is a {@link FileInputStream}; everything else is a
+     * {@link RandomAccessFile}, because the writer has to position, extend and truncate. {@code w}
+     * truncates after opening, {@code a} leaves the length alone and lets every write seek to the end,
+     * and {@code x} refuses a name that already exists before opening it. The descriptor number is
+     * {@code -1}, because the JVM hands out no such number; the stream still answers {@code name},
+     * {@code mode} and {@code closefd} as a {@code FileIO} does.
      */
-    private static PyFileIO descriptor(String path) {
+    private static PyFileIO descriptor(String path, Mode parsed, String ioMode) {
         if (path.indexOf('\0') >= 0) {
             throw Slots.valueError("embedded null byte");
         }
         try {
-            return new PyFileIO(path, new FileInputStream(path), -1, true);
+            if (parsed.reading && !parsed.updating) {
+                return new PyFileIO(path, new FileInputStream(path), -1, true);
+            }
+            if (parsed.creating && new File(path).exists()) {
+                throw osFailure(ExceptionTypes.FILE_EXISTS_ERROR, 17, "File exists", path);
+            }
+            RandomAccessFile file = new RandomAccessFile(path, "rw");
+            if (parsed.writing) {
+                file.setLength(0);
+            }
+            if (parsed.appending) {
+                // libc opens an append stream at the end, which is why `a+` reads nothing until it seeks.
+                file.seek(file.length());
+            }
+            return new PyFileIO(
+                    path, file, parsed.readable(), parsed.writable(), parsed.appending, ioMode);
         } catch (FileNotFoundException failure) {
             throw failureOf(failure, path);
+        } catch (IOException failure) {
+            throw Slots.osError("open");
         } catch (SecurityException failure) {
             throw osFailure(ExceptionTypes.PERMISSION_ERROR, 13, "Permission denied", path);
         }
+    }
+
+    /**
+     * What {@code FileIO.mode} reports, which is the flags rather than the caller's spelling.
+     *
+     * <p>The reference builds this string from the flags: {@code x} keeps its own letter, {@code a}
+     * wins over a {@code +}, and a read-write pair reads {@code 'rb+'} whichever way the caller wrote
+     * it, so {@code w+b} reports {@code 'rb+'}.
+     */
+    private static String ioMode(Mode parsed) {
+        String flags = parsed.updating ? "+" : "";
+        if (parsed.creating) {
+            return "xb" + flags;
+        }
+        if (parsed.appending) {
+            return "ab" + flags;
+        }
+        if (parsed.writing) {
+            return parsed.updating ? "rb+" : "wb";
+        }
+        return parsed.updating ? "rb+" : "rb";
+    }
+
+    /** The buffered class the directions pick: a reader, a writer, or the one that answers both. */
+    private static PyType bufferType(Mode parsed) {
+        if (parsed.readable() && parsed.writable()) {
+            return PyType.BUFFERED_RANDOM;
+        }
+        return parsed.writable() ? PyType.BUFFERED_WRITER : PyType.BUFFERED_READER;
     }
 
     private static PyRaise failureOf(FileNotFoundException failure, String path) {
@@ -263,7 +320,7 @@ final class Open {
      * why opening a missing file with a bad codec reports the missing file.
      */
     private static PyStream text(PyFileIO raw, String path, int buffering, String encoding,
-            String errors, String newline, String mode) {
+            String errors, String newline, String mode, Mode parsed) {
         if (buffering == 0) {
             throw Slots.valueError("can't have unbuffered text I/O");
         }
@@ -273,13 +330,15 @@ final class Open {
                 : encoding.equals("locale") ? "UTF-8" : encoding;
         return new PyStream(
                 path,
-                new PyBufferedReader(raw),
+                new PyBufferedReader(raw, bufferType(parsed), parsed.readable(), parsed.writable()),
                 -1,
                 spelling,
                 mode,
                 errors == null ? "strict" : errors,
                 newline,
-                buffering == 1);
+                buffering == 1,
+                parsed.readable(),
+                parsed.writable());
     }
 
     private static void checkNewline(String newline) {
@@ -304,8 +363,14 @@ final class Open {
             return (creating ? 1 : 0) + (reading ? 1 : 0) + (writing ? 1 : 0) + (appending ? 1 : 0);
         }
 
-        boolean readOnly() {
-            return !creating && !writing && !appending && !updating;
+        /** Whether the stream can be read from: {@code r}, or any mode carrying a {@code +}. */
+        boolean readable() {
+            return reading || updating;
+        }
+
+        /** Whether it can be written to: everything but a bare {@code r}. */
+        boolean writable() {
+            return writing || creating || appending || updating;
         }
     }
 

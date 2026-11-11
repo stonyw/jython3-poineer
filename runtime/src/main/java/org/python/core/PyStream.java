@@ -296,18 +296,26 @@ public final class PyStream extends PyIterator {
      */
     PyStream(String name, PyBufferedReader reading, int fd, String encoding, String mode,
             String errors, String newline, boolean lineBuffered) {
+        this(name, reading, fd, encoding, mode, errors, newline, lineBuffered, true, false);
+    }
+
+    /** The same stream with both directions set by the mode string {@code open} parsed. */
+    PyStream(String name, PyBufferedReader buffer, int fd, String encoding, String mode,
+            String errors, String newline, boolean lineBuffered, boolean readable,
+            boolean writable) {
         super(TYPE);
         this.name = name;
         this.out = null;
-        this.buffer = reading;
-        this.raw = reading.descriptor();
+        this.buffer = buffer;
+        this.raw = buffer.descriptor();
         this.encoding = encoding;
         this.codec = Encoder.codec(encoding);
         this.errors = errors;
         this.newline = newline;
         this.lineBuffered = lineBuffered;
         this.fd = fd;
-        this.readableLayer = true;
+        this.readableLayer = readable;
+        this.writableLayer = writable;
         declareMode(mode);
     }
 
@@ -318,6 +326,7 @@ public final class PyStream extends PyIterator {
 
     /** Write from Java, the way {@code print} does, without going through the {@code write} slot. */
     public void writeText(String text) {
+        text = translateNewlines(text);
         if (buffer == null) {
             if (closed) {
                 throw Slots.valueError(CLOSED);
@@ -326,6 +335,25 @@ public final class PyStream extends PyIterator {
         } else {
             writeTextToBuffer(text);
         }
+    }
+
+    /**
+     * The output half of {@code newline}: only '\n' is rewritten, and {@code None} means the platform's
+     * own separator — which is why an unspelled {@code open} on this machine writes the byte it read.
+     *
+     * <p>{@code ''} and {@code '\n'} are the two values that leave the text alone: the reference stores
+     * them as "no translation" rather than as a separator, since universal reading needs the empty one
+     * to stay empty. A '\r' byte in the text is never touched, exactly as the reference leaves it.
+     */
+    private String translateNewlines(String text) {
+        if (newline == null) {
+            String separator = System.lineSeparator();
+            return separator.equals("\n") ? text : text.replace("\n", separator);
+        }
+        if (newline.isEmpty() || newline.equals("\n")) {
+            return text;
+        }
+        return text.replace("\n", newline);
     }
 
     /** The writing stream's opening path: the encoder's octets straight into the descriptor. */

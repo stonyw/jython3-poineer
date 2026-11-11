@@ -56,9 +56,27 @@ public final class PyBufferedReader extends PyIOStream {
     /** Whether {@code detach()} has taken the descriptor away, which is the first question of every row. */
     private boolean detached;
 
+    /** The two directions the mode string chose, which decide what the rows below refuse. */
+    private final boolean readable;
+    private final boolean writable;
+
+    /**
+     * {@code self->buffer}: the octets a writer has accepted but not yet handed to the descriptor.
+     *
+     * <p>The reference keeps one array for both directions and this layer keeps a growable one for the
+     * outgoing half, since only a writer accumulates — a reader's octets live in {@link #store}.
+     */
+    private final ByteArrayOutputStream outgoing = new ByteArrayOutputStream();
+
     PyBufferedReader(PyFileIO raw) {
-        super(PyType.BUFFERED_READER);
+        this(raw, PyType.BUFFERED_READER, true, false);
+    }
+
+    PyBufferedReader(PyFileIO raw, PyType type, boolean readable, boolean writable) {
+        super(type);
         this.descriptor = raw;
+        this.readable = readable;
+        this.writable = writable;
     }
 
     /**
@@ -117,6 +135,33 @@ public final class PyBufferedReader extends PyIOStream {
         }
     }
 
+    /** The direction guard of a layer that files both halves of the rows whatever its mode was. */
+    private void requireReadable(String row) {
+        if (!readable) {
+            throw Slots.unsupportedOperation(row);
+        }
+    }
+
+    /**
+     * Hand the outgoing octets over before reading, which is what a {@code '+'} stream needs: the
+     * descriptor holds what a write has accepted, and one read cannot see it until the buffer is drained.
+     */
+    private void drain() {
+        if (outgoing.size() > 0) {
+            flushOutgoing();
+        }
+    }
+
+    /** {@code _bufferedwriter_flush_unlocked}: the octets the writer accepted, in one write for as long. */
+    private void flushOutgoing() {
+        if (outgoing.size() == 0) {
+            return;
+        }
+        byte[] octets = outgoing.toByteArray();
+        outgoing.reset();
+        descriptor.writeOctets(octets);
+    }
+
     /**
      * {@code _bufferedreader_fill_buffer}: one read of the descriptor into the tail of the store.
      *
@@ -126,6 +171,7 @@ public final class PyBufferedReader extends PyIOStream {
      * @return how many octets came, and 0 at the end of the descriptor
      */
     private int fill() {
+        drain();
         int start = readEnd < 0 ? 0 : readEnd;
         byte[] chunk = held().octets(BUFFER_SIZE - start);
         if (chunk.length == 0) {
@@ -156,6 +202,7 @@ public final class PyBufferedReader extends PyIOStream {
 
     /** {@code buffer.read(n)}: {@code n} octets, all that is left for a negative count, nothing for 0. */
     private PyObject read(long wanted) {
+        requireReadable("read");
         held();
         if (wanted < -1) {
             throw Slots.valueError("read length must be non-negative or -1");
@@ -230,6 +277,7 @@ public final class PyBufferedReader extends PyIOStream {
 
     /** {@code buffer.read1(n)}: the store if it holds anything, and one read of the descriptor if not. */
     private PyObject read1(long wanted) {
+        requireReadable("read1");
         held();
         // A negative count is one storeful, and the answer to a dry store is that one read whatever the
         // count was, so what a read1 fetches beyond its own answer is lost rather than buffered.
@@ -248,6 +296,7 @@ public final class PyBufferedReader extends PyIOStream {
 
     /** {@code buffer.peek(n)}: the whole store, which the count never limits. */
     private PyObject peek() {
+        requireReadable("peek");
         held();
         checkClosed(PEEK);
         if (readahead() > 0) {
@@ -268,6 +317,7 @@ public final class PyBufferedReader extends PyIOStream {
      * scan over at 0 because the store has just been reset.
      */
     private PyObject readline(long limit) {
+        requireReadable("readline");
         held();
         checkClosed(READLINE);
         int scanned = (int) (limit >= 0 ? Math.min(readahead(), limit) : readahead());
@@ -368,8 +418,39 @@ public final class PyBufferedReader extends PyIOStream {
                 new PyObject[] {PyNone.INSTANCE},
                 0);
         held();
+        if (!writable) {
+            throw Slots.unsupportedOperation("truncate");
+        }
         checkClosed(TRUNCATE);
-        throw Slots.unsupportedOperation("truncate");
+        flushOutgoing();
+        return Slots.call(Slots.getAttr(descriptor, "truncate"), args, null);
+    }
+
+    /**
+     * {@code buffer.write(data)}: the octets are taken first, and the store hands them over in blocks.
+     *
+     * <p>The count is the octets accepted, not the ones written: anything below one block stays here
+     * until a flush, a blockful, or a close. A write also drops whatever the store was holding for a
+     * read, because a {@code '+'} stream may not answer from a buffer the write has just overtaken.
+     */
+    private PyObject write(PyObject data) {
+        if (!writable) {
+            throw Slots.unsupportedOperation("write");
+        }
+        byte[] octets = PyFileIO.octetsToWrite(data);
+        held();
+        checkClosed("write to closed file");
+        pos = 0;
+        readEnd = -1;
+        if (outgoing.size() + octets.length >= BUFFER_SIZE) {
+            flushOutgoing();
+            if (octets.length >= BUFFER_SIZE) {
+                descriptor.writeOctets(octets);
+                return PyInt.of(octets.length);
+            }
+        }
+        outgoing.write(octets, 0, octets.length);
+        return PyInt.of(octets.length);
     }
 
     /**
@@ -394,6 +475,9 @@ public final class PyBufferedReader extends PyIOStream {
             throw Slots.unsupportedOperation("File or stream is not seekable.");
         }
         Numbers.cLong(args[0]);
+        if (writable) {
+            flushOutgoing();
+        }
         PyObject answer =
                 Slots.call(
                         Slots.getAttr(descriptor, "seek"),
@@ -433,7 +517,8 @@ public final class PyBufferedReader extends PyIOStream {
         return readline(args.length == 0 ? -1 : Numbers.optionalSize(args[0], -1));
     }
 
-    private static final Members METHODS = Members.of(PyType.BUFFERED_READER)
+    private static Members table(PyType type) {
+        return Members.of(type)
             .add("read", (self, args, kwNames) ->
                     ((PyBufferedReader) self).readRow(args, kwNames))
             .add("read1", (self, args, kwNames) ->
@@ -456,11 +541,11 @@ public final class PyBufferedReader extends PyIOStream {
                         "readinto1() argument must be read-write bytes-like object, not %s",
                         Slots.argumentName(args[0]));
             })
-            // A reader files no write rows of its own, so these two are `_IOBase`'s — and `write` among
-            // them refuses by the direction of the layer with no closed guard in front of it.
+            // The rows above file a write of their own; the three types this class can wear differ only in
+            // which direction their bodies let through, so the refusals and the work share one table.
             .add("write", (self, args, kwNames) -> {
                 Arguments.onlyPositional("write", args, kwNames, 1);
-                throw Slots.unsupportedOperation("write");
+                return ((PyBufferedReader) self).write(args[0]);
             })
             .add("writelines", (self, args, kwNames) -> ((PyIOStream) self).writeLines(args, kwNames))
             .add("truncate", (self, args, kwNames) ->
@@ -468,16 +553,25 @@ public final class PyBufferedReader extends PyIOStream {
             .add("seek", (self, args, kwNames) ->
                     ((PyBufferedReader) self).seek(args, kwNames))
             .addNoArgument("tell", self -> {
-                ((PyBufferedReader) self).held();
-                return ((PyBufferedReader) self).ask("tell");
+                PyBufferedReader buffer = (PyBufferedReader) self;
+                buffer.held();
+                if (buffer.writable) {
+                    buffer.flushOutgoing();
+                }
+                return buffer.ask("tell");
             })
             // BufferedReader's `flush` is `_io._Buffered.flush` filed as the simple one: CHECK_INITIALIZED
             // and then nothing but the descriptor's row — including the full stop it refuses a closed
             // descriptor with, which is the sentence here rather than the `flush of closed file` the
             // writer's version of the row says.
             .addNoArgument("flush", self -> {
-                ((PyBufferedReader) self).held();
-                return ((PyBufferedReader) self).ask("flush");
+                PyBufferedReader buffer = (PyBufferedReader) self;
+                buffer.held();
+                if (buffer.writable) {
+                    buffer.checkClosed("flush of closed file");
+                    buffer.flushOutgoing();
+                }
+                return buffer.ask("flush");
             })
             .addNoArgument("close", self -> ((PyBufferedReader) self).close())
             .addNoArgument("detach", self -> ((PyBufferedReader) self).detach())
@@ -499,7 +593,7 @@ public final class PyBufferedReader extends PyIOStream {
             })
             .add("writable", (self, args, kwNames) -> {
                 Arguments.none("_IOBase.writable()", args, kwNames);
-                return PyBool.FALSE;
+                return PyBool.of(((PyBufferedReader) self).writable);
             })
             .add("_checkClosed", (self, args, kwNames) ->
                     ((PyIOStream) self).checkClosedRow(args, kwNames))
@@ -523,6 +617,11 @@ public final class PyBufferedReader extends PyIOStream {
             .add("__getstate__", (self, args, kwNames) -> ((PyIOStream) self).getState(args, kwNames))
             .add("__enter__", (self, args, kwNames) -> ((PyIOStream) self).enter(args, kwNames))
             .add("__exit__", (self, args, kwNames) -> ((PyIOStream) self).exit(args));
+    }
+
+    private static final Members METHODS = table(PyType.BUFFERED_READER);
+    private static final Members WRITER_METHODS = table(PyType.BUFFERED_WRITER);
+    private static final Members RANDOM_METHODS = table(PyType.BUFFERED_RANDOM);
 
     /** {@code iter(buffer)}: the store is its own cursor, and the descriptor's flag says whether it runs. */
     @Override
@@ -562,6 +661,7 @@ public final class PyBufferedReader extends PyIOStream {
      */
     @Override
     public String repr() {
+        String typeName = getType().name();
         PyObject name;
         try {
             name = Slots.getAttr(this, "name");
@@ -570,8 +670,8 @@ public final class PyBufferedReader extends PyIOStream {
                     && refused.value().getType() != ExceptionTypes.ATTRIBUTE_ERROR) {
                 throw refused;
             }
-            return "<_io.BufferedReader>";
+            return "<_io." + typeName + ">";
         }
-        return "<_io.BufferedReader name=" + Slots.repr(name) + ">";
+        return "<_io." + typeName + " name=" + Slots.repr(name) + ">";
     }
 }

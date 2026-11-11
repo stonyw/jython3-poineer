@@ -2,10 +2,16 @@
 
 Every refusal below is one `_io.open` raises, printed in the order the reference checks
 them: the clinic's conversions, then the mode string, then the file, then the three
-questions `TextIOWrapper.__init__` asks about a stream that already exists. The files this
-script reads are placed in the working directory by the harness, because this runtime has
-no write mode yet.
+questions `TextIOWrapper.__init__` asks about a stream that already exists. The two
+fixtures are written by this script through the binary writer, because a script cannot
+delete them again; the harness removes them before each interpreter starts and after it
+finishes.
 """
+
+with open('open_text.txt', 'wb') as seed:
+    seed.write(b'a\r\nb\rc\nd\n')
+with open('open_bin.dat', 'wb') as seed:
+    seed.write(b'\x00\x01\x7f\xff')
 
 
 def fails(call):
