@@ -992,6 +992,24 @@ public final class Interpreter {
                         break;
                     }
 
+                    // --- t-strings (PEP 750) -------------------------------------------------
+                    case Opcodes.BUILD_TEMPLATE: {
+                        PyObject interpolations = frame.pop();
+                        PyObject strings = frame.pop();
+                        frame.push(PyTemplate.build(
+                                (PyTuple) strings, (PyTuple) interpolations));
+                        break;
+                    }
+                    case Opcodes.BUILD_INTERPOLATION: {
+                        // The low two bits say whether a format spec was pushed; the rest is the
+                        // conversion, 0 for none and 1, 2, 3 for !s, !r, !a.
+                        PyObject formatSpec = (arg & 1) != 0 ? frame.pop() : null;
+                        PyObject expression = frame.pop();
+                        PyObject value = frame.pop();
+                        frame.push(PyInterpolation.of(value, expression, arg >> 2, formatSpec));
+                        break;
+                    }
+
                     case Opcodes.SETUP_ANNOTATIONS: {
                         PyDict namespace = nameSpace(frame);
                         PyStr key = PyStr.interned("__annotations__");

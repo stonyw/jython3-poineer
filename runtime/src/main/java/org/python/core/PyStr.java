@@ -117,7 +117,7 @@ public final class PyStr extends PyObject {
             // CPython raises here instead of declining, so `str + bytes` names only the right operand.
             if (!(other instanceof PyStr text)) {
                 throw Slots.typeError(
-                        "can only concatenate str (not \"%s\") to str", other.getType().name());
+                        "can only concatenate str (not \"%s\") to str", other.getType().filedName());
             }
             return PyStr.of(value + text.value);
         }

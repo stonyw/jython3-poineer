@@ -95,6 +95,12 @@ final class Constructors {
         if (type == PyType.SLICE) {
             return slicing(args, keywordNames);
         }
+        if (type == PyType.TEMPLATE) {
+            return PyTemplate.creating(args, keywordNames);
+        }
+        if (type == PyType.INTERPOLATION) {
+            return PyInterpolation.creating(args, keywordNames);
+        }
         if (type == PyType.REVERSED) {
             return reversing(args, keywordNames);
         }

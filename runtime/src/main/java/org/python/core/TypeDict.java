@@ -879,6 +879,18 @@ final class TypeDict {
             sliceTable(into);
             return;
         }
+        if (owner == PyType.TEMPLATE) {
+            templateTable(into);
+            return;
+        }
+        if (owner == PyType.INTERPOLATION) {
+            interpolationTable(into);
+            return;
+        }
+        if (owner == PyType.TEMPLATE_ITERATOR) {
+            templateIterTable(into);
+            return;
+        }
         if (owner == PyType.RANGE) {
             rangeTable(into);
             return;
@@ -3070,6 +3082,90 @@ final class TypeDict {
     /** {@code slice_richcompare}: the two operands have to both be slices, and nothing else. */
     private static Method sliceComparing(CompareOp cmp) {
         return (args, kwNames, qualified) -> Slices.compare(cmp, args[0], args[1]);
+    }
+
+    /**
+     * The ten rows {@code Template} files for itself, in {@code __dict__} order.
+     *
+     * <p>{@code __reduce__} is a {@code method_descriptor} with no sentence at all, which is why the
+     * doc column is {@code null} rather than empty: CPython's {@code template_methods} carries
+     * {@code NULL} there. Everything else is the slot wrapper a value reaches through
+     * {@code Specials}, and the four pieces of state are read-only members.
+     */
+    private static void templateTable(PyDict into) {
+        PyType owner = PyType.TEMPLATE;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::templateNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__add__", ADD_DOC, args -> args[0].binaryOp(BinaryOp.ADD, args[1]));
+        table.method("__reduce__", null, args -> ((PyTemplate) args[0]).reduce(), METH_NOARGS);
+        table.genericSubscript("Template supports [] for generic usage");
+        table.member("strings", "Strings", self -> ((PyTemplate) self).strings(), null);
+        table.member(
+                "interpolations",
+                "Interpolations",
+                self -> ((PyTemplate) self).interpolations(),
+                null);
+        table.getset("values", "Values of interpolations", self -> ((PyTemplate) self).values(), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code template_new} behind {@code tp_new_wrapper}: the class gate, then the merge.
+     *
+     * <p>{@code Template()} is legal and answers the empty template, so the gate only refuses keyword
+     * arguments — the pieces are positional by construction.
+     */
+    private static PyObject templateNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.TEMPLATE, args, kwNames);
+        if (kwNames != null && kwNames.length > 0) {
+            throw Slots.typeError("Template.__new__ only accepts *args arguments");
+        }
+        return PyTemplate.merged(tail(args, kwNames));
+    }
+
+    /**
+     * The ten rows {@code Interpolation} files for itself, in {@code __dict__} order.
+     *
+     * <p>The four state reads are members rather than getsets, and {@code __reduce__} keeps the one
+     * sentence its {@code PyMethodDef} row carries. {@code __match_args__} comes last because a
+     * pattern match reads the names in the order the value was constructed.
+     */
+    private static void interpolationTable(PyDict into) {
+        PyType owner = PyType.INTERPOLATION;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::interpolationNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.method(
+                "__reduce__",
+                "__reduce__() -> (cls, state)",
+                args -> ((PyInterpolation) args[0]).reduce(),
+                METH_NOARGS);
+        table.genericSubscript("Interpolations are generic over the types of their values");
+        table.member("value", "Value", self -> ((PyInterpolation) self).value(), null);
+        table.member("expression", "Expression", self -> ((PyInterpolation) self).expression(), null);
+        table.member("conversion", "Conversion", self -> ((PyInterpolation) self).conversion(), null);
+        table.member("format_spec", "Format specifier", self -> ((PyInterpolation) self).formatSpec(), null);
+        table.value("__doc__", docValue(owner));
+        table.value("__match_args__", PyTuple.of(
+                PyStr.of("value"), PyStr.of("expression"), PyStr.of("conversion"),
+                PyStr.of("format_spec")));
+    }
+
+    /** {@code interpolation_new}: the same gate, then the clinic's four-argument unpack. */
+    private static PyObject interpolationNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.INTERPOLATION, args, kwNames);
+        return PyInterpolation.creating(tail(args, kwNames), kwNames);
+    }
+
+    /** The cursor {@code iter(template)} answers with, which no Python code can construct. */
+    private static void templateIterTable(PyDict into) {
+        PyType owner = PyType.TEMPLATE_ITERATOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.value("__doc__", docValue(owner));
     }
 
     /**

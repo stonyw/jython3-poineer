@@ -102,10 +102,132 @@ public final class PyRuntime {
         builtins = Builtins.namespace();
         sysModule = buildSys();
         PyModule home = new PyModule("builtins", builtins);
+        PyModule templateLib = buildTemplateLib();
         modules.put("sys", sysModule);
         modules.put("builtins", home);
+        modules.put("string.templatelib", templateLib);
         belongTo(home);
         belongTo(sysModule);
+        belongTo(templateLib);
+    }
+
+    /**
+     * {@code string.templatelib}: the two types a t-string literal produces and the two helpers PEP 750
+     * files beside them.
+     *
+     * <p>Only {@code string.templatelib} is registered, not a {@code string} package around it, because
+     * the import system that would build the parent is M4. {@code import string.templatelib} therefore
+     * still fails; the module is reachable through whatever imports this runtime answers.
+     */
+    private static PyModule buildTemplateLib() {
+        PyModule module = new PyModule("string.templatelib");
+        module.set("__doc__", PyStr.of("Support for template string literals (t-strings)."));
+        module.set("__package__", PyStr.of("string"));
+        module.set("Template", PyType.TEMPLATE);
+        module.set("Interpolation", PyType.INTERPOLATION);
+        module.set("convert", new PyNativeFunction("convert", PyRuntime::templateConvert)
+                .documented("Convert *obj* using formatted string literal semantics."));
+        module.set("_template_unpickle",
+                new PyNativeFunction("_template_unpickle", PyRuntime::templateUnpickle));
+        return module;
+    }
+
+    /**
+     * {@code convert(obj, conversion, /)}: the {@code !s}, {@code !r} and {@code !a} applied by hand.
+     *
+     * <p>The argument errors are a Python function's rather than a clinic's, because the reference
+     * writes this one in {@code string/templatelib.py}; the shapes below are the ones its binder gives.
+     */
+    private static PyObject templateConvert(PyObject[] args, String[] kwNames) {
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = Arguments.positional(args, kwNames);
+        boolean objByKeyword = false;
+        boolean conversionByKeyword = false;
+        PyObject conversionValue = null;
+        for (int i = 0; i < keywords; i++) {
+            if (kwNames[i].equals("obj")) {
+                objByKeyword = true;
+            } else if (kwNames[i].equals("conversion")) {
+                conversionByKeyword = true;
+                conversionValue = args[positional + i];
+            } else {
+                throw Slots.typeError(
+                        "convert() got an unexpected keyword argument '%s'", kwNames[i]);
+            }
+        }
+        if (objByKeyword) {
+            throw Slots.typeError(
+                    "convert() got some positional-only arguments passed as keyword arguments: 'obj'");
+        }
+        if (positional > 2) {
+            throw Slots.typeError(
+                    "convert() takes 2 positional arguments but %d were given", positional);
+        }
+        if (positional == 2 && conversionByKeyword) {
+            throw Slots.typeError("convert() got multiple values for argument 'conversion'");
+        }
+        if (positional == 0 && !conversionByKeyword) {
+            throw Slots.typeError(
+                    "convert() missing 2 required positional arguments: 'obj' and 'conversion'");
+        }
+        if (positional == 0) {
+            throw Slots.typeError("convert() missing 1 required positional argument: 'obj'");
+        }
+        if (positional == 1 && !conversionByKeyword) {
+            throw Slots.typeError("convert() missing 1 required positional argument: 'conversion'");
+        }
+        PyObject obj = args[0];
+        PyObject conversion = positional == 2 ? args[1] : conversionValue;
+        if (conversion == PyNone.INSTANCE) {
+            return obj;
+        }
+        if (conversion instanceof PyStr spec) {
+            switch (spec.getValue()) {
+                case "s":
+                    return PyStr.of(Slots.str(obj));
+                case "r":
+                    return PyStr.of(Slots.repr(obj));
+                case "a":
+                    return PyStr.of(Percent.ascii(Slots.repr(obj)));
+                default:
+                    break;
+            }
+        }
+        throw Slots.valueError("invalid conversion specifier: %s", Slots.str(conversion));
+    }
+
+    /**
+     * {@code _template_unpickle(*args)}: the halves a {@code Template.__reduce__} handed out, zipped
+     * back into constructor arguments.
+     *
+     * <p>It is a Python function in the reference, so a wrong number of arguments is its own
+     * {@code ValueError}; each half is any iterable, and the shorter one is padded with nothing.
+     */
+    private static PyObject templateUnpickle(PyObject[] args, String[] kwNames) {
+        if (kwNames != null && kwNames.length > 0) {
+            throw Slots.typeError(
+                    "_template_unpickle() got an unexpected keyword argument '%s'", kwNames[0]);
+        }
+        if (args.length != 2) {
+            throw Slots.valueError("Template expects tuple of length 2 to unpickle");
+        }
+        PyIterator strings = Slots.iterator(args[0]);
+        PyIterator interpolations = Slots.iterator(args[1]);
+        ArrayList<PyObject> parts = new ArrayList<>();
+        while (true) {
+            PyObject text = strings.nextOrNull();
+            PyObject interpolation = interpolations.nextOrNull();
+            if (text == null && interpolation == null) {
+                break;
+            }
+            if (text != null) {
+                parts.add(text);
+            }
+            if (interpolation != null) {
+                parts.add(interpolation);
+            }
+        }
+        return PyTemplate.merged(parts.toArray(new PyObject[0]));
     }
 
     /**

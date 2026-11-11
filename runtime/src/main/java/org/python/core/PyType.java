@@ -383,6 +383,28 @@ public class PyType extends PyObject {
     public static final PyType SLICE = builtin("slice").documented(SLICE_DOC);
 
     /**
+     * {@code string.templatelib.Template}: what a t-string literal evaluates to (PEP 750).
+     *
+     * <p>It is filed under its dotted name because that is how the module is read: the type's
+     * {@code __module__} is {@code 'string.templatelib'} and its {@code __qualname__} is
+     * {@code 'Template'}, while the bare name a message would otherwise use is only the last half.
+     */
+    public static final PyType TEMPLATE = builtin("Template")
+            .filedUnder("string.templatelib.Template")
+            .documented("Template object");
+
+    /** One substitution of a t-string, holding the value and the source's expression, conversion and spec. */
+    public static final PyType INTERPOLATION = builtin("Interpolation")
+            .filedUnder("string.templatelib.Interpolation")
+            .documented("Interpolation object");
+
+    /** The cursor {@code iter(template)} answers with, which no Python code can construct. */
+    static final PyType TEMPLATE_ITERATOR = builtin("TemplateIter")
+            .filedUnder("string.templatelib.TemplateIter")
+            .documented("Template iterator object")
+            .withoutNew();
+
+    /**
      * {@code code_doc}: the eighteen-field constructor table welded in front of the ten words.
      *
      * <p>The clinic files {@code code_new}'s argument list as the {@code tp_doc} of the type it constructs,
