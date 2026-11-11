@@ -1986,6 +1986,9 @@ final class TypeDict {
         table.raw("__new__", NEW_DOC, TypeDict::memoryviewsNew);
         table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
+        table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
         table.getset("obj", MEMORYVIEW_OBJ_DOC, self -> memoryview(self).viewed(), null);
         table.getset(
                 "nbytes", MEMORYVIEW_NBYTES_DOC, self -> PyInt.of(memoryview(self).bytes()), null);
@@ -2006,10 +2009,20 @@ final class TypeDict {
         table.getset(
                 "suboffsets", MEMORYVIEW_SUBOFFSETS_DOC, self -> memoryview(self).suboffsets(), null);
         table.getset(
-                "c_contiguous", MEMORYVIEW_C_CONTIGUOUS_DOC, self -> PyBool.of(true), null);
+                "c_contiguous",
+                MEMORYVIEW_C_CONTIGUOUS_DOC,
+                self -> PyBool.of(memoryview(self).contiguous()),
+                null);
         table.getset(
-                "f_contiguous", MEMORYVIEW_F_CONTIGUOUS_DOC, self -> PyBool.of(true), null);
-        table.getset("contiguous", MEMORYVIEW_CONTIGUOUS_DOC, self -> PyBool.of(true), null);
+                "f_contiguous",
+                MEMORYVIEW_F_CONTIGUOUS_DOC,
+                self -> PyBool.of(memoryview(self).contiguous()),
+                null);
+        table.getset(
+                "contiguous",
+                MEMORYVIEW_CONTIGUOUS_DOC,
+                self -> PyBool.of(memoryview(self).contiguous()),
+                null);
         table.value("__doc__", docValue(owner));
     }
 
