@@ -186,6 +186,13 @@ public final class PyFileIO extends PyIOStream {
     public PyObject close() {
         PyObject answer = internalClose();
         closed = true;
+        if (closefd) {
+            try {
+                in.close();
+            } catch (IOException ignored) {
+                // The answer is the Python one; a descriptor the JVM already lost cannot change it.
+            }
+        }
         return answer;
     }
 
@@ -229,13 +236,16 @@ public final class PyFileIO extends PyIOStream {
     /** {@code fileno}: the descriptor number, which is the one thing here a Java runtime knows exactly. */
     private PyObject fileno() {
         checkGetter();
+        if (fd < 0) {
+            throw Slots.notImplemented("fileno() on a stream opened by open()");
+        }
         return PyInt.of(fd);
     }
 
     private PyObject isatty() {
         checkGetter();
         // Java reports one console for the process; CPython asks this descriptor.
-        return PyBool.of(System.console() != null);
+        return PyBool.of(fd >= 0 && System.console() != null);
     }
 
     private static final Members METHODS = Members.of(PyType.FILE_IO)

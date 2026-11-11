@@ -167,11 +167,12 @@ final class Builtins {
     static PyObject commonAny;
 
     /**
-     * The forty rows {@code bltinmodule.c}'s method table files, each with the {@code ml_doc} its table
-     * row carries.
+     * The forty-one rows this table files: the forty {@code bltinmodule.c} declares, each with the
+     * {@code ml_doc} its table row carries, and {@code open}, which {@code _io} files and the built-in
+     * namespace shares.
      *
-     * <p>Twenty-seven of these texts are the clinic's, and so read as two halves: {@code find_signature} and
-     * {@code skip_signature} cut the signature out of the front of the sentence and hand it to
+     * <p>Twenty-eight of these texts are the clinic's, and so read as two halves: {@code find_signature}
+     * and {@code skip_signature} cut the signature out of the front of the sentence and hand it to
      * {@code __text_signature__}, leaving the rest to {@code __doc__}. Eight were written by hand —
      * {@code dir}, {@code getattr}, {@code iter}, {@code max}, {@code min}, {@code next}, {@code vars} and
      * {@code __build_class__} — and their first line carries no {@code --} rule, so the whole text stays in
@@ -212,6 +213,7 @@ final class Builtins {
                                 + "If the user hits EOF (*nix: Ctrl-D, Windows: Ctrl-Z+Return), raise\n"
                                 + "EOFError.\n"
                                 + "On *nix systems, readline is used if available."));
+        put(out, "open", Open.function());
         put(out, "len", unary("len", value -> Slots.length(value))
                 .documented(
                         "len($module, obj, /)\n"

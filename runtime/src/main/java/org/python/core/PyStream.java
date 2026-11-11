@@ -286,6 +286,31 @@ public final class PyStream extends PyIterator {
         declareMode("r");
     }
 
+    /**
+     * What {@code open} hands back for a text read: the buffer, its codec and the mode the call spelled.
+     *
+     * <p>The reference builds this with {@code _io.TextIOWrapper(buffer, encoding, errors, newline,
+     * line_buffering, write_through)}; the mode is filed afterwards, which is why it lives in the
+     * dictionary rather than in a field. Every layer below the text was already decided by
+     * {@code _io.open}, so nothing here opens anything.
+     */
+    PyStream(String name, PyBufferedReader reading, int fd, String encoding, String mode,
+            String errors, String newline, boolean lineBuffered) {
+        super(TYPE);
+        this.name = name;
+        this.out = null;
+        this.buffer = reading;
+        this.raw = reading.descriptor();
+        this.encoding = encoding;
+        this.codec = Encoder.codec(encoding);
+        this.errors = errors;
+        this.newline = newline;
+        this.lineBuffered = lineBuffered;
+        this.fd = fd;
+        this.readableLayer = true;
+        declareMode(mode);
+    }
+
     /** The first entry the stream's dictionary is made with, which is where {@code s.mode} is read from. */
     private void declareMode(String mode) {
         dictionary.put(PyStr.interned("mode"), PyStr.of(mode));

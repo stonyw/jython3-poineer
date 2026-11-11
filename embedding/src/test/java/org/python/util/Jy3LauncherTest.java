@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -173,6 +174,22 @@ class Jy3LauncherTest {
     @MethodSource("m3Corpus")
     void anM3CorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
         answersExactlyAsCpython("m3/corpus", scriptName);
+    }
+
+    /**
+     * Slice 105's corpus script, which needs files to open.
+     *
+     * <p>It is not in the list above because this runtime has no write mode yet: the two fixtures have
+     * to exist before either interpreter starts, so the working directory is prepared here. The text
+     * one carries all three endings and the binary one carries an octet that is not UTF-8, which is
+     * what the translation and the descriptor layer are asked about.
+     */
+    @Test
+    void anOpenScriptAnswersExactlyAsCpythonAnswers() throws Exception {
+        write("open_text.txt", "a\r\nb\rc\nd\n");
+        Files.write(work.resolve("open_bin.dat"), new byte[] {0x00, 0x01, 0x7f, (byte) 0xff});
+
+        answersExactlyAsCpython("m3/corpus", "174_open.py");
     }
 
     private static List<String> m3Corpus() {

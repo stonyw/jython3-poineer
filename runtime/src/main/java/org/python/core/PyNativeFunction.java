@@ -176,7 +176,23 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      */
     void belongingTo(PyModule owner) {
         home = owner;
-        module = PyStr.of(owner.name());
+        if (module == null) {
+            module = PyStr.of(owner.name());
+        }
+    }
+
+    /**
+     * Files this function under a module of its own, before {@link #belongingTo} names it after the
+     * namespace that exposes it.
+     *
+     * <p>{@code open} is the one row here that {@code _io} files rather than {@code bltinmodule.c}: its
+     * {@code __module__} reads {@code '_io'} while the namespace that hands it out is {@code builtins}.
+     * CPython gets both because {@code _io} puts the function in the built-in namespace itself; this is
+     * the same split written down before the namespace is built.
+     */
+    PyNativeFunction moduleNamed(String name) {
+        module = PyStr.of(name);
+        return this;
     }
 
     /**
