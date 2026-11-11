@@ -1807,9 +1807,11 @@ final class TypeDict {
      *
      * <p>The same slots {@code bytes} files for reading, less the three that are not yet written here —
      * {@code __buffer__}, {@code __mod__} and {@code __rmod__} — plus the three that make the run writable:
-     * {@code __init__}, {@code __setitem__} and {@code __delitem__}, and the two in-place repeats. What is
-     * missing beside them is the whole of the mutating method set ({@code append} through {@code resize}) and
-     * the forty-one read-only methods {@code bytes} already has, both of which arrive in later segments.
+     * {@code __init__}, {@code __setitem__} and {@code __delitem__}, and the two in-place repeats. The
+     * mutating methods ({@code append} through {@code resize}) and the read-only ones {@code bytes} already
+     * has are both filed in the alphabetical run at the end, since CPython's own table sorts them that way.
+     * What is still missing beside them is {@code __reduce__}, {@code __reduce_ex__} and the conversion to
+     * {@code int}, which arrive in a later segment.
      */
     private static void bytearrayTable(PyDict into) {
         PyType owner = PyType.BYTEARRAY;
@@ -1840,14 +1842,56 @@ final class TypeDict {
                 "__alloc__",
                 "__sizeof__",
                 "append",
+                "capitalize",
+                "center",
                 "clear",
                 "copy",
+                "count",
+                "decode",
+                "endswith",
+                "expandtabs",
                 "extend",
+                "find",
+                "fromhex",
+                "hex",
+                "index",
                 "insert",
+                "isalnum",
+                "isalpha",
+                "isascii",
+                "isdigit",
+                "islower",
+                "isspace",
+                "istitle",
+                "isupper",
+                "join",
+                "ljust",
+                "lower",
+                "lstrip",
+                "maketrans",
+                "partition",
                 "pop",
                 "remove",
+                "removeprefix",
+                "removesuffix",
+                "replace",
                 "resize",
-                "reverse");
+                "reverse",
+                "rfind",
+                "rindex",
+                "rjust",
+                "rpartition",
+                "rsplit",
+                "rstrip",
+                "split",
+                "splitlines",
+                "startswith",
+                "strip",
+                "swapcase",
+                "title",
+                "translate",
+                "upper",
+                "zfill");
         table.value("__doc__", docValue(owner));
     }
 

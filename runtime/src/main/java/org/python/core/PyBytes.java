@@ -986,6 +986,9 @@ public final class PyBytes extends PyObject {
         if (value instanceof PyBytes b) {
             return b.value;
         }
+        if (value instanceof PyByteArray b) {
+            return b.raw();
+        }
         throw Slots.typeError(
                 "%s first arg must be bytes or a tuple of bytes, not %s",
                 name, value.getType().name());

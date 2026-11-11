@@ -226,6 +226,53 @@ public final class PyByteArray extends PyObject {
                 Arguments.atMost("pop", args, kwNames, 1);
                 return ((PyByteArray) self).popped(args.length == 0 ? null : args[0]);
             })
+            // The read-only half is bytes' half, body and sentence alike, except where the sentence
+            // names the receiver's type; those names are documented again below, and the two that are
+            // not methods of an instance are filed here rather than adopted.
+            .adopt(
+                    PyBytes.methods(),
+                    "capitalize",
+                    "center",
+                    "count",
+                    "decode",
+                    "endswith",
+                    "expandtabs",
+                    "find",
+                    "hex",
+                    "index",
+                    "isalnum",
+                    "isalpha",
+                    "isascii",
+                    "isdigit",
+                    "islower",
+                    "isspace",
+                    "istitle",
+                    "isupper",
+                    "join",
+                    "ljust",
+                    "lower",
+                    "lstrip",
+                    "partition",
+                    "replace",
+                    "removeprefix",
+                    "removesuffix",
+                    "rfind",
+                    "rindex",
+                    "rjust",
+                    "rpartition",
+                    "rsplit",
+                    "rstrip",
+                    "split",
+                    "splitlines",
+                    "startswith",
+                    "strip",
+                    "swapcase",
+                    "title",
+                    "translate",
+                    "upper",
+                    "zfill")
+            .addClass("fromhex", (args, kwNames) -> PyBytes.fromHexadecimal(args, kwNames, true))
+            .addStatic("maketrans", (args, kwNames) -> PyBytes.translationTable(args, kwNames, true))
             .document(
                     "__alloc__",
                     "__alloc__($self, /)\n"
@@ -316,7 +363,252 @@ public final class PyByteArray extends PyObject {
                             + "Resize the internal buffer of bytearray to len.\n"
                             + "\n"
                             + "  size\n"
-                            + "    New size to resize to.");
+                            + "    New size to resize to.")
+            .document(
+                    "decode",
+                    "decode($self, /, encoding='utf-8', errors='strict')\n"
+                            + "--\n"
+                            + "\n"
+                            + "Decode the bytearray using the codec registered for encoding.\n"
+                            + "\n"
+                            + "  encoding\n"
+                            + "    The encoding with which to decode the bytearray.\n"
+                            + "  errors\n"
+                            + "    The error handling scheme to use for the handling of decoding\n"
+                            + "    errors.  The default is 'strict' meaning that decoding errors\n"
+                            + "    raise a UnicodeDecodeError.  Other possible values are 'ignore'\n"
+                            + "    and 'replace' as well as any other name registered with\n"
+                            + "    codecs.register_error that can handle UnicodeDecodeErrors.")
+            .document(
+                    "endswith",
+                    "endswith($self, suffix[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the bytearray ends with the specified suffix, False otherwise.\n"
+                            + "\n"
+                            + "  suffix\n"
+                            + "    A bytes or a tuple of bytes to try.\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytearray.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytearray.")
+            .document(
+                    "find",
+                    "find($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Return -1 on failure.")
+            .document(
+                    "fromhex",
+                    "fromhex($type, string, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Create a bytearray object from a string of hexadecimal numbers.\n"
+                            + "\n"
+                            + "Spaces between two numbers are accepted.\n"
+                            + "Example:\n"
+                            + "    bytearray.fromhex('B9 01EF') -> bytearray(b'\\\\xb9\\\\x01\\\\xef')")
+            .document(
+                    "hex",
+                    "hex($self, /, sep=<unrepresentable>, bytes_per_sep=1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Create a string of hexadecimal numbers from a bytearray object.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    An optional single character or byte to separate hex bytes.\n"
+                            + "  bytes_per_sep\n"
+                            + "    How many bytes between separators.  Positive values count from\n"
+                            + "    the right, negative values count from the left.\n"
+                            + "\n"
+                            + "Example:\n"
+                            + ">>> value = bytearray([0xb9, 0x01, 0xef])\n"
+                            + ">>> value.hex()\n"
+                            + "'b901ef'\n"
+                            + ">>> value.hex(':')\n"
+                            + "'b9:01:ef'\n"
+                            + ">>> value.hex(':', 2)\n"
+                            + "'b9:01ef'\n"
+                            + ">>> value.hex(':', -2)\n"
+                            + "'b901:ef'")
+            .document(
+                    "index",
+                    "index($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the lowest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Raise ValueError if the subsection is not found.")
+            .document(
+                    "join",
+                    "join($self, iterable_of_bytes, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Concatenate any number of bytes/bytearray objects.\n"
+                            + "\n"
+                            + "The bytearray whose method is called is inserted in between each\n"
+                            + "pair.\n"
+                            + "\n"
+                            + "The result is returned as a new bytearray object.")
+            .document(
+                    "lstrip",
+                    "lstrip($self, bytes=None, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Strip leading bytes contained in the argument.\n"
+                            + "\n"
+                            + "If the argument is omitted or None, strip leading ASCII whitespace.")
+            .document(
+                    "partition",
+                    "partition($self, sep, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Partition the bytearray into three parts using the given separator.\n"
+                            + "\n"
+                            + "This will search for the separator sep in the bytearray.  If the\n"
+                            + "separator is found, returns a 3-tuple containing the part before the\n"
+                            + "separator, the separator itself, and the part after it as new\n"
+                            + "bytearray objects.\n"
+                            + "\n"
+                            + "If the separator is not found, returns a 3-tuple containing the copy\n"
+                            + "of the original bytearray object and two empty bytearray objects.")
+            .document(
+                    "removeprefix",
+                    "removeprefix($self, prefix, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a bytearray with the given prefix string removed if present.\n"
+                            + "\n"
+                            + "If the bytearray starts with the prefix string, return\n"
+                            + "bytearray[len(prefix):].  Otherwise, return a copy of the original\n"
+                            + "bytearray.")
+            .document(
+                    "removesuffix",
+                    "removesuffix($self, suffix, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a bytearray with the given suffix string removed if present.\n"
+                            + "\n"
+                            + "If the bytearray ends with the suffix string and that suffix is not\n"
+                            + "empty, return bytearray[:-len(suffix)].  Otherwise, return a copy of\n"
+                            + "the original bytearray.")
+            .document(
+                    "rfind",
+                    "rfind($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Return -1 on failure.")
+            .document(
+                    "rindex",
+                    "rindex($self, sub[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return the highest index in B where subsection 'sub' is found, such that 'sub' is contained within B[start:end].\n"
+                            + "\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytes.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytes.\n"
+                            + "\n"
+                            + "Raise ValueError if the subsection is not found.")
+            .document(
+                    "rpartition",
+                    "rpartition($self, sep, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Partition the bytearray into three parts using the given separator.\n"
+                            + "\n"
+                            + "This will search for the separator sep in the bytearray, starting at\n"
+                            + "the end.  If the separator is found, returns a 3-tuple containing\n"
+                            + "the part before the separator, the separator itself, and the part\n"
+                            + "after it as new bytearray objects.\n"
+                            + "\n"
+                            + "If the separator is not found, returns a 3-tuple containing two\n"
+                            + "empty bytearray objects and the copy of the original bytearray\n"
+                            + "object.")
+            .document(
+                    "rsplit",
+                    "rsplit($self, /, sep=None, maxsplit=-1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the sections in the bytearray, using sep as the delimiter.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    The delimiter according which to split the bytearray.\n"
+                            + "    None (the default value) means split on ASCII whitespace\n"
+                            + "    characters (space, tab, return, newline, formfeed, vertical tab).\n"
+                            + "  maxsplit\n"
+                            + "    Maximum number of splits to do.\n"
+                            + "    -1 (the default value) means no limit.\n"
+                            + "\n"
+                            + "Splitting is done starting at the end of the bytearray and working\n"
+                            + "to the front.")
+            .document(
+                    "split",
+                    "split($self, /, sep=None, maxsplit=-1)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the sections in the bytearray, using sep as the delimiter.\n"
+                            + "\n"
+                            + "  sep\n"
+                            + "    The delimiter according which to split the bytearray.\n"
+                            + "    None (the default value) means split on ASCII whitespace\n"
+                            + "    characters (space, tab, return, newline, formfeed, vertical tab).\n"
+                            + "  maxsplit\n"
+                            + "    Maximum number of splits to do.\n"
+                            + "    -1 (the default value) means no limit.")
+            .document(
+                    "splitlines",
+                    "splitlines($self, /, keepends=False)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a list of the lines in the bytearray, breaking at line boundaries.\n"
+                            + "\n"
+                            + "Line breaks are not included in the resulting list unless keepends\n"
+                            + "is given and true.")
+            .document(
+                    "startswith",
+                    "startswith($self, prefix[, start[, end]], /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return True if the bytearray starts with the specified prefix, False otherwise.\n"
+                            + "\n"
+                            + "  prefix\n"
+                            + "    A bytes or a tuple of bytes to try.\n"
+                            + "  start\n"
+                            + "    Optional start position. Default: start of the bytearray.\n"
+                            + "  end\n"
+                            + "    Optional stop position. Default: end of the bytearray.")
+            .document(
+                    "maketrans",
+                    "maketrans(frm, to, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a translation table usable for the bytes or bytearray translate method.\n"
+                            + "\n"
+                            + "The returned table will be one where each byte in frm is mapped to\n"
+                            + "the byte at the same position in to.\n"
+                            + "\n"
+                            + "The bytes objects frm and to must be of the same length.");
 
     /** {@code append(item)}: one octet, in the words every other byte write uses. */
     private PyObject appended(PyObject item) {

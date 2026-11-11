@@ -211,18 +211,39 @@ final class Members {
         for (String name : names) {
             PyBoundMethod.Body body = other.entries.get(name);
             if (body != null) {
+                Integer flag = other.flags.get(name);
+                if (flag != null
+                        && (flag == PyNativeFunction.METH_NOARGS || flag == PyNativeFunction.METH_O)) {
+                    // The check these two shapes were registered with names the declaring type, and the
+                    // declaring type is now this table's owner, not the one the body came from: without
+                    // this the refusal for `bytearray(b'').capitalize(1)` would say bytes.
+                    body = requalified(flag, owner, name, body);
+                }
                 entries.put(name, body);
                 String text = other.docs.get(name);
                 if (text != null) {
                     docs.put(name, text);
                 }
-                Integer flag = other.flags.get(name);
                 if (flag != null) {
                     flags.put(name, flag);
                 }
             }
         }
         return this;
+    }
+
+    /** {@code body}, with the arity check of {@code flag} stated in {@code declared}'s own name first. */
+    private static PyBoundMethod.Body requalified(
+            int flag, PyType declared, String name, PyBoundMethod.Body body) {
+        String qualified = declared.name() + "." + name + "()";
+        return (self, args, kwNames) -> {
+            if (flag == PyNativeFunction.METH_NOARGS) {
+                Arguments.none(qualified, args, kwNames);
+            } else {
+                Arguments.exactlyOne(qualified, args, kwNames);
+            }
+            return body.apply(self, args, kwNames);
+        };
     }
 
     /**
