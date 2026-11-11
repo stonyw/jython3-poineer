@@ -1990,10 +1990,21 @@ final class TypeDict {
     private static final String MEMORYVIEW_TOLIST_DOC =
             "Return the data in the buffer as a list of elements.";
 
+    private static final String MEMORYVIEW_CAST_DOC =
+            "cast($self, /, format, shape=<unrepresentable>)\n--\n\n"
+                    + "Cast a memoryview to a new format or shape.";
+
+    private static final String MEMORYVIEW_TOREADONLY_DOC =
+            "toreadonly($self, /)\n--\n\nReturn a readonly version of the memoryview.";
+
+    private static final String MEMORYVIEW_FROM_FLAGS_DOC =
+            "_from_flags($type, /, object, flags)\n--\n\n"
+                    + "Create a new memoryview object which references the given object.";
+
     /**
      * {@code memoryview}'s own dictionary, as {@code Objects/memoryobject.c} files it: forty-one names.
      *
-     * <p>The three slices so far file the skeleton and the window's own facts: the slots that make a view
+     * <p>The slices so far file the skeleton and the window's own facts: the slots that make a view
      * printable and sized ({@code __new__}, {@code __repr__}, {@code __len__}), the twelve read-only
      * {@code getset_descriptor}s over the fields a buffer exporter filled in, the three subscript slots,
      * and the seven rows the comparison and iteration protocols contribute — {@code __hash__}, the six
@@ -2002,10 +2013,11 @@ final class TypeDict {
      * six rows differ only in the operator they pass on. The rows that make a released view reachable —
      * {@code release} and the {@code with} pair — sit right where the reference keeps them, after
      * {@code __delitem__}, and the two copies follow before {@code __enter__}, which is the reference's
-     * order too. The names still missing — {@code hex}, {@code cast}, {@code toreadonly},
-     * {@code _from_flags}, {@code count}, {@code index}, {@code __class_getitem__} and the two buffer
-     * protocol slots — are the segments still to come, so this dictionary is a prefix of the reference's
-     * rather than a permutation of it.
+     * order too. The two buffer protocol rows sit between {@code __iter__} and {@code __len__}, and the
+     * three conversions that make another header — {@code cast}, {@code toreadonly} and the constructor
+     * the protocol reaches, {@code _from_flags} — follow {@code tolist}. The names still missing —
+     * {@code hex}, {@code count}, {@code index} and {@code __class_getitem__} — are the segments still to
+     * come, so this dictionary is a prefix of the reference's rather than a permutation of it.
      *
      * <p>{@code __doc__} closes the dictionary, which is where the reference keeps it too. That is unlike
      * {@code bytes} and {@code bytearray}, whose sentences sit after the slots and before the named
@@ -2024,6 +2036,8 @@ final class TypeDict {
         table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
         table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__buffer__", BUFFER_DOC, TypeDict::exposeMemoryBuffer);
+        table.wrapper("__release_buffer__", RELEASE_BUFFER_DOC, TypeDict::memoryviewReleaseBuffer);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
         table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
         table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
@@ -2031,6 +2045,13 @@ final class TypeDict {
         table.method("release", MEMORYVIEW_RELEASE_DOC, TypeDict::memoryviewRelease, METH_NOARGS);
         table.method("tobytes", MEMORYVIEW_TOBYTES_DOC, TypeDict::memoryviewTobytes);
         table.method("tolist", MEMORYVIEW_TOLIST_DOC, TypeDict::memoryviewTolist, METH_NOARGS);
+        table.method("cast", MEMORYVIEW_CAST_DOC, TypeDict::memoryviewCast);
+        table.method("toreadonly", MEMORYVIEW_TOREADONLY_DOC, TypeDict::memoryviewToreadonly);
+        table.classMethod(
+                "_from_flags",
+                MEMORYVIEW_FROM_FLAGS_DOC,
+                TypeDict::memoryviewFromFlags,
+                METH_O_ON_TYPE);
         table.method("__enter__", null, TypeDict::memoryviewEnter, METH_NOARGS);
         table.method("__exit__", MEMORYVIEW_EXIT_DOC, TypeDict::memoryviewExit);
         table.getset("obj", MEMORYVIEW_OBJ_DOC, self -> memoryview(self).viewed(), null);
@@ -2162,6 +2183,82 @@ final class TypeDict {
                     Slots.argumentName(value));
         }
         return order.getValue();
+    }
+
+    /**
+     * {@code memoryview.cast(format, shape=None)}: another header over the same run.
+     *
+     * <p>The parser is the clinic one, so the two refusals about the call name the bare row — a missing
+     * {@code format} counts positions from one and a surplus argument counts the whole call. The format is
+     * converted here, before the view is looked at, which is why a spent window refuses a non-string
+     * format as a type rather than as released. The shape passes through as given: whether it is a list or
+     * a tuple, and whether its elements are positive indices, is the view's question.
+     */
+    private static PyObject memoryviewCast(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject[] given =
+                Arguments.unpackKeywords(
+                        "cast",
+                        tail(args, kwNames),
+                        kwNames,
+                        new String[] {"format", "shape"},
+                        1,
+                        2);
+        if (!(given[0] instanceof PyStr destination)) {
+            throw Slots.typeError(
+                    "cast() argument 'format' must be str, not %s", Slots.argumentName(given[0]));
+        }
+        PyObject shape = given[1] == null || given[1] == PyNone.INSTANCE ? null : given[1];
+        return memoryview(args[0]).cast(destination.getValue(), shape);
+    }
+
+    /** {@code memoryview.toreadonly()}: a fresh read-only header over the same run. */
+    private static PyObject memoryviewToreadonly(
+            PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return memoryview(args[0]).toReadonly();
+    }
+
+    /**
+     * {@code memoryview._from_flags(object, flags)}: the constructor the buffer protocol reaches.
+     *
+     * <p>The receiver is the class the descriptor bound, and the two arguments are required. The flags are
+     * a C {@code int}, refused by the converter when they will not fit, and ignored once the value is a
+     * view — which is the one place the two constructors differ.
+     */
+    private static PyObject memoryviewFromFlags(
+            PyObject[] args, String[] kwNames, String qualified) {
+        classReceiver("_from_flags", PyType.MEMORYVIEW, args, kwNames);
+        PyObject[] given =
+                Arguments.unpackKeywords(
+                        "_from_flags",
+                        tail(args, kwNames),
+                        kwNames,
+                        new String[] {"object", "flags"},
+                        2,
+                        2);
+        return PyMemoryView.fromFlags(given[0], Numbers.cInteger(given[1]));
+    }
+
+    /**
+     * {@code memoryview.__buffer__(flags)}: export a header over this view's run.
+     *
+     * <p>{@code wrap_buffer} settles the number first — it is a machine word, and then the {@code int} the
+     * flags are kept in — before the view is handed the bits. The released check and the three refusals
+     * about the window itself belong to the view.
+     */
+    private static PyObject exposeMemoryBuffer(
+            PyObject[] args, String[] kwNames, String qualified) {
+        long flags = Numbers.repeat(args[1]);
+        if (flags < Integer.MIN_VALUE || flags > Integer.MAX_VALUE) {
+            throw Slots.overflowError("buffer flags out of range");
+        }
+        return memoryview(args[0]).exposeBuffer((int) flags);
+    }
+
+    /** {@code memoryview.__release_buffer__(buffer)}: take back a header this view exported. */
+    private static PyObject memoryviewReleaseBuffer(
+            PyObject[] args, String[] kwNames, String qualified) {
+        return memoryview(args[0]).releaseBuffer(args[1]);
     }
 
     /**
@@ -4248,8 +4345,8 @@ final class TypeDict {
      * bytes or a str asks that its memory not be written to: {@code b''.__buffer__(-1)} asks for every flag
      * there is, including that one, and is refused as not writable.
      *
-     * <p>The buffer a valid call would answer with is this runtime's gap: there is no {@code memoryview}
-     * yet, and so no object to hand back.
+     * <p>The buffer a valid call answers with is a read-only {@code memoryview}: bytes exports one
+     * without copying, and a view made from it reports the same run.
      */
     private static PyObject exposeBuffer(PyObject[] args, String[] kwNames, String qualified) {
         long flags = Numbers.repeat(args[1]);
@@ -4259,7 +4356,7 @@ final class TypeDict {
         if (((int) flags & 1) != 0) {
             throw Slots.bufferError("Object is not writable.");
         }
-        throw Slots.notImplemented("memoryview");
+        return PyMemoryView.of(args[0]);
     }
 
     /**
@@ -4267,25 +4364,35 @@ final class TypeDict {
      *
      * <p>A run is writable, so the flag {@code wrap_buffer} reads as "do not write to me" is accepted
      * rather than refused; the only two complaints left are the ones about the number itself. What the
-     * call would answer is the same {@code memoryview} this runtime has not built.
+     * call answers is a writable {@code memoryview} over the run.
      */
     private static PyObject exposeWritableBuffer(PyObject[] args, String[] kwNames, String qualified) {
         long flags = Numbers.repeat(args[1]);
         if (flags < Integer.MIN_VALUE || flags > Integer.MAX_VALUE) {
             throw Slots.overflowError("buffer flags out of range");
         }
-        throw Slots.notImplemented("memoryview");
+        return PyMemoryView.of(args[0]);
     }
 
     /**
      * {@code bytearray.__release_buffer__}: the other end of the protocol, which only takes a view.
      *
      * <p>{@code bytearray_releasebuffer} refuses anything that is not a {@code memoryview} before it
-     * looks at the run at all, so with no {@code memoryview} in this runtime every call arrives at the
-     * same sentence — including the call that hands back the object a {@code __buffer__} would have made.
+     * looks at the run at all, then requires the view's {@code .obj} to be this bytearray — a view of a
+     * view is not taken back here — and refuses a header that was released already.
      */
     private static PyObject releaseBuffer(PyObject[] args, String[] kwNames, String qualified) {
-        throw Slots.typeError("expected a memoryview object");
+        if (!(args[1] instanceof PyMemoryView view)) {
+            throw Slots.typeError("expected a memoryview object");
+        }
+        if (view.reports() != args[0]) {
+            throw Slots.valueError("memoryview's buffer is not this object");
+        }
+        if (view.isReleased()) {
+            throw Slots.valueError("memoryview's buffer has already been released");
+        }
+        view.markReleased();
+        return PyNone.INSTANCE;
     }
 
     /**
