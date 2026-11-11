@@ -501,6 +501,81 @@ public final class PyMemoryView extends PyObject {
         return PyList.of(elements);
     }
 
+    /**
+     * {@code view.hex(sep, bytes_per_sep)}: the window's octets as a string of hexadecimal digits.
+     *
+     * <p>The copy is taken in the order the window presents its octets, exactly as {@code tobytes}
+     * takes it, so a strided or reversed view spells what it shows rather than what its parent holds.
+     * The grouping, the separator and every refusal are {@code bytes.hex}'s, because the text is the
+     * same text: what differs between the two methods is only which octets are handed to it.
+     */
+    PyStr hex(PyObject[] given) {
+        check();
+        return (PyStr) PyBytes.hexadecimal(octets(), given);
+    }
+
+    /**
+     * {@code view.count(value)}: how many elements equal {@code value}.
+     *
+     * <p>The comparison is {@code ==} between the element the format reads and the value, so
+     * {@code memoryview(b"a").count(97.0)} is one and a value that compares equal to nothing counts
+     * nothing. A multi-dimensional view is refused with the iterator's sentence rather than walked,
+     * because there are no sub-views here to compare against.
+     */
+    PyInt count(PyObject value) {
+        check();
+        if (shape.length > 1) {
+            throw unimplemented("multi-dimensional sub-views are not implemented");
+        }
+        long found = 0;
+        int total = elements();
+        for (int i = 0; i < total; i++) {
+            if (Slots.compareTrue(CompareOp.EQ, elementAt(position(i)), value)) {
+                found++;
+            }
+        }
+        return PyInt.of(found);
+    }
+
+    /**
+     * {@code view.index(value, start, stop)}: where the first element equal to {@code value} sits.
+     *
+     * <p>The bounds are slice bounds — a negative one counts back from the end and an overshooting one
+     * is clamped — but {@code None} is not one of them, which is why the refusal is the search's
+     * wording and not the slice's. A multi-dimensional view is refused with the lookup's own sentence,
+     * and a walk that finds nothing raises {@code ValueError} rather than answering {@code -1}.
+     */
+    PyInt index(PyObject value, PyObject start, PyObject stop) {
+        check();
+        if (shape.length > 1) {
+            throw unimplemented("multi-dimensional lookup is not implemented");
+        }
+        int total = elements();
+        int from = bound(start, total, 0);
+        int to = bound(stop, total, total);
+        for (int i = from; i < to; i++) {
+            if (Slots.compareTrue(CompareOp.EQ, elementAt(position(i)), value)) {
+                return PyInt.of(i);
+            }
+        }
+        throw Slots.valueError("memoryview.index(x): x not found");
+    }
+
+    /** One resolved bound of {@code index}, with a missing argument standing for its default. */
+    private static int bound(PyObject given, int length, int absent) {
+        if (given == null) {
+            return absent;
+        }
+        BigInteger value = Numbers.searchIndex(given);
+        if (value.signum() < 0) {
+            value = value.add(BigInteger.valueOf(length));
+            if (value.signum() < 0) {
+                return 0;
+            }
+        }
+        return value.compareTo(BigInteger.valueOf(length)) > 0 ? length : value.intValue();
+    }
+
     /** Refuses every read of a released view with CPython's one sentence for the state. */
     private void check() {
         if (released) {

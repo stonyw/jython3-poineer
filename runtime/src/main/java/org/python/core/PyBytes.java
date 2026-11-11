@@ -247,9 +247,9 @@ public final class PyBytes extends PyObject {
     private static final BigInteger OCTET_MAX = BigInteger.valueOf(255);
 
     /** {@code hex}'s two parameters, which a caller may name; the separator has no default value. */
-    private static final String[] HEX = {"sep", "bytes_per_sep"};
+    static final String[] HEX = {"sep", "bytes_per_sep"};
 
-    private static final PyObject[] HEX_DEFAULTS = {PyInt.of(1)};
+    static final PyObject[] HEX_DEFAULTS = {PyInt.of(1)};
 
     /** {@code translate}'s two parameters, both of which CPython leaves NULL until a call fills them. */
     private static final String[] TABLE_AND_DELETE = {"table", "delete"};
@@ -1637,7 +1637,7 @@ public final class PyBytes extends PyObject {
      * no length. Both numbers are a C {@code int}, so a step wider than one is an {@code OverflowError}
      * even when its sign would have made it a group of nothing.
      */
-    private static PyObject hexadecimal(byte[] text, PyObject[] given) {
+    static PyObject hexadecimal(byte[] text, PyObject[] given) {
         int step = Numbers.cInteger(given[1]);
         if (given[0] == null) {
             return PyStr.of(hexadecimal(text));

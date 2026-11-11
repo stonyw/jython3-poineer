@@ -2001,6 +2001,37 @@ final class TypeDict {
             "_from_flags($type, /, object, flags)\n--\n\n"
                     + "Create a new memoryview object which references the given object.";
 
+    private static final String MEMORYVIEW_HEX_DOC =
+            "hex($self, /, sep=<unrepresentable>, bytes_per_sep=1)\n--\n\n"
+                    + "Return the data in the buffer as a str of hexadecimal numbers.\n\n"
+                    + "  sep\n"
+                    + "    An optional single character or byte to separate hex bytes.\n"
+                    + "  bytes_per_sep\n"
+                    + "    How many bytes between separators.  Positive values count from\n"
+                    + "    the right, negative values count from the left.\n\n"
+                    + "Example:\n"
+                    + ">>> value = memoryview(b'\\xb9\\x01\\xef')\n"
+                    + ">>> value.hex()\n"
+                    + "'b901ef'\n"
+                    + ">>> value.hex(':')\n"
+                    + "'b9:01:ef'\n"
+                    + ">>> value.hex(':', 2)\n"
+                    + "'b9:01ef'\n"
+                    + ">>> value.hex(':', -2)\n"
+                    + "'b901:ef'";
+
+    private static final String MEMORYVIEW_COUNT_DOC =
+            "count($self, value, /)\n--\n\n" + "Count the number of occurrences of a value.";
+
+    private static final String MEMORYVIEW_INDEX_DOC =
+            "index($self, value, start=0, stop=sys.maxsize, /)\n--\n\n"
+                    + "Return the index of the first occurrence of a value.\n\n"
+                    + "Raises ValueError if the value is not present.";
+
+    /** {@code __class_getitem__}'s PEP 585 note, which is the whole sentence beside the flag. */
+    private static final String MEMORYVIEW_CLASS_GETITEM_DOC =
+            "memoryviews are generic over the type of their underlying data";
+
     /**
      * {@code memoryview}'s own dictionary, as {@code Objects/memoryobject.c} files it: forty-one names.
      *
@@ -2015,9 +2046,10 @@ final class TypeDict {
      * {@code __delitem__}, and the two copies follow before {@code __enter__}, which is the reference's
      * order too. The two buffer protocol rows sit between {@code __iter__} and {@code __len__}, and the
      * three conversions that make another header — {@code cast}, {@code toreadonly} and the constructor
-     * the protocol reaches, {@code _from_flags} — follow {@code tolist}. The names still missing —
-     * {@code hex}, {@code count}, {@code index} and {@code __class_getitem__} — are the segments still to
-     * come, so this dictionary is a prefix of the reference's rather than a permutation of it.
+     * the protocol reaches, {@code _from_flags} — follow {@code tolist}. The four read-only names the
+     * window answers with — {@code hex}, {@code count}, {@code index} and {@code __class_getitem__} —
+     * fill the last gaps where the reference keeps them, so this dictionary is the reference's
+     * forty-one names in the reference's order rather than a prefix of them.
      *
      * <p>{@code __doc__} closes the dictionary, which is where the reference keeps it too. That is unlike
      * {@code bytes} and {@code bytearray}, whose sentences sit after the slots and before the named
@@ -2044,6 +2076,7 @@ final class TypeDict {
         table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
         table.method("release", MEMORYVIEW_RELEASE_DOC, TypeDict::memoryviewRelease, METH_NOARGS);
         table.method("tobytes", MEMORYVIEW_TOBYTES_DOC, TypeDict::memoryviewTobytes);
+        table.method("hex", MEMORYVIEW_HEX_DOC, TypeDict::memoryviewHex);
         table.method("tolist", MEMORYVIEW_TOLIST_DOC, TypeDict::memoryviewTolist, METH_NOARGS);
         table.method("cast", MEMORYVIEW_CAST_DOC, TypeDict::memoryviewCast);
         table.method("toreadonly", MEMORYVIEW_TOREADONLY_DOC, TypeDict::memoryviewToreadonly);
@@ -2052,8 +2085,12 @@ final class TypeDict {
                 MEMORYVIEW_FROM_FLAGS_DOC,
                 TypeDict::memoryviewFromFlags,
                 METH_O_ON_TYPE);
+        table.method(
+                "count", MEMORYVIEW_COUNT_DOC, TypeDict::memoryviewCount, PyNativeFunction.METH_O);
+        table.method("index", MEMORYVIEW_INDEX_DOC, TypeDict::memoryviewIndex);
         table.method("__enter__", null, TypeDict::memoryviewEnter, METH_NOARGS);
         table.method("__exit__", MEMORYVIEW_EXIT_DOC, TypeDict::memoryviewExit);
+        table.genericSubscript(MEMORYVIEW_CLASS_GETITEM_DOC);
         table.getset("obj", MEMORYVIEW_OBJ_DOC, self -> memoryview(self).viewed(), null);
         table.getset(
                 "nbytes", MEMORYVIEW_NBYTES_DOC, self -> PyInt.of(memoryview(self).bytes()), null);
@@ -2237,6 +2274,51 @@ final class TypeDict {
                         2,
                         2);
         return PyMemoryView.fromFlags(given[0], Numbers.cInteger(given[1]));
+    }
+
+    /**
+     * {@code memoryview.hex(sep, bytes_per_sep)}: the window's octets as hexadecimal text.
+     *
+     * <p>The table runs to two optional parameters, so both arrive by keyword as easily as by position;
+     * the first is left absent rather than defaulted, which is how the row of {@code bytes.hex} says it.
+     * The count is settled here, before the view is asked anything, which is why a released view called
+     * with three arguments raises the {@code TypeError} rather than the release's {@code ValueError}.
+     */
+    private static PyObject memoryviewHex(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject[] given =
+                Arguments.parameters(
+                        "hex", tail(args, kwNames), kwNames, PyBytes.HEX, PyBytes.HEX_DEFAULTS, 0);
+        return memoryview(args[0]).hex(given);
+    }
+
+    /**
+     * {@code memoryview.count(value)}: how many elements equal the value.
+     *
+     * <p>One argument and no keyword, and the row is registered {@code METH_O} for the signature alone —
+     * the count is checked here so that the sentence names the method the reference names it by.
+     */
+    private static PyObject memoryviewCount(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject[] given = tail(args, kwNames);
+        Arguments.exactlyOne("memoryview.count()", given, kwNames);
+        return memoryview(args[0]).count(given[0]);
+    }
+
+    /**
+     * {@code memoryview.index(value, start=0, stop=sys.maxsize)}: where the first such element sits.
+     *
+     * <p>The three parameters are positional only, and the two bounds are unpacked as a legacy call does
+     * — the count first, in the bare-named wording {@code index expected at least 1 argument}, and the
+     * keyword refusal before it, since the reference refuses a name before it counts.
+     */
+    private static PyObject memoryviewIndex(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject[] given = tail(args, kwNames);
+        Arguments.noKeywords("memoryview.index()", kwNames);
+        Arguments.between("index", given, null, 1, 3);
+        return memoryview(args[0])
+                .index(
+                        given[0],
+                        given.length > 1 ? given[1] : null,
+                        given.length > 2 ? given[2] : null);
     }
 
     /**
