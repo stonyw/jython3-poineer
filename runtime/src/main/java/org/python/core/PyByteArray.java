@@ -194,6 +194,256 @@ public final class PyByteArray extends PyObject {
         return Members.find(this, name);
     }
 
+    // --- methods -----------------------------------------------------------------------
+
+    /**
+     * What a bytearray object costs before its octets, which is what {@code __sizeof__} adds the
+     * allocation to. CPython's own header for this type is 56 octets on this build.
+     */
+    private static final int OVERHEAD = 56;
+
+    private static final Members METHODS = Members.of(PyType.BYTEARRAY)
+            .addNoArgument("__alloc__", self -> PyInt.of(((PyByteArray) self).allocated))
+            .addNoArgument(
+                    "__sizeof__", self -> PyInt.of(OVERHEAD + ((PyByteArray) self).allocated))
+            .addNoArgument("copy", self -> PyByteArray.of(((PyByteArray) self).value))
+            .addNoArgument("clear", self -> {
+                ((PyByteArray) self).clear();
+                return PyNone.INSTANCE;
+            })
+            .addNoArgument("reverse", self -> ((PyByteArray) self).reversed())
+            .addOne("append", (self, item) -> ((PyByteArray) self).appended(item))
+            .addOne("extend", (self, source) -> ((PyByteArray) self).extended(source))
+            .addOne("remove", (self, item) -> ((PyByteArray) self).removed(item))
+            .addOne("resize", (self, size) -> ((PyByteArray) self).resized(size))
+            .add("insert", (self, args, kwNames) -> {
+                Arguments.noKeywords("bytearray.insert()", kwNames);
+                Arguments.exactly("insert", args, kwNames, 2);
+                return ((PyByteArray) self).inserted(args[0], args[1]);
+            })
+            .add("pop", (self, args, kwNames) -> {
+                Arguments.noKeywords("bytearray.pop()", kwNames);
+                Arguments.atMost("pop", args, kwNames, 1);
+                return ((PyByteArray) self).popped(args.length == 0 ? null : args[0]);
+            })
+            .document(
+                    "__alloc__",
+                    "__alloc__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "B.__alloc__() -> int\n"
+                            + "\n"
+                            + "Return the number of bytes actually allocated.")
+            .document(
+                    "__sizeof__",
+                    "__sizeof__($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Returns the size of the bytearray object in memory, in bytes.")
+            .document(
+                    "copy",
+                    "copy($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Return a copy of B.")
+            .document(
+                    "clear",
+                    "clear($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove all items from the bytearray.")
+            .document(
+                    "reverse",
+                    "reverse($self, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Reverse the order of the values in B in place.")
+            .document(
+                    "append",
+                    "append($self, item, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Append a single item to the end of the bytearray.\n"
+                            + "\n"
+                            + "  item\n"
+                            + "    The item to be appended.")
+            .document(
+                    "extend",
+                    "extend($self, iterable_of_ints, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Append all the items from the iterator or sequence to the end of the bytearray.\n"
+                            + "\n"
+                            + "  iterable_of_ints\n"
+                            + "    The iterable of items to append.")
+            .document(
+                    "insert",
+                    "insert($self, index, item, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Insert a single item into the bytearray before the given index.\n"
+                            + "\n"
+                            + "  index\n"
+                            + "    The index where the value is to be inserted.\n"
+                            + "  item\n"
+                            + "    The item to be inserted.")
+            .document(
+                    "pop",
+                    "pop($self, index=-1, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove and return a single item from B.\n"
+                            + "\n"
+                            + "  index\n"
+                            + "    The index from where to remove the item.\n"
+                            + "    -1 (the default value) means remove the last item.\n"
+                            + "\n"
+                            + "If no index argument is given, will pop the last item.")
+            .document(
+                    "remove",
+                    "remove($self, value, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Remove the first occurrence of a value in the bytearray.\n"
+                            + "\n"
+                            + "  value\n"
+                            + "    The value to remove.")
+            .document(
+                    "resize",
+                    "resize($self, size, /)\n"
+                            + "--\n"
+                            + "\n"
+                            + "Resize the internal buffer of bytearray to len.\n"
+                            + "\n"
+                            + "  size\n"
+                            + "    New size to resize to.");
+
+    /** {@code append(item)}: one octet, in the words every other byte write uses. */
+    private PyObject appended(PyObject item) {
+        appendOctet(octetOf(item));
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code extend(iterable_of_ints)}, which collects everything before it writes anything.
+     *
+     * <p>A bytes is appended as it stands and a bytearray is copied first, because the two runs may be
+     * the same one: {@code b.extend(b)} doubles the value rather than reading the slots it is growing.
+     * Every other iterable is walked into a buffer of its own, so an item out of range leaves the
+     * receiver exactly as it was; a str is refused before the walk, because its characters are not
+     * integers.
+     */
+    private PyObject extended(PyObject source) {
+        byte[] tail;
+        if (source instanceof PyBytes bytes) {
+            tail = bytes.getValue();
+        } else if (source instanceof PyByteArray bytearray) {
+            tail = bytearray.value.clone();
+        } else {
+            if (source instanceof PyStr) {
+                throw Slots.typeError(
+                        "expected iterable of integers; got: '%s'", source.getType().filedName());
+            }
+            PyIterator iterator;
+            try {
+                iterator = Slots.iterator(source);
+            } catch (PyRaise uniterable) {
+                if (!uniterable.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                    throw uniterable;
+                }
+                throw Slots.typeError(
+                        "can't extend bytearray with %s", source.getType().filedName());
+            }
+            byte[] grown = new byte[0];
+            int size = 0;
+            for (PyObject item = iterator.nextOrNull(); item != null; item = iterator.nextOrNull()) {
+                byte octet = octetOf(item);
+                if (size == grown.length) {
+                    grown = Arrays.copyOf(grown, size == 0 ? 8 : size * 2);
+                }
+                grown[size++] = octet;
+            }
+            tail = Arrays.copyOf(grown, size);
+        }
+        int size = value.length;
+        resize(size + tail.length);
+        System.arraycopy(tail, 0, value, size, tail.length);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code insert(index, item)}: the index is clamped to the ends, then one octet is made room for. */
+    private PyObject inserted(PyObject index, PyObject item) {
+        long at = Numbers.size(index);
+        int size = value.length;
+        if (at < 0) {
+            at += size;
+            if (at < 0) {
+                at = 0;
+            }
+        }
+        if (at > size) {
+            at = size;
+        }
+        byte octet = octetOf(item);
+        resize(size + 1);
+        System.arraycopy(value, (int) at, value, (int) at + 1, size - (int) at);
+        value[(int) at] = octet;
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code pop(index=-1)}: the index is read before the run is asked whether it holds anything. */
+    private PyObject popped(PyObject index) {
+        long at = index == null ? -1 : Numbers.size(index);
+        int size = value.length;
+        if (size == 0) {
+            throw Slots.indexError("pop from empty bytearray");
+        }
+        if (at < 0) {
+            at += size;
+        }
+        if (at < 0 || at >= size) {
+            throw Slots.indexError("pop index out of range");
+        }
+        byte octet = value[(int) at];
+        System.arraycopy(value, (int) at + 1, value, (int) at, size - (int) at - 1);
+        resize(size - 1);
+        return PyInt.of(octet & 0xff);
+    }
+
+    /** {@code remove(value)}: the first octet equal to the argument, or the refusal that names nothing. */
+    private PyObject removed(PyObject item) {
+        byte octet = octetOf(item);
+        int size = value.length;
+        for (int at = 0; at < size; at++) {
+            if (value[at] == octet) {
+                System.arraycopy(value, at + 1, value, at, size - at - 1);
+                resize(size - 1);
+                return PyNone.INSTANCE;
+            }
+        }
+        throw Slots.valueError("value not found in bytearray");
+    }
+
+    /** {@code resize(size)}: a new length, filled with zeroes when it grows and cut when it shrinks. */
+    private PyObject resized(PyObject size) {
+        long requested = Numbers.size(size);
+        if (requested < 0) {
+            throw Slots.valueError("Can only resize to positive sizes, got %d", requested);
+        }
+        resize(Numbers.total(requested));
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code reverse()}: the octets in the opposite order, with the allocation left alone. */
+    private PyObject reversed() {
+        for (int left = 0, right = value.length - 1; left < right; left++, right--) {
+            byte octet = value[left];
+            value[left] = value[right];
+            value[right] = octet;
+        }
+        return PyNone.INSTANCE;
+    }
+
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
         if (op == BinaryOp.ADD) {
@@ -220,6 +470,11 @@ public final class PyByteArray extends PyObject {
             if (!(other instanceof PyBytes || other instanceof PyByteArray)) {
                 throw Slots.typeError(
                         "can't concat %s to %s", other.getType().name(), getType().name());
+            }
+            // `b += b` reads the receiver as its own source, and CPython's export count refuses the
+            // resize that would follow. An empty receiver needs no room, so that call still succeeds.
+            if (other == this && value.length > 0) {
+                throw Slots.bufferError("Existing exports of data: object cannot be re-sized");
             }
             byte[] tail = PyBytes.octets(other).clone();
             int size = value.length;

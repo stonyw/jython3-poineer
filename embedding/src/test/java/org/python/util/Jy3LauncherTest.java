@@ -314,7 +314,8 @@ class Jy3LauncherTest {
                 "137_the_four_books_under_every_stream.py",
                 "138_textiowrappers_own_book.py",
                 "155_length_hint.py",
-                "156_bytearray.py");
+                "156_bytearray.py",
+                "157_bytearray_capacity.py");
     }
 
     /**

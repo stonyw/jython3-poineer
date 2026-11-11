@@ -1836,6 +1836,18 @@ final class TypeDict {
         table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
         table.wrapper("__iadd__", IADD_DOC, TypeDict::joinedInPlace);
         table.wrapper("__imul__", IMUL_DOC, TypeDict::repeatedInPlace);
+        table.named(
+                "__alloc__",
+                "__sizeof__",
+                "append",
+                "clear",
+                "copy",
+                "extend",
+                "insert",
+                "pop",
+                "remove",
+                "resize",
+                "reverse");
         table.value("__doc__", docValue(owner));
     }
 
