@@ -45,6 +45,9 @@ final class Constructors {
         if (type == PyType.BOOL) {
             return booleanValue(args, keywordNames);
         }
+        if (type == PyType.MODULE) {
+            return PyModule.created(args, keywordNames);
+        }
         if (type == PyType.INT) {
             return integer(args, keywordNames);
         }

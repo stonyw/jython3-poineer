@@ -4,9 +4,7 @@ import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * The state one interpreter process owns: the builtins namespace, the {@code sys} module, the two text
@@ -36,13 +34,40 @@ public final class PyRuntime {
     private static final String RELEASE_LEVEL = "final";
     private static final int RELEASE_SERIAL = 0;
 
+    /**
+     * The modules this runtime builds itself, and therefore the ones {@link BuiltinImporter} claims.
+     *
+     * <p>Until M4 there is no finder and no {@code sys.path}, so the answer to "is this a built-in
+     * module?" is exactly this list; the reference interpreter's is longer because it also holds the
+     * extension modules, which are imports this runtime answers in Java instead.
+     */
+    private static final String[] BUILTIN_MODULE_NAMES = {"builtins", "sys"};
+
+    /** Whether {@code name} is one of the modules this runtime builds itself. */
+    static boolean isBuiltinModuleName(String name) {
+        for (String builtIn : BUILTIN_MODULE_NAMES) {
+            if (builtIn.equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static PyDict builtins;
     private static PyModule sysModule;
     private static PyModule main;
     private static PyStream stdout;
     private static PyStream stderr;
     private static PyStream stdin;
-    private static final Map<String, PyObject> modules = new LinkedHashMap<>();
+    /**
+     * What {@code sys.modules} starts out as, and the one mapping the import machinery reads.
+     *
+     * <p>It is a real dict because the reference interpreter's is: {@code sys.modules} answers every
+     * dict question and a script may write into it. The field and the attribute are the same object
+     * only until a script rebinds {@code sys.modules}, which in CPython replaces the attribute without
+     * touching the interpreter's own mapping — {@code import} keeps reading this field either way.
+     */
+    private static PyDict modules;
 
     /**
      * One item of {@code tstate->exc_info}: the exception a handler is running for, and the item the
@@ -99,15 +124,25 @@ public final class PyRuntime {
         // `input` reads this one, and `PyFile_GetLine` asks it for a line rather than the descriptor.
         stdin = new PyStream("<stdin>", System.in, 0, "strict");
 
+        modules = PyDict.empty();
         builtins = Builtins.namespace();
         sysModule = buildSys();
         PyModule home = new PyModule("builtins", builtins);
         PyModule templateLib = buildTemplateLib();
         PyModule annotationLib = AnnotationLib.newModule();
-        modules.put("sys", sysModule);
-        modules.put("builtins", home);
-        modules.put("string.templatelib", templateLib);
-        modules.put("annotationlib", annotationLib);
+        modules.put(PyStr.interned("sys"), sysModule);
+        modules.put(PyStr.interned("builtins"), home);
+        modules.put(PyStr.interned("string.templatelib"), templateLib);
+        modules.put(PyStr.interned("annotationlib"), annotationLib);
+        // The two modules CPython builds during initialization are imported from built-in code, so
+        // their `__loader__` is the one loader that answers without a finder. `__spec__` stays None
+        // until the import system can build a ModuleSpec, which is the one remaining gap in these two
+        // dictionaries and is named as M4's.
+        for (PyModule builtIn : new PyModule[] {home, sysModule}) {
+            builtIn.set("__package__", PyStr.of(""));
+            builtIn.set("__loader__", BuiltinImporter.type());
+            builtIn.set("__spec__", PyNone.INSTANCE);
+        }
         belongTo(home);
         belongTo(sysModule);
         belongTo(templateLib);
@@ -300,7 +335,7 @@ public final class PyRuntime {
      */
     public static PyObject importModule(String dotted) {
         startup();
-        PyObject module = modules.get(dotted);
+        PyObject module = modules.get(PyStr.interned(dotted));
         if (module != null) {
             return module;
         }
@@ -309,7 +344,7 @@ public final class PyRuntime {
             if (found != null) {
                 // Cached like any other module, because a second import must be the same object:
                 // a package holds its loaded classes, and two copies would hold two states.
-                modules.put(dotted, found);
+                modules.put(PyStr.interned(dotted), found);
                 return found;
             }
         }
@@ -326,7 +361,7 @@ public final class PyRuntime {
      */
     static PyObject existingModule(String dotted) {
         startup();
-        return modules.get(dotted);
+        return modules.get(PyStr.interned(dotted));
     }
 
     /** Install a finder, in order of preference: the first that answers wins. */
@@ -399,7 +434,7 @@ public final class PyRuntime {
         startup();
         if (main == null) {
             main = namespace(new PyModule("__main__"));
-            modules.put("__main__", main);
+            modules.put(PyStr.interned("__main__"), main);
         }
         return main;
     }
@@ -562,7 +597,7 @@ public final class PyRuntime {
         sys.set("version_info", PyVersionInfo.current());
         sys.set("argv", PyList.of(PyStr.of("jy3")));
         sys.set("path", PyList.empty());
-        sys.set("modules", PyDict.empty());
+        sys.set("modules", modules);
         sys.set("builtin_module_names",
                 PyTuple.of(PyStr.of("builtins"), PyStr.of("sys")));
         sys.set("defaultencoding", PyStr.of("utf-8"));

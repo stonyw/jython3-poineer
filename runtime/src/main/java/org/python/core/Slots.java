@@ -456,10 +456,16 @@ public final class Slots {
         }
         // A module names itself, for the same reason again: `sys.excepthook` after the name has been
         // deleted is a question about which namespace was asked, and module_getattro answers it with the
-        // module's own __name__ rather than with the type every module shares.
+        // module's own __name__ rather than with the type every module shares. A __name__ that is missing
+        // or is not a string leaves the sentence without one, which is the reference's `module has no
+        // attribute '...'`.
         if (target instanceof PyModule module) {
-            throw failedRead(
-                    target, name, "module '%s' has no attribute '%s'", module.name(), name);
+            PyObject shown = module.get("__name__");
+            if (shown instanceof PyStr text) {
+                throw failedRead(
+                        target, name, "module '%s' has no attribute '%s'", text.getValue(), name);
+            }
+            throw failedRead(target, name, "module has no attribute '%s'", name);
         }
         // The last question a read asks is the one CPython's generic read asks first for a value whose own
         // type keeps a dictionary: the MRO is walked and the first entry under the name is run through its

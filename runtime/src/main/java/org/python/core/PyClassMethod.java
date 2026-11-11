@@ -48,6 +48,10 @@ public final class PyClassMethod extends PyCallableWrapper {
         // still arrives as a method of the class, so the binding is done by handing the class over at
         // the call. That last case never gets that far: `PyMethod_New(None, C)` is a method whose call
         // is the None's own complaint.
+        //
+        // The sentence rides along because `method_get_doc` reads `__doc__` off the function, and a
+        // request for one is asked of the method rather than of the wrapper it came from.
+        PyObject sentence = wrapped().getAttr("__doc__");
         return new PyBoundMethod(
                 klass,
                 nameOf(),
@@ -56,7 +60,8 @@ public final class PyClassMethod extends PyCallableWrapper {
                     withClass[0] = self;
                     System.arraycopy(args, 0, withClass, 1, args.length);
                     return Slots.call(wrapped(), withClass, PyBoundMethod.keywordTuple(kwNames));
-                });
+                },
+                sentence instanceof PyStr text ? text.getValue() : null);
     }
 
     private String nameOf() {

@@ -326,7 +326,7 @@ class Jy3LauncherTest {
                 "168_namereplace_and_the_name_table.py",
                 "169_template_strings.py",
                 "170_deferred_annotations.py",
-                "171_annotationlib.py", "172_annotationlib.py");
+                "171_annotationlib.py", "172_annotationlib.py", "173_module_metadata.py");
     }
 
     /**
