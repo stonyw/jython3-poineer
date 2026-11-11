@@ -31,8 +31,11 @@ import java.util.Arrays;
  *
  * <p>Release is a state of the view, not of the exporter: it drops the reference (and in CPython asks the
  * exporter to unpin its buffer), and every read afterwards raises the same {@link Slots#valueError}
- * sentence. {@code repr} is the one operation that still answers, because CPython prints a released view
- * rather than refusing it — and {@code release} itself is idempotent.
+ * sentence. Four operations still answer, because CPython keeps them outside the check: {@code repr}
+ * prints the released window rather than refusing it, {@code release} is idempotent, {@code __exit__} is
+ * a release and so repeats it, and the two equalities compare by identity alone. The {@code with}
+ * statement's pair is the reachable spelling of that state — entering checks, leaving releases — which is
+ * why {@code with memoryview(x):} hands the window back spent.
  */
 public final class PyMemoryView extends PyObject {
 
@@ -97,9 +100,40 @@ public final class PyMemoryView extends PyObject {
                 value.getType().filedName());
     }
 
-    /** {@code memoryview.release()}: idempotent, and the only read a released view still allows. */
+    /**
+     * {@code memoryview.release()}: idempotent, and one of the four operations a released view allows.
+     *
+     * <p>The reference first asks whether buffers were exported from this view and refuses with a
+     * {@code BufferError} when any were; nothing can export one yet — that is {@code __buffer__}'s
+     * segment — so releasing is the flag and nothing else. The second call finds the flag already set
+     * and answers {@code None} like the first, which is what makes {@code release} safe to repeat where
+     * the other reads are not.
+     */
     void release() {
         released = true;
+    }
+
+    /**
+     * {@code memoryview.__enter__()}: the {@code with} statement's entry, which answers the view itself.
+     *
+     * <p>Entering copies and pins nothing here, so the body is the released check every read repeats: a
+     * view that was released cannot be entered, while leaving one is a release and stays allowed.
+     */
+    PyMemoryView enter() {
+        check();
+        return this;
+    }
+
+    /**
+     * {@code memoryview.__exit__()}: leaving a {@code with} releases the window, however the body ended.
+     *
+     * <p>The three exception arguments are read and dropped — the reference releases in every case and
+     * answers {@code None}, which lets an exception out unchanged. Leaving twice is releasing twice,
+     * which is why a second {@code __exit__} on a released view still answers {@code None}.
+     */
+    PyObject exit() {
+        release();
+        return PyNone.INSTANCE;
     }
 
     /** Refuses every read of a released view with CPython's one sentence for the state. */

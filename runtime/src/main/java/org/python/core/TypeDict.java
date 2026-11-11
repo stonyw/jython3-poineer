@@ -1969,6 +1969,14 @@ final class TypeDict {
     private static final String MEMORYVIEW_CONTIGUOUS_DOC =
             "A bool indicating whether the memory is contiguous.";
 
+    /** {@code memory.release}'s clinic text, which {@code __exit__} repeats under its own table. */
+    private static final String MEMORYVIEW_RELEASE_DOC =
+            "release($self, /)\n--\n\nRelease the underlying buffer exposed by the memoryview object.";
+
+    private static final String MEMORYVIEW_EXIT_DOC =
+            "__exit__($self, /, *exc_info)\n--\n\n"
+                    + "Release the underlying buffer exposed by the memoryview object.";
+
     /**
      * {@code memoryview}'s own dictionary, as {@code Objects/memoryobject.c} files it: forty-one names.
      *
@@ -1978,10 +1986,11 @@ final class TypeDict {
      * and the seven rows the comparison and iteration protocols contribute — {@code __hash__}, the six
      * rich comparisons and {@code __iter__}. The comparisons come in one {@code tp_richcompare}
      * ({@code memory_richcompare}) that answers only for equality and declines the four orderings, so the
-     * six rows differ only in the operator they pass on. The names the reference keeps after them — the
-     * two buffer protocol slots, the context manager and the named methods from {@code release} to
-     * {@code index} — are the segments still to come, so this dictionary is a prefix of the reference's
-     * rather than a permutation of it.
+     * six rows differ only in the operator they pass on. This slice files the three rows that make a
+     * released view reachable — {@code release} and the {@code with} pair — right where the reference
+     * keeps them, after {@code __delitem__}. The names after them — the two buffer protocol slots and the
+     * named methods from {@code tobytes} to {@code index} — are the segments still to come, so this
+     * dictionary is a prefix of the reference's rather than a permutation of it.
      *
      * <p>{@code __doc__} closes the dictionary, which is where the reference keeps it too. That is unlike
      * {@code bytes} and {@code bytearray}, whose sentences sit after the slots and before the named
@@ -2004,6 +2013,9 @@ final class TypeDict {
         table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
         table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
         table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
+        table.method("release", MEMORYVIEW_RELEASE_DOC, TypeDict::memoryviewRelease, METH_NOARGS);
+        table.method("__enter__", null, TypeDict::memoryviewEnter, METH_NOARGS);
+        table.method("__exit__", MEMORYVIEW_EXIT_DOC, TypeDict::memoryviewExit);
         table.getset("obj", MEMORYVIEW_OBJ_DOC, self -> memoryview(self).viewed(), null);
         table.getset(
                 "nbytes", MEMORYVIEW_NBYTES_DOC, self -> PyInt.of(memoryview(self).bytes()), null);
@@ -2044,6 +2056,42 @@ final class TypeDict {
     /** The window a descriptor's getter was handed, already checked against the declaring class. */
     private static PyMemoryView memoryview(PyObject self) {
         return (PyMemoryView) self;
+    }
+
+    /**
+     * {@code memoryview.release()}: the {@code METH_NOARGS} flag names the signature; the body refuses
+     * arguments itself, as every table body here does.
+     */
+    private static PyObject memoryviewRelease(
+            PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        memoryview(args[0]).release();
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code memoryview.__enter__()}: entering answers the same window, after the released check.
+     *
+     * <p>The reference files this row with a {@code NULL} doc and {@code METH_NOARGS}, so its signature
+     * comes from the flag and its {@code __doc__} is {@code None}; the arity refusal is still the body's.
+     */
+    private static PyObject memoryviewEnter(
+            PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return memoryview(args[0]).enter();
+    }
+
+    /**
+     * {@code memoryview.__exit__(*exc_info)}: any number of positional arguments, and a release.
+     *
+     * <p>{@code METH_VARARGS} takes the three exception values as a tuple the reference ignores, so there
+     * is no upper bound here; keywords are still refused before the release runs.
+     */
+    private static PyObject memoryviewExit(
+            PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.noKeywords(qualified + "()", kwNames);
+        memoryview(args[0]).exit();
+        return PyNone.INSTANCE;
     }
 
     /**
