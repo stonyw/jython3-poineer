@@ -48,6 +48,9 @@ final class Members {
      */
     private static final Map<PyType, Class<?>> VALUE_CLASSES = Map.ofEntries(
             Map.entry(PyType.INT, PyInt.class),
+            // `Format` is an int whose four members are filed as values, and a program asks
+            // `Format.VALUE` before the interpreter has had a reason to make one.
+            Map.entry(PyType.FORMAT, PyFormat.class),
             Map.entry(PyType.FLOAT, PyFloat.class),
             Map.entry(PyType.COMPLEX, PyComplex.class),
             Map.entry(PyType.STR, PyStr.class),

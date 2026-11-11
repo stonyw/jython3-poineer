@@ -103,12 +103,15 @@ public final class PyRuntime {
         sysModule = buildSys();
         PyModule home = new PyModule("builtins", builtins);
         PyModule templateLib = buildTemplateLib();
+        PyModule annotationLib = AnnotationLib.newModule();
         modules.put("sys", sysModule);
         modules.put("builtins", home);
         modules.put("string.templatelib", templateLib);
+        modules.put("annotationlib", annotationLib);
         belongTo(home);
         belongTo(sysModule);
         belongTo(templateLib);
+        belongTo(annotationLib);
     }
 
     /**

@@ -43,20 +43,96 @@ public final class PyModule extends PyObject {
     }
 
     /**
-     * Module attributes are dictionary entries, with the one exception CPython also has:
-     * {@code __dict__} is the dictionary itself, and only that name is read-only.
+     * Module attributes are dictionary entries, with the exceptions CPython also has: {@code __dict__} is
+     * the dictionary itself and only that name is read-only, and the two annotation names are read and
+     * written through PEP 649's rules rather than being plain entries.
      */
     @Override
     public PyObject getAttr(String attribute) {
         if ("__dict__".equals(attribute)) {
             return dictionary;
         }
+        if ("__annotate__".equals(attribute)) {
+            return annotateAttribute();
+        }
+        if ("__annotations__".equals(attribute)) {
+            return annotationsAttribute();
+        }
         PyObject value = dictionary.get(PyStr.interned(attribute));
         return value == null ? Slots.DECLINED : value;
     }
 
+    /**
+     * {@code module.__annotate__}: the function this module's definitions left behind, or {@code None}.
+     *
+     * <p>CPython's {@code module_getannotate} files the {@code None} it answers into the dictionary, so a
+     * module that never had annotations keeps one entry saying so rather than an answer that would have to
+     * be reconstructed and could disagree with a later {@code del}.
+     */
+    private PyObject annotateAttribute() {
+        PyStr name = PyStr.interned("__annotate__");
+        PyObject value = dictionary.get(name);
+        if (value == null) {
+            dictionary.put(name, PyNone.INSTANCE);
+            return PyNone.INSTANCE;
+        }
+        return value;
+    }
+
+    /**
+     * {@code module.__annotations__}: the cached dictionary, computed once from {@code __annotate__}.
+     *
+     * <p>This is 3.14's module half of PEP 649: running a module's code leaves an annotate function, and
+     * reading {@code __annotations__} calls it with {@code Format.VALUE} and keeps the answer. A module
+     * with neither name answers an empty dictionary, which is also what a module whose code named no
+     * annotations has. The annotate function itself is left alone, so a caller that wants a different
+     * format can still ask for it through {@link AnnotationLib}.
+     */
+    private PyObject annotationsAttribute() {
+        PyStr plural = PyStr.interned("__annotations__");
+        PyObject cached = dictionary.get(plural);
+        if (cached != null) {
+            return cached;
+        }
+        PyObject annotate = dictionary.get(PyStr.interned("__annotate__"));
+        PyObject computed;
+        if (annotate == null || annotate == PyNone.INSTANCE) {
+            computed = PyDict.empty();
+        } else {
+            // CPython's module getter calls the annotate function directly, so a refusal in it is the
+            // answer rather than something to translate the way `call_annotate_function` does.
+            computed = Slots.call(annotate, new PyObject[] {PyFormat.VALUE}, null);
+            if (!(computed instanceof PyDict)) {
+                throw Slots.typeError(
+                        "__annotate__ returned non-dict of type '%s'", computed.getType().name());
+            }
+        }
+        dictionary.put(plural, computed);
+        return computed;
+    }
+
+    /**
+     * {@code module.name = value}, with the two annotation names keeping PEP 649's invariants.
+     *
+     * <p>{@code __annotate__} must be callable or {@code None} — anything else would leave a module whose
+     * annotations can never be read. Writing {@code __annotations__} renames the value authoritative and
+     * moves the annotate function to {@code None}, which is what CPython does so that a later read answers
+     * the written dictionary rather than recomputing over it.
+     */
     @Override
     public PyObject setAttr(String attribute, PyObject value) {
+        if ("__annotate__".equals(attribute)) {
+            if (value != PyNone.INSTANCE && !Slots.isCallable(value)) {
+                throw Slots.typeError("__annotate__ must be callable or None");
+            }
+            dictionary.put(PyStr.interned(attribute), value);
+            return PyNone.INSTANCE;
+        }
+        if ("__annotations__".equals(attribute)) {
+            dictionary.put(PyStr.interned(attribute), value);
+            dictionary.put(PyStr.interned("__annotate__"), PyNone.INSTANCE);
+            return PyNone.INSTANCE;
+        }
         dictionary.put(PyStr.interned(attribute), value);
         return PyNone.INSTANCE;
     }
@@ -79,6 +155,17 @@ public final class PyModule extends PyObject {
     public PyObject delAttr(String attribute) {
         if ("__dict__".equals(attribute)) {
             throw Slots.attributeError("readonly attribute");
+        }
+        if ("__annotate__".equals(attribute)) {
+            throw Slots.typeError("cannot delete __annotate__ attribute");
+        }
+        if ("__annotations__".equals(attribute)) {
+            PyObject annotations = dictionary.remove(PyStr.interned("__annotations__"));
+            PyObject annotate = dictionary.remove(PyStr.interned("__annotate__"));
+            if (annotations == null && annotate == null) {
+                throw Slots.attributeError("__annotations__");
+            }
+            return PyNone.INSTANCE;
         }
         return dictionary.remove(PyStr.interned(attribute)) == null
                 ? Slots.DECLINED

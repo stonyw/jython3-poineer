@@ -180,6 +180,18 @@ public class PyType extends PyObject {
      * {@code {True: 1, 1: 2}} behave as ints that print as {@code True}.
      */
     public static final PyType BOOL = subclass("bool", INT).documented(BOOL_DOC);
+
+    /**
+     * {@code annotationlib.Format}, the four ways an annotate function may be asked to report.
+     *
+     * <p>It is an {@code IntEnum} in the reference — an int subclass whose members keep a name beside
+     * their number — so it is an int subclass here too, and {@code Format.VALUE == 1} and every int
+     * operation on a member answer the way the reference's do. The class-name header reads
+     * {@code enum} rather than {@code class} because that is the word the reference's metaclass writes.
+     */
+    public static final PyType FORMAT = subclass("Format", INT)
+            .inModule("annotationlib")
+            .enumeration();
     public static final PyType FLOAT = builtin("float").flagged(MATCH_SELF).documented(FLOAT_DOC);
 
     /**
@@ -1030,8 +1042,28 @@ public class PyType extends PyObject {
      */
     private String filedName;
 
+    /**
+     * The module a type belongs to when its written-down name carries no dot, or null where the dot says it.
+     *
+     * <p>{@link #filedName} carries the module for the static types CPython writes with a dotted
+     * {@code tp_name} — {@code sys.version_info}. An enumeration declared in a module's Python code is
+     * the other way round: its {@code tp_name} is the bare name {@code Format}, what a message quotes,
+     * and the module comes from the {@code __module__} its class body set. This field is that second
+     * source, read by {@link #moduleName()} before the dot in {@link #filedName}.
+     */
+    private String moduleName;
+
     /** Whether calling this type is refused the way an empty {@code tp_new} is; see {@link #withoutNew}. */
     private boolean withoutInstances;
+
+    /**
+     * Whether this type's values are enumeration members rather than instances.
+     *
+     * <p>One type sets it: {@code annotationlib.Format}, whose {@code repr} the reference answers as
+     * {@code <enum 'Format'>} because the word comes from {@code EnumMeta.__repr__} and not from
+     * {@code type_repr}. Nothing else in the runtime is an enumeration yet.
+     */
+    private boolean enumeration;
 
     /** The bits above that this type declares for itself; see {@link #hasFeature}. */
     private int features;
@@ -1173,6 +1205,23 @@ public class PyType extends PyObject {
      */
     PyType filedUnder(String dotted) {
         filedName = dotted;
+        return this;
+    }
+
+    /**
+     * The module this type answers for {@code __module__} when its written-down name does not say it.
+     *
+     * <p>Everything the dot in {@link #filedName} is used for keeps working — a message still quotes the
+     * bare name — while {@code __module__} answers this instead of {@code builtins}.
+     */
+    PyType inModule(String module) {
+        moduleName = module;
+        return this;
+    }
+
+    /** Marks this type as an enumeration, so its {@code repr} reads {@code <enum 'Format'>}. */
+    PyType enumeration() {
+        enumeration = true;
         return this;
     }
 
@@ -1436,6 +1485,9 @@ public class PyType extends PyObject {
      * {@link PyClass#getAttr} asks that first.
      */
     String moduleName() {
+        if (moduleName != null) {
+            return moduleName;
+        }
         int dot = filedName.lastIndexOf('.');
         return dot < 0 ? "builtins" : filedName.substring(0, dot);
     }
@@ -1623,6 +1675,9 @@ public class PyType extends PyObject {
         // CPython writes `<class 'module.name'>` for anything whose module is not `builtins`, and takes
         // `tp_name` for a built-in — the two answers are the same string for a named sequence, whose
         // module is the half of its written-down name before the dot.
+        if (enumeration) {
+            return "<enum '" + name + "'>";
+        }
         return "<class '" + filedName + "'>";
     }
 }

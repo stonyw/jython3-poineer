@@ -48,6 +48,9 @@ final class Constructors {
         if (type == PyType.INT) {
             return integer(args, keywordNames);
         }
+        if (type == PyType.FORMAT) {
+            return PyFormat.called(args, keywordNames);
+        }
         if (type == PyType.FLOAT) {
             return floating(args, keywordNames);
         }

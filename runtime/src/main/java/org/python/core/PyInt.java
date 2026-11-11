@@ -4,8 +4,15 @@ import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.util.Arrays;
 
-/** Python's {@code int}: arbitrary precision, with the small-value cache CPython relies on. */
-public final class PyInt extends PyObject {
+/**
+ * Python's {@code int}: arbitrary precision, with the small-value cache CPython relies on.
+ *
+ * <p>Not final, because two of the reference's own types are int subclasses built in Java:
+ * {@code annotationlib.Format} (an {@code IntEnum}, whose members compare equal to their numbers) and
+ * nothing else yet. A subclass passes its own type to the constructor; every arithmetic and comparison
+ * path here still sees a plain value and answers with {@link #of(long)}.
+ */
+public class PyInt extends PyObject {
 
     /** CPython caches -5..256; identity of those values is observable through {@code is}. */
     private static final int CACHE_MIN = -5;
@@ -24,9 +31,13 @@ public final class PyInt extends PyObject {
 
     private final BigInteger value;
 
-    private PyInt(BigInteger value) {
-        super(PyType.INT);
+    PyInt(BigInteger value, PyType type) {
+        super(type);
         this.value = value;
+    }
+
+    private PyInt(BigInteger value) {
+        this(value, PyType.INT);
     }
 
     public static PyInt of(long v) {
