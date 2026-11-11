@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.PrintStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -38,6 +40,13 @@ import org.junit.jupiter.api.Test;
  * that call answered is heard, in the conversion's own words, and arrives before a prompt has been
  * written. The three stream names are required in order, and the calling convention is settled before any
  * of them is read.
+ *
+ * <p>The other direction is asked of a stream whose octets land in a buffer rather than on a descriptor,
+ * since a double cannot read them back. What a write encodes with is the codec {@code reconfigure} left
+ * behind. A mark belongs to the encoder rather than to the stream's first octet: {@code utf-8-sig}'s
+ * incremental encoder carries its own, so every {@code reconfigure} that builds one puts the mark back in
+ * front of the next text — the empty string included — while {@code utf-16}, whose mark depends on a window
+ * only a seekable descriptor opens, writes native-order units and none.
  */
 class InputStreamTest {
 
@@ -1185,5 +1194,146 @@ class InputStreamTest {
                                         .isEqualTo(
                                                 "AttributeError: '_io.TextIOWrapper' object has no"
                                                         + " attribute 'readinto'"));
+    }
+
+    /**
+     * A writing stream whose octets land in a buffer, which is the only way a test can read them back.
+     *
+     * <p>The stream is opened the way {@code sys.stdout} is — {@code backslashreplace}, unflushed — so the
+     * only thing that differs from the real one is where the octets go.
+     */
+    private static final class Writer {
+        private final ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        private final PyStream stream =
+                new PyStream(
+                        "<stdout>",
+                        new PrintStream(sink, true, StandardCharsets.UTF_8),
+                        1,
+                        "backslashreplace",
+                        false);
+
+        byte[] octets() {
+            return sink.toByteArray();
+        }
+
+        PyObject write(String text) {
+            return Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of(text)}, null);
+        }
+
+        /**
+         * {@code stream.reconfigure(**pairs)}, the pairs being name and value in turn.
+         *
+         * <p>{@code reconfigure} takes no positional argument, so every value travels as a keyword: the
+         * names are the tuple and the values are the positionals, which is the calling convention this
+         * runtime gives a keyword call.
+         */
+        PyObject reconfigure(String... pairs) {
+            int count = pairs.length / 2;
+            PyObject[] values = new PyObject[count];
+            PyObject[] keywords = new PyObject[count];
+            for (int i = 0; i < count; i++) {
+                keywords[i] = PyStr.interned(pairs[2 * i]);
+                values[i] = PyStr.of(pairs[2 * i + 1]);
+            }
+            return Slots.call(
+                    Slots.getAttr(stream, "reconfigure"), values, PyTuple.of(keywords));
+        }
+    }
+
+    /**
+     * The encoding {@code reconfigure} named is the one the next write encodes with.
+     *
+     * <p>Five characters leave as five octets under {@code latin-1}, the accented one as {@code 0xe9} —
+     * where the UTF-8 the stream opened as would have written two. The count the write answers is
+     * characters, which is what the reference's {@code write} answers regardless of codec.
+     */
+    @Test
+    void aReconfiguredWriterEncodesWithItsNewCodec() {
+        Writer writer = new Writer();
+        writer.reconfigure("encoding", "latin-1");
+
+        assertThat(Slots.str(writer.write("caf\u00e9\n"))).isEqualTo("5");
+        assertThat(writer.octets()).isEqualTo(new byte[] {'c', 'a', 'f', (byte) 0xe9, '\n'});
+        assertThat(Slots.str(Slots.getAttr(writer.stream, "encoding"))).isEqualTo("latin-1");
+    }
+
+    /**
+     * A mark belongs to the encoder that writes it, and {@code reconfigure} builds a new encoder.
+     *
+     * <p>{@code utf-8-sig} carries its mark in the incremental encoder itself, so the empty write hands it
+     * text and gets the mark back, and asking for the same codec again builds another encoder whose own
+     * first write carries a second mark. {@code utf-16} is not like that: the window its mark depends on is
+     * armed only for a descriptor that can seek, so a stream like this one — which cannot — writes the
+     * native-order unit and no mark, before or after a {@code reconfigure}, and {@code utf-16-le} named
+     * outright writes none either.
+     */
+    @Test
+    void aReconfiguredEncoderWritesItsOwnMark() {
+        Writer sig = new Writer();
+        sig.reconfigure("encoding", "utf-8-sig");
+        sig.write("");
+        sig.write("a");
+        sig.reconfigure("encoding", "utf-8-sig");
+        sig.write("b");
+        assertThat(sig.octets())
+                .isEqualTo(
+                        new byte[] {
+                            (byte) 0xef, (byte) 0xbb, (byte) 0xbf, 'a',
+                            (byte) 0xef, (byte) 0xbb, (byte) 0xbf, 'b'
+                        });
+
+        Writer later = new Writer();
+        later.write("a");
+        later.reconfigure("encoding", "utf-16");
+        later.write("b");
+        later.reconfigure("encoding", "utf-16-le");
+        later.write("c");
+        assertThat(later.octets()).isEqualTo(new byte[] {'a', 'b', 0, 'c', 0});
+    }
+
+    /**
+     * The handler is looked up when a character is refused, not when it is named, and a refused write
+     * writes nothing.
+     *
+     * <p>{@code backslashreplace} and {@code replace} are the two text answers, so the ascii codec turns
+     * them into octets of their own. {@code 'nope'} is stored without complaint and only the write that
+     * needs it asks the registry; before either, the strict write that fails leaves the buffer exactly as
+     * it was, because the whole text is encoded before the first octet goes out.
+     */
+    @Test
+    void aReconfiguredWriterAnswersRefusalsWithItsNewHandler() {
+        Writer writer = new Writer();
+        writer.reconfigure("encoding", "ascii", "errors", "backslashreplace");
+        writer.write("\u00e9\n");
+        assertThat(writer.octets())
+                .isEqualTo(new byte[] {'\\', 'x', 'e', '9', '\n'});
+
+        writer.reconfigure("errors", "replace");
+        writer.write("\u00e9\n");
+        assertThat(writer.octets())
+                .isEqualTo(new byte[] {'\\', 'x', 'e', '9', '\n', '?', '\n'});
+
+        writer.reconfigure("encoding", "ascii");
+        assertThatThrownBy(() -> writer.write("a\u00e9\n"))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused ->
+                                assertThat(refused.getMessage())
+                                        .isEqualTo(
+                                                "UnicodeEncodeError: 'ascii' codec can't encode"
+                                                    + " character '\\xe9' in position 1: ordinal not"
+                                                    + " in range(128)"));
+        assertThat(writer.octets()).hasSize(7);
+
+        writer.reconfigure("errors", "nope");
+        writer.write("plain");
+        assertThatThrownBy(() -> writer.write("\u00e9"))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused ->
+                                assertThat(refused.getMessage())
+                                        .isEqualTo(
+                                                "LookupError: unknown error handler name 'nope'"));
+        assertThat(writer.octets()).hasSize(12);
     }
 }

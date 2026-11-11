@@ -16,10 +16,6 @@ import java.util.function.Supplier;
  * object: a script that interleaves {@code print} with {@code sys.stdout.write} has to see one buffer,
  * not two that flush at different times.
  *
- * <p>The stream re-encodes as UTF-8 whatever it is given, which is why {@code encoding} reads
- * {@code 'utf-8'} rather than echoing the JVM's {@code stdout.encoding}. The two agree under the
- * build's {@code -Dfile.encoding=UTF-8}, and disagreeing is visible rather than silent.
- *
  * <p>One class serves both directions, and which way it goes decides the rest of the face: the members
  * of the other direction are refused. The reference refuses them as {@code io.UnsupportedOperation},
  * which is what they arrive as here too — the type is built in {@link ExceptionTypes}, and the
@@ -57,6 +53,14 @@ import java.util.function.Supplier;
  * answers with. {@code seekable} is also remembered, because {@code seek} and {@code tell} consult the
  * memory rather than the buffer: on the pipe this runtime reads from it is False, so they refuse
  * {@code underlying stream is not seekable} even after the buffer below has been detached.
+ *
+ * <p>Writing encodes with the stream's own codec rather than the JVM's {@code stdout.encoding}, which is
+ * why {@code encoding} reads {@code 'utf-8'} until {@code reconfigure} says otherwise and why the octets
+ * of a reconfigured stream are the reference's. The mark of a markful codec is the one place the pipe
+ * shows: the reference arms it in its constructor only when the descriptor can seek, and a stream this
+ * runtime writes to cannot, so {@code utf-16} writes native-order units and no mark, while
+ * {@code utf-8-sig} — whose encoder is incremental and carries the mark itself — writes one mark for
+ * every encoder {@code reconfigure} builds.
  *
  * <p>{@code _io._IOBase} gives every stream a dictionary of its own, and the interpreter's stream
  * creation files {@code mode} in it before the object reaches {@code sys}. That is where the stream's
@@ -139,7 +143,7 @@ public final class PyStream extends PyIterator {
      * The codec module under {@link #encoding}, resolved when the name is set rather than per chunk.
      *
      * <p>{@code _io} keeps the codec info and its incremental decoder side by side with the name, and the
-     * three change together in {@code reconfigure}; this field is the one the decoding loop reads.
+     * three change together in {@code reconfigure}; this field is the one the two loops read.
      */
     private String codec = "utf_8";
 
@@ -151,6 +155,18 @@ public final class PyStream extends PyIterator {
 
     /** The order a markless {@code utf-16} stream was read in, decided by its first two octets. */
     private boolean utf16Big;
+
+    /**
+     * Whether the encoder {@code reconfigure} last built has written anything yet.
+     *
+     * <p>{@code utf-8-sig} is the one codec here whose mark is carried by its incremental encoder rather
+     * than decided by the stream: {@code _textiowrapper_set_encoder} builds a fresh one on every
+     * {@code reconfigure} that changes the encoding, the handler or the newline, and that encoder writes
+     * its mark on the first text it is handed, the empty string included. The reference's own
+     * {@code encoding_start_of_stream} would not say this — on a descriptor that cannot seek it is left at
+     * zero and never armed again — which is why {@code utf-16} below writes no mark at all.
+     */
+    private boolean encoderAtStart = true;
 
     /** {@code self->errors}: the handler name, kept as handed over and never looked up here. */
     private String errors;
@@ -250,7 +266,25 @@ public final class PyStream extends PyIterator {
         if (closed) {
             throw Slots.valueError(CLOSED);
         }
-        out.print(text);
+        boolean sig = codec.equals("utf_8_sig");
+        if (text.isEmpty() && !sig) {
+            // The one-byte and UTF-8 funcs answer the empty string with nothing at all, so no octet and no
+            // handler lookup; utf-8-sig is not one of those funcs, and its encoder writes its mark here.
+            return;
+        }
+        String name = codec;
+        if (sig) {
+            name = encoderAtStart ? "utf_8_sig" : "utf_8";
+        } else if (codec.equals("utf_16")) {
+            // `utf16_encode` writes a mark only when the stream's window is open, and a descriptor that
+            // cannot seek never opens it: the octets are the native-order units, which are little-endian.
+            name = "utf_16_le";
+        }
+        byte[] octets = Encoder.encode(text, name, errors).getValue();
+        out.write(octets, 0, octets.length);
+        if (sig) {
+            encoderAtStart = false;
+        }
     }
 
     public void flush() {
@@ -363,6 +397,11 @@ public final class PyStream extends PyIterator {
         }
         if (newlineGiven && newEncoding == null && newErrors == null) {
             resetDecoder();
+        }
+        if (newEncoding != null || newErrors != null || newlineGiven) {
+            // `textiowrapper_change_encoding` builds both halves of the pair over again unless all three
+            // are None, so even a newline alone leaves a fresh encoder behind, mark and all.
+            encoderAtStart = true;
         }
         if (newLineBuffering != null) {
             lineBuffered = newLineBuffering;

@@ -316,8 +316,9 @@ class Jy3LauncherTest {
     }
 
     /**
-     * M3 slices 85, 86, 89 and 90's stream face: the scripts whose questions are asked of {@code sys.stdin},
-     * so both children get the same pipe and the same closed descriptor at the end of it.
+     * M3 slices 85, 86, 89, 90 and 91's stream face: the scripts whose questions are asked of
+     * {@code sys.stdin} or answered on {@code sys.stdout}, so both children get the same pipe and the same
+     * closed descriptor at the end of it.
      *
      * <p>The pipe is the case, not an accident of plumbing. Asked of a regular file, {@code seek} and
      * {@code tell} answer with a position and this runtime has no raw layer to ask; asked of a pipe both
@@ -355,7 +356,10 @@ class Jy3LauncherTest {
                 Arguments.of("144_reconfigure_utf8_sig_reads_the_mark_once.py", SIG_OCTETS),
                 Arguments.of("145_reconfigure_utf16_reads_its_mark_and_holds_a_pair.py", UTF16_OCTETS),
                 Arguments.of("146_reconfigure_utf16_le_holds_an_odd_octet.py", UTF16LE_OCTETS),
-                Arguments.of("147_reconfigure_names_refused_and_accepted.py", NAMES_OCTETS));
+                Arguments.of("147_reconfigure_names_refused_and_accepted.py", NAMES_OCTETS),
+                Arguments.of("148_reconfigure_encoding_writes_with_the_new_codec.py", NO_OCTETS),
+                Arguments.of("149_reconfigure_utf16_writes_native_order_without_a_mark.py", NO_OCTETS),
+                Arguments.of("150_reconfigure_write_names_refused_and_accepted.py", NO_OCTETS));
     }
 
     /**
@@ -505,6 +509,15 @@ class Jy3LauncherTest {
      */
     private static final byte[] NAMES_OCTETS =
             octets("a", new byte[] {(byte) 0x80}, "b\n");
+
+    /**
+     * The pipe cases 148 to 150 read: nothing at all.
+     *
+     * <p>Those three are about the other direction. What they compare is the octets the script's writes put
+     * on {@code sys.stdout}, and a descriptor with nothing on it is what makes the reading half of the
+     * stream stay out of the way.
+     */
+    private static final byte[] NO_OCTETS = new byte[0];
 
     /** UTF-8 text and raw octets, end to end, which is what a pipe carries. */
     private static byte[] octets(Object... parts) {
