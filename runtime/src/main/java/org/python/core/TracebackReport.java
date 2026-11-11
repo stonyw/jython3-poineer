@@ -33,13 +33,15 @@ import java.util.function.Supplier;
  * and nothing else, the sentence because it joins {@code _str} before the type name goes in front of it and
  * so belongs to the complaint line rather than standing under it.
  *
- * <p>The anchors are therefore the one named omission, and it is not a matter of reading wider ranges
- * out of the line table: {@code _extract_caret_anchors_from_line_segment} decides which characters get a
- * {@code ~} by parsing the source segment with {@code ast} and {@code tokenize}, and this runtime has
- * neither module — it reads a code object, not a syntax tree. Everything else the report says is here:
- * the chain of causes and contexts, the collapse of a repeated line, {@code sys.tracebacklimit}, the
- * notes, the type name the complaint is filed under, and the tree of a group down to the margin CPython
- * puts in front of every line inside one.
+ * <p>The anchors are here too, read from the position table rather than from a syntax tree:
+ * {@link TracebackSource} takes the {@code co_positions()} entry of the failing instruction, cuts the
+ * source segment it names, and decides which characters get a {@code ~} by scanning that segment for a
+ * binary operator or for the last call or subscript of a chain. CPython makes the same decision by
+ * parsing the segment with {@code ast}, which this runtime does not have; a segment the scan cannot read
+ * is shown without anchors, which is also what CPython does when {@code ast} refuses the segment.
+ * Everything else the report says is here: the chain of causes and contexts, the collapse of a repeated
+ * line, {@code sys.tracebacklimit}, the notes, the type name the complaint is filed under, and the tree
+ * of a group down to the margin CPython puts in front of every line inside one.
  *
  * <p>Three readings follow CPython's code rather than a plausible shortcut. The limit keeps the
  * <em>last</em> N entries, because {@code BUILTIN_EXCEPTION_LIMIT} slices the walked traceback from the
@@ -97,8 +99,19 @@ public final class TracebackReport {
 
     private final int limit;
 
+    /**
+     * Whether the report draws the PEP 657 anchors.
+     *
+     * <p>It does not when {@code sys.tracebacklimit} is set to something that is not a number: the Python
+     * printer compares that value with zero, the comparison raises, and {@code _PyErr_Display} drops the
+     * whole report to the C printer, which quotes one line per entry and draws nothing under it.
+     */
+    private final boolean anchors;
+
     private TracebackReport() {
-        limit = entryLimit();
+        PyObject configured = PyRuntime.sysAttribute("tracebacklimit");
+        limit = entryLimit(configured);
+        anchors = configured == null || configured == PyNone.INSTANCE || limitValue(configured) != null;
     }
 
     /** The whole report of {@code error}, ending in a newline like every line of it does. */
@@ -350,8 +363,17 @@ public final class TracebackReport {
 
     // --- the entries ---------------------------------------------------------------------
 
-    /** One traceback link as the report reads it: a file, a line, a function, and the code to quote. */
-    private record Entry(String fileName, int line, String name, PyCode code) {}
+    /**
+     * One traceback link as the report reads it: a file, the source range the frame stopped in, a
+     * function, and the code to quote.
+     *
+     * <p>The four numbers are CPython's {@code (lineno, end_lineno, colno, end_colno)} for the failing
+     * instruction, with -1 wherever the code object's position table names nothing. The report only needs
+     * them to place the PEP 657 anchor under the right characters; the header line falls back to the line
+     * table when the position table has no start line.
+     */
+    private record Entry(
+            String fileName, int line, int endLine, int col, int endCol, String name, PyCode code) {}
 
     /**
      * The links of {@code value.__traceback__}, outermost first, cut to {@code sys.tracebacklimit}.
@@ -364,15 +386,53 @@ public final class TracebackReport {
         PyObject carried = value.getAttr("__traceback__");
         while (carried instanceof PyTraceback traceback) {
             Frame frame = traceback.frame();
+            PyCode code = frame.code();
+            int[] position = positionOf(code, traceback.lasti());
+            int line =
+                    position[0] >= 0
+                            ? position[0]
+                            : frame.instructions().lineAtLasti(traceback.lasti());
             all.add(
                     new Entry(
-                            frame.code().fileName(),
-                            frame.instructions().lineAtLasti(traceback.lasti()),
-                            frame.code().name(),
-                            frame.code()));
+                            code.fileName(),
+                            line,
+                            position[1] >= 0 ? position[1] : line,
+                            position[2],
+                            position[3],
+                            code.name(),
+                            code));
             carried = traceback.next() == null ? PyNone.INSTANCE : traceback.next();
         }
         return all.size() <= limit ? all : all.subList(all.size() - limit, all.size());
+    }
+
+    /**
+     * {@code _get_code_position}: the position table's entry for the failing instruction.
+     *
+     * <p>The table has one entry per two-byte unit, and {@code tb_lasti} counts bytes, so the index is
+     * the offset halved. An offset the table does not reach, or a value it does not name, answers four
+     * -1s and lets the caller fall back to the line table, exactly as {@code _walk_tb_with_full_positions}
+     * does with a quadruple whose first item is {@code None}.
+     */
+    private static int[] positionOf(PyCode code, int lasti) {
+        int[] none = {-1, -1, -1, -1};
+        if (lasti < 0) {
+            return none;
+        }
+        PyTuple positions = code.positions();
+        int index = lasti / 2;
+        if (index >= positions.size() || !(positions.at(index) instanceof PyTuple item)) {
+            return none;
+        }
+        int[] position = new int[4];
+        for (int at = 0; at < 4 && at < item.size(); at++) {
+            position[at] = item.at(at) instanceof PyInt value ? number(value) : -1;
+        }
+        return position;
+    }
+
+    private static int number(PyInt value) {
+        return value.getValue().intValue();
     }
 
     /**
@@ -445,29 +505,35 @@ public final class TracebackReport {
                         .append(", in ")
                         .append(entry.name())
                         .append('\n');
-        String source = sourceLine(entry);
-        if (source != null && !source.isEmpty()) {
-            line.append(SOURCE_INDENT).append(source).append('\n');
+        String source =
+                TracebackSource.block(
+                        linesOf(entry),
+                        entry.line(),
+                        entry.endLine(),
+                        // A report that fell back to the C printer quotes one line and draws nothing:
+                        // a column the entry does not carry is the same request.
+                        anchors ? entry.col() : -1,
+                        anchors ? entry.endCol() : -1);
+        if (source != null) {
+            line.append(source);
         }
         return line.toString();
     }
 
-    /** The quoted line of an entry, or null where CPython prints no line at all. */
-    private String sourceLine(Entry entry) {
-        if (entry.line() < 1) {
-            return null;
-        }
+    /**
+     * The lines an entry quotes, read once per file because a deep traceback names one file many times.
+     *
+     * <p>A source compiled from a string has no file to read, so the launcher registers its text instead,
+     * keyed the way {@code linecache._register_code} keys it. A name nothing registered answers an empty
+     * list, which is the same thing as a line the file does not have.
+     */
+    private List<String> linesOf(Entry entry) {
         String fileName = entry.fileName();
         List<String> lines =
                 fileName.startsWith("<") && fileName.endsWith(">")
                         ? inlineSources.get(keyOf(entry.code()))
                         : files.computeIfAbsent(fileName, TracebackReport::readLines);
-        if (lines == null || entry.line() > lines.size()) {
-            return null;
-        }
-        // linecache rstrips each line and FrameSummary strips the one it returns; the report only ever
-        // shows a line that still has something on it.
-        return lines.get(entry.line() - 1).strip();
+        return lines == null ? List.of() : lines;
     }
 
     private static List<String> readLines(String fileName) {
@@ -662,15 +728,15 @@ public final class TracebackReport {
      * refuses to compare it, the report falls back to the printer that never reads it, and every frame
      * is shown.
      */
-    private static int entryLimit() {
-        BigInteger configured = limitValue(PyRuntime.sysAttribute("tracebacklimit"));
-        if (configured == null) {
+    private static int entryLimit(PyObject configured) {
+        BigInteger value = limitValue(configured);
+        if (value == null) {
             return Integer.MAX_VALUE;
         }
-        if (configured.signum() <= 0) {
+        if (value.signum() <= 0) {
             return 0;
         }
-        return configured.bitLength() < 32 ? configured.intValue() : Integer.MAX_VALUE;
+        return value.bitLength() < 32 ? value.intValue() : Integer.MAX_VALUE;
     }
 
     /** The integer a limit stands for, or null for a value that is not a limit. */

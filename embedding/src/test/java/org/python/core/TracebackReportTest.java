@@ -20,10 +20,13 @@ import org.python.front.cpython314.Cpython314Compiler;
  * run in the embedding module rather than the runtime's own: a frame is only worth reporting once
  * something compiled it, and decision D2 keeps the compiler out of {@code org.python.core}.
  *
- * <p>Every literal is what CPython 3.14.8 prints for the same shape, read off the reference asked for
- * its anchor-free report. The unregistered {@code <string>} is its own reading: CPython only hands the
- * text to {@code linecache} on the entry points it compiles itself — {@code -c} and the REPL — so an
- * embedded snippet, which is what {@code PyRun_SimpleString} and {@code exec()} both are, quotes nothing.
+ * <p>Every literal is what CPython 3.14.8 prints for the same shape, read off the reference with the
+ * anchors PEP 657 asks its Python printer for. The one exception is a {@code sys.tracebacklimit} the
+ * comparison refuses: that raises inside the reference's printer and drops it to the C one, whose text
+ * quotes the same lines without the anchors — which is what the literal for that case says. The
+ * unregistered {@code <string>} is its own reading: CPython only hands the text to {@code linecache} on
+ * the entry points it compiles itself — {@code -c} and the REPL — so an embedded snippet, which is what
+ * {@code PyRun_SimpleString} and {@code exec()} both are, quotes nothing.
  */
 class TracebackReportTest {
 
@@ -55,8 +58,10 @@ class TracebackReportTest {
                         Traceback (most recent call last):
                           File "%1$s", line 4, in <module>
                             inner(0)
+                            ~~~~~^^^
                           File "%1$s", line 2, in inner
                             return 1 / x
+                                   ~~^~~
                         ZeroDivisionError: division by zero
                         """
                                 .formatted(where));
@@ -107,6 +112,7 @@ class TracebackReportTest {
                         Traceback (most recent call last):
                           File "<string>", line 4, in <module>
                             boom()
+                            ~~~~^^
                           File "<string>", line 2, in boom
                             raise KeyError('cmd')
                         KeyError: 'cmd'
@@ -131,7 +137,7 @@ class TracebackReportTest {
                 "  File \"%1$s\", line 2, in a\n    raise ValueError('deep')\n".formatted(where);
         String wholeReport =
                 ("Traceback (most recent call last):\n"
-                                + "  File \"%1$s\", line 7, in <module>\n    b()\n"
+                                + "  File \"%1$s\", line 7, in <module>\n    b()\n    ~^^\n"
                                 + "  File \"%1$s\", line 5, in b\n    return a()\n")
                         .formatted(where)
                         + innermost
@@ -154,11 +160,20 @@ class TracebackReportTest {
             assertThat(TracebackReport.of(error)).isEqualTo("ValueError: deep\n");
         }
 
-        // A number too wide for a count is every frame, and so is anything the comparison refuses.
+        // A number too wide for a count is every frame. Anything the comparison refuses is every frame
+        // too, but from the C printer, which draws no anchors under the lines it quotes.
         assign("sys.tracebacklimit = 10 ** 40");
         assertThat(TracebackReport.of(error)).isEqualTo(wholeReport);
         assign("sys.tracebacklimit = 'not a number'");
-        assertThat(TracebackReport.of(error)).isEqualTo(wholeReport);
+        assertThat(TracebackReport.of(error))
+                .isEqualTo(
+                        "Traceback (most recent call last):\n"
+                                + "  File \"%1$s\", line 7, in <module>\n    b()\n"
+                                        .formatted(where)
+                                + "  File \"%1$s\", line 5, in b\n    return a()\n"
+                                        .formatted(where)
+                                + innermost
+                                + "ValueError: deep\n");
     }
 
     @Test

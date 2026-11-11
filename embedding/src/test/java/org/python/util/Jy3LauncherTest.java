@@ -27,8 +27,8 @@ import org.python.util.Jy3Process.Result;
  * <p>One case compares less than the whole stream on purpose: a usage error is matched on its exit status
  * and on the tail of its message, because the program's own name and the working directory are both in
  * the sentence. Everything else is compared byte for byte, the report an uncaught exception leaves on
- * stderr included — that report is M3 slice 9's, and it is matched against the reference asked to leave
- * its anchors out.
+ * stderr included — that report is M3 slice 9's, and since slice 99 the reference's own report, anchors
+ * and all, is what it is held against.
  */
 class Jy3LauncherTest {
 
@@ -564,11 +564,9 @@ class Jy3LauncherTest {
     /**
      * M3 slice 9's report: an exception nobody caught, printed the way CPython prints it.
      *
-     * <p>The reference runs with {@code -X no_debug_ranges}, and that is not a convenience. CPython's
-     * default report puts an anchor line under each frame — the {@code ~~~^~~~} of PEP 657, built from
-     * the column ranges this runtime does not carry yet — and switching the ranges off makes the
-     * interpreter answer with the report its own C printer writes, which is the one {@code jy3}
-     * transcribes. The missing anchor is the named difference of this slice and is recorded in PLAN.md.
+     * <p>The reference runs with its default report, anchors and all: the {@code ~~~^~~~} line of PEP 657
+     * is part of the document now that the report reads the position table, so the comparison is the
+     * report a person actually sees.
      *
      * <p>Unlike the M3 corpus, every script here ends on an uncaught exception: the report is what is
      * being compared. Stdout is compared alongside it because a script catches and prints before it
@@ -583,7 +581,7 @@ class Jy3LauncherTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("uncaughtReports")
     void anUncaughtExceptionIsReportedAsCpythonReportsIt(String scriptName) throws Exception {
-        answersExactlyAsCpython("m3/uncaught", scriptName, cpythonWithoutAnchorsCommand());
+        answersExactlyAsCpython("m3/uncaught", scriptName, cpythonCommand());
     }
 
     private static List<String> uncaughtReports() {
@@ -676,7 +674,16 @@ class Jy3LauncherTest {
                 "86_hook_raises_an_interrupt.py",
                 "87_last_names_before_the_hook.py",
                 "88_traceback_handed_to_the_display.py",
-                "89_interrupt_and_a_hook_that_exits.py");
+                "89_interrupt_and_a_hook_that_exits.py",
+                "90_anchor_binary_operator.py",
+                "91_anchor_call.py",
+                "92_anchor_subscript.py",
+                "93_anchor_suppressed_for_a_returned_call.py",
+                "94_anchor_suppressed_for_an_assigned_call.py",
+                "95_anchor_in_a_multiline_call.py",
+                "96_anchor_after_wide_characters.py",
+                "97_anchor_on_the_operators_line.py",
+                "98_anchors_in_a_chain.py");
     }
 
     @Test
@@ -715,15 +722,16 @@ class Jy3LauncherTest {
     /**
      * The whole report is compared, not the complaint alone.
      *
-     * <p>The frame lines above the message are what M3 slice 9 added, and they are why this test asks the
-     * reference for its anchor-free report: see {@link #anUncaughtExceptionIsReportedAsCpythonReportsIt}.
+     * <p>The frame lines above the message are what M3 slice 9 added, and the line under them is the one
+     * slice 99 added: a {@code raise} statement records its whole statement as the failing range, so the
+     * caret line has nothing to point at and CPython prints none either.
      */
     @Test
     void anUncaughtExceptionNamesItsTypeAndFails() throws Exception {
         Path script = write("raises.py", "raise ValueError('bad value')\n");
 
         Result jy3 = jy3(script);
-        Result reference = cpythonWithoutAnchors(List.of(script.toString()));
+        Result reference = cpython(List.of(script.toString()));
 
         assertThat(jy3.exit()).isEqualTo(1);
         assertThat(jy3.err()).isEqualTo(reference.err());
@@ -754,7 +762,7 @@ class Jy3LauncherTest {
         List<String> arguments = commandOptions(List.of(program), List.of());
 
         Result jy3 = jy3(arguments);
-        Result reference = cpythonWithoutAnchors(arguments);
+        Result reference = cpython(arguments);
 
         assertThat(jy3.exit()).as(program).isEqualTo(reference.exit());
         assertThat(jy3.out()).as(program).isEqualTo(reference.out());
@@ -869,18 +877,6 @@ class Jy3LauncherTest {
 
     private Result cpython(List<String> arguments, String stdin) throws Exception {
         return Jy3Process.run(work, cpythonCommand(), arguments, stdin);
-    }
-
-    /**
-     * The reference asked for the report without anchors: {@code -X no_debug_ranges} leaves the PEP 657
-     * ranges unrecorded, and the report CPython then writes is the one its own C printer writes.
-     */
-    private Result cpythonWithoutAnchors(List<String> arguments) throws Exception {
-        return Jy3Process.run(work, cpythonWithoutAnchorsCommand(), arguments, null);
-    }
-
-    private static List<String> cpythonWithoutAnchorsCommand() {
-        return cpythonCommand(List.of("-X", "no_debug_ranges"));
     }
 
     private static List<String> cpythonCommand() {

@@ -125,9 +125,9 @@ public interface PyCode {
      * last entry is not in it at all: CPython's iterator counts the units its table writes, never the length
      * of {@code co_code}.
      *
-     * <p>These are the numbers a PEP 657 caret is drawn from. The report this runtime prints names only a
-     * line, because a caret needs the source text beside the column, and that is Stage B's half of the
-     * display.
+     * <p>These are the numbers a PEP 657 caret is drawn from: {@link TracebackReport} asks this table for
+     * the failing instruction's range and draws the {@code ^} and {@code ~} under the characters it names,
+     * using the source text beside the column.
      */
     PyTuple positions();
 
