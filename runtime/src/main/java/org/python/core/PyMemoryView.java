@@ -1,6 +1,7 @@
 package org.python.core;
 
 import java.math.BigInteger;
+import java.util.Arrays;
 
 /**
  * The window a {@code memoryview} holds over an octet string.
@@ -172,6 +173,118 @@ public final class PyMemoryView extends PyObject {
     boolean contiguous() {
         check();
         return length <= 1 || stride == 1;
+    }
+
+    /**
+     * {@code view == other} and {@code view != other}: the octets the window selects, compared with the
+     * octets another buffer selects.
+     *
+     * <p>CPython spells this one {@code memory_richcompare}, and it answers only for equality: the four
+     * orderings raise {@code TypeError} at the point the slot declines, which is the
+     * {@link PyNotImplemented#INSTANCE} this returns. A memoryview on the other side is compared through
+     * the shapes first — the reference walks the two {@code shape} arrays and stops at an extent that is
+     * zero — and then through the values the two formats describe; with both sides always one-dimensional
+     * {@code B} views here, that is the length followed by the selected octets, so a strided slice equals
+     * the contiguous run that spells the same elements.
+     *
+     * <p>A released view is CPython's exception to every rule above: the comparison answers identity and
+     * nothing else, which is why {@code released == released} is true only for the very same object and
+     * why a released view is unequal to the contents it used to cover. Another value that exports no
+     * buffer — a string, a list, {@code None} — is not compared at all; the reference asks for a buffer,
+     * clears the failure and declines, and Python's fallback then answers false for {@code ==} and true
+     * for {@code !=}.
+     */
+    @Override
+    public PyObject richCompare(CompareOp cmp, PyObject other) {
+        if (cmp != CompareOp.EQ && cmp != CompareOp.NE) {
+            return PyNotImplemented.INSTANCE;
+        }
+        boolean equal;
+        if (released) {
+            equal = this == other;
+        } else if (other instanceof PyMemoryView view) {
+            equal = view.released ? this == other : sameOctets(view);
+        } else if (other instanceof PyBytes || other instanceof PyByteArray) {
+            equal = Arrays.equals(octets(), PyBytes.octets(other));
+        } else {
+            return PyNotImplemented.INSTANCE;
+        }
+        return PyBool.of(cmp == CompareOp.EQ ? equal : !equal);
+    }
+
+    /**
+     * The Java-level equality behind {@link PyObject#equals}, which is {@code ==} without the declined
+     * case: the same octets, or the same object when either side has been released.
+     */
+    @Override
+    public boolean eq(PyObject other) {
+        if (other == this) {
+            return true;
+        }
+        if (other instanceof PyMemoryView view) {
+            return !released && !view.released && sameOctets(view);
+        }
+        return !released
+                && (other instanceof PyBytes || other instanceof PyByteArray)
+                && Arrays.equals(octets(), PyBytes.octets(other));
+    }
+
+    /**
+     * {@code hash(view)}: the hash of the octets the window covers, refused for a writable view.
+     *
+     * <p>{@code memory_hash} hashes the exporter first and then hashes the buffer, so a view of a
+     * {@code bytes} hashes exactly as those {@code bytes} do and a view of a {@code bytearray} would agree
+     * with them too — if it had a hash at all. It does not: an exporter that can change under the hash
+     * would break every dictionary it was put in, so CPython refuses a writable view with the sentence
+     * below. A released view is refused earlier, with the same sentence every released read uses, because
+     * the reference checks the window's state before the read-only bit.
+     *
+     * <p>A strided view hashes its elements in the order the view presents them, since the reference
+     * copies a non-contiguous window into a scratch buffer before hashing it.
+     */
+    @Override
+    public long hash() {
+        check();
+        if (!readonly) {
+            throw Slots.valueError("cannot hash writable memoryview object");
+        }
+        return PyHash.bytesHash(octets());
+    }
+
+    /**
+     * {@code iter(view)}: a cursor over the elements, in the order the window presents them.
+     *
+     * <p>The cursor is {@link MemoryIterator}, the one type {@code Objects/memoryobject.c} declares for
+     * this. It captures the length now — a view cannot make its exporter grow or shrink, so the number is
+     * stable — and reads each element when the step is asked for, which is what makes a walk of a writable
+     * view see a write that lands after the cursor was made.
+     */
+    @Override
+    public PyObject iterator() {
+        check();
+        return new MemoryIterator(this);
+    }
+
+    /** The selected octets, copied out in the order the window presents them. */
+    private byte[] octets() {
+        byte[] out = new byte[length];
+        for (int i = 0; i < length; i++) {
+            out[i] = (byte) byteAt(i);
+        }
+        return out;
+    }
+
+    /** Whether two live windows select the same octets, element for element. */
+    private boolean sameOctets(PyMemoryView other) {
+        if (length != other.length) {
+            return false;
+        }
+        for (int i = 0; i < length; i++) {
+            if (byteAt(i) != other.byteAt(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** {@code view[i]}, {@code view[a:b:c]} and {@code view[i,]}: the element or the sub-window. */
@@ -419,5 +532,54 @@ public final class PyMemoryView extends PyObject {
     public PyObject length() {
         check();
         return PyInt.of(length);
+    }
+
+    /**
+     * The cursor {@code iter(view)} answers: the view, the length it started with, and the index reached.
+     *
+     * <p>{@code memoryiter_next} asks the view for its element on every step rather than copying the run
+     * first, which is why a write through a writable view between two {@code next} calls is seen, and why
+     * a released view refuses the step that comes after the release. Once the cursor has run out it drops
+     * the view and can only keep reporting the end, so releasing afterwards changes nothing.
+     *
+     * <p>CPython gives this cursor no docstring of its own, and the default {@code object} repr is what it
+     * prints — {@code <memory_iterator object at 0x...>} — rather than the {@code <iterator object>} the
+     * abstract cursor here would print.
+     */
+    private static final class MemoryIterator extends PyIterator {
+
+        /** The view being walked; dropped once the end has been reported. */
+        private PyMemoryView source;
+
+        /** The element count the walk started with, which a view cannot change. */
+        private final int length;
+
+        /** How many elements have been handed out. */
+        private int at;
+
+        MemoryIterator(PyMemoryView source) {
+            super(PyType.MEMORY_ITERATOR);
+            this.source = source;
+            this.length = source.length;
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            if (source == null) {
+                return null;
+            }
+            if (at >= length) {
+                source = null;
+                return null;
+            }
+            source.check();
+            return PyInt.of(source.byteAt(at++));
+        }
+
+        @Override
+        public String repr() {
+            return "<" + getType().name() + " object at 0x"
+                    + Integer.toHexString(System.identityHashCode(this)) + ">";
+        }
     }
 }

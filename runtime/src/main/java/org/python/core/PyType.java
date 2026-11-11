@@ -311,6 +311,18 @@ public class PyType extends PyObject {
 
     public static final PyType MEMORYVIEW = builtin("memoryview").documented(MEMORYVIEW_DOC);
 
+    /**
+     * {@code type(iter(memoryview(b"ab")))}: the cursor {@code memory_iter} hands out.
+     *
+     * <p>{@code Objects/memoryobject.c} declares it beside the view it walks and files no method table on
+     * it: {@code __iter__} and {@code __next__} are the two slots, and the type carries no docstring of
+     * its own, so {@code memory_iterator.__doc__} is {@code None} where every other cursor here has a
+     * sentence. The struct holds the view, the length the view had when the walk started and the index
+     * reached so far; every step reads through the view's own stride, which is why walking a reversed
+     * slice reports its elements backwards and walking a writable view sees later writes.
+     */
+    static final PyType MEMORY_ITERATOR = builtin("memory_iterator").withoutNew();
+
     public static final PyType TUPLE =
             builtin("tuple").flagged(SEQUENCE | MATCH_SELF).documented(TUPLE_DOC);
     public static final PyType LIST =

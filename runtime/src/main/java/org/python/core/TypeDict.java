@@ -823,6 +823,10 @@ final class TypeDict {
             memoryviewTable(into);
             return;
         }
+        if (owner == PyType.MEMORY_ITERATOR) {
+            memoryIteratorTable(into);
+            return;
+        }
         if (owner == PyType.STR) {
             strTable(into);
             return;
@@ -1968,11 +1972,14 @@ final class TypeDict {
     /**
      * {@code memoryview}'s own dictionary, as {@code Objects/memoryobject.c} files it: forty-one names.
      *
-     * <p>This first slice files the skeleton and the window's own facts: the three slots that make a view
-     * printable and sized ({@code __new__}, {@code __repr__}, {@code __len__}) and the twelve read-only
-     * {@code getset_descriptor}s over the fields a buffer exporter filled in. The names the reference
-     * keeps between them — the six comparisons, {@code __iter__}, the two buffer protocol slots, the
-     * subscript and delete halves, the context manager and the named methods from {@code release} to
+     * <p>The three slices so far file the skeleton and the window's own facts: the slots that make a view
+     * printable and sized ({@code __new__}, {@code __repr__}, {@code __len__}), the twelve read-only
+     * {@code getset_descriptor}s over the fields a buffer exporter filled in, the three subscript slots,
+     * and the seven rows the comparison and iteration protocols contribute — {@code __hash__}, the six
+     * rich comparisons and {@code __iter__}. The comparisons come in one {@code tp_richcompare}
+     * ({@code memory_richcompare}) that answers only for equality and declines the four orderings, so the
+     * six rows differ only in the operator they pass on. The names the reference keeps after them — the
+     * two buffer protocol slots, the context manager and the named methods from {@code release} to
      * {@code index} — are the segments still to come, so this dictionary is a prefix of the reference's
      * rather than a permutation of it.
      *
@@ -1985,6 +1992,14 @@ final class TypeDict {
         Table table = new Table(owner, into);
         table.raw("__new__", NEW_DOC, TypeDict::memoryviewsNew);
         table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
         table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
         table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
@@ -2029,6 +2044,23 @@ final class TypeDict {
     /** The window a descriptor's getter was handed, already checked against the declaring class. */
     private static PyMemoryView memoryview(PyObject self) {
         return (PyMemoryView) self;
+    }
+
+    /**
+     * {@code memory_iterator}'s dictionary: the three names its type files.
+     *
+     * <p>{@code Objects/memoryobject.c} gives the cursor no {@code tp_methods} and no {@code tp_doc}; the
+     * two names it has are the slot wrappers every iterator carries, and the third is the {@code None} a
+     * missing docstring leaves, which is why this table is shorter than {@link #cursorTable}'s: there is no
+     * {@code __length_hint__} to estimate with and no pickle pair to save with. The cursor itself is
+     * therefore as thin as CPython's — the view, the length it started with and the index reached so far.
+     */
+    private static void memoryIteratorTable(PyDict into) {
+        PyType owner = PyType.MEMORY_ITERATOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.value("__doc__", docValue(owner));
     }
 
     /**
