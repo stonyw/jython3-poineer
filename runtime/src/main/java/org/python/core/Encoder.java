@@ -10,9 +10,11 @@ import java.util.Set;
  *
  * <p>Three shapes of complaint, and they are not the same. The one-byte family ({@code unicode_encode_ucs1},
  * Objects/unicodeobject.c:7378) collects <em>every</em> character at or above its limit into one range and
- * answers for the whole run; UTF-8 does the same but its only offender is a surrogate; UTF-16 (6441) never
- * collects at all — it stops at the first bad character and hands a range of one, which is why {@code
- * "a\ud800\udc00b"} is one refusal while the same pair above {@code 0x80} is two.
+ * answers for the whole run — and so does {@code cp1252}, whose limit is a set of holes rather than a
+ * number; UTF-8 does the same but its only offender is a surrogate; UTF-16 (6441) and UTF-32 never collect at
+ * all — they stop at the first bad character and hand a range of one, which is why {@code
+ * "a\ud800\udc00b"} is one refusal while the same pair above {@code 0x80} is two. {@code unicode_escape}
+ * refuses nothing at all, because every code point has an escape it can write.
  *
  * <p>Of the eight names the registry files ({@code _PyCodec_InitRegistry}, Python/codecs.c:1577) this
  * runtime answers seven. Six of them are inside the two families above and are called without looking
@@ -26,29 +28,33 @@ import java.util.Set;
  *
  * <p>Two handlers write what they replace through the codec, and one writes raw octets. {@code replace}
  * answers {@code '?'} per character and {@code backslashreplace} an escape per character, both as text, so
- * UTF-16 turns them into two bytes each; {@code surrogateescape} is the one whose answer is a bytes, and the
- * one-byte family and UTF-8 take it as a fast path that writes the octet {@code ch - 0xdc00} for the
- * characters in {@code 0xdc80..0xdcff} and re-raises the <em>rest</em> of the run — the range it complains
- * about starts where the escaping stopped, so a leading {@code '\udc80'} moves the position of the
- * {@code '\xe9'} behind it. Everywhere else that answer is a one-octet reply to a two-byte codec, and
- * UTF-16 refuses it outright ({@code _PyUnicode_EncodeUTF16}:6558 raises for an odd-length bytes).
+ * UTF-16 turns them into two bytes each and UTF-32 into four; {@code surrogateescape} is the one whose answer
+ * is a bytes, and the one-byte family, {@code cp1252} and UTF-8 take it as a fast path that writes the octet
+ * {@code ch - 0xdc00} for the characters in {@code 0xdc80..0xdcff} and re-raises the <em>rest</em> of the run
+ * — the range it complains about starts where the escaping stopped, so a leading {@code '\udc80'} moves the
+ * position of the {@code '\xe9'} behind it. Everywhere else that answer is a one-octet reply to a wider
+ * codec, and UTF-16 and UTF-32 refuse it outright ({@code _PyUnicode_EncodeUTF16}:6558 raises for an
+ * odd-length bytes).
  */
 final class Encoder {
 
     /**
-     * The seven codec modules this runtime has, under the names {@code encodings} imports.
+     * The twelve codec modules this runtime has, under the names {@code encodings} imports.
      *
      * <p>A name reaches one of them exactly as CPython's {@code encodings.search_function} decides it: the
      * {@code _Py_normalize_encoding} of Objects/unicodeobject.c:3605 first, then one step through the alias
      * table of {@code Lib/encodings/aliases.py} as {@code Lib/encodings/__init__.py:87} reads it. Only the
-     * aliases of these seven are copied, and they are copied verbatim, because an invented alias would answer
+     * aliases of these twelve are copied, and they are copied verbatim, because an invented alias would answer
      * for a name the reference refuses — the way {@code u-t-f8} normalizes to {@code u_t_f8} and is no codec
      * at all, while {@code utf 8} and {@code UTF-8} and {@code utf-8} all normalize to {@code utf_8} and are.
+     * {@code unicode_escape} has no alias at all, which is why {@code unicodeescape} is refused while
+     * {@code unicode_escape} is not.
      */
     private static final Set<String> CODECS = Set.of(
-            "ascii", "latin_1", "utf_8", "utf_8_sig", "utf_16", "utf_16_le", "utf_16_be");
+            "ascii", "latin_1", "utf_8", "utf_8_sig", "utf_16", "utf_16_le", "utf_16_be",
+            "utf_32", "utf_32_le", "utf_32_be", "cp1252", "unicode_escape");
 
-    /** The lines of {@code aliases.py} whose target is one of the seven. */
+    /** The lines of {@code aliases.py} whose target is one of the twelve. */
     private static final Map<String, String> ALIASES = Map.ofEntries(
             Map.entry("646", "ascii"),
             Map.entry("ansi_x3.4_1968", "ascii"),
@@ -80,6 +86,12 @@ final class Encoder {
             Map.entry("utf_16be", "utf_16_be"),
             Map.entry("unicodelittleunmarked", "utf_16_le"),
             Map.entry("utf_16le", "utf_16_le"),
+            Map.entry("u32", "utf_32"),
+            Map.entry("utf32", "utf_32"),
+            Map.entry("utf_32be", "utf_32_be"),
+            Map.entry("utf_32le", "utf_32_le"),
+            Map.entry("1252", "cp1252"),
+            Map.entry("windows_1252", "cp1252"),
             Map.entry("u8", "utf_8"),
             Map.entry("utf", "utf_8"),
             Map.entry("utf8", "utf_8"),
@@ -92,6 +104,42 @@ final class Encoder {
     /** The byte order mark UTF-16 writes ahead of everything, an empty string included. */
     private static final byte[] UTF16_BOM = {(byte) 0xFF, (byte) 0xFE};
 
+    /** The byte order mark UTF-32 writes ahead of everything, an empty string included. */
+    private static final byte[] UTF32_BOM = {(byte) 0xFF, (byte) 0xFE, 0x00, 0x00};
+
+    /**
+     * The 32 octets {@code cp1252} writes differently from {@code latin-1}, with {@code -1} where the table
+     * has no character at all: {@code 0x81}, {@code 0x8d}, {@code 0x8f}, {@code 0x90} and {@code 0x9d} are the
+     * five holes Microsoft left.
+     */
+    private static final int[] CP1252_HIGH = {
+        0x20AC, -1, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, -1, 0x017D, -1,
+        -1, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, -1, 0x017E, 0x0178
+    };
+
+    /** The character {@code cp1252} reads for one octet, or {@code -1} where the octet is undefined. */
+    static int cp1252(int octet) {
+        return octet >= 0x80 && octet <= 0x9F ? CP1252_HIGH[octet - 0x80] : octet;
+    }
+
+    /** The octet {@code cp1252} writes for one character, or {@code -1} where it has none. */
+    static int octetOf(int codePoint) {
+        if (codePoint < 0x80 || (codePoint >= 0xA0 && codePoint <= 0xFF)) {
+            return codePoint;
+        }
+        if (codePoint <= 0x9F) {
+            return -1;
+        }
+        for (int at = 0; at < CP1252_HIGH.length; at++) {
+            if (CP1252_HIGH[at] == codePoint) {
+                return 0x80 + at;
+            }
+        }
+        return -1;
+    }
+
     /** Seven of the eight names the registry files, in the order its table walks them. */
     private enum Handler {
         STRICT,
@@ -103,49 +151,95 @@ final class Encoder {
         SURROGATEPASS
     }
 
+    /** How a codec decides which characters it can write, and how it writes the ones it can. */
+    private enum Kind {
+        /** One octet per character below a limit: {@code ascii} and {@code latin-1}. */
+        ONE_BYTE,
+        /** The UTF-8 sequence of a character, surrogates included when a handler asks for them. */
+        UTF8,
+        /** One or two code units of two octets each. */
+        UTF16,
+        /** One code point of four octets. */
+        UTF32,
+        /** A table of 256 octets, five of which stand for no character. */
+        CHARMAP,
+        /** A backslash escape for every character, so nothing is ever refused. */
+        ESCAPED
+    }
+
     /**
      * One codec: the name its own errors carry, the sentence they end with, the limit under which a
-     * character is fine, and whether a refusal collects a run.
+     * character is fine, whether a refusal collects a run, and how it writes.
+     *
+     * <p>{@code limit} is read only by the one-byte family; the other kinds answer {@link #refuses} their own
+     * way. {@code reason} is read only where a refusal actually happens, which is why {@code unicode-escape}
+     * can leave it empty.
      */
-    private record Codec(String reported, String reason, int limit, boolean collects, byte[] prefix) {
+    private record Codec(String reported, String reason, int limit, boolean collects, byte[] prefix,
+            Kind kind) {
 
-        private static final Codec ASCII = new Codec("ascii", "ordinal not in range(128)", 0x80, true, null);
+        private static final Codec ASCII =
+                new Codec("ascii", "ordinal not in range(128)", 0x80, true, null, Kind.ONE_BYTE);
         private static final Codec LATIN1 =
-                new Codec("latin-1", "ordinal not in range(256)", 0x100, true, null);
-        private static final Codec UTF8 = new Codec("utf-8", "surrogates not allowed", 0, true, null);
+                new Codec("latin-1", "ordinal not in range(256)", 0x100, true, null, Kind.ONE_BYTE);
+        private static final Codec UTF8 =
+                new Codec("utf-8", "surrogates not allowed", 0, true, null, Kind.UTF8);
         private static final Codec UTF8_SIG =
-                new Codec("utf-8", "surrogates not allowed", 0, true, UTF8_BOM);
+                new Codec("utf-8", "surrogates not allowed", 0, true, UTF8_BOM, Kind.UTF8);
         private static final Codec UTF16 =
-                new Codec("utf-16", "surrogates not allowed", 0, false, UTF16_BOM);
+                new Codec("utf-16", "surrogates not allowed", 0, false, UTF16_BOM, Kind.UTF16);
         private static final Codec UTF16_LE =
-                new Codec("utf-16-le", "surrogates not allowed", 0, false, null);
+                new Codec("utf-16-le", "surrogates not allowed", 0, false, null, Kind.UTF16);
         private static final Codec UTF16_BE =
-                new Codec("utf-16-be", "surrogates not allowed", 0, false, null);
+                new Codec("utf-16-be", "surrogates not allowed", 0, false, null, Kind.UTF16);
+        private static final Codec UTF32 =
+                new Codec("utf-32", "surrogates not allowed", 0, false, UTF32_BOM, Kind.UTF32);
+        private static final Codec UTF32_LE =
+                new Codec("utf-32-le", "surrogates not allowed", 0, false, null, Kind.UTF32);
+        private static final Codec UTF32_BE =
+                new Codec("utf-32-be", "surrogates not allowed", 0, false, null, Kind.UTF32);
+        private static final Codec CP1252 =
+                new Codec("charmap", "character maps to <undefined>", 0, true, null, Kind.CHARMAP);
+        private static final Codec UNICODE_ESCAPE =
+                new Codec("unicode-escape", "", 0, false, null, Kind.ESCAPED);
 
         /** Whether this is a character the codec refuses to write at all. */
         boolean refuses(int codePoint) {
-            return limit == 0 ? isSurrogate(codePoint) : codePoint >= limit;
+            return switch (kind) {
+                case ONE_BYTE -> codePoint >= limit;
+                case UTF8, UTF16, UTF32 -> isSurrogate(codePoint);
+                case CHARMAP -> octetOf(codePoint) < 0;
+                case ESCAPED -> false;
+            };
+        }
+
+        /** Whether {@code surrogatepass} may hand this codec a surrogate to write. */
+        boolean carriesSurrogates() {
+            return kind == Kind.UTF8 || kind == Kind.UTF16 || kind == Kind.UTF32;
         }
 
         /** The octets this codec writes for one character it does accept. */
         void write(ByteArrayOutputStream out, int codePoint) {
-            if (limit != 0) {
-                out.write(codePoint);
-                return;
+            switch (kind) {
+                case ONE_BYTE -> out.write(codePoint);
+                case UTF8 -> utf8(out, codePoint);
+                case UTF16 -> units(out, codePoint);
+                case UTF32 -> quads(out, codePoint);
+                case CHARMAP -> out.write(octetOf(codePoint));
+                case ESCAPED -> escaped(out, codePoint);
             }
-            if (reported.startsWith("utf-16")) {
-                if (codePoint < 0x10000) {
-                    units(out, codePoint, -1);
-                    return;
-                }
-                int pair = codePoint - 0x10000;
-                units(out, 0xD800 | (pair >> 10), 0xDC00 | (pair & 0x3FF));
-                return;
-            }
-            utf8(out, codePoint);
         }
 
-        /** The two code units of UTF-16, in the order this codec's name says. */
+        /** The code units of UTF-16, in the order this codec's name says. */
+        private void units(ByteArrayOutputStream out, int codePoint) {
+            if (codePoint < 0x10000) {
+                units(out, codePoint, -1);
+                return;
+            }
+            int pair = codePoint - 0x10000;
+            units(out, 0xD800 | (pair >> 10), 0xDC00 | (pair & 0x3FF));
+        }
+
         private void units(ByteArrayOutputStream out, int first, int second) {
             if (reported.endsWith("be")) {
                 big(out, first);
@@ -168,6 +262,53 @@ final class Encoder {
         private static void little(ByteArrayOutputStream out, int unit) {
             out.write(unit & 0xff);
             out.write(unit >> 8);
+        }
+
+        /** The four octets of UTF-32, in the order this codec's name says. */
+        private void quads(ByteArrayOutputStream out, int codePoint) {
+            if (reported.endsWith("be")) {
+                out.write(codePoint >> 24);
+                out.write((codePoint >> 16) & 0xff);
+                out.write((codePoint >> 8) & 0xff);
+                out.write(codePoint & 0xff);
+                return;
+            }
+            out.write(codePoint & 0xff);
+            out.write((codePoint >> 8) & 0xff);
+            out.write((codePoint >> 16) & 0xff);
+            out.write(codePoint >> 24);
+        }
+
+        /** The backslash escape of one character: {@code unicode-escape} writes nothing else. */
+        private static void escaped(ByteArrayOutputStream out, int codePoint) {
+            switch (codePoint) {
+                case '\\' -> {
+                    out.write('\\');
+                    out.write('\\');
+                }
+                case '\n' -> {
+                    out.write('\\');
+                    out.write('n');
+                }
+                case '\r' -> {
+                    out.write('\\');
+                    out.write('r');
+                }
+                case '\t' -> {
+                    out.write('\\');
+                    out.write('t');
+                }
+                default -> {
+                    if (codePoint >= 0x20 && codePoint <= 0x7E) {
+                        out.write(codePoint);
+                        return;
+                    }
+                    String escape = escapeOf(codePoint);
+                    for (int at = 0; at < escape.length(); at++) {
+                        out.write(escape.charAt(at));
+                    }
+                }
+            }
         }
 
         /** The UTF-8 sequence of one character, written by hand because a surrogate passes through it. */
@@ -264,9 +405,9 @@ final class Encoder {
             case XMLCHARREFREPLACE -> write(codec, out, text, from, to, false, true);
             case SURROGATEESCAPE -> escape(codec, out, text, from, to, start, stop);
             case SURROGATEPASS -> {
-                if (codec.limit != 0) {
-                    // surrogatepass asks the encoding whether it is one of the four that carry a
-                    // surrogate through, and a one-byte codec is not one of them (Python/codecs.c:1237).
+                if (!codec.carriesSurrogates()) {
+                    // surrogatepass asks the encoding whether it is one of the utf family that carries a
+                    // surrogate through, and a one-byte or table codec is not (Python/codecs.c:1237).
                     throw Slots.unicodeEncode(codec.reported, text, start, stop, codec.reason);
                 }
                 for (int unit = from; unit < to; ) {
@@ -327,7 +468,7 @@ final class Encoder {
             long start,
             long stop) {
         if (!codec.collects) {
-            // One octet is not an answer a two-byte codec can use, so the run is refused as it arrived.
+            // One octet is not an answer a wider codec can use, so the run is refused as it arrived.
             throw Slots.unicodeEncode(codec.reported, text, start, stop, codec.reason);
         }
         int unit = from;
@@ -427,7 +568,13 @@ final class Encoder {
             case "utf_8_sig" -> Codec.UTF8_SIG;
             case "utf_16" -> Codec.UTF16;
             case "utf_16_le" -> Codec.UTF16_LE;
-            default -> Codec.UTF16_BE;
+            case "utf_16_be" -> Codec.UTF16_BE;
+            case "utf_32" -> Codec.UTF32;
+            case "utf_32_le" -> Codec.UTF32_LE;
+            case "utf_32_be" -> Codec.UTF32_BE;
+            case "cp1252" -> Codec.CP1252;
+            case "unicode_escape" -> Codec.UNICODE_ESCAPE;
+            default -> throw new AssertionError(encoding);
         };
     }
 }

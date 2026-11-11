@@ -1,5 +1,6 @@
 package org.python.core;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
@@ -24,6 +25,12 @@ import java.util.Arrays;
  * escape an ASCII octet, so it answers for less of the range than it was given and the walk resumes
  * <em>inside</em> the unit it was refusing — {@code b"\xdc\x00"} read big-endian escapes {@code 0xdc},
  * resumes at 1, and then refuses the odd octet left over as {@code truncated data}.
+ *
+ * <p>{@code utf-32} is {@code utf-16} with a wider unit and the same rule: four octets, one code point, and a
+ * refusal that hands the handler all four — which is why {@code surrogateescape} can resume inside a quad and
+ * leave the walk two octets short of one. {@code cp1252} is the one-octet walk with its high half looked up in
+ * a table, and {@code unicode-escape} is the only walk here that reads a grammar rather than a width: a
+ * backslash that ends the input, or one whose digits run out, is refused by the octets it did read.
  *
  * <p>The handler's name is settled at the first refusal and not before, as it is when encoding, and the
  * encoding's name is settled before the walk but after the empty check: every decoder returns the empty
@@ -51,6 +58,9 @@ final class Decoder {
     /** The order a UTF-16 run is read in, the name its errors carry, and the octets it opens by skipping. */
     private record Utf16(boolean big, String reported, int skip) {}
 
+    /** The order a UTF-32 run is read in, the name its errors carry, and the octets it opens by skipping. */
+    private record Utf32(boolean big, String reported, int skip) {}
+
     private static final String HEX = "0123456789abcdef";
 
     private static final byte[] UTF8_BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
@@ -71,7 +81,13 @@ final class Decoder {
                     utf8(out, marked(data) ? Arrays.copyOfRange(data, 3, data.length) : data, errors);
             case "utf_16" -> utf16(out, data, errors, stateful(data));
             case "utf_16_le" -> utf16(out, data, errors, new Utf16(false, "utf-16-le", 0));
-            default -> utf16(out, data, errors, new Utf16(true, "utf-16-be", 0));
+            case "utf_16_be" -> utf16(out, data, errors, new Utf16(true, "utf-16-be", 0));
+            case "utf_32" -> utf32(out, data, errors, stateful32(data));
+            case "utf_32_le" -> utf32(out, data, errors, new Utf32(false, "utf-32-le", 0));
+            case "utf_32_be" -> utf32(out, data, errors, new Utf32(true, "utf-32-be", 0));
+            case "cp1252" -> charmap(out, data, errors);
+            case "unicode_escape" -> unicodeEscape(out, data, errors);
+            default -> throw new AssertionError(encoding);
         }
         return out.toString();
     }
@@ -300,6 +316,261 @@ final class Decoder {
         return big ? (first << 8) | second : (second << 8) | first;
     }
 
+    /**
+     * {@code PyUnicode_DecodeUTF32Stateful}: four octets at a time, with the mark at the front choosing the
+     * order when the name did not.
+     *
+     * <p>Three refusals, and each hands the handler the whole quad it was reading. A run shorter than four
+     * octets is {@code truncated data} over everything that is left. A value above {@code 0x10ffff} is
+     * {@code code point not in range(0x110000)}, and one in the surrogate range is {@code code point in
+     * surrogate code point range(0xd800, 0xe000)} — both covering all four octets, which is what lets
+     * {@code surrogateescape} escape the two non-ASCII octets of {@code b"\x80\xdc\x00\x00"} and then leave
+     * the walk two octets short of a quad.
+     */
+    private static void utf32(StringBuilder out, byte[] data, String errors, Utf32 order) {
+        String reported = order.reported();
+        for (int at = order.skip(); at < data.length; ) {
+            if (data.length - at < 4) {
+                at = handled(errors, reported, data, out, at, data.length, "truncated data");
+                continue;
+            }
+            long value = quad(data, at, order.big());
+            if (value > 0x10FFFF) {
+                at = handled(
+                        errors, reported, data, out, at, at + 4, "code point not in range(0x110000)");
+                continue;
+            }
+            if (isSurrogate((int) value)) {
+                at = handled(
+                        errors,
+                        reported,
+                        data,
+                        out,
+                        at,
+                        at + 4,
+                        "code point in surrogate code point range(0xd800, 0xe000)");
+                continue;
+            }
+            out.appendCodePoint((int) value);
+            at += 4;
+        }
+    }
+
+    /** {@code utf-32} with no order given: the mark at the front decides, and this machine reads LE. */
+    private static Utf32 stateful32(byte[] data) {
+        if (data.length >= 4) {
+            int first = data[0] & 0xff;
+            int second = data[1] & 0xff;
+            int third = data[2] & 0xff;
+            int fourth = data[3] & 0xff;
+            if (first == 0xFF && second == 0xFE && third == 0 && fourth == 0) {
+                return new Utf32(false, "utf-32-le", 4);
+            }
+            if (first == 0 && second == 0 && third == 0xFE && fourth == 0xFF) {
+                return new Utf32(true, "utf-32-be", 4);
+            }
+        }
+        return new Utf32(false, "utf-32-le", 0);
+    }
+
+    /** One UTF-32 value, unsigned because a quad may name any of the 2^32 values. */
+    private static long quad(byte[] data, int at, boolean big) {
+        long first = data[at] & 0xff;
+        long second = data[at + 1] & 0xff;
+        long third = data[at + 2] & 0xff;
+        long fourth = data[at + 3] & 0xff;
+        return big
+                ? (first << 24) | (second << 16) | (third << 8) | fourth
+                : (fourth << 24) | (third << 16) | (second << 8) | first;
+    }
+
+    /**
+     * {@code cp1252}: the one-octet walk of the one-byte family with its high half looked up in a table.
+     *
+     * <p>Its errors carry the codec's own name, {@code charmap}, because that is the table's name and not
+     * the module's, and five of the 32 octets in {@code 0x80..0x9f} are holes no character fills.
+     */
+    private static void charmap(StringBuilder out, byte[] data, String errors) {
+        for (int at = 0; at < data.length; ) {
+            int codePoint = Encoder.cp1252(data[at] & 0xff);
+            if (codePoint >= 0) {
+                out.append((char) codePoint);
+                at++;
+                continue;
+            }
+            at = handled(errors, "charmap", data, out, at, at + 1, "character maps to <undefined>");
+        }
+    }
+
+    /**
+     * {@code PyUnicode_DecodeUnicodeEscape}: a walk over a grammar rather than over a width, and the one walk
+     * here that refuses nothing it can simply copy.
+     *
+     * <p>An octet that is not a backslash is already a character — the high half comes through as latin-1
+     * rather than as a refusal — and a backslash introduces one of five things: a one-letter escape, a line
+     * continuation, an octal value of up to three digits, a {@code x}, {@code u} or capital {@code U} escape
+     * of two, four or eight hex digits, or an {@code N} escape whose braces name a character in the JDK's own
+     * name table. A backslash that ends the input is refused by its own octet; a hex escape whose digits run
+     * out is refused by the octets that did arrive, up to the first one that is not a digit; and a value above
+     * {@code 0x10ffff} is refused by the whole escape as {@code illegal Unicode character}. Anything else the
+     * backslash could introduce — a {@code z} or an {@code 8} — is copied through with both octets, which the
+     * reference warns about.
+     *
+     * <p>The name table is the JDK's, and it is not the reference's: {@code Character.codePointOf} knows
+     * {@code BULLET} and {@code SNOWMAN} and the ordinary spellings of the cased scripts, but not the bare
+     * aliases of {@code aliases.py} ({@code LF}) and not the reference's hyphenated CJK names, which this JDK
+     * spells by block ({@code CJK UNIFIED IDEOGRAPHS 4E00}). A name outside it answers {@code unknown Unicode
+     * character name} where the reference would have found one.
+     */
+    private static void unicodeEscape(StringBuilder out, byte[] data, String errors) {
+        String reported = "unicodeescape";
+        for (int at = 0; at < data.length; ) {
+            int octet = data[at] & 0xff;
+            if (octet != '\\') {
+                out.append((char) octet);
+                at++;
+                continue;
+            }
+            if (at + 1 >= data.length) {
+                at = handled(errors, reported, data, out, at, at + 1, "\\ at end of string");
+                continue;
+            }
+            int escape = data[at + 1] & 0xff;
+            int one = simpleEscape(escape);
+            if (one >= 0) {
+                out.append((char) one);
+                at += 2;
+                continue;
+            }
+            if (escape == '\n') {
+                at += 2;
+                continue;
+            }
+            if (escape >= '0' && escape <= '7') {
+                at = octal(out, data, at);
+                continue;
+            }
+            if (escape == 'x' || escape == 'u' || escape == 'U') {
+                at = hexEscape(out, errors, reported, data, at, escape);
+                continue;
+            }
+            if (escape == 'N') {
+                at = namedEscape(out, errors, reported, data, at);
+                continue;
+            }
+            out.append((char) octet).append((char) escape);
+            at += 2;
+        }
+    }
+
+    /** The character a one-letter escape stands for, or {@code -1} where the letter stands for none. */
+    private static int simpleEscape(int escape) {
+        return switch (escape) {
+            case '\\' -> '\\';
+            case '\'' -> '\'';
+            case '"' -> '"';
+            case 'b' -> 0x08;
+            case 'f' -> 0x0C;
+            case 'v' -> 0x0B;
+            case 'a' -> 0x07;
+            case 'n' -> 0x0A;
+            case 't' -> 0x09;
+            case 'r' -> 0x0D;
+            default -> -1;
+        };
+    }
+
+    /**
+     * An octal escape: up to three digits, and no mask at the end — {@code \777} is {@code 0x1ff}, which the
+     * reference warns about and still answers.
+     */
+    private static int octal(StringBuilder out, byte[] data, int at) {
+        int value = 0;
+        int end = at + 1;
+        for (int digits = 0; digits < 3 && end < data.length; digits++) {
+            int octet = data[end] & 0xff;
+            if (octet < '0' || octet > '7') {
+                break;
+            }
+            value = (value << 3) | (octet - '0');
+            end++;
+        }
+        out.appendCodePoint(value);
+        return end;
+    }
+
+    /** A two-, four- or eight-digit hex escape, refused by the digits that did not arrive. */
+    private static int hexEscape(
+            StringBuilder out, String errors, String reported, byte[] data, int at, int kind) {
+        int width = kind == 'x' ? 2 : kind == 'u' ? 4 : 8;
+        int value = 0;
+        int end = at + 2;
+        while (end < at + 2 + width) {
+            if (end >= data.length) {
+                return handled(errors, reported, data, out, at, data.length, truncated(kind));
+            }
+            int digit = hex(data[end]);
+            if (digit < 0) {
+                return handled(errors, reported, data, out, at, end, truncated(kind));
+            }
+            value = (value << 4) | digit;
+            end++;
+        }
+        if (value > 0x10FFFF) {
+            return handled(errors, reported, data, out, at, end, "illegal Unicode character");
+        }
+        out.appendCodePoint(value);
+        return end;
+    }
+
+    /** The words the reference uses for an escape whose digits ran out before its width did. */
+    private static String truncated(int kind) {
+        return switch (kind) {
+            case 'x' -> "truncated \\xXX escape";
+            case 'u' -> "truncated \\uXXXX escape";
+            default -> "truncated \\UXXXXXXXX escape";
+        };
+    }
+
+    /** {@code \N{name}}: the braces name one character, and the braces themselves are not optional. */
+    private static int namedEscape(
+            StringBuilder out, String errors, String reported, byte[] data, int at) {
+        int open = at + 2;
+        if (open >= data.length || (data[open] & 0xff) != '{') {
+            return handled(
+                    errors,
+                    reported,
+                    data,
+                    out,
+                    at,
+                    Math.min(at + 2, data.length),
+                    "malformed \\N character escape");
+        }
+        int close = open + 1;
+        while (close < data.length && (data[close] & 0xff) != '}') {
+            close++;
+        }
+        if (close >= data.length) {
+            return handled(
+                    errors, reported, data, out, at, data.length, "malformed \\N character escape");
+        }
+        if (close == open + 1) {
+            // An empty name is refused up to the brace that ended it, not past it.
+            return handled(
+                    errors, reported, data, out, at, close, "malformed \\N character escape");
+        }
+        String name = new String(data, open + 1, close - open - 1, StandardCharsets.ISO_8859_1);
+        int codePoint;
+        try {
+            codePoint = Character.codePointOf(name);
+        } catch (IllegalArgumentException e) {
+            return handled(
+                    errors, reported, data, out, at, close + 1, "unknown Unicode character name");
+        }
+        out.appendCodePoint(codePoint);
+        return close + 1;
+    }
+
     /** {@code _Py_normalize_encoding}'s other use: the mark {@code utf-8-sig} takes off the front. */
     private static boolean marked(byte[] data) {
         return data.length >= 3
@@ -397,25 +668,30 @@ final class Decoder {
      * front of the range, whatever else the range covers.
      *
      * <p>The handler asks the codec's own name first — {@code get_standard_encoding} knows {@code utf-8},
-     * {@code utf-16-le} and {@code utf-16-be} and nobody else, so an {@code ascii} refusal is re-raised as it
-     * arrived. Then it reads one unit of the codec's width at the position the codec complained about, and if
-     * that unit is not a surrogate it re-raises too. So the width the handler answers for is its own and not
-     * the range's: {@code b"\xd8\x00\x00"} complains about three octets and the handler takes two, and the
-     * walk resumes on the leftover, while {@code b"\xed\xa0\x80"} complains about the lead's own octet and
-     * the handler takes all three and returns the surrogate they stand for.
+     * {@code utf-16-le}, {@code utf-16-be}, {@code utf-32-le} and {@code utf-32-be} and nobody else, so an
+     * {@code ascii} refusal is re-raised as it arrived. Then it reads one unit of the codec's width at the
+     * position the codec complained about, and if that unit is not a surrogate it re-raises too. So the width
+     * the handler answers for is its own and not the range's: {@code b"\xd8\x00\x00"} complains about three
+     * octets and the handler takes two, and the walk resumes on the leftover, while {@code b"\xed\xa0\x80"}
+     * complains about the lead's own octet and the handler takes all three and returns the surrogate they
+     * stand for.
      */
     private static Answer pass(String reported, byte[] data, int start, int stop, String reason) {
         int width =
                 switch (reported) {
                     case "utf-8" -> 3;
                     case "utf-16-le", "utf-16-be" -> 2;
+                    case "utf-32-le", "utf-32-be" -> 4;
                     default -> 0;
                 };
         int ch = 0;
         if (width != 0 && data.length - start >= width) {
             int first = data[start] & 0xff;
             int second = data[start + 1] & 0xff;
-            if (width == 3) {
+            if (width == 4) {
+                long value = quad(data, start, reported.endsWith("-be"));
+                ch = value <= 0xFFFF ? (int) value : 0;
+            } else if (width == 3) {
                 int third = data[start + 2] & 0xff;
                 if ((first & 0xf0) == 0xE0 && isContinuation(second) && isContinuation(third)) {
                     ch = ((first & 0x0f) << 12) + ((second & 0x3f) << 6) + (third & 0x3f);
@@ -435,6 +711,20 @@ final class Decoder {
     /** A byte that may stand in the second, third or fourth place of a UTF-8 sequence. */
     private static boolean isContinuation(int octet) {
         return (octet & 0xC0) == 0x80;
+    }
+
+    /** The value of one hexadecimal digit, or {@code -1} where the octet is not one. */
+    private static int hex(int octet) {
+        if (octet >= '0' && octet <= '9') {
+            return octet - '0';
+        }
+        if (octet >= 'a' && octet <= 'f') {
+            return octet - 'a' + 10;
+        }
+        if (octet >= 'A' && octet <= 'F') {
+            return octet - 'A' + 10;
+        }
+        return -1;
     }
 
     private static boolean isSurrogate(int codePoint) {

@@ -321,7 +321,8 @@ class Jy3LauncherTest {
                 "160_memoryview_first.py", "161_memoryview_slice.py",
                 "162_memoryview_compare_iter.py", "163_memoryview_release_context.py",
                 "164_memoryview_bytes_list.py", "165_memoryview_cast_buffer.py",
-                "166_memoryview_readonly_methods.py");
+                "166_memoryview_readonly_methods.py",
+                "167_utf32_charmap_and_unicode_escape.py");
     }
 
     /**
