@@ -376,15 +376,18 @@ class Jy3LauncherTest {
     }
 
     /**
-     * The pipe case 135 reads: eleven whole lines and a twelfth that no terminator follows.
+     * The pipe case 135 reads: ten whole lines, and then the end of the descriptor.
      *
      * <p>The six {@code '\r'} characters inside are ordinary text — five of them sit before a line's own
      * terminator and one ends {@code three} in the middle of a line — because the stream was opened with
      * {@code newline='\n'} and translates nothing, and the octet counts differ from the character counts
      * on purpose: a snake is four octets and a backslash-escaped accent two, so the reads that the script
-     * makes in four-octet chunks answer in units the chunks cannot cut. The last two lines are not text at
-     * all — a lone {@code 0xc3} that no continuation octet follows, and an {@code 0xe2} whose three-octet
-     * run stops at two — which is why this is an array of octets rather than a string.
+     * makes in four-octet chunks answer in units the chunks cannot cut.
+     *
+     * <p>It stops on a clean end rather than on a misencoded tail because {@code errors} is {@code strict}:
+     * a broken octet raises {@code UnicodeDecodeError}, whose report carries a {@code <frozen codecs>}
+     * frame and PEP 657 anchors this runtime does not draw yet, so a misencoded tail would compare the
+     * report rather than the reads.
      */
     private static final byte[] STDIN_OCTETS =
             octets(
@@ -397,12 +400,7 @@ class Jy3LauncherTest {
                     "seven\n",
                     "eight\n",
                     "nine\r\n",
-                    "tail\r\n",
-                    "bad",
-                    new byte[] {(byte) 0xc3},
-                    "afer\n",
-                    "mid",
-                    new byte[] {(byte) 0xe2, (byte) 0x82});
+                    "tail\r\n");
 
     /**
      * The pipe case 136 reads: eight short lines, 41 octets, and no terminator on the last one.

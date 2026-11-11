@@ -1,16 +1,18 @@
 r"""The read side of a text stream: what a chunk hands back, and what the wrong stream refuses.
 
-Everything here is answered off one pipe, in the order the reads are asked. The pipe holds eleven
-whole lines and a twelfth that no terminator and no completing octet follow: `one\r\n`, `two\r\n`,
-`three\rcafé\r\n`, `🐍x\n`, `abc🐍🐍def\n`, `six\r\n`, `seven\n`, `eight\n`, `nine\r\n`, `tail\r\n`,
-`bad` + `0xc3` + `afer\n` and `mid` + `0xe2` + `0x82`. The chunk size is set to four octets before the
-first read, so the reads below are made of the smallest chunks the field allows rather than one big
-one — and every answer is the one it would be with the default 8192, because the loops reassemble what
-the descriptor hands out. That is what makes the astral lines worth reading: a snake is four octets,
-so a chunk of four carries it whole or cuts it in half, and the half waits for the chunk that
-completes it. The last two lines are not text at all, and `errors` says what becomes of them: an octet
-that starts a sequence its neighbour refuses to continue answers `\udcc3`, and the run the end of the
-pipe cuts short answers one surrogate for each octet left over.
+Everything here is answered off one pipe, in the order the reads are asked. The pipe holds ten whole
+lines — `one\r\n`, `two\r\n`, `three\rcafé\r\n`, `🐍x\n`, `abc🐍🐍def\n`, `six\r\n`, `seven\n`,
+`eight\n`, `nine\r\n` and `tail\r\n` — and then ends, so the last line has a terminator and the walk
+below reaches the end of the descriptor. The chunk size is set to four octets before the first read,
+so the reads below are made of the smallest chunks the field allows rather than one big one — and
+every answer is the one it would be with the default 8192, because the loops reassemble what the
+descriptor hands out. That is what makes the astral lines worth reading: a snake is four octets, so a
+chunk of four carries it whole or cuts it in half, and the half waits for the chunk that completes it.
+
+The pipe stops at a clean end on purpose. `errors` is `strict`, so an octet that starts a sequence its
+neighbour refuses to continue raises `UnicodeDecodeError` — while the report of that failure carries a
+`<frozen codecs>` frame and PEP 657 anchors this runtime does not draw yet, which keeps the comparison
+of an escaped traceback out of this corpus rather than out of the runtime.
 
 The two counters the stream keeps are in different units. It asks the descriptor for octets and
 answers in characters, so `read(3)` is `one` then `\r\nt` then `wo\r`, and the `read(5)` after that
@@ -57,7 +59,7 @@ check, so it is the one that answers a closed stream with the full stop.
 The fields that describe the chunk rather than its contents answer last. `newlines` is None, because
 the universal-newline scan that would fill it in is the one this stream never runs; it stays None over
 a closed descriptor, and a write reaches it only as `attribute 'newlines' of '_io.TextIOWrapper'
-objects is not writable`. `mode`, `encoding` and `errors` answer `r`, `utf-8` and `surrogateescape`,
+objects is not writable`. `mode`, `encoding` and `errors` answer `r`, `utf-8` and `strict`,
 and the repr spells the same pipe after the close as `<_io.TextIOWrapper name='<stdin>' mode='r'
 encoding='utf-8'>`. `_CHUNK_SIZE` reads 8192 until it is rewritten and 4 after that, and rewriting it
 takes an integer count that is strictly positive: `0` and `-3` answer `a strictly positive integer is

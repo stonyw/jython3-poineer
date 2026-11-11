@@ -85,15 +85,19 @@ public final class PyRuntime {
         if (builtins != null) {
             return;
         }
-        // The streams exist before sys, because sys's dictionary holds them.
+        // The streams exist before sys, because sys's dictionary holds them. Both reading and writing
+        // start `strict` in 3.14 — measured, `sys.stdin.errors` and `sys.stdout.errors` — and only the
+        // report on stderr keeps `backslashreplace`, so that writing the exception text cannot itself
+        // fail. `reconfigure` already writes this same pair into the two writable streams when it is
+        // asked without an `errors`, which is why its corpora agreed before this line did.
         stdout = new PyStream("<stdout>",
                 new PrintStream(new FileOutputStream(FileDescriptor.out)), 1,
-                "surrogateescape", System.console() != null);
+                "strict", System.console() != null);
         stderr = new PyStream("<stderr>",
                 new PrintStream(new FileOutputStream(FileDescriptor.err)), 2,
                 "backslashreplace", true);
         // `input` reads this one, and `PyFile_GetLine` asks it for a line rather than the descriptor.
-        stdin = new PyStream("<stdin>", System.in, 0, "surrogateescape");
+        stdin = new PyStream("<stdin>", System.in, 0, "strict");
 
         builtins = Builtins.namespace();
         sysModule = buildSys();
