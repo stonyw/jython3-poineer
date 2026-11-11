@@ -356,6 +356,10 @@ final class Constructors {
             throw Slots.typeError("int() missing string argument");
         }
         BigInteger radix = base == null ? null : readBase(base);
+        PyBytes octets = octetsOf(value);
+        if (octets != null) {
+            return parseOctets(octets, radix);
+        }
         String literal = textual(value);
         if (literal != null) {
             return parseInteger(literal, radix, value);
@@ -423,6 +427,61 @@ final class Constructors {
                     "invalid literal for int() with base %d: %s", radix, shown.repr());
         }
         return PyInt.of(value);
+    }
+
+    /**
+     * {@code _PyLong_FromBytes}: {@code int(b'12')} and {@code int(bytearray(b'12'))}.
+     *
+     * <p>The octets are read as ASCII and as nothing else. Only the six ASCII whitespace octets are
+     * allowed around the literal — {@code b'\xa01'} is a bad literal rather than a padded one — and no
+     * digit folding happens, so a value whose octets spell a non-ASCII decimal digit is refused the
+     * way any other bad octet is.
+     *
+     * <p>The value in the refusal is a {@code bytes} repr however the octets arrived, which is why a
+     * {@code bytearray} argument is complained about as {@code b'...'} rather than as
+     * {@code bytearray(b'...')}. It is cut the way CPython's {@code %.200R} of a 200-octet
+     * {@code PyBytes} cuts it: the first 200 octets, then 200 characters of the repr.
+     */
+    private static PyObject parseOctets(PyBytes octets, BigInteger base) {
+        int radix = base == null ? 10 : base.intValue();
+        byte[] value = octets.getValue();
+        int start = 0;
+        int end = value.length;
+        while (start < end && asciiSpace(value[start])) {
+            start++;
+        }
+        while (end > start && asciiSpace(value[end - 1])) {
+            end--;
+        }
+        BigInteger parsed = decodeInteger(
+                new String(value, start, end - start, java.nio.charset.StandardCharsets.ISO_8859_1),
+                radix);
+        if (parsed == null) {
+            String shown = PyBytes
+                    .wrap(java.util.Arrays.copyOf(value, Math.min(value.length, 200)))
+                    .repr();
+            throw Slots.valueError(
+                    "invalid literal for int() with base %d: %s", radix,
+                    shown.length() > 200 ? shown.substring(0, 200) : shown);
+        }
+        return PyInt.of(parsed);
+    }
+
+    /** The bytes-like argument {@code int} reads as a literal, or null when the value is not one. */
+    private static PyBytes octetsOf(PyObject value) {
+        if (value instanceof PyBytes bytes) {
+            return bytes;
+        }
+        if (value instanceof PyByteArray bytes) {
+            return PyBytes.wrap(java.util.Arrays.copyOf(bytes.raw(), bytes.size()));
+        }
+        return null;
+    }
+
+    /** One of the six octets CPython's literal reader strips, and no other. */
+    private static boolean asciiSpace(byte octet) {
+        return octet == ' ' || octet == '\t' || octet == '\n' || octet == 0x0b
+                || octet == 0x0c || octet == '\r';
     }
 
     /**
@@ -1194,7 +1253,13 @@ final class Constructors {
         return value;
     }
 
-    /** The text of a {@code str} or {@code bytes} argument, or null when the value is neither. */
+    /**
+     * The text of a {@code str}, {@code bytes} or {@code bytearray} argument, or null for anything else.
+     *
+     * <p>Both octet types are read as ASCII, which is what lets {@code float(bytearray(b'1.5'))} work and
+     * {@code float(b'\xd9\xdb')} fail. {@code int} does not come through here: it keeps the octets so
+     * that its refusal can show a {@code bytes} repr.
+     */
     private static String textual(PyObject value) {
         if (value instanceof PyStr s) {
             return s.getValue();
@@ -1203,6 +1268,11 @@ final class Constructors {
             // Bytes are read as ASCII: int(b'12') works and int(b'\xd9\xdb') does not, because the
             // digits an integer literal may use are ASCII digits whatever the encoding story says.
             return new String(b.getValue(), java.nio.charset.StandardCharsets.ISO_8859_1);
+        }
+        if (value instanceof PyByteArray b) {
+            return new String(
+                    java.util.Arrays.copyOf(b.raw(), b.size()),
+                    java.nio.charset.StandardCharsets.ISO_8859_1);
         }
         return null;
     }

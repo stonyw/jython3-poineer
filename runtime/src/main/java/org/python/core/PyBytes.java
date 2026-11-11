@@ -125,6 +125,9 @@ public final class PyBytes extends PyObject {
         if (op == BinaryOp.MUL) {
             return PyBytes.wrap(repeated(other));
         }
+        if (op == BinaryOp.MOD) {
+            return PyBytes.wrap(OctetFormat.format(value, other));
+        }
         return PyNotImplemented.INSTANCE;
     }
 

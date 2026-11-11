@@ -748,6 +748,9 @@ public final class PyByteArray extends PyObject {
         if (op == BinaryOp.MUL) {
             return PyByteArray.of(repeated(other));
         }
+        if (op == BinaryOp.MOD) {
+            return PyByteArray.of(OctetFormat.format(value, other));
+        }
         return PyNotImplemented.INSTANCE;
     }
 

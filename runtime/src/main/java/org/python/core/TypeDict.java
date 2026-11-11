@@ -1,5 +1,6 @@
 package org.python.core;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -333,6 +334,26 @@ final class TypeDict {
     private static final String BUFFER_DOC =
             "__buffer__($self, flags, /)\n--\n\nReturn a buffer object that exposes the underlying"
                     + " memory of the object.";
+
+    /**
+     * The two ends of the buffer protocol {@code bytearray} files, and the two pickle helpers beside them.
+     *
+     * <p>The release row is the same sentence for both halves of the protocol, and it is a {@code
+     * wrapper_descriptor} whose argument is checked to be a {@code memoryview} before anything else
+     * happens — which is why a call with the wrong object can only ever say what it expected. The two
+     * pickle rows say "state information" rather than {@code object}'s "Helper for pickle", and the
+     * protocol row is the one of the two whose signature names its argument, because a run keeps its
+     * bytes as text below protocol 3 and as bytes from protocol 3 on.
+     */
+    private static final String RELEASE_BUFFER_DOC =
+            "__release_buffer__($self, buffer, /)\n--\n\nRelease the buffer object that exposes the"
+                    + " underlying memory of the object.";
+
+    private static final String OCTETS_REDUCE_DOC =
+            "__reduce__($self, /)\n--\n\nReturn state information for pickling.";
+
+    private static final String OCTETS_REDUCE_EX_DOC =
+            "__reduce_ex__($self, proto=0, /)\n--\n\nReturn state information for pickling.";
 
     /**
      * The twenty-five sentences {@code longobject.c}'s {@code PyNumberMethods} carries.
@@ -1803,22 +1824,23 @@ final class TypeDict {
     }
 
     /**
-     * {@code bytearray}'s dictionary, as far as the sequence protocol goes.
+     * {@code bytearray}'s dictionary: the eighty-two names a writable run files.
      *
-     * <p>The same slots {@code bytes} files for reading, less the three that are not yet written here —
-     * {@code __buffer__}, {@code __mod__} and {@code __rmod__} — plus the three that make the run writable:
-     * {@code __init__}, {@code __setitem__} and {@code __delitem__}, and the two in-place repeats. The
-     * mutating methods ({@code append} through {@code resize}) and the read-only ones {@code bytes} already
-     * has are both filed in the alphabetical run at the end, since CPython's own table sorts them that way.
-     * What is still missing beside them is {@code __reduce__}, {@code __reduce_ex__} and the conversion to
-     * {@code int}, which arrive in a later segment.
+     * <p>The same slots {@code bytes} files for reading — including {@code __buffer__}, {@code __mod__}
+     * and {@code __rmod__}, which the writable type takes from the same rows — plus the three that make
+     * the run writable: {@code __init__}, {@code __setitem__} and {@code __delitem__}, and the two
+     * in-place repeats. The mutating methods ({@code append} through {@code resize}) and the read-only
+     * ones {@code bytes} already has are both filed in the alphabetical run at the end, since CPython's
+     * own table sorts them that way; {@code __reduce__} and {@code __reduce_ex__} open that run, after
+     * {@code __alloc__}. The dictionary closes with the sentence and then, alone among these tables,
+     * {@code __hash__ = None} — a type with no hash keeps the name so that {@code hash(run)} is refused
+     * rather than inherited from {@code object}.
      */
     private static void bytearrayTable(PyDict into) {
         PyType owner = PyType.BYTEARRAY;
         Table table = new Table(owner, into);
         table.raw("__new__", NEW_DOC, TypeDict::bytearraysNew);
         table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
-        table.value("__hash__", PyNone.INSTANCE);
         table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
         table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
         table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
@@ -1828,6 +1850,10 @@ final class TypeDict {
         table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
         table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
         table.wrapper("__init__", INIT_DOC, TypeDict::bytearrayInit);
+        table.wrapper("__buffer__", BUFFER_DOC, TypeDict::exposeWritableBuffer);
+        table.wrapper("__release_buffer__", RELEASE_BUFFER_DOC, TypeDict::releaseBuffer);
+        table.wrapper("__mod__", MOD_DOC, TypeDict::modulo);
+        table.wrapper("__rmod__", RMOD_DOC, TypeDict::reflectedMod);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
         table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
         table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
@@ -1838,8 +1864,10 @@ final class TypeDict {
         table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
         table.wrapper("__iadd__", IADD_DOC, TypeDict::joinedInPlace);
         table.wrapper("__imul__", IMUL_DOC, TypeDict::repeatedInPlace);
+        table.named("__alloc__");
+        table.method("__reduce__", OCTETS_REDUCE_DOC, TypeDict::bytearrayReduce);
+        table.method("__reduce_ex__", OCTETS_REDUCE_EX_DOC, TypeDict::bytearrayReduceEx);
         table.named(
-                "__alloc__",
                 "__sizeof__",
                 "append",
                 "capitalize",
@@ -1872,9 +1900,9 @@ final class TypeDict {
                 "partition",
                 "pop",
                 "remove",
+                "replace",
                 "removeprefix",
                 "removesuffix",
-                "replace",
                 "resize",
                 "reverse",
                 "rfind",
@@ -1893,6 +1921,7 @@ final class TypeDict {
                 "upper",
                 "zfill");
         table.value("__doc__", docValue(owner));
+        table.value("__hash__", PyNone.INSTANCE);
     }
 
     /**
@@ -3917,10 +3946,12 @@ final class TypeDict {
      * slot at all leaves the wrapper with nothing to report but the decline.
      */
     private static PyObject reflectedMod(PyObject[] args) {
+        PyObject self = args[0];
         PyObject other = args[1];
-        return other instanceof PyStr || other instanceof PyBytes
-                ? other.binaryOp(BinaryOp.MOD, args[0])
-                : PyNotImplemented.INSTANCE;
+        boolean sameFamily = (self instanceof PyStr && other instanceof PyStr)
+                || (self instanceof PyBytes && other instanceof PyBytes)
+                || (self instanceof PyByteArray && other instanceof PyByteArray);
+        return sameFamily ? other.binaryOp(BinaryOp.MOD, self) : PyNotImplemented.INSTANCE;
     }
 
     /**
@@ -3961,6 +3992,71 @@ final class TypeDict {
             throw Slots.bufferError("Object is not writable.");
         }
         throw Slots.notImplemented("memoryview");
+    }
+
+    /**
+     * {@code bytearray.__buffer__}: the same row, kept here for what it does not check.
+     *
+     * <p>A run is writable, so the flag {@code wrap_buffer} reads as "do not write to me" is accepted
+     * rather than refused; the only two complaints left are the ones about the number itself. What the
+     * call would answer is the same {@code memoryview} this runtime has not built.
+     */
+    private static PyObject exposeWritableBuffer(PyObject[] args, String[] kwNames, String qualified) {
+        long flags = Numbers.repeat(args[1]);
+        if (flags < Integer.MIN_VALUE || flags > Integer.MAX_VALUE) {
+            throw Slots.overflowError("buffer flags out of range");
+        }
+        throw Slots.notImplemented("memoryview");
+    }
+
+    /**
+     * {@code bytearray.__release_buffer__}: the other end of the protocol, which only takes a view.
+     *
+     * <p>{@code bytearray_releasebuffer} refuses anything that is not a {@code memoryview} before it
+     * looks at the run at all, so with no {@code memoryview} in this runtime every call arrives at the
+     * same sentence — including the call that hands back the object a {@code __buffer__} would have made.
+     */
+    private static PyObject releaseBuffer(PyObject[] args, String[] kwNames, String qualified) {
+        throw Slots.typeError("expected a memoryview object");
+    }
+
+    /**
+     * {@code bytearray.__reduce__} and {@code bytearray.__reduce_ex__}: a run rebuilt from its octets.
+     *
+     * <p>The third field is always {@code None}, because a run has no state beyond its bytes. Below
+     * protocol 3 those bytes travel as text — {@code latin-1} is the one codec that maps every octet to
+     * a character and back — while from protocol 3 on they travel as the {@code bytes} object itself.
+     * An empty run needs no argument at all, which is why {@code bytearray()} is the only callable the
+     * tuple names in that case.
+     */
+    private static PyObject bytearrayReduce(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return reduced(args[0], 2);
+    }
+
+    private static PyObject bytearrayReduceEx(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject[] given = tail(args, kwNames);
+        if (kwNames != null) {
+            throw Slots.typeError("%s() takes no keyword arguments", qualified);
+        }
+        Arguments.atMost("__reduce_ex__", given, null, 1);
+        return reduced(args[0], given.length == 0 ? 0 : Numbers.cInteger(given[0]));
+    }
+
+    /** The tuple {@code copyreg} would have built, for the protocol the caller asked about. */
+    private static PyObject reduced(PyObject value, int protocol) {
+        PyByteArray run = (PyByteArray) value;
+        PyTuple arguments;
+        if (run.size() == 0) {
+            arguments = PyTuple.of();
+        } else {
+            byte[] octets = Arrays.copyOf(run.raw(), run.size());
+            arguments = protocol < 3
+                    ? PyTuple.of(PyStr.of(new String(octets, StandardCharsets.ISO_8859_1)),
+                            PyStr.of("latin-1"))
+                    : PyTuple.of(PyBytes.wrap(octets));
+        }
+        return PyTuple.of(PyType.BYTEARRAY, arguments, PyNone.INSTANCE);
     }
 
     /**
@@ -5983,13 +6079,13 @@ final class TypeDict {
      * {@code wrapperdescr_call}'s refusal of the wrong count.
      *
      * <p>A slot that takes only its receiver says the number bare — {@code expected 0 arguments, got 1} —
-     * because there is no method name that would help. Four wrappers name themselves, and each is the
+     * because there is no method name that would help. Five wrappers name themselves, and each is the
      * because of the C function behind it: {@code wrap_setattr} hands {@code PyArg_UnpackTuple} the name
      * {@code __setattr__}, {@code wrap_ass_subscript} hands it {@code __setitem__}, {@code wrap_buffer}
-     * hands it {@code __buffer__} and {@code wrap_descr_set} hands it {@code __set__}. Everything else,
-     * including the {@code __delattr__} and {@code __getattribute__} that sit beside the first, the {@code
-     * __delitem__} beside the second and the {@code __delete__} beside the fourth, passes no name and so
-     * prints none.
+     * hands it {@code __buffer__}, {@code wrap_descr_set} hands it {@code __set__} and the release half of
+     * the buffer protocol hands it {@code __release_buffer__}. Everything else, including the {@code
+     * __delattr__} and {@code __getattribute__} that sit beside the first and the {@code __delitem__}
+     * beside the second, passes no name and so prints none.
      *
      * <p>{@code __pow__} and {@code __rpow__} are the two that state a range rather than a number, because
      * {@code check_pow_args} is written for a slot that may or may not be handed a modulus: {@code
@@ -6010,7 +6106,8 @@ final class TypeDict {
         if (name.equals("__setattr__")
                 || name.equals("__setitem__")
                 || name.equals("__set__")
-                || name.equals("__buffer__")) {
+                || name.equals("__buffer__")
+                || name.equals("__release_buffer__")) {
             throw Slots.typeError(
                     "%s expected %d argument%s, got %d", name, need, plural, got);
         }
