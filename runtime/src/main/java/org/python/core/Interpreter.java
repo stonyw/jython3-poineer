@@ -1158,11 +1158,12 @@ public final class Interpreter {
     }
 
     private static void extend(PyList list, PyObject iterable) {
-        if (!Slots.isIterable(iterable)) {
+        PyIterator iterator = Slots.iteratorOrNull(iterable);
+        if (iterator == null) {
             throw Slots.typeError(
                     "Value after * must be an iterable, not %s", iterable.getType().name());
         }
-        PyIterator iterator = Slots.iterator(iterable);
+        list.reserve(Slots.lengthHint(iterable, 8));
         PyObject item;
         while ((item = iterator.nextOrNull()) != null) {
             list.add(item);

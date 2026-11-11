@@ -21,9 +21,9 @@ import java.util.List;
  */
 public final class PyList extends PyObject {
 
-    private final List<PyObject> items;
+    private final ArrayList<PyObject> items;
 
-    private PyList(List<PyObject> items) {
+    private PyList(ArrayList<PyObject> items) {
         super(PyType.LIST);
         this.items = items;
     }
@@ -606,8 +606,16 @@ public final class PyList extends PyObject {
             items.addAll(Arrays.asList(list.elements()));
             return;
         }
-        for (PyObject item : drain(Slots.iterator(iterable))) {
+        PyIterator iterator = Slots.iterator(iterable);
+        items.ensureCapacity(items.size() + Slots.lengthHint(iterable, 8));
+        PyObject item;
+        while ((item = iterator.nextOrNull()) != null) {
             items.add(item);
         }
+    }
+
+    /** Room for {@code extra} more values; what a constructor's length hint asked to reserve. */
+    void reserve(int extra) {
+        items.ensureCapacity(items.size() + extra);
     }
 }

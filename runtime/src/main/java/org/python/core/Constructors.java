@@ -72,7 +72,7 @@ final class Constructors {
             return PyTuple.of(source.toArray(new PyObject[0]));
         }
         if (type == PyType.LIST) {
-            return PyList.of(iterable(args, keywordNames, "list").toArray(new PyObject[0]));
+            return listedValues(args, keywordNames);
         }
         if (type == PyType.SET) {
             return PySet.collected(single(args, keywordNames, "set"));
@@ -774,6 +774,23 @@ final class Constructors {
     }
 
     /**
+     * {@code list(x)}: the constructor's refusals, then the list {@code list_extend} would build.
+     *
+     * <p>It goes through {@link PyList#initialized} rather than {@link #materialise} so that the length
+     * hint is asked where the reference asks it — after the iterator exists, with the refusals kept —
+     * and so that {@code list(x)} and {@code l.__init__(x)} cannot drift apart.
+     */
+    private static PyList listedValues(PyObject[] args, String[] kwNames) {
+        refuseKeywords("list", kwNames);
+        Arguments.atMost("list", args, kwNames, 1);
+        PyList out = PyList.empty();
+        if (args.length == 1) {
+            out.initialized(args[0]);
+        }
+        return out;
+    }
+
+    /**
      * The one argument a set constructor is given, handed over rather than walked out here.
      *
      * <p>{@code set_vectorcall} and {@code frozenset_vectorcall} make the same two refusals and then pass
@@ -1013,7 +1030,7 @@ final class Constructors {
             throw Slots.typeError(
                     "cannot convert '%s' object to bytes", value.getType().name());
         }
-        List<PyObject> out = new ArrayList<>();
+        List<PyObject> out = new ArrayList<>(Slots.lengthHint(value, 8));
         PyObject item;
         while ((item = iterator.nextOrNull()) != null) {
             out.add(item);

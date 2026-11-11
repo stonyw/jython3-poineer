@@ -204,6 +204,63 @@ public final class Slots {
     }
 
     /**
+     * {@code PyObject_LengthHint}: how many values an iterable says it holds, for the constructors that
+     * size themselves before they fill — {@code list()}, {@code [*x]} and {@code bytes(x)}.
+     *
+     * <p>3.14 asks {@code len()} first, which is why a list subclass that overrides
+     * {@code __length_hint__} is never asked: the {@code __len__} it inherits answers first. Only a
+     * {@code TypeError} from {@code len} — no {@code __len__} at all, or one that refused in those words —
+     * lets the hint be asked; a {@code ValueError} or an {@code OverflowError} is the answer already.
+     *
+     * <p>The hint must be an {@code int}, and {@code True} counts as one; a value with only an
+     * {@code __index__} does not. Its two refusals are checked in CPython's order, so a hint of
+     * {@code -(2 ** 70)} is an {@code OverflowError} rather than the {@code ValueError} a negative count
+     * gets — the machine-word conversion is asked before the sign.
+     *
+     * <p>The answer is only ever used as room to reserve, so it is capped here: capacity is invisible, and
+     * a hint beyond what a JVM can hold should not decide whether the call completes. What the reference
+     * answers instead at that size is a {@code MemoryError}, which this runtime does not reproduce.
+     */
+    public static int lengthHint(PyObject source, int fallback) {
+        try {
+            return capped(((PyInt) Slots.length(source)).getValue().longValue());
+        } catch (PyRaise refusal) {
+            if (!refusal.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                throw refusal;
+            }
+        }
+        PyObject declared = Specials.lookUp(source.getType(), "__length_hint__");
+        // A declaration that cannot be called is no declaration at all: `__length_hint__ = None` on a
+        // class is answered by the default, the way CPython's `PyCallable_Check` makes it.
+        if (declared == null || !isCallable(declared)) {
+            return fallback;
+        }
+        PyObject answer = Specials.invoke(source, "__length_hint__");
+        if (answer == DECLINED) {
+            return fallback;
+        }
+        java.math.BigInteger hint = Numbers.asInteger(answer);
+        if (hint == null) {
+            throw typeError(
+                    "__length_hint__ must be an integer, not %s", answer.getType().name());
+        }
+        if (hint.bitLength() > 63) {
+            throw overflowError("Python int too large to convert to C ssize_t");
+        }
+        if (hint.signum() < 0) {
+            throw valueError("__length_hint__() should return >= 0");
+        }
+        return capped(hint.longValue());
+    }
+
+    /** How much room a hint may reserve; the number itself is kept out of reach of a lying hint. */
+    private static int capped(long hint) {
+        return (int) Math.min(hint, CAPACITY_LIMIT);
+    }
+
+    private static final int CAPACITY_LIMIT = 1 << 16;
+
+    /**
      * A {@code __len__} answer reduced to a size, which is what {@code slot_sq_length} does with a
      * Python-level one.
      *
@@ -309,9 +366,26 @@ public final class Slots {
 
     /** {@code iter(x)}. */
     public static PyIterator iterator(PyObject iterable) {
+        PyIterator iterator = iteratorOrNull(iterable);
+        if (iterator == null) {
+            throw typeError("'%s' object is not iterable", iterable.getType().filedName());
+        }
+        return iterator;
+    }
+
+    /**
+     * The iterator {@code iterable} answers with, or null when it has no iteration at all.
+     *
+     * <p>{@code __iter__} is called once and once only, which matters because a caller that first asks
+     * whether an object is iterable and then asks for its iterator would otherwise run the method twice.
+     * A caller with its own words for "not iterable" — the unpacking opcodes say "Value after * must be
+     * an iterable" — uses the null; a {@code __iter__} that returns something without {@code __next__}
+     * is still CPython's TypeError here, since that is not a question about the caller.
+     */
+    public static PyIterator iteratorOrNull(PyObject iterable) {
         PyObject answer = iterable.iterator();
         if (answer == DECLINED) {
-            throw typeError("'%s' object is not iterable", iterable.getType().filedName());
+            return null;
         }
         if (answer instanceof PyIterator iterator) {
             return iterator;
