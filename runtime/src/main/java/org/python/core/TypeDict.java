@@ -794,6 +794,10 @@ final class TypeDict {
             bytesTable(into);
             return;
         }
+        if (owner == PyType.BYTEARRAY) {
+            bytearrayTable(into);
+            return;
+        }
         if (owner == PyType.STR) {
             strTable(into);
             return;
@@ -1799,6 +1803,43 @@ final class TypeDict {
     }
 
     /**
+     * {@code bytearray}'s dictionary, as far as the sequence protocol goes.
+     *
+     * <p>The same slots {@code bytes} files for reading, less the three that are not yet written here —
+     * {@code __buffer__}, {@code __mod__} and {@code __rmod__} — plus the three that make the run writable:
+     * {@code __init__}, {@code __setitem__} and {@code __delitem__}, and the two in-place repeats. What is
+     * missing beside them is the whole of the mutating method set ({@code append} through {@code resize}) and
+     * the forty-one read-only methods {@code bytes} already has, both of which arrive in later segments.
+     */
+    private static void bytearrayTable(PyDict into) {
+        PyType owner = PyType.BYTEARRAY;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::bytearraysNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.value("__hash__", PyNone.INSTANCE);
+        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__init__", INIT_DOC, TypeDict::bytearrayInit);
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
+        table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
+        table.wrapper("__add__", ADD_DOC, TypeDict::joined);
+        table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
+        table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);
+        table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+        table.wrapper("__iadd__", IADD_DOC, TypeDict::joinedInPlace);
+        table.wrapper("__imul__", IMUL_DOC, TypeDict::repeatedInPlace);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
      * {@code str}'s own dictionary: the seventy names a run of text files.
      *
      * <p>The same nineteen slots as {@code bytes}, less {@code __buffer__} — a string has no memory to
@@ -2738,6 +2779,7 @@ final class TypeDict {
                 || owner == PyType.LIST_REVERSE_ITERATOR
                 || owner == PyType.TUPLE_ITERATOR
                 || owner == PyType.BYTES_ITERATOR
+                || owner == PyType.BYTEARRAY_ITERATOR
                 || owner == PyType.STR_ITERATOR
                 || owner == PyType.STR_ASCII_ITERATOR;
     }
@@ -3579,6 +3621,30 @@ final class TypeDict {
     private static PyObject listsNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.LIST, args, kwNames);
         return PyList.empty();
+    }
+
+    /**
+     * {@code bytearray.__init__}: the constructor's filling, run over a value that already exists.
+     *
+     * <p>{@code bytearray_new} allocates an empty run and leaves the arguments to this slot, so the only
+     * work here is {@link Constructors#fillByteArray}, which clears first and then reads the source in the
+     * constructor's own order.
+     */
+    private static PyObject bytearrayInit(PyObject[] args, String[] kwNames, String qualified) {
+        Constructors.fillByteArray((PyByteArray) args[0], tail(args, kwNames), kwNames);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code bytearray.__new__}: the class is checked and the arguments are dropped.
+     *
+     * <p>{@code bytearray.__new__(bytearray, b'ab')} is an empty run, exactly as
+     * {@code list.__new__(list, 'ab')} is an empty list: the constructor is {@code __new__} plus
+     * {@code __init__}, and the slot alone is only the first half.
+     */
+    private static PyObject bytearraysNew(PyObject[] args, String[] kwNames, String qualified) {
+        declaredClass(PyType.BYTEARRAY, args, kwNames);
+        return PyByteArray.empty();
     }
 
     private static PyObject tuplesNew(PyObject[] args, String[] kwNames, String qualified) {

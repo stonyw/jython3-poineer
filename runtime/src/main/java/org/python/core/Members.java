@@ -52,6 +52,7 @@ final class Members {
             Map.entry(PyType.COMPLEX, PyComplex.class),
             Map.entry(PyType.STR, PyStr.class),
             Map.entry(PyType.BYTES, PyBytes.class),
+            Map.entry(PyType.BYTEARRAY, PyByteArray.class),
             Map.entry(PyType.TUPLE, PyTuple.class),
             Map.entry(PyType.LIST, PyList.class),
             Map.entry(PyType.DICT, PyDict.class),
@@ -195,6 +196,33 @@ final class Members {
         Members methods = new Members(type);
         REGISTRY.put(type, methods);
         return methods;
+    }
+
+    /**
+     * The methods of {@code other} under the names given, filed in this table as its own.
+     *
+     * <p>A bytearray answers most of the questions a bytes does, with the same bodies and the same words,
+     * but names itself in the few messages that mention the receiver's type and hands back a bytearray
+     * rather than a bytes. The bodies are shared; the table is not, because each type's table also owns
+     * the descriptors a read of the <em>type</em> hands out. The docs come along for the ride, and a name
+     * this table later documents again wins.
+     */
+    Members adopt(Members other, String... names) {
+        for (String name : names) {
+            PyBoundMethod.Body body = other.entries.get(name);
+            if (body != null) {
+                entries.put(name, body);
+                String text = other.docs.get(name);
+                if (text != null) {
+                    docs.put(name, text);
+                }
+                Integer flag = other.flags.get(name);
+                if (flag != null) {
+                    flags.put(name, flag);
+                }
+            }
+        }
+        return this;
     }
 
     /**

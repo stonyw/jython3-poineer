@@ -283,6 +283,19 @@ public class PyType extends PyObject {
 
     public static final PyType STR = builtin("str").flagged(MATCH_SELF).documented(STR_DOC);
     public static final PyType BYTES = builtin("bytes").flagged(MATCH_SELF).documented(BYTES_DOC);
+
+    /** The mutable octet run's own sentence, which CPython keeps in {@code bytearrayobject.c}. */
+    static final String BYTEARRAY_DOC =
+            "bytearray(iterable_of_ints) -> bytearray\nbytearray(string, encoding[, errors]) ->"
+                    + " bytearray\nbytearray(bytes_or_buffer) -> mutable copy of bytes_or_buffer\n"
+                    + "bytearray(int) -> bytes array of size given by the parameter initialized with null"
+                    + " bytes\nbytearray() -> empty bytes array\n\nConstruct a mutable bytearray object"
+                    + " from:\n  - an iterable yielding integers in range(256)\n  - a text string encoded"
+                    + " using the specified encoding\n  - a bytes or a buffer object\n  - any object"
+                    + " implementing the buffer API.\n  - an integer";
+
+    public static final PyType BYTEARRAY =
+            builtin("bytearray").flagged(MATCH_SELF).documented(BYTEARRAY_DOC);
     public static final PyType TUPLE =
             builtin("tuple").flagged(SEQUENCE | MATCH_SELF).documented(TUPLE_DOC);
     public static final PyType LIST =
@@ -743,6 +756,9 @@ public class PyType extends PyObject {
 
     /** {@code type(iter(b''))}, whose items are the numbers of the octets. */
     static final PyType BYTES_ITERATOR = builtin("bytes_iterator").withoutNew();
+
+    /** The cursor over a bytearray, which reads the run as it stands and so sees later appends. */
+    static final PyType BYTEARRAY_ITERATOR = builtin("bytearray_iterator").withoutNew();
 
     /** The cursor of a string with a code point at or above 128 in it. */
     static final PyType STR_ITERATOR = builtin("str_iterator").withoutNew();

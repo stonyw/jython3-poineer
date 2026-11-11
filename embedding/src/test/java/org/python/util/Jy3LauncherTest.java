@@ -313,7 +313,8 @@ class Jy3LauncherTest {
                 "134_decode_handlers_and_the_octets_they_answer_for.py",
                 "137_the_four_books_under_every_stream.py",
                 "138_textiowrappers_own_book.py",
-                "155_length_hint.py");
+                "155_length_hint.py",
+                "156_bytearray.py");
     }
 
     /**

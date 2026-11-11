@@ -60,6 +60,9 @@ final class Constructors {
         if (type == PyType.BYTES) {
             return bytes(args, keywordNames);
         }
+        if (type == PyType.BYTEARRAY) {
+            return bytearray(args, keywordNames);
+        }
         if (type == PyType.TUPLE) {
             List<PyObject> source = iterable(args, keywordNames, "tuple");
             // `tuple(t)` of a tuple is the one object rather than a copy of it: `PySequence_Tuple` keeps what
@@ -961,8 +964,8 @@ final class Constructors {
     private static PyObject bytes(PyObject[] args, String[] kwNames) {
         PyObject[] given =
                 Arguments.parameters("bytes", args, kwNames, BYTES_NAMES, new PyObject[0], 0);
-        String codec = codecArgument("encoding", given[1]);
-        String mode = codecArgument("errors", given[2]);
+        String codec = codecArgument("bytes", "encoding", given[1]);
+        String mode = codecArgument("bytes", "errors", given[2]);
         PyObject value = given[0];
         if (value == null) {
             if (codec != null || mode != null) {
@@ -1007,6 +1010,106 @@ final class Constructors {
             out[i] = item.byteValue();
         }
         return PyBytes.wrap(out);
+    }
+
+    /**
+     * {@code bytearray()}'s three parameters. All of them are nameable — {@code bytearray(source='ab',
+     * encoding='ascii')} works — where {@code bytes}' first is positional-only.
+     */
+    private static final String[] BYTEARRAY_NAMES = {"source", "encoding", "errors"};
+
+    /** {@code bytearray(args, kw)}: an empty run, filled the way {@code __init__} fills an existing one. */
+    private static PyByteArray bytearray(PyObject[] args, String[] kwNames) {
+        PyByteArray target = PyByteArray.empty();
+        fillByteArray(target, args, kwNames);
+        return target;
+    }
+
+    /**
+     * {@code bytearray_init_impl} (Objects/bytearrayobject.c), which the constructor and
+     * {@code bytearray.__init__} both run.
+     *
+     * <p>The order is the whole of the subtlety. Clinic's converters run first, so
+     * {@code bytearray(b'', None)} refuses the null encoding and leaves an existing value untouched. Then
+     * the run is cleared, and only then are the shapes read — which is why {@code b.__init__('a')} and
+     * {@code b.__init__(errors='strict')} both leave {@code b} empty even though neither adds a byte.
+     *
+     * <p>Text, an octet count, bytes and a bytearray each arrive with their length already known, and each
+     * one resize once. A list or a tuple is read into an array first so that a bad element leaves the run
+     * empty, while any other iterable is appended one octet at a time — which is why
+     * {@code b.__init__((x for x in [65, 300]))} keeps the {@code b'A'} it had already written. The float
+     * case is the iterable case: a value with no {@code __index__} is asked for an iterator, and what
+     * {@code PyObject_GetIter} refuses becomes {@code cannot convert 'float' object to bytearray}.
+     */
+    static void fillByteArray(PyByteArray target, PyObject[] args, String[] kwNames) {
+        PyObject[] given =
+                Arguments.parameters("bytearray", args, kwNames, BYTEARRAY_NAMES, new PyObject[0], 0);
+        String codec = codecArgument("bytearray", "encoding", given[1]);
+        String mode = codecArgument("bytearray", "errors", given[2]);
+        PyObject source = given[0];
+        target.clear();
+        if (source instanceof PyStr text) {
+            if (codec == null) {
+                throw Slots.typeError("string argument without an encoding");
+            }
+            target.set(
+                    PyBytes.encodeText(text.getValue(), codec, mode == null ? "strict" : mode)
+                            .getValue());
+            return;
+        }
+        if (codec != null) {
+            throw Slots.typeError("encoding without a string argument");
+        }
+        if (mode != null) {
+            throw Slots.typeError("errors without a string argument");
+        }
+        if (source == null) {
+            return;
+        }
+        Long count = askedForOctets(source);
+        if (count != null) {
+            if (count < 0) {
+                throw Slots.valueError("negative count");
+            }
+            target.zeroed(Numbers.total(count));
+            return;
+        }
+        if (source instanceof PyBytes bytes) {
+            target.set(bytes.getValue());
+            return;
+        }
+        if (source instanceof PyByteArray octets) {
+            target.set(octets.raw());
+            return;
+        }
+        if (source instanceof PyList || source instanceof PyTuple) {
+            List<PyObject> items = new ArrayList<>();
+            PyIterator iterator = Slots.iterator(source);
+            PyObject read;
+            while ((read = iterator.nextOrNull()) != null) {
+                items.add(read);
+            }
+            byte[] out = new byte[items.size()];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = PyByteArray.octetOf(items.get(i));
+            }
+            target.set(out);
+            return;
+        }
+        PyIterator iterator;
+        try {
+            iterator = Slots.iterator(source);
+        } catch (PyRaise refusal) {
+            if (!refusal.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                throw refusal;
+            }
+            throw Slots.typeError(
+                    "cannot convert '%s' object to bytearray", source.getType().name());
+        }
+        PyObject item;
+        while ((item = iterator.nextOrNull()) != null) {
+            target.appendOctet(PyByteArray.octetOf(item));
+        }
     }
 
     /**
@@ -1072,13 +1175,13 @@ final class Constructors {
      * mentioned, and only a value that was mentioned is asked whether it is text. The {@code embedded null
      * character} refusal is the converter's too, made after the type check and before the codec is named.
      */
-    private static String codecArgument(String name, PyObject value) {
+    private static String codecArgument(String owner, String name, PyObject value) {
         if (value == null) {
             return null;
         }
         if (!(value instanceof PyStr text)) {
             throw Slots.typeError(
-                    "bytes() argument '%s' must be str, not %s", name, Slots.argumentName(value));
+                    "%s() argument '%s' must be str, not %s", owner, name, Slots.argumentName(value));
         }
         return noNullByte(text.getValue());
     }

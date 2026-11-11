@@ -57,6 +57,7 @@ final class SequenceIterators {
     private static final Members LIST_BACK = book(PyType.LIST_REVERSE_ITERATOR);
     private static final Members TUPLE = book(PyType.TUPLE_ITERATOR);
     private static final Members BYTES = book(PyType.BYTES_ITERATOR);
+    private static final Members BYTEARRAY = book(PyType.BYTEARRAY_ITERATOR);
     private static final Members TEXT = book(PyType.STR_ITERATOR);
     private static final Members ASCII_TEXT = book(PyType.STR_ASCII_ITERATOR);
 
@@ -330,6 +331,9 @@ final class SequenceIterators {
             if (source instanceof PyStr text) {
                 return text.codePointLength();
             }
+            if (source instanceof PyByteArray octets) {
+                return octets.size();
+            }
             return source instanceof PyBytes octets ? octets.size() : ((PyTuple) source).size();
         }
 
@@ -337,6 +341,9 @@ final class SequenceIterators {
         PyObject item(int index) {
             if (source instanceof PyStr text) {
                 return text.characterAt(index);
+            }
+            if (source instanceof PyByteArray octets) {
+                return PyInt.of(octets.byteAt(index) & 0xff);
             }
             return source instanceof PyBytes octets
                     ? PyInt.of(octets.byteAt(index) & 0xff)
@@ -347,6 +354,9 @@ final class SequenceIterators {
         private static PyType typeOf(PyObject source) {
             if (source instanceof PyStr text) {
                 return text.isAscii() ? PyType.STR_ASCII_ITERATOR : PyType.STR_ITERATOR;
+            }
+            if (source instanceof PyByteArray) {
+                return PyType.BYTEARRAY_ITERATOR;
             }
             return source instanceof PyBytes ? PyType.BYTES_ITERATOR : PyType.TUPLE_ITERATOR;
         }

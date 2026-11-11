@@ -86,7 +86,7 @@ public final class PyBytes extends PyObject {
         return Decoder.decode(value, encoding, errors);
     }
 
-    private static byte[] concat(byte[] head, byte[] body) {
+    static byte[] concat(byte[] head, byte[] body) {
         byte[] out = new byte[head.length + body.length];
         System.arraycopy(head, 0, out, 0, head.length);
         System.arraycopy(body, 0, out, head.length, body.length);
@@ -116,11 +116,11 @@ public final class PyBytes extends PyObject {
             // `bytes_concat` does not decline: it tries to read the right operand as a buffer and, when
             // that fails, says which of the two it could not concat — `[] + b'ab'` is the list's own
             // complaint about a bytes, while `b'ab' + []` is this one about a list.
-            if (!(other instanceof PyBytes b)) {
+            if (!(other instanceof PyBytes || other instanceof PyByteArray)) {
                 throw Slots.typeError(
                         "can't concat %s to %s", other.getType().name(), getType().name());
             }
-            return PyBytes.wrap(concat(value, b.value));
+            return PyBytes.wrap(concat(value, octets(other)));
         }
         if (op == BinaryOp.MUL) {
             return PyBytes.wrap(repeated(other));
@@ -173,6 +173,11 @@ public final class PyBytes extends PyObject {
      */
     @Override
     public PyObject contains(PyObject item) {
+        return containsOctets(value, item);
+    }
+
+    /** {@code item in run}, which a bytearray asks about its own octets in the same words. */
+    static PyObject containsOctets(byte[] value, PyObject item) {
         BigInteger wanted = askedAsOctet(item);
         byte[] needle = wanted == null ? run(item) : octet(wanted);
         return PyBool.of(first(value, needle, 0, value.length, false) >= 0);
@@ -207,8 +212,8 @@ public final class PyBytes extends PyObject {
      */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
-        return other instanceof PyBytes b
-                ? PyObject.ordered(cmp, Arrays.compare(value, b.value))
+        return other instanceof PyBytes || other instanceof PyByteArray
+                ? PyObject.ordered(cmp, Arrays.compare(value, octets(other)))
                 : PyNotImplemented.INSTANCE;
     }
 
@@ -252,10 +257,10 @@ public final class PyBytes extends PyObject {
     private static final String HEX_DIGITS = "0123456789abcdef";
 
     private static final Members METHODS = Members.of(PyType.BYTES)
-            .addNoArgument("capitalize", self -> PyBytes.wrap(capitalized(octets(self))))
+            .addNoArgument("capitalize", PyBytes::capitalized)
             .add("center", (self, args, kwNames) -> padded(self, args, kwNames, "center", true, true))
             .add("count", (self, args, kwNames) -> {
-                legacy("count", args, kwNames, 1, 3);
+                legacy(self, "count", args, kwNames, 1, 3);
                 byte[] text = octets(self);
                 int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
                 int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
@@ -265,17 +270,20 @@ public final class PyBytes extends PyObject {
                 PyObject[] parameters =
                         Arguments.parameters(
                                 "decode", args, kwNames, CODE_NAMES, CODE_DEFAULTS, 0);
-                return PyStr.of(((PyBytes) self).decodeText(
+                return PyStr.of(Decoder.decode(
+                        octets(self),
                         PyStr.named(parameters[0], "decode", "encoding"),
                         PyStr.named(parameters[1], "decode", "errors")));
             })
             .add("endswith", (self, args, kwNames) -> edge(self, args, kwNames, "endswith", false))
-            .add("expandtabs", (self, args, kwNames) -> PyBytes.wrap(expanded(
-                    octets(self),
-                    Numbers.cInteger(Arguments.parameters(
-                            "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]))))
+            .add("expandtabs", (self, args, kwNames) -> answer(
+                    self,
+                    expanded(
+                            octets(self),
+                            Numbers.cInteger(Arguments.parameters(
+                                    "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]))))
             .add("find", (self, args, kwNames) -> search(self, args, kwNames, "find", false, false))
-            .addClass("fromhex", (args, kwNames) -> fromHexadecimal(args, kwNames))
+            .addClass("fromhex", (args, kwNames) -> fromHexadecimal(args, kwNames, false))
             .add("hex", (self, args, kwNames) -> hexadecimal(
                     octets(self),
                     Arguments.parameters("hex", args, kwNames, HEX, HEX_DEFAULTS, 0)))
@@ -288,47 +296,47 @@ public final class PyBytes extends PyObject {
             .addNoArgument("isspace", self -> PyBool.of(allOf(octets(self), PyBytes::isSpace)))
             .addNoArgument("istitle", self -> PyBool.of(isTitled(octets(self))))
             .addNoArgument("isupper", self -> PyBool.of(caseTest(octets(self), false)))
-            .addOne("join", (self, parts) -> joined(octets(self), parts))
+            .addOne("join", PyBytes::joined)
             .add("ljust", (self, args, kwNames) ->
                     padded(self, args, kwNames, "ljust", false, true))
-            .addNoArgument("lower", self -> PyBytes.wrap(cased(octets(self), false)))
+            .addNoArgument("lower", PyBytes::lower)
             .add("lstrip", (self, args, kwNames) -> trim(self, args, kwNames, "lstrip", true, false))
-            .addStatic("maketrans", (args, kwNames) -> translationTable(args, kwNames))
-            .addOne("partition", (self, argument) -> divided(self, octets(self), argument, true))
+            .addStatic("maketrans", (args, kwNames) -> translationTable(args, kwNames, false))
+            .addOne("partition", (self, argument) -> divided(self, argument, true))
             .addOne("removeprefix", (self, argument) -> shortened(self, argument, true))
             .addOne("removesuffix", (self, argument) -> shortened(self, argument, false))
             .add("replace", (self, args, kwNames) -> {
-                legacy("replace", args, kwNames, 2, 3);
+                legacy(self, "replace", args, kwNames, 2, 3);
                 byte[] text = octets(self);
                 byte[] old = run(args[0]);
                 byte[] replacement = run(args[1]);
                 long count = args.length > 2 ? Numbers.size(args[2]) : -1;
                 return count == 0 || first(text, old, 0, text.length, false) < 0
-                        ? self
-                        : PyBytes.wrap(exchanged(text, old, replacement, count));
+                        ? unchanged(self, text)
+                        : answer(self, exchanged(text, old, replacement, count));
             })
             .add("rfind", (self, args, kwNames) -> search(self, args, kwNames, "rfind", true, false))
             .add("rindex", (self, args, kwNames) -> search(self, args, kwNames, "rindex", true, true))
             .add("rjust", (self, args, kwNames) ->
                     padded(self, args, kwNames, "rjust", true, false))
-            .addOne("rpartition", (self, argument) -> divided(self, octets(self), argument, false))
+            .addOne("rpartition", (self, argument) -> divided(self, argument, false))
             .add("rsplit", (self, args, kwNames) -> split(self, args, kwNames, "rsplit", true))
             .add("rstrip", (self, args, kwNames) -> trim(self, args, kwNames, "rstrip", false, true))
             .add("split", (self, args, kwNames) -> split(self, args, kwNames, "split", false))
             .add("splitlines", (self, args, kwNames) -> lined(
-                    octets(self),
+                    self,
                     Slots.truth(Arguments.parameters(
                             "splitlines", args, kwNames, KEEP_ENDS, KEEP_ENDS_DEFAULTS, 0)[0])))
             .add("startswith", (self, args, kwNames) -> edge(self, args, kwNames, "startswith", true))
             .add("strip", (self, args, kwNames) -> trim(self, args, kwNames, "strip", true, true))
-            .addNoArgument("swapcase", self -> PyBytes.wrap(swapped(octets(self))))
-            .addNoArgument("title", self -> PyBytes.wrap(titleCased(octets(self))))
+            .addNoArgument("swapcase", PyBytes::swapcase)
+            .addNoArgument("title", PyBytes::title)
             .add("translate", (self, args, kwNames) -> translated(
                     octets(self),
                     Arguments.parameters(
                             "translate", args, kwNames, TABLE_AND_DELETE, TRANSLATE_DEFAULTS, 1),
                     self))
-            .addNoArgument("upper", self -> PyBytes.wrap(cased(octets(self), true)))
+            .addNoArgument("upper", PyBytes::upper)
             .addOne("zfill", (self, width) -> zeroFilled(self, octets(self), Numbers.size(width)))
             // The two names pickle and the buffer protocol read off a value rather than call: the argument
             // list a rebuild is made from is the octet run itself, and `__bytes__` answers the same object
@@ -803,6 +811,10 @@ public final class PyBytes extends PyObject {
                             + "\n"
                             + "The original string is never truncated.");
 
+    /** The read-only method table, filed on {@code bytes} itself when the type is first asked. */
+    static Members methods() {
+        return METHODS;
+    }
 
     // --- argument helpers ------------------------------------------------------------------
 
@@ -812,9 +824,50 @@ public final class PyBytes extends PyObject {
      * bare inside the body. See {@link Arguments} for why the counts differ between them.
      */
     private static void legacy(
-            String name, PyObject[] args, String[] kwNames, int atLeast, int atMost) {
-        Arguments.noKeywords("bytes." + name + "()", kwNames);
+            PyObject self, String name, PyObject[] args, String[] kwNames, int atLeast, int atMost) {
+        Arguments.noKeywords(self.getType().name() + "." + name + "()", kwNames);
         Arguments.between(name, args, kwNames, atLeast, atMost);
+    }
+
+    /**
+     * The answer to a read-only method, in the receiver's own type.
+     *
+     * <p>A bytes answers with a bytes and a bytearray with a fresh bytearray — CPython's bytearray
+     * methods never hand back the receiver, even when nothing changed, while bytes returns {@code self}
+     * for an unchanged copy.
+     */
+    static PyObject answer(PyObject self, byte[] text) {
+        return self instanceof PyByteArray ? PyByteArray.wrap(text) : PyBytes.wrap(text);
+    }
+
+    /** An unchanged read-only result: {@code self} for a bytes, a fresh copy for a bytearray. */
+    static PyObject unchanged(PyObject self, byte[] text) {
+        return self instanceof PyByteArray ? PyByteArray.of(text) : self;
+    }
+
+    static PyObject capitalized(PyObject self) {
+        return answer(self, capitalized(octets(self)));
+    }
+
+    static PyObject lower(PyObject self) {
+        return answer(self, cased(octets(self), false));
+    }
+
+    static PyObject swapcase(PyObject self) {
+        return answer(self, swapped(octets(self)));
+    }
+
+    static PyObject title(PyObject self) {
+        return answer(self, titleCased(octets(self)));
+    }
+
+    static PyObject upper(PyObject self) {
+        return answer(self, cased(octets(self), true));
+    }
+
+    /** The empty value in the receiver's own type. */
+    static PyObject emptyOf(PyObject self) {
+        return self instanceof PyByteArray ? PyByteArray.wrap(new byte[0]) : EMPTY;
     }
 
     /**
@@ -828,6 +881,9 @@ public final class PyBytes extends PyObject {
     private static byte[] run(PyObject value) {
         if (value instanceof PyBytes b) {
             return b.value;
+        }
+        if (value instanceof PyByteArray b) {
+            return b.raw();
         }
         throw Slots.typeError("a bytes-like object is required, not '%s'", value.getType().name());
     }
@@ -845,6 +901,9 @@ public final class PyBytes extends PyObject {
         if (value instanceof PyBytes b) {
             return b.value;
         }
+        if (value instanceof PyByteArray b) {
+            return b.raw();
+        }
         if (!Numbers.isIndex(value)) {
             throw Slots.typeError(
                     "argument should be integer or bytes-like object, not '%s'",
@@ -861,8 +920,9 @@ public final class PyBytes extends PyObject {
         return new byte[] {wanted.byteValue()};
     }
 
-    private static byte[] octets(PyObject self) {
-        return ((PyBytes) self).value;
+    /** The octets of a bytes or a bytearray: the one reading both method tables share. */
+    static byte[] octets(PyObject self) {
+        return self instanceof PyByteArray b ? b.raw() : ((PyBytes) self).value;
     }
 
     // --- method bodies ---------------------------------------------------------------------
@@ -877,7 +937,7 @@ public final class PyBytes extends PyObject {
      */
     private static PyObject search(PyObject self, PyObject[] args, String[] kwNames, String name,
             boolean right, boolean raises) {
-        legacy(name, args, kwNames, 1, 3);
+        legacy(self, name, args, kwNames, 1, 3);
         byte[] text = octets(self);
         int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
         int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
@@ -898,7 +958,7 @@ public final class PyBytes extends PyObject {
      */
     private static PyObject edge(PyObject self, PyObject[] args, String[] kwNames, String name,
             boolean prefix) {
-        legacy(name, args, kwNames, 1, 3);
+        legacy(self, name, args, kwNames, 1, 3);
         byte[] text = octets(self);
         int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
         int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
@@ -944,23 +1004,24 @@ public final class PyBytes extends PyObject {
                 Arguments.parameters(name, args, kwNames, SEPARATOR, SEPARATOR_DEFAULTS, 0);
         long maxsplit = Numbers.size(parameters[1]);
         byte[] separator = parameters[0] == PyNone.INSTANCE ? null : run(parameters[0]);
-        return pieces(octets(self), separator, maxsplit, right);
+        return pieces(self, octets(self), separator, maxsplit, right);
     }
 
     /** {@code strip}, {@code lstrip} and {@code rstrip}: an alphabet of octets, or none. */
     private static PyObject trim(
             PyObject self, PyObject[] args, String[] kwNames, String name, boolean left, boolean right) {
-        legacy(name, args, kwNames, 0, 1);
+        legacy(self, name, args, kwNames, 0, 1);
         byte[] characters = args.length > 0 && args[0] != PyNone.INSTANCE ? run(args[0]) : null;
         byte[] text = octets(self);
         int[] edges = trimmed(text, characters, left, right);
         return edges[0] == 0 && edges[1] == text.length
-                ? self
-                : PyBytes.wrap(Arrays.copyOfRange(text, edges[0], edges[1]));
+                ? unchanged(self, text)
+                : answer(self, Arrays.copyOfRange(text, edges[0], edges[1]));
     }
 
     /** {@code separator.join(iterable)}: a run for every item, and nothing else. */
-    private static PyObject joined(byte[] separator, PyObject parts) {
+    static PyObject joined(PyObject self, PyObject parts) {
+        byte[] separator = octets(self);
         if (parts.iterator() == Slots.DECLINED) {
             throw Slots.typeError("can only join an iterable");
         }
@@ -976,13 +1037,13 @@ public final class PyBytes extends PyObject {
             }
             out.writeBytes(segment(item, at));
         }
-        return PyBytes.wrap(out.toByteArray());
+        return answer(self, out.toByteArray());
     }
 
     /** An item of {@code join}'s iterable, refused with the position it was reached at. */
     private static byte[] segment(PyObject item, int at) {
-        if (item instanceof PyBytes b) {
-            return b.value;
+        if (item instanceof PyBytes || item instanceof PyByteArray) {
+            return run(item);
         }
         throw Slots.typeError(
                 "sequence item %d: expected a bytes-like object, %s found",
@@ -996,7 +1057,8 @@ public final class PyBytes extends PyObject {
      * method reads from. An empty separator is an error, because it would be found at a place that is
      * not between two pieces.
      */
-    private static PyTuple divided(PyObject self, byte[] text, PyObject argument, boolean left) {
+    private static PyTuple divided(PyObject self, PyObject argument, boolean left) {
+        byte[] text = octets(self);
         byte[] separator = run(argument);
         if (separator.length == 0) {
             throw Slots.valueError("empty separator");
@@ -1004,13 +1066,13 @@ public final class PyBytes extends PyObject {
         int at = first(text, separator, 0, text.length, !left);
         if (at < 0) {
             return left
-                    ? PyTuple.of(self, PyBytes.EMPTY, PyBytes.EMPTY)
-                    : PyTuple.of(PyBytes.EMPTY, PyBytes.EMPTY, self);
+                    ? PyTuple.of(unchanged(self, text), emptyOf(self), emptyOf(self))
+                    : PyTuple.of(emptyOf(self), emptyOf(self), unchanged(self, text));
         }
         return PyTuple.of(
-                PyBytes.wrap(Arrays.copyOfRange(text, 0, at)),
-                PyBytes.wrap(Arrays.copyOfRange(text, at, at + separator.length)),
-                PyBytes.wrap(Arrays.copyOfRange(text, at + separator.length, text.length)));
+                answer(self, Arrays.copyOfRange(text, 0, at)),
+                answer(self, Arrays.copyOfRange(text, at, at + separator.length)),
+                answer(self, Arrays.copyOfRange(text, at + separator.length, text.length)));
     }
 
     /** {@code removeprefix} and {@code removesuffix}: the edge run cut off, if the value starts there. */
@@ -1018,9 +1080,10 @@ public final class PyBytes extends PyObject {
         byte[] edge = run(argument);
         byte[] text = octets(self);
         if (edge.length == 0 || !matches(text, 0, text.length, edge, prefix)) {
-            return self;
+            return unchanged(self, text);
         }
-        return PyBytes.wrap(
+        return answer(
+                self,
                 prefix
                         ? Arrays.copyOfRange(text, edge.length, text.length)
                         : Arrays.copyOfRange(text, 0, text.length - edge.length));
@@ -1037,16 +1100,16 @@ public final class PyBytes extends PyObject {
      */
     private static PyObject padded(PyObject self, PyObject[] args, String[] kwNames, String name,
             boolean left, boolean right) {
-        legacy(name, args, kwNames, 1, 2);
+        legacy(self, name, args, kwNames, 1, 2);
         byte[] text = octets(self);
         long width = Numbers.size(args[0]);
         byte fill = args.length > 1 ? fillByte(args[1], name) : SPACE;
         if (text.length >= width) {
-            return self;
+            return unchanged(self, text);
         }
         long margin = width - text.length;
         long before = !left ? 0 : right ? margin / 2 + (margin & width & 1) : margin;
-        return PyBytes.wrap(pad(text, before, margin - before, fill));
+        return answer(self, pad(text, before, margin - before, fill));
     }
 
     /**
@@ -1059,14 +1122,15 @@ public final class PyBytes extends PyObject {
      * refused by the converter's own {@code PyErr_Format}, which adds the colon and counts the octets.
      */
     private static byte fillByte(PyObject value, String name) {
-        if (value instanceof PyBytes one) {
-            if (one.size() != 1) {
+        if (value instanceof PyBytes || value instanceof PyByteArray) {
+            byte[] one = octets(value);
+            if (one.length != 1) {
                 throw Slots.typeError(
                         "%s(): argument 2 must be a byte string of length 1, "
-                                + "not a bytes object of length %d",
-                        name, one.size());
+                                + "not a %s object of length %d",
+                        name, value.getType().name(), one.length);
             }
-            return one.value[0];
+            return one[0];
         }
         throw Slots.typeError(
                 "%s() argument 2 must be a byte string of length 1, not %s",
@@ -1099,7 +1163,7 @@ public final class PyBytes extends PyObject {
      */
     private static PyObject zeroFilled(PyObject self, byte[] text, long width) {
         if (text.length >= width) {
-            return self;
+            return unchanged(self, text);
         }
         long margin = width - text.length;
         byte[] out = pad(text, margin, 0, (byte) '0');
@@ -1109,7 +1173,7 @@ public final class PyBytes extends PyObject {
             out[0] = text[0];
             out[(int) margin] = '0';
         }
-        return PyBytes.wrap(out);
+        return answer(self, out);
     }
 
     /**
@@ -1278,14 +1342,15 @@ public final class PyBytes extends PyObject {
     }
 
     /** The pieces {@code split} and {@code rsplit} report, by separator or by whitespace. */
-    private static PyList pieces(byte[] text, byte[] separator, long maxsplit, boolean right) {
+    private static PyList pieces(
+            PyObject self, byte[] text, byte[] separator, long maxsplit, boolean right) {
         if (separator != null && separator.length == 0) {
             throw Slots.valueError("empty separator");
         }
         long cuts = maxsplit < 0 ? Long.MAX_VALUE : maxsplit;
         List<byte[]> out = new ArrayList<>();
         if (separator == null) {
-            return whitespacePieces(text, cuts, right);
+            return whitespacePieces(self, text, cuts, right);
         }
         if (right) {
             int end = text.length;
@@ -1300,7 +1365,7 @@ public final class PyBytes extends PyObject {
             }
             out.add(Arrays.copyOfRange(text, 0, end));
             Collections.reverse(out);
-            return bytes(out);
+            return bytes(self, out);
         }
         int at = 0;
         while (cuts > 0) {
@@ -1313,7 +1378,7 @@ public final class PyBytes extends PyObject {
             cuts--;
         }
         out.add(Arrays.copyOfRange(text, at, text.length));
-        return bytes(out);
+        return bytes(self, out);
     }
 
     /**
@@ -1321,7 +1386,7 @@ public final class PyBytes extends PyObject {
      * piece of a truncated split keeps the whitespace it was reached through, which is why
      * {@code b'  a  b  '.split(None, 1)} is {@code [b'a', b'b  ']} and not a list of one.
      */
-    private static PyList whitespacePieces(byte[] text, long cuts, boolean right) {
+    private static PyList whitespacePieces(PyObject self, byte[] text, long cuts, boolean right) {
         List<byte[]> out = new ArrayList<>();
         if (right) {
             int end = previousNonSpace(text, text.length);
@@ -1338,7 +1403,7 @@ public final class PyBytes extends PyObject {
                 out.add(Arrays.copyOfRange(text, 0, end));
             }
             Collections.reverse(out);
-            return bytes(out);
+            return bytes(self, out);
         }
         int at = nextNonSpace(text, 0);
         while (at < text.length) {
@@ -1354,7 +1419,7 @@ public final class PyBytes extends PyObject {
             at = nextNonSpace(text, end);
             cuts--;
         }
-        return bytes(out);
+        return bytes(self, out);
     }
 
     private static int nextNonSpace(byte[] text, int at) {
@@ -1379,7 +1444,8 @@ public final class PyBytes extends PyObject {
      * the Unicode family. {@code b'a\x0bb'.splitlines()} is one line, and a {@code \x85} is two octets
      * of some other character's UTF-8 rather than the next line.
      */
-    private static PyList lined(byte[] text, boolean keepends) {
+    private static PyList lined(PyObject self, boolean keepends) {
+        byte[] text = octets(self);
         List<byte[]> out = new ArrayList<>();
         int start = 0;
         int at = 0;
@@ -1400,7 +1466,7 @@ public final class PyBytes extends PyObject {
         if (start < text.length) {
             out.add(Arrays.copyOfRange(text, start, text.length));
         }
-        return bytes(out);
+        return bytes(self, out);
     }
 
     /** ASCII case folding, which is all of what {@code bytes.upper()} means: {@code \xff} stays. */
@@ -1429,15 +1495,15 @@ public final class PyBytes extends PyObject {
         return octet >= 'a' && octet <= 'z';
     }
 
-    private static boolean isAlpha(int octet) {
+    static boolean isAlpha(int octet) {
         return isUpper(octet) || isLower(octet);
     }
 
-    private static boolean isAlnum(int octet) {
+    static boolean isAlnum(int octet) {
         return isAlpha(octet) || isDigit(octet);
     }
 
-    private static boolean isDigit(int octet) {
+    static boolean isDigit(int octet) {
         return octet >= '0' && octet <= '9';
     }
 
@@ -1622,9 +1688,10 @@ public final class PyBytes extends PyObject {
     }
 
     /** {@code bytes.fromhex(string)}: two digits per octet, with a space allowed between the pair. */
-    private static PyObject fromHexadecimal(PyObject[] args, String[] kwNames) {
-        Arguments.exactlyOne("bytes.fromhex()", args, kwNames);
-        return PyBytes.wrap(hexadecimalDigits(args[0]));
+    static PyObject fromHexadecimal(PyObject[] args, String[] kwNames, boolean mutable) {
+        Arguments.exactlyOne(mutable ? "bytearray.fromhex()" : "bytes.fromhex()", args, kwNames);
+        byte[] digits = hexadecimalDigits(args[0]);
+        return mutable ? PyByteArray.wrap(digits) : PyBytes.wrap(digits);
     }
 
     /**
@@ -1650,8 +1717,8 @@ public final class PyBytes extends PyObject {
             }
             return hexadecimalDigits(value.getBytes(StandardCharsets.ISO_8859_1));
         }
-        if (source instanceof PyBytes one) {
-            return hexadecimalDigits(one.value);
+        if (source instanceof PyBytes || source instanceof PyByteArray) {
+            return hexadecimalDigits(octets(source));
         }
         throw Slots.typeError(
                 "fromhex() argument must be str or bytes-like, not %s", source.getType().name());
@@ -1713,8 +1780,8 @@ public final class PyBytes extends PyObject {
     }
 
     /** {@code bytes.maketrans(frm, to)}: the identity table with each octet of one pointed at the other. */
-    private static PyObject translationTable(PyObject[] args, String[] kwNames) {
-        Arguments.noKeywords("bytes.maketrans()", kwNames);
+    static PyObject translationTable(PyObject[] args, String[] kwNames, boolean mutable) {
+        Arguments.noKeywords(mutable ? "bytearray.maketrans()" : "bytes.maketrans()", kwNames);
         Arguments.exactly("maketrans", args, kwNames, 2);
         byte[] from = run(args[0]);
         byte[] to = run(args[1]);
@@ -1743,7 +1810,7 @@ public final class PyBytes extends PyObject {
      * {@code b'ab'.translate(bytes.maketrans(b'', b'')) is b'ab'} true. A deletion that never happens and
      * a mapping that maps nothing both count as no change.
      */
-    private static PyObject translated(byte[] text, PyObject[] given, PyObject self) {
+    static PyObject translated(byte[] text, PyObject[] given, PyObject self) {
         byte[] table = given[0] instanceof PyNone ? null : run(given[0]);
         if (table != null && table.length != 256) {
             throw Slots.valueError("translation table must be 256 characters long");
@@ -1759,7 +1826,7 @@ public final class PyBytes extends PyObject {
                     out[at] = mapped;
                     changed |= mapped != text[at];
                 }
-                return changed ? PyBytes.wrap(out) : self;
+                return changed ? answer(self, out) : unchanged(self, text);
             }
         }
         int[] mapped = new int[256];
@@ -1782,7 +1849,9 @@ public final class PyBytes extends PyObject {
                 changed = true;
             }
         }
-        return changed ? PyBytes.wrap(Arrays.copyOf(out, written)) : self;
+        return changed
+                ? answer(self, Arrays.copyOf(out, written))
+                : unchanged(self, text);
     }
 
     private static String hexadecimal(byte[] text) {
@@ -1799,10 +1868,10 @@ public final class PyBytes extends PyObject {
         out.append(HEX_DIGITS.charAt(value >> 4)).append(HEX_DIGITS.charAt(value & 0xf));
     }
 
-    private static PyList bytes(List<byte[]> parts) {
+    private static PyList bytes(PyObject self, List<byte[]> parts) {
         PyObject[] out = new PyObject[parts.size()];
         for (int i = 0; i < out.length; i++) {
-            out[i] = PyBytes.wrap(parts.get(i));
+            out[i] = answer(self, parts.get(i));
         }
         return PyList.of(out);
     }
@@ -1814,7 +1883,8 @@ public final class PyBytes extends PyObject {
 
     @Override
     public boolean eq(PyObject other) {
-        return other instanceof PyBytes b && Arrays.equals(value, b.value);
+        return (other instanceof PyBytes || other instanceof PyByteArray)
+                && Arrays.equals(value, octets(other));
     }
 
     @Override

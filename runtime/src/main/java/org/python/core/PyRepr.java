@@ -48,6 +48,19 @@ final class PyRepr {
      * string path by mapping a byte to a Latin-1 code point — 0xC0 would render as a printable.
      */
     static String quoteBytes(byte[] bytes) {
+        return quoted(bytes, false);
+    }
+
+    /**
+     * {@code bytearray_repr}'s quoting, which differs from {@code bytes}' in one place: a single quote is
+     * escaped even when the run is written in double quotes, so {@code repr(bytearray(b"a'b"))} is
+     * {@code bytearray(b"a\\'b")} while {@code repr(b"a'b")} is {@code b"a'b"}.
+     */
+    static String quoteByteArray(byte[] bytes) {
+        return quoted(bytes, true);
+    }
+
+    private static String quoted(byte[] bytes, boolean escapeSingle) {
         boolean hasSingle = false;
         boolean hasDouble = false;
         for (byte b : bytes) {
@@ -70,7 +83,7 @@ final class PyRepr {
                 out.append("\\r");
             } else if (v == '\t') {
                 out.append("\\t");
-            } else if (v == quote) {
+            } else if (v == quote || (escapeSingle && v == '\'')) {
                 out.append('\\').append((char) v);
             } else if (v >= 0x20 && v < 0x7f) {
                 out.append((char) v);
