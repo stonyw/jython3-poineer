@@ -55,7 +55,19 @@ import java.util.function.Supplier;
  */
 public final class PyStream extends PyIterator {
 
-    static final PyType TYPE = PyType.builtin("TextIOWrapper").filedUnder("_io.TextIOWrapper");
+    /**
+     * {@code type(sys.stdin)}: the top of the chain {@code _io} files, and the only one of its six classes
+     * a program meets without naming it.
+     *
+     * <p>It is declared over {@link PyType#TEXT_IO_BASE} rather than born at {@code object}, which is what
+     * gives {@code TextIOWrapper.__mro__} its four names and {@code isinstance(sys.stdin, IOBase)} its
+     * answer. The rows the two base classes hold are in {@link IoBases}, and the ones here are only the
+     * wrapper's own.
+     */
+    static final PyType TYPE =
+            PyType.declare("TextIOWrapper", PyType.TEXT_IO_BASE)
+                    .filedUnder("_io.TextIOWrapper")
+                    .documented(PyType.TEXTIOWRAPPER_DOC);
 
     /** What {@code _io} says when a method of the stream itself meets a closed descriptor. */
     private static final String CLOSED = "I/O operation on closed file.";

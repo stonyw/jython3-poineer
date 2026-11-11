@@ -112,7 +112,14 @@ final class Members {
             // asked of the type — `BufferedReader.peek` — is answerable the same way as one asked of the
             // stream itself.
             Map.entry(PyType.BUFFERED_READER, PyBufferedReader.class),
-            Map.entry(PyType.FILE_IO, PyFileIO.class));
+            Map.entry(PyType.FILE_IO, PyFileIO.class),
+            // The four abstract bases under `_io` file their rows in one class, because they are one
+            // family of stubs: `_IOBase.seek` and `_BufferedIOBase.read` are askable through the type
+            // before any base value exists.
+            Map.entry(PyType.IO_BASE, IoBases.class),
+            Map.entry(PyType.TEXT_IO_BASE, IoBases.class),
+            Map.entry(PyType.RAW_IO_BASE, IoBases.class),
+            Map.entry(PyType.BUFFERED_IO_BASE, IoBases.class));
 
     private final PyType owner;
 

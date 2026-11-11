@@ -310,7 +310,8 @@ class Jy3LauncherTest {
                 "131_ascii_repr_rewritten.py",
                 "132_input_and_the_line_it_reads.py",
                 "133_encode_handlers_and_the_runs_they_answer_for.py",
-                "134_decode_handlers_and_the_octets_they_answer_for.py");
+                "134_decode_handlers_and_the_octets_they_answer_for.py",
+                "137_the_four_books_under_every_stream.py");
     }
 
     /**

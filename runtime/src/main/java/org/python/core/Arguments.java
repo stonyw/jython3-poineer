@@ -267,6 +267,12 @@ final class Arguments {
             int maxPositional) {
         int keywords = kwNames == null ? 0 : kwNames.length;
         int positional = positional(args, kwNames);
+        // parser->pos: the parameters a call may not reach by keyword, and so the ones the copy loop
+        // starts after rather than filling with a name nobody can write.
+        int posonly = 0;
+        while (posonly < names.length && names[posonly].isEmpty()) {
+            posonly++;
+        }
         if (keywords == 0 && minPositional <= positional && positional <= maxPositional) {
             // CPython's fast path hands the caller `args` itself; the extra slots are its defaults.
             return Arrays.copyOf(args, names.length);
@@ -292,10 +298,20 @@ final class Arguments {
                     maxPositional == 1 ? "" : "s",
                     positional);
         }
+        int minposonly = Math.min(posonly, minPositional);
+        if (positional < minposonly) {
+            throw Slots.typeError(
+                    "%s() takes %s %d positional argument%s (%d given)",
+                    name,
+                    minposonly < maxPositional ? "at least" : "exactly",
+                    minposonly,
+                    minposonly == 1 ? "" : "s",
+                    positional);
+        }
         PyObject[] values = new PyObject[names.length];
         System.arraycopy(args, 0, values, 0, positional);
         int left = keywords;
-        for (int i = positional; i < values.length; i++) {
+        for (int i = Math.max(positional, posonly); i < values.length; i++) {
             values[i] = left == 0 ? null : behind(args, positional, kwNames, names[i]);
             if (values[i] != null) {
                 left--;

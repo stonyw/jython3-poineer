@@ -887,6 +887,22 @@ final class TypeDict {
             superTable(into);
             return;
         }
+        if (owner == PyType.IO_BASE) {
+            ioBaseTable(owner, into);
+            return;
+        }
+        if (owner == PyType.TEXT_IO_BASE) {
+            textIOBaseTable(owner, into);
+            return;
+        }
+        if (owner == PyType.RAW_IO_BASE) {
+            rawIOBaseTable(owner, into);
+            return;
+        }
+        if (owner == PyType.BUFFERED_IO_BASE) {
+            bufferedIOBaseTable(owner, into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -2951,6 +2967,83 @@ final class TypeDict {
         table.wrapper("__gt__", GT_DOC, (args, kw, q) -> identity(args, CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, (args, kw, q) -> identity(args, CompareOp.GE));
         table.wrapper("__bool__", TRUTH_DOC, args -> PyBool.FALSE);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code _IOBase}'s own dictionary: the twenty-five names the reference files less {@code __module__}.
+     *
+     * <p>The first three are slot wrappers, and the rest are the rows of the C method table plus the two
+     * getsets. The order is the reference's — {@code vars(_io._IOBase)} reads it that way — and the three
+     * wrappers are first because {@code type_new} files the slots before the methods.
+     */
+    private static void ioBaseTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.wrapper("__iter__", null, (args, kwNames, qualified) -> IoBases.iterate(args[0]));
+        table.wrapper("__next__", null, (args, kwNames, qualified) -> IoBases.advance(args[0]));
+        table.wrapper("__del__", null, (args, kwNames, qualified) -> IoBases.finalize(args[0]));
+        table.named(
+                "seek",
+                "tell",
+                "truncate",
+                "flush",
+                "close",
+                "seekable",
+                "readable",
+                "writable",
+                "_checkClosed",
+                "_checkSeekable",
+                "_checkReadable",
+                "_checkWritable",
+                "fileno",
+                "isatty",
+                "__enter__",
+                "__exit__",
+                "readline",
+                "readlines",
+                "writelines");
+        table.getset("__dict__", null, IoBases::dictionary, null);
+        table.getset("closed", null, IoBases::closed, null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code _TextIOBase}'s own dictionary: four stubs and the three fields a bare value answers with
+     * {@code None}, because only {@code TextIOWrapper} fills them.
+     */
+    private static void textIOBaseTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.named("detach", "read", "readline", "write");
+        table.getset(
+                "encoding",
+                "Encoding of the text stream.\n\nSubclasses should override.",
+                IoBases::absentField,
+                null);
+        table.getset(
+                "newlines",
+                "Line endings translated so far.\n\nOnly line endings translated during reading are"
+                        + " considered.\n\nSubclasses should override.",
+                IoBases::absentField,
+                null);
+        table.getset(
+                "errors",
+                "The error setting of the decoder or encoder.\n\nSubclasses should override.",
+                IoBases::absentField,
+                null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code _RawIOBase}'s own dictionary: two stubs that refuse with {@code NotImplementedError}. */
+    private static void rawIOBaseTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.named("read", "readall", "readinto", "write");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code _BufferedIOBase}'s own dictionary: six stubs, the two {@code readinto} forms included. */
+    private static void bufferedIOBaseTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.named("detach", "read", "read1", "readinto", "readinto1", "write");
         table.value("__doc__", docValue(owner));
     }
 
@@ -5646,6 +5739,7 @@ final class TypeDict {
                     "__hash__",
                     "__iter__",
                     "__next__",
+                    "__del__",
                     "__len__",
                     "__neg__",
                     "__pos__",

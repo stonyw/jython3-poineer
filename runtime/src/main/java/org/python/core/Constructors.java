@@ -128,6 +128,9 @@ final class Constructors {
         if (type == PyType.ELLIPSIS) {
             return theOneValue(PyEllipsis.INSTANCE, "EllipsisType", args, keywordNames);
         }
+        if (IoBases.owns(type)) {
+            return IoBases.instantiate(type, args, kwNames);
+        }
         throw Slots.notImplemented("calling '" + type.name() + "'");
     }
 

@@ -543,6 +543,56 @@ public class PyType extends PyObject {
     private static final String RAW_IOBASE_DOC =
             "Base class for raw binary I/O.";
 
+    /**
+     * What {@code _TextIOBase.__doc__} is, and with it the half of {@code help(sys.stdin)} that names the
+     * layer the wrapper sits on.
+     *
+     * <p>The sentence is the reason the class exists in the chain at all: it files no iteration, no
+     * {@code _check} row and no close, only the four rows whose signatures differ between a text stream
+     * and a binary one and the three fields a binary stream cannot answer. It is why there is no
+     * {@code readinto} above {@link #BUFFERED_IO_BASE}, which the last line says out loud.
+     */
+    private static final String TEXT_IOBASE_DOC =
+            "Base class for text I/O.\n"
+                    + "\n"
+                    + "This class provides a character and line based interface to stream\n"
+                    + "I/O. There is no readinto method because Python's character strings\n"
+                    + "are immutable.\n";
+
+    /**
+     * What {@code TextIOWrapper.__doc__} is — the only one of the six {@code _io} sentences a program reads
+     * through a class it cannot name, since {@code type(sys.stdin)} is the wrapper.
+     */
+    static final String TEXTIOWRAPPER_DOC =
+            "Character and line based layer over a BufferedIOBase object, buffer.\n"
+                    + "\n"
+                    + "encoding gives the name of the encoding that the stream will be\n"
+                    + "decoded or encoded with. It defaults to locale.getencoding().\n"
+                    + "\n"
+                    + "errors determines the strictness of encoding and decoding (see\n"
+                    + "help(codecs.Codec) or the documentation for codecs.register) and\n"
+                    + "defaults to \"strict\".\n"
+                    + "\n"
+                    + "newline controls how line endings are handled. It can be None, '',\n"
+                    + "'\\n', '\\r', and '\\r\\n'.  It works as follows:\n"
+                    + "\n"
+                    + "* On input, if newline is None, universal newlines mode is\n"
+                    + "  enabled. Lines in the input can end in '\\n', '\\r', or '\\r\\n', and\n"
+                    + "  these are translated into '\\n' before being returned to the\n"
+                    + "  caller. If it is '', universal newline mode is enabled, but line\n"
+                    + "  endings are returned to the caller untranslated. If it has any of\n"
+                    + "  the other legal values, input lines are only terminated by the given\n"
+                    + "  string, and the line ending is returned to the caller untranslated.\n"
+                    + "\n"
+                    + "* On output, if newline is None, any '\\n' characters written are\n"
+                    + "  translated to the system default line separator, os.linesep. If\n"
+                    + "  newline is '' or '\\n', no translation takes place. If newline is any\n"
+                    + "  of the other legal values, any '\\n' characters written are translated\n"
+                    + "  to the given string.\n"
+                    + "\n"
+                    + "If line_buffering is True, a call to flush is implied when a call to\n"
+                    + "write contains a newline character.";
+
     private static final String BUFFERED_READER_DOC =
             "Create a new buffered reader using the given readable raw IO object.";
 
@@ -559,18 +609,23 @@ public class PyType extends PyObject {
                     + "similar to passing None).";
 
     /**
-     * The four {@code _io} classes a stream is built out of, and the two of them {@code sys.stdin} rests on.
+     * The five {@code _io} classes a stream is built out of, and the two of them {@code sys.stdin} rests on.
      *
      * <p>{@code _io} is one abstract class per layer of its own: {@code _IOBase} holds what every stream
      * answers — the closed flag, the direction questions, the two iterations and the four {@code _check}
-     * rows — and {@code _BufferedIOBase} and {@code _RawIOBase} are the empty markers between it and the
-     * concrete readers, present so that {@code BufferedReader.__mro__} names four classes and
-     * {@code isinstance} has something to ask. They are declared here rather than beside
-     * {@link PyStream#TYPE} because all five sit in one chain, and a chain cannot be initialised from its
-     * ends in either order.
+     * rows — {@code _TextIOBase} holds the four rows whose signature a text stream cannot share with a
+     * binary one, and {@code _BufferedIOBase} and {@code _RawIOBase} are the markers between the base and
+     * the concrete readers. They are declared here rather than beside {@link PyStream#TYPE} because all six
+     * sit in one chain, and a chain cannot be initialised from its ends in either order.
      */
     public static final PyType IO_BASE =
             declare("_IOBase", OBJECT).filedUnder("_io._IOBase").documented(IOBASE_DOC);
+
+    /** The marker between {@link #IO_BASE} and the streams of characters. */
+    public static final PyType TEXT_IO_BASE =
+            declare("_TextIOBase", IO_BASE)
+                    .filedUnder("_io._TextIOBase")
+                    .documented(TEXT_IOBASE_DOC);
 
     /** The marker between {@link #IO_BASE} and the readers of octets. */
     public static final PyType BUFFERED_IO_BASE =
@@ -1208,6 +1263,10 @@ public class PyType extends PyObject {
                 || this == PyStream.TYPE
                 || this == BUFFERED_READER
                 || this == FILE_IO
+                || this == IO_BASE
+                || this == TEXT_IO_BASE
+                || this == RAW_IO_BASE
+                || this == BUFFERED_IO_BASE
                 || matches(ExceptionTypes.BASE_EXCEPTION);
     }
 
