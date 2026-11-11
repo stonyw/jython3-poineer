@@ -1176,14 +1176,14 @@ class InputStreamTest {
         assertThat(Slots.repr(PyStream.TYPE)).isEqualTo("<class '_io.TextIOWrapper'>");
         assertThat(reading("one\n").getType()).isSameAs(PyStream.TYPE);
         // The names the reading face is filed are all there; the buffer layer beneath it is not, and a
-        // slice-86 row like `reconfigure` is refused by the lookup rather than by the stream.
-        assertThatThrownBy(() -> Slots.getAttr(reading("one\n"), "reconfigure"))
+        // name only that layer declares is refused by the lookup rather than by the stream.
+        assertThatThrownBy(() -> Slots.getAttr(reading("one\n"), "readinto"))
                 .isInstanceOfSatisfying(
                         PyRaise.class,
                         refused ->
                                 assertThat(refused.getMessage())
                                         .isEqualTo(
                                                 "AttributeError: '_io.TextIOWrapper' object has no"
-                                                        + " attribute 'reconfigure'"));
+                                                        + " attribute 'readinto'"));
     }
 }

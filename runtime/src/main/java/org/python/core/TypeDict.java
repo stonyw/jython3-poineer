@@ -201,6 +201,21 @@ final class TypeDict {
             "__delattr__($self, name, /)\n--\n\nImplement delattr(self, name).";
     private static final String ITER_DOC = "__iter__($self, /)\n--\n\nImplement iter(self).";
     private static final String NEXT_DOC = "__next__($self, /)\n--\n\nImplement next(self).";
+
+    /**
+     * The three sentences {@code TextIOWrapper}'s slot wrappers carry, with no argument table above them.
+     *
+     * <p>A slot wrapper's {@code ml_doc} is the {@code slotdefs} sentence alone — the table the other
+     * dunders of this file carry is clinic's, and these three rows are not clinic's — so {@code
+     * TextIOWrapper.__dict__['__repr__'].__doc__} is one line and not three.
+     */
+    private static final String WRAPPER_REPR_DOC = "Return repr(self).";
+
+    private static final String WRAPPER_NEXT_DOC = "Implement next(self).";
+
+    private static final String WRAPPER_INIT_DOC =
+            "Initialize self.  See help(type(self)) for accurate signature.";
+
     private static final String LEN_DOC = "__len__($self, /)\n--\n\nReturn len(self).";
     private static final String GETITEM_DOC = "__getitem__($self, key, /)\n--\n\nReturn self[key].";
     private static final String CONTAINS_DOC =
@@ -901,6 +916,10 @@ final class TypeDict {
         }
         if (owner == PyType.BUFFERED_IO_BASE) {
             bufferedIOBaseTable(owner, into);
+            return;
+        }
+        if (owner == PyStream.TYPE) {
+            textIOWrapperTable(owner, into);
             return;
         }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
@@ -3045,6 +3064,106 @@ final class TypeDict {
         Table table = new Table(owner, into);
         table.named("detach", "read", "read1", "readinto", "readinto1", "write");
         table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code _io.TextIOWrapper}'s own dictionary: the thirty names the reference files less
+     * {@code __module__}.
+     *
+     * <p>Three wrappers, nineteen methods, four members and six getsets, in the order
+     * {@code vars(_io.TextIOWrapper)} reads them. The wrappers are the three slots {@code type_new}
+     * gives a type that writes {@code tp_repr}, {@code tp_iternext} and {@code tp_init}; the members are
+     * the four fields {@code PyMemberDef} declares, of which {@code encoding}, {@code line_buffering} and
+     * {@code write_through} are read-only while {@code _finalizing} takes a bool and nothing else; and the
+     * getsets are the six rows of {@code textio_getsetlist}, of which only {@code _CHUNK_SIZE} writes.
+     *
+     * <p>Every read and write goes back through {@link PyStream}'s own answers, so a name read through
+     * the descriptor and the same name read through the instance cannot disagree. What is not here is
+     * {@code __module__}, which no type of this runtime files.
+     */
+    private static void textIOWrapperTable(PyType owner, PyDict into) {
+        Table table = new Table(owner, into);
+        table.wrapper("__repr__", WRAPPER_REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper(
+                "__next__",
+                WRAPPER_NEXT_DOC,
+                (args, kwNames, qualified) -> IoBases.advance(args[0]));
+        table.wrapper("__init__", WRAPPER_INIT_DOC, TypeDict::initializeTextStream);
+        table.named(
+                "detach",
+                "reconfigure",
+                "write",
+                "read",
+                "readline",
+                "flush",
+                "close",
+                "fileno",
+                "seekable",
+                "readable",
+                "writable",
+                "isatty",
+                "seek",
+                "tell",
+                "truncate",
+                "__getstate__");
+        table.member("encoding", null, self -> Slots.getAttr(self, "encoding"), null);
+        table.member("line_buffering", null, self -> Slots.getAttr(self, "line_buffering"), null);
+        table.member("write_through", null, self -> Slots.getAttr(self, "write_through"), null);
+        table.member(
+                "_finalizing",
+                null,
+                self -> Slots.getAttr(self, "_finalizing"),
+                (self, value) -> {
+                    if (value == null) {
+                        throw Slots.typeError("can't delete numeric/char attribute");
+                    }
+                    ((PyStream) self).setAttr("_finalizing", value);
+                });
+        table.getset("name", null, self -> Slots.getAttr(self, "name"), null);
+        table.getset("closed", null, self -> Slots.getAttr(self, "closed"), null);
+        table.getset("newlines", null, self -> Slots.getAttr(self, "newlines"), null);
+        table.getset("errors", null, self -> Slots.getAttr(self, "errors"), null);
+        table.getset(
+                "_CHUNK_SIZE",
+                null,
+                self -> Slots.getAttr(self, "_CHUNK_SIZE"),
+                (self, value) -> {
+                    if (value == null) {
+                        ((PyStream) self).delAttr("_CHUNK_SIZE");
+                    } else {
+                        ((PyStream) self).setAttr("_CHUNK_SIZE", value);
+                    }
+                });
+        table.getset("buffer", null, self -> Slots.getAttr(self, "buffer"), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code TextIOWrapper.__init__}: the argument table {@code textio.c} files, as an already-built
+     * stream meets it.
+     *
+     * <p>The reference checks the buffer by asking it three questions — {@code readable}, {@code
+     * writable} and {@code seekable} — before it touches anything, which is why a value that is not a
+     * buffer is refused with the missing attribute rather than a message of the stream's own. The layers
+     * a live stream was built with are not replaced here; a call that gets past the three questions keeps
+     * the stream it was handed.
+     */
+    private static PyObject initializeTextStream(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject[] values =
+                Arguments.unpackKeywords(
+                        "TextIOWrapper",
+                        Arrays.copyOfRange(args, 1, args.length),
+                        kwNames,
+                        new String[] {
+                            "buffer", "encoding", "errors", "newline", "line_buffering",
+                            "write_through"
+                        },
+                        1,
+                        6);
+        Slots.getAttr(values[0], "readable");
+        Slots.getAttr(values[0], "writable");
+        Slots.getAttr(values[0], "seekable");
+        return PyNone.INSTANCE;
     }
 
     /** {@code none_new}: the class gates, and then nothing at all is asked of the arguments. */

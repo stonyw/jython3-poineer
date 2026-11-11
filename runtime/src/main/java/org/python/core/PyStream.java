@@ -85,6 +85,32 @@ public final class PyStream extends PyIterator {
     /** What {@code CHECK_ATTACHED} says once the stream has handed its buffer over. */
     private static final String DETACHED = "underlying buffer has been detached";
 
+    /** {@code _io.TextIOWrapper_reconfigure}'s sentence, which is the one row of the type with a doc. */
+    private static final String RECONFIGURE_DOC =
+            "Reconfigure the text stream with new parameters.\n\nThis also does an implicit stream flush.";
+
+    /**
+     * The two sentences {@code _io.TextIOWrapper} files over {@code seek} and {@code tell}.
+     *
+     * <p>The pairs are the type's own, not the ones {@code _IOBase} writes: this layer is the one that
+     * restricts a cookie to what a previous {@code tell} answered, which is what the four combinations
+     * below describe. They are the only two rows of the book whose sentence is longer than one line, and
+     * the reference keeps the clinic table's wrapping word for word.
+     */
+    private static final String SEEK_DOC =
+            "Set the stream position, and return the new stream position.\n\n  cookie\n    Zero or an"
+                    + " opaque number returned by tell().\n  whence\n    The relative position to seek"
+                    + " from.\n\nFour operations are supported, given by the following argument\n"
+                    + "combinations:\n\n- seek(0, SEEK_SET): Rewind to the start of the stream.\n-"
+                    + " seek(cookie, SEEK_SET): Restore a previous position;\n  'cookie' must be a number"
+                    + " returned by tell().\n- seek(0, SEEK_END): Fast-forward to the end of the"
+                    + " stream.\n- seek(0, SEEK_CUR): Leave the current stream position unchanged.\n\nAny"
+                    + " other argument combinations are invalid,\nand may raise exceptions.";
+
+    private static final String TELL_DOC =
+            "Return the stream position as an opaque number.\n\nThe return value of tell() can be given"
+                    + " as input to seek(), to\nrestore a previous stream position.";
+
     private final String name;
     private final PrintStream out;
 
@@ -94,8 +120,19 @@ public final class PyStream extends PyIterator {
     /** {@code self->raw}: the descriptor the buffer rests on, cached to ask it about closedness. */
     private final PyFileIO raw;
 
-    private final String errors;
-    private final boolean lineBuffered;
+    /** {@code self->encoding}: reported as it was handed over, which is why {@code reconfigure} keeps its spelling. */
+    private String encoding = "utf-8";
+
+    /** {@code self->errors}: the handler name, kept as handed over and never looked up here. */
+    private String errors;
+
+    /** {@code self->line_buffering} and {@code self->write_through}: what the two rows report. */
+    private boolean lineBuffered;
+    private boolean writeThrough;
+
+    /** {@code self->finalizing}: the {@code T_BOOL} member a program may write. */
+    private boolean finalizing;
+
     private final int fd;
 
     /** {@code _IOBase.__dict__}: the one dictionary this stream's own attributes are kept in. */
@@ -190,6 +227,87 @@ public final class PyStream extends PyIterator {
     /** {@code _PyFile_Flush(self)}: this stream's own {@code flush} row, reached through Python. */
     private void flushSelf() {
         Slots.call(Slots.getAttr(this, "flush"), new PyObject[0], null);
+    }
+
+    /**
+     * {@code reconfigure}: what a program says about the stream after it was opened.
+     *
+     * <p>The five keywords are clinic's, in clinic's order, and they are all optional; none of them is a
+     * positional argument, which is a sentence of its own rather than "too many arguments". The types are
+     * checked as the arguments are unpacked — the three strings are {@code str or None}, the two flags are
+     * counted as integers with {@code None} left meaning "keep" — and the newline is only checked once all
+     * five conversions are done, which is the order the reference's single {@code PyArg_ParseTupleAndKeywords}
+     * gives. What the newline may be is the four values {@code textio.c} accepts, and anything else is the
+     * {@code ValueError} it raises.
+     *
+     * <p>What follows is {@code CHECK_ATTACHED}, then {@code CHECK_CLOSED}, then the codec lookup — the
+     * reference asks the registry for the name but stores the name the program gave, so {@code
+     * encoding='LATIN-1'} reads back in that spelling — and finally the flush that is the second half of the
+     * sentence in {@link #RECONFIGURE_DOC}. Only after the flush are the fields written.
+     */
+    private PyObject reconfigure(PyObject[] args, String[] kwNames) {
+        PyObject[] values =
+                Arguments.unpackKeywords(
+                        "reconfigure",
+                        args,
+                        kwNames,
+                        new String[] {"encoding", "errors", "newline", "line_buffering", "write_through"},
+                        0,
+                        0);
+        String newEncoding = optionalText(values[0], "encoding");
+        String newErrors = optionalText(values[1], "errors");
+        String newline = optionalText(values[2], "newline");
+        Boolean newLineBuffering = optionalCount(values[3]);
+        Boolean newWriteThrough = optionalCount(values[4]);
+        if (newline != null
+                && !newline.isEmpty()
+                && !newline.equals("\n")
+                && !newline.equals("\r")
+                && !newline.equals("\r\n")) {
+            throw Slots.valueError("illegal newline value: %s", newline);
+        }
+        checkAttached();
+        checkOpen();
+        if (newEncoding != null) {
+            // The lookup is all this runtime keeps of the new codec: the decoder underneath is fixed, so a
+            // name that resolves changes what is reported and not what is read. See PLAN-progress.md.
+            Encoder.codec(newEncoding);
+        }
+        flushSelf();
+        if (newEncoding != null) {
+            encoding = newEncoding;
+        }
+        if (newErrors != null) {
+            errors = newErrors;
+        }
+        if (newLineBuffering != null) {
+            lineBuffered = newLineBuffering;
+        }
+        if (newWriteThrough != null) {
+            writeThrough = newWriteThrough;
+        }
+        return PyNone.INSTANCE;
+    }
+
+    /** One of {@code reconfigure}'s three string keywords, or null where the program passed none or None. */
+    private static String optionalText(PyObject value, String parameter) {
+        if (value == null || value == PyNone.INSTANCE) {
+            return null;
+        }
+        if (!(value instanceof PyStr text)) {
+            throw Slots.typeError(
+                    "reconfigure() argument '%s' must be str or None, not %s",
+                    parameter, Slots.argumentName(value));
+        }
+        return text.getValue();
+    }
+
+    /** One of the two flag keywords, counted the way {@code PyArg_ParseTupleAndKeywords}'s {@code p} does. */
+    private static Boolean optionalCount(PyObject value) {
+        if (value == null || value == PyNone.INSTANCE) {
+            return null;
+        }
+        return Numbers.count(value) != 0;
     }
 
     /**
@@ -646,7 +764,7 @@ public final class PyStream extends PyIterator {
                 return ((PyStream) self)
                         .readlines(args.length == 0 ? -1 : Numbers.optionalSize(args[0], -1));
             })
-            .add("seek", (self, args, kwNames) -> {
+            .add("seek", SEEK_DOC, (self, args, kwNames) -> {
                 Arguments.noKeywords("TextIOWrapper.seek()", kwNames);
                 Arguments.between("seek", args, kwNames, 1, 2);
                 PyStream stream = (PyStream) self;
@@ -657,7 +775,7 @@ public final class PyStream extends PyIterator {
                 }
                 return stream.tellAnswer();
             })
-            .addNoArgument("tell", self -> ((PyStream) self).tellAnswer())
+            .addNoArgument("tell", TELL_DOC, self -> ((PyStream) self).tellAnswer())
             .add("truncate", (self, args, kwNames) -> {
                 Arguments.noKeywords("TextIOWrapper.truncate()", kwNames);
                 Arguments.atMost("truncate", args, kwNames, 1);
@@ -689,6 +807,11 @@ public final class PyStream extends PyIterator {
             .addNoArgument("writable", self -> ((PyStream) self).writableAnswer())
             .addNoArgument("readable", self -> ((PyStream) self).readableAnswer())
             .addNoArgument("seekable", self -> ((PyStream) self).seekableAnswer())
+            .addNoArgument("fileno", self -> ((PyStream) self).filenoAnswer())
+            .add(
+                    "reconfigure",
+                    RECONFIGURE_DOC,
+                    (self, args, kwNames) -> ((PyStream) self).reconfigure(args, kwNames))
             .add("_checkClosed", (self, args, kwNames) -> {
                 Arguments.none("_IOBase._checkClosed()", args, kwNames);
                 ((PyStream) self).checkVirtual();
@@ -763,11 +886,12 @@ public final class PyStream extends PyIterator {
     @Override
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
-            // The four rows that ask only of the stream itself, whatever the layer below it says.
-            case "encoding" -> PyStr.of("utf-8");
+            // The five rows that ask only of the stream itself, whatever the layer below it says.
+            case "encoding" -> PyStr.of(encoding);
             case "errors" -> PyStr.of(errors);
             case "line_buffering" -> PyBool.of(lineBuffered);
-            case "write_through" -> PyBool.FALSE;
+            case "write_through" -> PyBool.of(writeThrough);
+            case "_finalizing" -> PyBool.of(finalizing);
             case "name" -> reading() ? Slots.getAttr(attached(), "name") : PyStr.of(name);
             case "closed" -> closedValue();
             case "buffer" -> {
@@ -790,10 +914,6 @@ public final class PyStream extends PyIterator {
                 checkAttached();
                 yield PyInt.of(chunkSize);
             }
-            case "fileno" -> new PyNativeFunction("fileno", (args, kwNames) -> {
-                Arguments.none("fileno", args, kwNames);
-                return filenoAnswer();
-            });
             case "__enter__" -> new PyNativeFunction("__enter__", (args, kwNames) -> {
                 Arguments.none("_IOBase.__enter__()", args, kwNames);
                 checkVirtual();
@@ -848,6 +968,15 @@ public final class PyStream extends PyIterator {
             chunkSize = size;
             return PyNone.INSTANCE;
         }
+        if (attribute.equals("_finalizing")) {
+            // A `T_BOOL` member: `PyMember_SetOne` refuses anything that is not a bool, in its own words,
+            // rather than counting it the way `bool(value)` would.
+            if (!(value instanceof PyBool flag)) {
+                throw Slots.typeError("attribute value type must be bool");
+            }
+            finalizing = flag == PyBool.TRUE;
+            return PyNone.INSTANCE;
+        }
         GenericAttributes.write(this, attribute, value);
         return PyNone.INSTANCE;
     }
@@ -859,6 +988,10 @@ public final class PyStream extends PyIterator {
             // The row has a setter and no deleter, which is a third refusal of the three kinds of row.
             throw Slots.attributeError(
                     "attribute '_CHUNK_SIZE' of '_io.TextIOWrapper' objects cannot be deleted");
+        }
+        if (attribute.equals("_finalizing")) {
+            // A `T_BOOL` field's deleter, which is `structmember.c`'s sentence and not the row's.
+            throw Slots.typeError("can't delete numeric/char attribute");
         }
         GenericAttributes.delete(this, attribute);
         return PyNone.INSTANCE;
@@ -902,7 +1035,7 @@ public final class PyStream extends PyIterator {
                 + (name == null ? "" : " name=" + Slots.repr(name))
                 + (mode == null ? "" : " mode=" + Slots.repr(mode))
                 + " encoding="
-                + Slots.repr(PyStr.of("utf-8"))
+                + Slots.repr(PyStr.of(encoding))
                 + ">";
     }
 
