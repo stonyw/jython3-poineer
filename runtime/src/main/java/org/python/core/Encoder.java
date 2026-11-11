@@ -17,24 +17,23 @@ import java.util.Set;
  * refuses nothing at all, because every code point has an escape it can write.
  *
  * <p>Of the eight names the registry files ({@code _PyCodec_InitRegistry}, Python/codecs.c:1577) this
- * runtime answers seven. Six of them are inside the two families above and are called without looking
+ * runtime answers all eight. Seven of them are inside the two families above and are called without looking
  * anything up, and the registry is asked only when a run actually fails: {@code "x".encode("ascii","nope")}
  * is {@code b'x'} and the name is never mentioned, while {@code "é".encode("ascii","nope")} is refused in
- * the registry's own words. The seventh, {@code namereplace}, needs the Unicode name database, which is not
- * in this runtime — measured against this JDK 25 and CPython's unicodedata 16.0.0, the reference names
- * 148,853 characters, {@code Character.getName} names 294,579 of which 145,726 the reference leaves
- * unnamed, and the two disagree on the spelling of 108,840 of the rest (it writes CJK ideographs by block)
- * — so it is refused rather than answered with a table that would be wrong.
+ * the registry's own words. The eighth, {@code namereplace}, writes the character's name as the text
+ * {@code \N{...}} — run through the codec like the other text-shaped handlers — and falls back to the hex
+ * escape for a character the reference leaves unnamed. The table behind it is exported from the reference's
+ * own {@code unicodedata} (Unicode 16.0.0) rather than transcribed; {@link UnicodeNames} describes it.
  *
- * <p>Two handlers write what they replace through the codec, and one writes raw octets. {@code replace}
- * answers {@code '?'} per character and {@code backslashreplace} an escape per character, both as text, so
- * UTF-16 turns them into two bytes each and UTF-32 into four; {@code surrogateescape} is the one whose answer
- * is a bytes, and the one-byte family, {@code cp1252} and UTF-8 take it as a fast path that writes the octet
- * {@code ch - 0xdc00} for the characters in {@code 0xdc80..0xdcff} and re-raises the <em>rest</em> of the run
- * — the range it complains about starts where the escaping stopped, so a leading {@code '\udc80'} moves the
- * position of the {@code '\xe9'} behind it. Everywhere else that answer is a one-octet reply to a wider
- * codec, and UTF-16 and UTF-32 refuse it outright ({@code _PyUnicode_EncodeUTF16}:6558 raises for an
- * odd-length bytes).
+ * <p>Three handlers write a text they build through the codec, and one writes raw octets. {@code replace}
+ * answers {@code '?'} per character, {@code backslashreplace} an escape per character and {@code namereplace}
+ * a name or an escape per character, all as text, so UTF-16 turns them into two bytes each and UTF-32 into
+ * four; {@code surrogateescape} is the one whose answer is a bytes, and the one-byte family, {@code cp1252}
+ * and UTF-8 take it as a fast path that writes the octet {@code ch - 0xdc00} for the characters in
+ * {@code 0xdc80..0xdcff} and re-raises the <em>rest</em> of the run — the range it complains about starts
+ * where the escaping stopped, so a leading {@code '\udc80'} moves the position of the {@code '\xe9'} behind
+ * it. Everywhere else that answer is a one-octet reply to a wider codec, and UTF-16 and UTF-32 refuse it
+ * outright ({@code _PyUnicode_EncodeUTF16}:6558 raises for an odd-length bytes).
  */
 final class Encoder {
 
@@ -140,7 +139,7 @@ final class Encoder {
         return -1;
     }
 
-    /** Seven of the eight names the registry files, in the order its table walks them. */
+    /** The eight names the registry files, in the order its table walks them. */
     private enum Handler {
         STRICT,
         IGNORE,
@@ -148,7 +147,8 @@ final class Encoder {
         XMLCHARREFREPLACE,
         BACKSLASHREPLACE,
         SURROGATEESCAPE,
-        SURROGATEPASS
+        SURROGATEPASS,
+        NAMEREPLACE
     }
 
     /** How a codec decides which characters it can write, and how it writes the ones it can. */
@@ -403,6 +403,7 @@ final class Encoder {
             }
             case BACKSLASHREPLACE -> write(codec, out, text, from, to, true, false);
             case XMLCHARREFREPLACE -> write(codec, out, text, from, to, false, true);
+            case NAMEREPLACE -> writeNames(codec, out, text, from, to);
             case SURROGATEESCAPE -> escape(codec, out, text, from, to, start, stop);
             case SURROGATEPASS -> {
                 if (!codec.carriesSurrogates()) {
@@ -438,8 +439,33 @@ final class Encoder {
                 replacement.append("&#").append(codePoint).append(';');
             }
         }
+        emit(codec, out, replacement);
+    }
+
+    /**
+     * {@code namereplace}: {@code \N{NAME}} for a character the reference names, and the hex escape
+     * {@code backslashreplace} writes for the few it leaves unnamed.
+     */
+    private static void writeNames(
+            Codec codec, ByteArrayOutputStream out, String text, int from, int to) {
+        StringBuilder replacement = new StringBuilder();
+        for (int unit = from; unit < to; ) {
+            int codePoint = text.codePointAt(unit);
+            unit += Character.charCount(codePoint);
+            String name = UnicodeNames.nameOf(codePoint);
+            if (name == null) {
+                replacement.append(escapeOf(codePoint));
+            } else {
+                replacement.append("\\N{").append(name).append('}');
+            }
+        }
+        emit(codec, out, replacement);
+    }
+
+    /** Writes a replacement text through the codec, which is what every text-shaped handler does. */
+    private static void emit(Codec codec, ByteArrayOutputStream out, CharSequence replacement) {
         for (int at = 0; at < replacement.length(); ) {
-            int codePoint = replacement.codePointAt(at);
+            int codePoint = Character.codePointAt(replacement, at);
             at += Character.charCount(codePoint);
             codec.write(out, codePoint);
         }
@@ -508,8 +534,7 @@ final class Encoder {
             case "backslashreplace" -> Handler.BACKSLASHREPLACE;
             case "surrogateescape" -> Handler.SURROGATEESCAPE;
             case "surrogatepass" -> Handler.SURROGATEPASS;
-            case "namereplace" -> throw Slots.notImplemented(
-                    "str.encode error handler namereplace");
+            case "namereplace" -> Handler.NAMEREPLACE;
             default -> throw Slots.lookupError("unknown error handler name '" + clipped(errors) + "'");
         };
     }

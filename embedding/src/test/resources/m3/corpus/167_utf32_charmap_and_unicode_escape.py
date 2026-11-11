@@ -41,12 +41,11 @@ up to but not including the closing brace, and a name the table does not know is
 name` over the escape including that brace. Octal reads up to three digits, `\\101` is `A` and `\\377` is
 `0xFF`.
 
-Three things this file leaves unmeasured. `namereplace` still needs the Unicode name database, which this
-runtime does not carry, so it is not reached on either face. The names given to `\\N` are the few the JDK and
-the reference spell the same way, because the JDK writes CJK ideographs by block and does not know the bare
-aliases the reference accepts. And the probe texts use lone surrogates only: this runtime's lexer joins an
-adjacent high and low surrogate into one astral character, which is a gap of its own and not a codec
-question, so a pair written as two escapes would measure the lexer rather than the decoder.
+Two things this file leaves alone. `namereplace` and the Unicode name table behind `\\N` have a file of their
+own, because the table is exported reference data rather than a codec rule. And the probe texts use lone
+surrogates only: this runtime's lexer joins an adjacent high and low surrogate into one astral character, which
+is a gap of its own and not a codec question, so a pair written as two escapes would measure the lexer rather
+than the decoder.
 """
 
 import sys

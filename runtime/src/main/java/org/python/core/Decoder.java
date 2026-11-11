@@ -409,18 +409,20 @@ final class Decoder {
      * <p>An octet that is not a backslash is already a character — the high half comes through as latin-1
      * rather than as a refusal — and a backslash introduces one of five things: a one-letter escape, a line
      * continuation, an octal value of up to three digits, a {@code x}, {@code u} or capital {@code U} escape
-     * of two, four or eight hex digits, or an {@code N} escape whose braces name a character in the JDK's own
-     * name table. A backslash that ends the input is refused by its own octet; a hex escape whose digits run
-     * out is refused by the octets that did arrive, up to the first one that is not a digit; and a value above
-     * {@code 0x10ffff} is refused by the whole escape as {@code illegal Unicode character}. Anything else the
-     * backslash could introduce — a {@code z} or an {@code 8} — is copied through with both octets, which the
-     * reference warns about.
+     * of two, four or eight hex digits, or an {@code N} escape whose braces name a character in the table
+     * {@link UnicodeNames} reads. A backslash that ends the input is refused by its own octet; a hex escape
+     * whose digits run out is refused by the octets that did arrive, up to the first one that is not a digit;
+     * and a value above {@code 0x10ffff} is refused by the whole escape as {@code illegal Unicode character}.
+     * Anything else the backslash could introduce — a {@code z} or an {@code 8} — is copied through with both
+     * octets, which the reference warns about.
      *
-     * <p>The name table is the JDK's, and it is not the reference's: {@code Character.codePointOf} knows
-     * {@code BULLET} and {@code SNOWMAN} and the ordinary spellings of the cased scripts, but not the bare
-     * aliases of {@code aliases.py} ({@code LF}) and not the reference's hyphenated CJK names, which this JDK
-     * spells by block ({@code CJK UNIFIED IDEOGRAPHS 4E00}). A name outside it answers {@code unknown Unicode
-     * character name} where the reference would have found one.
+     * <p>That table is the reference's, exported rather than transcribed: the primary names and the formal
+     * aliases of Unicode 16.0.0, plus the algorithmic names {@code unicodedata.lookup} knows and
+     * {@code unicodedata.name} does not spell (the Tangut ideographs). A name is folded one character at a
+     * time and otherwise matches exactly, so {@code snowman} and {@code LF} are found while
+     * {@code LATIN_SMALL_LETTER_A} and {@code SNOW MAN} are not; a named sequence, which only
+     * {@code unicodedata.lookup} accepts, is a name outside this table and answers
+     * {@code unknown Unicode character name}, as the reference's {@code \N{...}} does too.
      */
     private static void unicodeEscape(StringBuilder out, byte[] data, String errors) {
         String reported = "unicodeescape";
@@ -560,10 +562,8 @@ final class Decoder {
                     errors, reported, data, out, at, close, "malformed \\N character escape");
         }
         String name = new String(data, open + 1, close - open - 1, StandardCharsets.ISO_8859_1);
-        int codePoint;
-        try {
-            codePoint = Character.codePointOf(name);
-        } catch (IllegalArgumentException e) {
+        int codePoint = UnicodeNames.codePointOf(name);
+        if (codePoint < 0) {
             return handled(
                     errors, reported, data, out, at, close + 1, "unknown Unicode character name");
         }
