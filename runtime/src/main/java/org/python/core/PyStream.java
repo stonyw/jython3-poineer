@@ -135,6 +135,23 @@ public final class PyStream extends PyIterator {
     /** {@code self->encoding}: reported as it was handed over, which is why {@code reconfigure} keeps its spelling. */
     private String encoding = "utf-8";
 
+    /**
+     * The codec module under {@link #encoding}, resolved when the name is set rather than per chunk.
+     *
+     * <p>{@code _io} keeps the codec info and its incremental decoder side by side with the name, and the
+     * three change together in {@code reconfigure}; this field is the one the decoding loop reads.
+     */
+    private String codec = "utf_8";
+
+    /**
+     * Whether the decoder has yet to see its first octet, which is when the BOM of {@code utf-8-sig} and of
+     * {@code utf-16} is looked for — once, not on every chunk.
+     */
+    private boolean atStart = true;
+
+    /** The order a markless {@code utf-16} stream was read in, decided by its first two octets. */
+    private boolean utf16Big;
+
     /** {@code self->errors}: the handler name, kept as handed over and never looked up here. */
     private String errors;
 
@@ -283,10 +300,14 @@ public final class PyStream extends PyIterator {
      * change. Draining the descriptor drops the buffer, so the lock is a property of what is held rather
      * than of what has happened.
      *
-     * <p>What follows is {@code CHECK_ATTACHED}, then {@code CHECK_CLOSED}, then the codec lookup — the
-     * reference asks the registry for the name but stores the name the program gave, so {@code
-     * encoding='LATIN-1'} reads back in that spelling — and finally the flush that is the second half of the
-     * sentence in {@link #RECONFIGURE_DOC}. Only after the flush are the fields written.
+     * <p>What follows is {@code CHECK_ATTACHED}, then {@code CHECK_CLOSED}, then the flush that is the
+     * second half of the sentence in {@link #RECONFIGURE_DOC}; only a flush that succeeds is followed by
+     * the codec lookup and the field writes. The reference asks the registry for the name but stores the
+     * name the program gave, so {@code encoding='LATIN-1'} reads back in that spelling, and the one name
+     * that is not stored verbatim is the word {@code locale}, which stands for the locale's own codec.
+     * An encoding arrives with its handler: when the program names an encoding and no handler, the
+     * handler becomes {@code 'strict'} rather than staying what it was, while an {@code errors} on its
+     * own keeps the encoding and an {@code encoding} of {@code None} is not a change at all.
      */
     private PyObject reconfigure(PyObject[] args, String[] kwNames) {
         PyObject[] values =
@@ -317,20 +338,31 @@ public final class PyStream extends PyIterator {
         }
         checkAttached();
         checkOpen();
-        if (newEncoding != null) {
-            // The lookup is all this runtime keeps of the new codec: the decoder underneath is fixed, so a
-            // name that resolves changes what is reported and not what is read. See PLAN-progress.md.
-            Encoder.codec(newEncoding);
-        }
         flushSelf();
+        bytesPerChar = 0;
+        if (newlineGiven) {
+            newline = newNewline;
+        }
+        String newCodec = null;
         if (newEncoding != null) {
+            if (newEncoding.equals("locale")) {
+                newEncoding = System.getProperty("native.encoding", "UTF-8");
+            }
+            newCodec = Encoder.codec(newEncoding);
+        }
+        if (newCodec != null) {
             encoding = newEncoding;
+            codec = newCodec;
+            resetDecoder();
         }
         if (newErrors != null) {
             errors = newErrors;
+            resetDecoder();
+        } else if (newEncoding != null) {
+            errors = "strict";
         }
-        if (newlineGiven) {
-            newline = newNewline;
+        if (newlineGiven && newEncoding == null && newErrors == null) {
+            resetDecoder();
         }
         if (newLineBuffering != null) {
             lineBuffered = newLineBuffering;
@@ -339,6 +371,16 @@ public final class PyStream extends PyIterator {
             writeThrough = newWriteThrough;
         }
         return PyNone.INSTANCE;
+    }
+
+    /** {@code utf-8-sig}'s mark, which is dropped from the first octets of the stream and nowhere else. */
+    private static final byte[] UTF8_BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
+
+    /** A fresh decoder, as {@code _textiowrapper_set_decoder} builds one: no carried octets and no marks read. */
+    private void resetDecoder() {
+        carried = new byte[0];
+        atStart = true;
+        utf16Big = false;
     }
 
     /** One of {@code reconfigure}'s three string keywords, or null where the program passed none or None. */
@@ -744,9 +786,16 @@ public final class PyStream extends PyIterator {
      * The incremental decoder's {@code decode(octets, atEnd)}, over the octets it is still holding.
      *
      * <p>The half character a chunk ends on is not an error and is not thrown away: it is kept for the
-     * next chunk, where the octets that complete it arrive. At the end of the descriptor there is no next
-     * chunk, so the tail goes to the handler instead — which is why {@code b'caf\xc3'} reads as {@code
-     * 'caf\udcc3'} under the surrogate escape {@code sys.stdin} is opened with.
+     * next chunk, where the octets that complete it arrive. How much "half" is depends on the codec — a
+     * UTF-8 sequence's lead says how many of its continuations have arrived, UTF-16 holds an odd octet
+     * and the high surrogate it would otherwise leave dangling, and the one-byte family holds nothing.
+     * At the end of the descriptor there is no next chunk, so the tail goes to the handler instead —
+     * which is why {@code b'caf\xc3'} reads as {@code 'caf\udcc3'} under the surrogate escape {@code
+     * sys.stdin} is opened with.
+     *
+     * <p>The two marks are read once. {@code utf-8-sig} drops a UTF-8 BOM only from its first octets,
+     * so the same three octets later in the stream are a character and not a mark; {@code utf-16}
+     * decides its byte order from the first two octets, or reads little-endian when they are not a mark.
      */
     private String decode(byte[] octets, boolean atEnd) {
         byte[] input = octets;
@@ -755,15 +804,57 @@ public final class PyStream extends PyIterator {
             System.arraycopy(octets, 0, input, carried.length, octets.length);
         }
         carried = new byte[0];
-        if (atEnd) {
-            return Decoder.decode(input, "utf-8", errors);
+        String name = codec.equals("utf_8_sig") ? "utf_8" : codec;
+        if (codec.equals("utf_16") && atStart) {
+            if (input.length < 2 && !atEnd) {
+                carried = input;
+                return "";
+            }
+            atStart = false;
+            if (input.length >= 2) {
+                int mark = ((input[1] & 0xff) << 8) | (input[0] & 0xff);
+                if (mark == 0xFEFF) {
+                    utf16Big = false;
+                    input = Arrays.copyOfRange(input, 2, input.length);
+                } else if (mark == 0xFFFE) {
+                    utf16Big = true;
+                    input = Arrays.copyOfRange(input, 2, input.length);
+                }
+            }
+        } else if (codec.equals("utf_8_sig") && atStart) {
+            int matched = 0;
+            while (matched < input.length
+                    && matched < 3
+                    && (input[matched] & 0xff) == (UTF8_BOM[matched] & 0xff)) {
+                matched++;
+            }
+            if (!atEnd && input.length < 3 && matched == input.length) {
+                carried = input;
+                return "";
+            }
+            atStart = false;
+            if (matched == 3) {
+                input = Arrays.copyOfRange(input, 3, input.length);
+            }
         }
-        int held = unfinishedTail(input);
+        if (codec.equals("utf_16")) {
+            name = utf16Big ? "utf_16_be" : "utf_16_le";
+        }
+        int held = 0;
+        if (!atEnd) {
+            switch (codec) {
+                case "utf_8", "utf_8_sig" -> held = unfinishedTail(input);
+                case "utf_16" -> held = utf16Tail(input, utf16Big);
+                case "utf_16_be" -> held = utf16Tail(input, true);
+                case "utf_16_le" -> held = utf16Tail(input, false);
+                default -> held = 0;
+            }
+        }
         if (held == 0) {
-            return Decoder.decode(input, "utf-8", errors);
+            return Decoder.decode(input, name, errors);
         }
         carried = Arrays.copyOfRange(input, input.length - held, input.length);
-        return Decoder.decode(Arrays.copyOfRange(input, 0, input.length - held), "utf-8", errors);
+        return Decoder.decode(Arrays.copyOfRange(input, 0, input.length - held), name, errors);
     }
 
     /**
@@ -790,6 +881,24 @@ public final class PyStream extends PyIterator {
             return seen < width ? seen : 0;
         }
         return 0;
+    }
+
+    /**
+     * How many octets of a UTF-16 run belong to the next chunk: an odd trailing octet, and the unit before
+     * it when that unit is a high surrogate, because the pair it starts is still incomplete.
+     */
+    private static int utf16Tail(byte[] input, boolean big) {
+        int held = input.length % 2;
+        int end = input.length - held;
+        if (end >= 2) {
+            int unit = big
+                    ? ((input[end - 2] & 0xff) << 8) | (input[end - 1] & 0xff)
+                    : ((input[end - 1] & 0xff) << 8) | (input[end - 2] & 0xff);
+            if (unit >= 0xD800 && unit <= 0xDBFF) {
+                held += 2;
+            }
+        }
+        return held;
     }
 
     /** How CPython counts a string's length: in characters, not in the UTF-16 units Java stores. */

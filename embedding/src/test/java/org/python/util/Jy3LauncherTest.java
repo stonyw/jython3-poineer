@@ -316,7 +316,7 @@ class Jy3LauncherTest {
     }
 
     /**
-     * M3 slices 85, 86 and 89's stream face: the scripts whose questions are asked of {@code sys.stdin},
+     * M3 slices 85, 86, 89 and 90's stream face: the scripts whose questions are asked of {@code sys.stdin},
      * so both children get the same pipe and the same closed descriptor at the end of it.
      *
      * <p>The pipe is the case, not an accident of plumbing. Asked of a regular file, {@code seek} and
@@ -350,7 +350,12 @@ class Jy3LauncherTest {
                 Arguments.of("139_reconfigure_newlines_translate_and_the_guard.py", TRANSLATE_OCTETS),
                 Arguments.of("140_reconfigure_newlines_keep_and_the_reads_around_them.py", KEEP_OCTETS),
                 Arguments.of("141_reconfigure_crlf_and_the_last_character.py", CRLF_OCTETS),
-                Arguments.of("142_reconfigure_cr_and_the_lines_it_cuts.py", CR_OCTETS));
+                Arguments.of("142_reconfigure_cr_and_the_lines_it_cuts.py", CR_OCTETS),
+                Arguments.of("143_reconfigure_encoding_rebuilds_the_decoder.py", LATIN1_OCTETS),
+                Arguments.of("144_reconfigure_utf8_sig_reads_the_mark_once.py", SIG_OCTETS),
+                Arguments.of("145_reconfigure_utf16_reads_its_mark_and_holds_a_pair.py", UTF16_OCTETS),
+                Arguments.of("146_reconfigure_utf16_le_holds_an_odd_octet.py", UTF16LE_OCTETS),
+                Arguments.of("147_reconfigure_names_refused_and_accepted.py", NAMES_OCTETS));
     }
 
     /**
@@ -440,6 +445,66 @@ class Jy3LauncherTest {
      * a '\r' of its own, which is the shape that tells a single-character mode apart from the pair.
      */
     private static final byte[] CR_OCTETS = octets("a\rb\r\nc\n");
+
+    /**
+     * The pipe case 143 reads: seven octets, the fourth of them above ASCII, under {@code latin-1}.
+     *
+     * <p>{@code 0xe9} is an error to the UTF-8 the stream opens as and a character to the codec it is moved
+     * to, which is the whole difference the case is about: the same octets, read before and after the
+     * {@code reconfigure}, cannot answer the same way.
+     */
+    private static final byte[] LATIN1_OCTETS =
+            octets("caf", new byte[] {(byte) 0xe9}, "\n");
+
+    /**
+     * The pipe case 144 reads: a mark, a letter, a second mark, and one more letter before the ending.
+     *
+     * <p>The chunk size is two, so the opening mark arrives as {@code b'\xef\xbb'} and {@code b'\xbfa'} and
+     * has to be held across the boundary before it can be recognised; the second mark begins a chunk whole
+     * and is a character, because the stream's mark is only the one at its start.
+     */
+    private static final byte[] SIG_OCTETS =
+            octets(
+                    new byte[] {(byte) 0xef, (byte) 0xbb, (byte) 0xbf},
+                    "a",
+                    new byte[] {(byte) 0xef, (byte) 0xbb, (byte) 0xbf},
+                    "b\n");
+
+    /**
+     * The pipe case 145 reads: a little-endian mark, {@code 'ok'}, an astral character, and an ending.
+     *
+     * <p>Two octets a chunk puts the high surrogate of the astral character in a chunk of its own, which is
+     * what makes the segment hold it back rather than hand the handler an unfinished pair.
+     */
+    private static final byte[] UTF16_OCTETS =
+            octets(
+                    new byte[] {(byte) 0xff, (byte) 0xfe},
+                    new byte[] {0x6f, 0x00, 0x6b, 0x00},
+                    new byte[] {0x3d, (byte) 0xd8, 0x00, (byte) 0xde},
+                    new byte[] {0x0a, 0x00});
+
+    /**
+     * The pipe case 146 reads: the same text without a mark, in three-octet chunks, so every boundary falls
+     * inside a unit or inside the pair.
+     *
+     * <p>Ten octets, and the codec named outright — {@code utf-16-le} decides no order and reads no mark,
+     * so the only thing the decoder has to hold is what the chunk cut in half.
+     */
+    private static final byte[] UTF16LE_OCTETS =
+            octets(
+                    new byte[] {0x68, 0x00, 0x69, 0x00},
+                    new byte[] {0x3d, (byte) 0xd8, 0x00, (byte) 0xde},
+                    new byte[] {0x0a, 0x00});
+
+    /**
+     * The pipe case 147 reads: two octets of ASCII around one that {@code ascii} refuses.
+     *
+     * <p>Nothing is read until the last {@code reconfigure}, so every name the script hands over is handed
+     * over before the lock; the {@code 0x80} is what finally decides whether the handler that was stored
+     * without a lookup is the one the decoder walks.
+     */
+    private static final byte[] NAMES_OCTETS =
+            octets("a", new byte[] {(byte) 0x80}, "b\n");
 
     /** UTF-8 text and raw octets, end to end, which is what a pipe carries. */
     private static byte[] octets(Object... parts) {
