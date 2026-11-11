@@ -1977,6 +1977,19 @@ final class TypeDict {
             "__exit__($self, /, *exc_info)\n--\n\n"
                     + "Release the underlying buffer exposed by the memoryview object.";
 
+    private static final String MEMORYVIEW_TOBYTES_DOC =
+            "tobytes($self, /, order='C')\n--\n\n"
+                    + "Return the data in the buffer as a byte string.\n\n"
+                    + "Order can be {'C', 'F', 'A'}.  When order is 'C' or 'F', the data of\n"
+                    + "the original array is converted to C or Fortran order.  For\n"
+                    + "contiguous views, 'A' returns an exact copy of the physical memory.\n"
+                    + "In particular, in-memory Fortran order is preserved.  For\n"
+                    + "non-contiguous views, the data is converted to C first.  order=None\n"
+                    + "is the same as order='C'.";
+
+    private static final String MEMORYVIEW_TOLIST_DOC =
+            "Return the data in the buffer as a list of elements.";
+
     /**
      * {@code memoryview}'s own dictionary, as {@code Objects/memoryobject.c} files it: forty-one names.
      *
@@ -1986,11 +1999,13 @@ final class TypeDict {
      * and the seven rows the comparison and iteration protocols contribute — {@code __hash__}, the six
      * rich comparisons and {@code __iter__}. The comparisons come in one {@code tp_richcompare}
      * ({@code memory_richcompare}) that answers only for equality and declines the four orderings, so the
-     * six rows differ only in the operator they pass on. This slice files the three rows that make a
-     * released view reachable — {@code release} and the {@code with} pair — right where the reference
-     * keeps them, after {@code __delitem__}. The names after them — the two buffer protocol slots and the
-     * named methods from {@code tobytes} to {@code index} — are the segments still to come, so this
-     * dictionary is a prefix of the reference's rather than a permutation of it.
+     * six rows differ only in the operator they pass on. The rows that make a released view reachable —
+     * {@code release} and the {@code with} pair — sit right where the reference keeps them, after
+     * {@code __delitem__}, and the two copies follow before {@code __enter__}, which is the reference's
+     * order too. The names still missing — {@code hex}, {@code cast}, {@code toreadonly},
+     * {@code _from_flags}, {@code count}, {@code index}, {@code __class_getitem__} and the two buffer
+     * protocol slots — are the segments still to come, so this dictionary is a prefix of the reference's
+     * rather than a permutation of it.
      *
      * <p>{@code __doc__} closes the dictionary, which is where the reference keeps it too. That is unlike
      * {@code bytes} and {@code bytearray}, whose sentences sit after the slots and before the named
@@ -2014,6 +2029,8 @@ final class TypeDict {
         table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
         table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
         table.method("release", MEMORYVIEW_RELEASE_DOC, TypeDict::memoryviewRelease, METH_NOARGS);
+        table.method("tobytes", MEMORYVIEW_TOBYTES_DOC, TypeDict::memoryviewTobytes);
+        table.method("tolist", MEMORYVIEW_TOLIST_DOC, TypeDict::memoryviewTolist, METH_NOARGS);
         table.method("__enter__", null, TypeDict::memoryviewEnter, METH_NOARGS);
         table.method("__exit__", MEMORYVIEW_EXIT_DOC, TypeDict::memoryviewExit);
         table.getset("obj", MEMORYVIEW_OBJ_DOC, self -> memoryview(self).viewed(), null);
@@ -2092,6 +2109,59 @@ final class TypeDict {
         Arguments.noKeywords(qualified + "()", kwNames);
         memoryview(args[0]).exit();
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code memoryview.tobytes(order='C')}: one keyword, whose three accepted values copy the same way
+     * for the one-dimensional views modelled here.
+     *
+     * <p>The arity and keyword refusals name {@code tobytes} without the class, which is what the
+     * clinic-generated parser says, while the sentence for a bad value names the parameter. The type of
+     * {@code order} is settled here, before the view is looked at, but the released check and the
+     * spelling of the letter belong to the view: a spent window refuses a wrong letter as released
+     * rather than as an order.
+     */
+    private static PyObject memoryviewTobytes(
+            PyObject[] args, String[] kwNames, String qualified) {
+        PyObject[] given =
+                Arguments.parameters(
+                        "tobytes",
+                        tail(args, kwNames),
+                        kwNames,
+                        new String[] {"order"},
+                        new PyObject[] {PyStr.of("C")},
+                        0);
+        String order = memoryviewOrder(given[0]);
+        return memoryview(args[0]).toBytes(order);
+    }
+
+    /**
+     * {@code memoryview.tolist()}: no arguments, and unlike {@code tobytes} the refusal carries the
+     * class, because this row is hand-written rather than parsed from a clinic table.
+     */
+    private static PyObject memoryviewTolist(
+            PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        return memoryview(args[0]).toList();
+    }
+
+    /**
+     * The {@code order} argument's conversion: {@code None} becomes {@code null}, a string passes its
+     * spelling on, and anything else names its type the way the converter does.
+     *
+     * <p>This is only the type check. Whether the spelling is one of the three letters is the view's
+     * question, asked after the released check.
+     */
+    private static String memoryviewOrder(PyObject value) {
+        if (value == PyNone.INSTANCE) {
+            return null;
+        }
+        if (!(value instanceof PyStr order)) {
+            throw Slots.typeError(
+                    "tobytes() argument 'order' must be str or None, not %s",
+                    Slots.argumentName(value));
+        }
+        return order.getValue();
     }
 
     /**

@@ -136,6 +136,39 @@ public final class PyMemoryView extends PyObject {
         return PyNone.INSTANCE;
     }
 
+    /**
+     * {@code view.tobytes(order='C')}: the elements the window selects, copied into a {@code bytes}.
+     *
+     * <p>The copy walks the window through its offset and stride, so a strided slice answers the elements
+     * it selects rather than the run underneath. All three orders answer that same run here: with a single
+     * dimension a Fortran layout is the C layout, and the reference converts a non-contiguous view to C
+     * before copying, which is the walk below either way.
+     *
+     * <p>{@code order} arrives already converted — {@code null} for {@code None}, otherwise the string —
+     * and its spelling is checked here rather than in the argument parser, because the reference refuses
+     * a spent view before it looks at which of the three letters was asked for.
+     */
+    PyBytes toBytes(String order) {
+        check();
+        if (order != null
+                && !order.equals("C")
+                && !order.equals("F")
+                && !order.equals("A")) {
+            throw Slots.valueError("order must be 'C', 'F' or 'A'");
+        }
+        return PyBytes.wrap(octets());
+    }
+
+    /** {@code view.tolist()}: the same elements, each as the integer its octet spells. */
+    PyList toList() {
+        check();
+        PyObject[] elements = new PyObject[length];
+        for (int i = 0; i < elements.length; i++) {
+            elements[i] = PyInt.of(byteAt(i));
+        }
+        return PyList.of(elements);
+    }
+
     /** Refuses every read of a released view with CPython's one sentence for the state. */
     private void check() {
         if (released) {
@@ -499,11 +532,7 @@ public final class PyMemoryView extends PyObject {
         }
         if (value instanceof PyMemoryView view) {
             view.check();
-            byte[] out = new byte[view.length];
-            for (int i = 0; i < out.length; i++) {
-                out[i] = (byte) view.byteAt(i);
-            }
-            return out;
+            return view.octets();
         }
         throw notBytesLike(value);
     }
