@@ -92,9 +92,9 @@ public class PyType extends PyObject {
      * looks for the rule under it, which a recipe never writes, so {@code int.__text_signature__} is
      * {@code None} and {@code int.__doc__} is the whole text. {@code bool_doc}
      * ({@code Objects/boolobject.c:112}) writes its rule by hand — {@code bool(object=False, /)}, then the
-     * brackets-dashes-blank-line rule, then the sentence — and so {@code bool} is one of the sixteen books
-     * here whose table is read apart from its sentence. The reference's seventeenth name with a table is
-     * {@code memoryview}, whose type this runtime has not built.
+     * brackets-dashes-blank-line rule, then the sentence — and so {@code bool} is one of the books here
+     * whose table is read apart from its sentence; {@code memoryview}, whose type this runtime now builds,
+     * is another.
      *
      * <p>The integer's is transcribed exactly, including its last line: 3.14.8 breaks "integer literal"
      * across a newline and loses the {@code l}, and the dictionary holds that text, so a program that prints
@@ -296,6 +296,21 @@ public class PyType extends PyObject {
 
     public static final PyType BYTEARRAY =
             builtin("bytearray").flagged(MATCH_SELF).documented(BYTEARRAY_DOC);
+
+    /**
+     * {@code memoryview}'s own sentence, which CPython keeps beside {@code memoryview_new} in
+     * {@code Objects/memoryobject.c}.
+     *
+     * <p>The one argument is called {@code object} and may be spelled either way: {@code
+     * memoryview(b"ab")} and {@code memoryview(object=b"ab")} are the same call. The text is one of the
+     * seventeen here that are read apart from their table, so {@code memoryview.__text_signature__} is
+     * {@code (object)} and {@code memoryview.__doc__} is the sentence below the rule.
+     */
+    static final String MEMORYVIEW_DOC =
+            "(object)\n--\n\nCreate a new memoryview object which references the given object.";
+
+    public static final PyType MEMORYVIEW = builtin("memoryview").documented(MEMORYVIEW_DOC);
+
     public static final PyType TUPLE =
             builtin("tuple").flagged(SEQUENCE | MATCH_SELF).documented(TUPLE_DOC);
     public static final PyType LIST =

@@ -59,6 +59,7 @@ final class Builtins {
         put(out, "str", PyType.STR);
         put(out, "bytes", PyType.BYTES);
         put(out, "bytearray", PyType.BYTEARRAY);
+        put(out, "memoryview", PyType.MEMORYVIEW);
         put(out, "tuple", PyType.TUPLE);
         put(out, "list", PyType.LIST);
         put(out, "dict", PyType.DICT);

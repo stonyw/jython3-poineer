@@ -819,6 +819,10 @@ final class TypeDict {
             bytearrayTable(into);
             return;
         }
+        if (owner == PyType.MEMORYVIEW) {
+            memoryviewTable(into);
+            return;
+        }
         if (owner == PyType.STR) {
             strTable(into);
             return;
@@ -1922,6 +1926,96 @@ final class TypeDict {
                 "zfill");
         table.value("__doc__", docValue(owner));
         table.value("__hash__", PyNone.INSTANCE);
+    }
+
+    /** The twelve {@code PyGetSetDef} sentences, one for each field of the buffer header. */
+    private static final String MEMORYVIEW_OBJ_DOC = "The underlying object of the memoryview.";
+
+    private static final String MEMORYVIEW_NBYTES_DOC =
+            "The amount of space in bytes that the array would use in\n a contiguous representation.";
+
+    private static final String MEMORYVIEW_READONLY_DOC =
+            "A bool indicating whether the memory is read only.";
+
+    private static final String MEMORYVIEW_ITEMSIZE_DOC =
+            "The size in bytes of each element of the memoryview.";
+
+    private static final String MEMORYVIEW_FORMAT_DOC =
+            "A string containing the format (in struct module style)\n for each element in the view.";
+
+    private static final String MEMORYVIEW_NDIM_DOC =
+            "An integer indicating how many dimensions of a multi-dimensional\n array the memory represents.";
+
+    private static final String MEMORYVIEW_SHAPE_DOC =
+            "A tuple of ndim integers giving the shape of the memory\n as an N-dimensional array.";
+
+    private static final String MEMORYVIEW_STRIDES_DOC =
+            "A tuple of ndim integers giving the size in bytes to access\n each element for each dimension of"
+                    + " the array.";
+
+    private static final String MEMORYVIEW_SUBOFFSETS_DOC =
+            "A tuple of integers used internally for PIL-style arrays.";
+
+    private static final String MEMORYVIEW_C_CONTIGUOUS_DOC =
+            "A bool indicating whether the memory is C contiguous.";
+
+    private static final String MEMORYVIEW_F_CONTIGUOUS_DOC =
+            "A bool indicating whether the memory is Fortran contiguous.";
+
+    private static final String MEMORYVIEW_CONTIGUOUS_DOC =
+            "A bool indicating whether the memory is contiguous.";
+
+    /**
+     * {@code memoryview}'s own dictionary, as {@code Objects/memoryobject.c} files it: forty-one names.
+     *
+     * <p>This first slice files the skeleton and the window's own facts: the three slots that make a view
+     * printable and sized ({@code __new__}, {@code __repr__}, {@code __len__}) and the twelve read-only
+     * {@code getset_descriptor}s over the fields a buffer exporter filled in. The names the reference
+     * keeps between them — the six comparisons, {@code __iter__}, the two buffer protocol slots, the
+     * subscript and delete halves, the context manager and the named methods from {@code release} to
+     * {@code index} — are the segments still to come, so this dictionary is a prefix of the reference's
+     * rather than a permutation of it.
+     *
+     * <p>{@code __doc__} closes the dictionary, which is where the reference keeps it too. That is unlike
+     * {@code bytes} and {@code bytearray}, whose sentences sit after the slots and before the named
+     * methods: {@code memoryview}'s is the last entry of all.
+     */
+    private static void memoryviewTable(PyDict into) {
+        PyType owner = PyType.MEMORYVIEW;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::memoryviewsNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.getset("obj", MEMORYVIEW_OBJ_DOC, self -> memoryview(self).viewed(), null);
+        table.getset(
+                "nbytes", MEMORYVIEW_NBYTES_DOC, self -> PyInt.of(memoryview(self).bytes()), null);
+        table.getset(
+                "readonly",
+                MEMORYVIEW_READONLY_DOC,
+                self -> PyBool.of(memoryview(self).readonly()),
+                null);
+        table.getset(
+                "itemsize",
+                MEMORYVIEW_ITEMSIZE_DOC,
+                self -> PyInt.of(memoryview(self).itemsize()),
+                null);
+        table.getset("format", MEMORYVIEW_FORMAT_DOC, self -> PyStr.of(memoryview(self).format()), null);
+        table.getset("ndim", MEMORYVIEW_NDIM_DOC, self -> PyInt.of(memoryview(self).ndim()), null);
+        table.getset("shape", MEMORYVIEW_SHAPE_DOC, self -> memoryview(self).shape(), null);
+        table.getset("strides", MEMORYVIEW_STRIDES_DOC, self -> memoryview(self).strides(), null);
+        table.getset(
+                "suboffsets", MEMORYVIEW_SUBOFFSETS_DOC, self -> memoryview(self).suboffsets(), null);
+        table.getset(
+                "c_contiguous", MEMORYVIEW_C_CONTIGUOUS_DOC, self -> PyBool.of(true), null);
+        table.getset(
+                "f_contiguous", MEMORYVIEW_F_CONTIGUOUS_DOC, self -> PyBool.of(true), null);
+        table.getset("contiguous", MEMORYVIEW_CONTIGUOUS_DOC, self -> PyBool.of(true), null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** The window a descriptor's getter was handed, already checked against the declaring class. */
+    private static PyMemoryView memoryview(PyObject self) {
+        return (PyMemoryView) self;
     }
 
     /**
@@ -3730,6 +3824,17 @@ final class TypeDict {
     private static PyObject bytearraysNew(PyObject[] args, String[] kwNames, String qualified) {
         declaredClass(PyType.BYTEARRAY, args, kwNames);
         return PyByteArray.empty();
+    }
+
+    /**
+     * {@code memoryview.__new__}: the four {@code tp_new_wrapper} checks, then the constructor's own one
+     * argument.
+     *
+     * <p>{@code memoryview.__new__(memoryview, b"ab")} answers a window, and {@code
+     * memoryview.__new__(bytes, b"ab")} is refused before the buffer is asked for.
+     */
+    private static PyObject memoryviewsNew(PyObject[] args, String[] kwNames, String qualified) {
+        return constructorNew(PyType.MEMORYVIEW, args, kwNames);
     }
 
     private static PyObject tuplesNew(PyObject[] args, String[] kwNames, String qualified) {

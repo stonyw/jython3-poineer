@@ -317,7 +317,8 @@ class Jy3LauncherTest {
                 "156_bytearray.py",
                 "157_bytearray_capacity.py",
                 "158_bytearray_readonly.py",
-                "159_bytearray_final.py");
+                "159_bytearray_final.py",
+                "160_memoryview_first.py");
     }
 
     /**

@@ -63,6 +63,9 @@ final class Constructors {
         if (type == PyType.BYTEARRAY) {
             return bytearray(args, keywordNames);
         }
+        if (type == PyType.MEMORYVIEW) {
+            return memoryview(args, keywordNames);
+        }
         if (type == PyType.TUPLE) {
             List<PyObject> source = iterable(args, keywordNames, "tuple");
             // `tuple(t)` of a tuple is the one object rather than a copy of it: `PySequence_Tuple` keeps what
@@ -1169,6 +1172,35 @@ final class Constructors {
         while ((item = iterator.nextOrNull()) != null) {
             target.appendOctet(PyByteArray.octetOf(item));
         }
+    }
+
+    /**
+     * {@code memoryview(object)}: the window the one named argument exports.
+     *
+     * <p>The argument is called {@code object} and is read either positionally or by that name. A
+     * keyword of any other name is not answered as an unexpected keyword, because the count tests run
+     * before the name is looked at and the missing required argument is what is left — which is why
+     * {@code memoryview(foo=1)} says the argument is missing rather than that {@code foo} is unknown.
+     *
+     * <p>The too-many sentence differs by where the excess lies, and only the positional count changes
+     * the wording: with no position given the call filled its one slot from keywords and the complaint
+     * is a keyword argument, while any position at all makes it an argument. Both count every value
+     * handed over, which is why {@code memoryview(b"ab", object=b"cd", foo=1)} says three.
+     */
+    private static PyObject memoryview(PyObject[] args, String[] kwNames) {
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = args.length - keywords;
+        if (args.length > 1) {
+            throw Slots.typeError(
+                    positional == 0
+                            ? "memoryview() takes at most 1 keyword argument (%d given)"
+                            : "memoryview() takes at most 1 argument (%d given)",
+                    args.length);
+        }
+        if (args.length == 1 && (positional == 1 || "object".equals(kwNames[0]))) {
+            return PyMemoryView.of(args[0]);
+        }
+        throw Slots.typeError("memoryview() missing required argument 'object' (pos 1)");
     }
 
     /**
