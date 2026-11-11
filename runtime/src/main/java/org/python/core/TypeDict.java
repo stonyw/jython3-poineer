@@ -3142,28 +3142,13 @@ final class TypeDict {
      * {@code TextIOWrapper.__init__}: the argument table {@code textio.c} files, as an already-built
      * stream meets it.
      *
-     * <p>The reference checks the buffer by asking it three questions — {@code readable}, {@code
-     * writable} and {@code seekable} — before it touches anything, which is why a value that is not a
-     * buffer is refused with the missing attribute rather than a message of the stream's own. The layers
-     * a live stream was built with are not replaced here; a call that gets past the three questions keeps
-     * the stream it was handed.
+     * <p>The reference checks and replaces every field in one impl, so the call is handed whole to
+     * {@link PyStream#reinitialize}: a second {@code __init__} swaps the buffer and rebuilds the codec
+     * rather than being a no-op, and a call that fails part-way leaves the stream uninitialized until
+     * another call succeeds.
      */
     private static PyObject initializeTextStream(PyObject[] args, String[] kwNames, String qualified) {
-        PyObject[] values =
-                Arguments.unpackKeywords(
-                        "TextIOWrapper",
-                        Arrays.copyOfRange(args, 1, args.length),
-                        kwNames,
-                        new String[] {
-                            "buffer", "encoding", "errors", "newline", "line_buffering",
-                            "write_through"
-                        },
-                        1,
-                        6);
-        Slots.getAttr(values[0], "readable");
-        Slots.getAttr(values[0], "writable");
-        Slots.getAttr(values[0], "seekable");
-        return PyNone.INSTANCE;
+        return ((PyStream) args[0]).reinitialize(Arrays.copyOfRange(args, 1, args.length), kwNames);
     }
 
     /** {@code none_new}: the class gates, and then nothing at all is asked of the arguments. */

@@ -1336,4 +1336,313 @@ class InputStreamTest {
                                                 "LookupError: unknown error handler name 'nope'"));
         assertThat(writer.octets()).hasSize(12);
     }
+
+    /**
+     * A buffer double: the rows {@code __init__} asks of a layer, and the answers it is built to give.
+     *
+     * <p>The five questions of a constructor are recorded in the order they are asked, which is what the
+     * order of the first test is about; {@code read1} hands back {@code answer} once and then nothing, and
+     * {@code write} records the octets it was handed. A null {@code answer} leaves {@code read1} out, which
+     * is how a buffer that has none is spelled.
+     */
+    private static PyObject layer(
+            boolean readable,
+            boolean writable,
+            boolean seekable,
+            long tell,
+            String answer,
+            List<byte[]> written,
+            List<String> asked) {
+        PyModule buffer = new PyModule("buffer");
+        buffer.set("name", PyStr.of("<buffer>"));
+        buffer.set("closed", PyBool.FALSE);
+        buffer.set(
+                "readable",
+                new PyNativeFunction(
+                        "readable",
+                        (args, kwNames) -> {
+                            asked.add("readable");
+                            return PyBool.of(readable);
+                        }));
+        buffer.set(
+                "writable",
+                new PyNativeFunction(
+                        "writable",
+                        (args, kwNames) -> {
+                            asked.add("writable");
+                            return PyBool.of(writable);
+                        }));
+        buffer.set(
+                "seekable",
+                new PyNativeFunction(
+                        "seekable",
+                        (args, kwNames) -> {
+                            asked.add("seekable");
+                            return PyBool.of(seekable);
+                        }));
+        buffer.set(
+                "tell",
+                new PyNativeFunction(
+                        "tell",
+                        (args, kwNames) -> {
+                            asked.add("tell");
+                            return PyInt.of(tell);
+                        }));
+        if (answer != null) {
+            String[] pending = {answer};
+            buffer.set(
+                    "read1",
+                    new PyNativeFunction(
+                            "read1",
+                            (args, kwNames) -> {
+                                asked.add("read1");
+                                byte[] octets = pending[0].getBytes(StandardCharsets.UTF_8);
+                                pending[0] = "";
+                                return PyBytes.of(octets);
+                            }));
+        }
+        buffer.set(
+                "write",
+                new PyNativeFunction(
+                        "write",
+                        (args, kwNames) -> {
+                            asked.add("write");
+                            byte[] octets = ((PyBytes) args[0]).getValue();
+                            written.add(octets);
+                            return PyInt.of(octets.length);
+                        }));
+        buffer.set(
+                "flush",
+                new PyNativeFunction(
+                        "flush",
+                        (args, kwNames) -> {
+                            asked.add("flush");
+                            return PyNone.INSTANCE;
+                        }));
+        return buffer;
+    }
+
+    /** {@code stream.__init__(buffer, ...)}, which is the constructor body run a second time. */
+    private static PyObject reinit(PyStream stream, PyObject... arguments) {
+        return stream.reinitialize(arguments, null);
+    }
+
+    /**
+     * A second {@code __init__} stores the buffer and rebuilds the codec, and clears what the last one
+     * counted.
+     *
+     * <p>The stream starts over a Java descriptor and with {@code _CHUNK_SIZE} at three; the layer it is
+     * handed is a real {@link PyBufferedReader}, so the read that follows crosses the layer rather than a
+     * double. {@code latin-1} makes the accent one character where the UTF-8 it opened as would have
+     * refused the octet, the handler and both flags are the ones passed, and the chunk size is the
+     * reference's default again because the constructor clears it before a parameter can set it.
+     */
+    @Test
+    void aSecondInitStoresTheBufferAndRebuildsTheCodec() {
+        byte[] latin1 = {'c', 'a', 'f', (byte) 0xe9, '\n'};
+        PyBufferedReader layer =
+                new PyBufferedReader(
+                        new PyFileIO(
+                                "<stdin>", new ByteArrayInputStream(latin1), 0, false));
+        PyStream stream = reading("unreached");
+        chunk(stream, 3);
+
+        assertThat(Slots.str(reinit(stream, layer, PyStr.of("latin-1"), PyStr.of("replace"))))
+                .isEqualTo("None");
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("latin-1");
+        assertThat(Slots.str(Slots.getAttr(stream, "errors"))).isEqualTo("replace");
+        assertThat(Slots.str(Slots.getAttr(stream, "line_buffering"))).isEqualTo("False");
+        assertThat(Slots.str(Slots.getAttr(stream, "write_through"))).isEqualTo("False");
+        assertThat(Slots.getAttr(stream, "buffer")).isSameAs(layer);
+        assertThat(Slots.str(Slots.getAttr(stream, "_CHUNK_SIZE"))).isEqualTo("8192");
+        assertThat(Slots.str(Slots.getAttr(stream, "name"))).isEqualTo("<stdin>");
+        assertThat(Slots.str(call(stream, "readable"))).isEqualTo("True");
+        assertThat(Slots.str(call(stream, "writable"))).isEqualTo("False");
+        assertThat(Slots.str(call(stream, "seekable"))).isEqualTo("False");
+        assertThat(Slots.str(call(stream, "read"))).isEqualTo("caf\u00e9\n");
+    }
+
+    /**
+     * The layer is asked its three directions in the constructor's order, and reads go through
+     * {@code read1} when the layer has one.
+     *
+     * <p>{@code writable} after {@code readable} and {@code seekable} after both is the order the reference
+     * asks them in, and it decides what the stream answers afterwards: the directions are remembered, not
+     * asked again. The text is the layer's, handed over one chunk at a time and running out on the empty
+     * answer.
+     */
+    @Test
+    void aSecondInitAsksTheLayerItsDirectionsInOrder() {
+        List<String> asked = new ArrayList<>();
+        PyObject layer = layer(true, false, false, 0, "hi", new ArrayList<>(), asked);
+        PyStream stream = reading("");
+
+        reinit(stream, layer);
+
+        assertThat(asked).containsExactly("readable", "writable", "seekable");
+        assertThat(Slots.str(call(stream, "read", PyInt.of(2)))).isEqualTo("hi");
+        assertThat(Slots.str(call(stream, "read", PyInt.of(2)))).isEqualTo("");
+        assertThat(asked).containsExactly("readable", "writable", "seekable", "read1", "read1");
+    }
+
+    /** Both flags are the truth of whatever was passed, not the integer a stricter signature would take. */
+    @Test
+    void theTwoFlagsAreTheTruthOfWhateverWasPassed() {
+        PyStream stream = reading("");
+        PyObject layer = layer(true, false, false, 0, null, new ArrayList<>(), new ArrayList<>());
+
+        reinit(stream, layer, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE, PyInt.of(1), PyStr.of("x"));
+        assertThat(Slots.str(Slots.getAttr(stream, "line_buffering"))).isEqualTo("True");
+        assertThat(Slots.str(Slots.getAttr(stream, "write_through"))).isEqualTo("True");
+
+        reinit(stream, layer, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE, PyStr.of(""));
+        assertThat(Slots.str(Slots.getAttr(stream, "line_buffering"))).isEqualTo("False");
+        assertThat(Slots.str(Slots.getAttr(stream, "write_through"))).isEqualTo("False");
+    }
+
+    /**
+     * A type refused by the parser leaves the stream as it was, and a value or a handler refused by the
+     * impl leaves it torn with the fields it had.
+     *
+     * <p>{@code encoding} and {@code newline} are converted before the impl runs, so nothing moves:
+     * {@code repr} still answers and the codec is still UTF-8. {@code errors} and an illegal
+     * {@code newline} value are refused after {@code ok} was cleared, so every row that checks the state
+     * refuses with the uninitialized sentence, while {@code encoding} still answers the old name and
+     * {@code closed} still says True.
+     */
+    @Test
+    void aRefusalBeforeTheClearLeavesTheOldFieldsButNoWorkingStream() {
+        PyStream stream = reading("x");
+
+        assertThatThrownBy(() -> reinit(stream, layer(true, false, false, 0, null, new ArrayList<>(), new ArrayList<>()), PyInt.of(1)))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).contains("argument 'encoding' must be str or None, not int"));
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("utf-8");
+        assertThat(stream.repr()).contains("TextIOWrapper");
+
+        assertThatThrownBy(() -> reinit(stream, layer(true, false, false, 0, null, new ArrayList<>(), new ArrayList<>()), PyNone.INSTANCE, PyNone.INSTANCE, PyInt.of(1)))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).contains("argument 'newline' must be str or None, not int"));
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("utf-8");
+
+        assertThatThrownBy(() -> reinit(stream, layer(true, false, false, 0, null, new ArrayList<>(), new ArrayList<>()), PyNone.INSTANCE, PyNone.INSTANCE, PyStr.of("x")))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).isEqualTo("ValueError: illegal newline value: x"));
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("utf-8");
+        assertThat(Slots.str(Slots.getAttr(stream, "closed"))).isEqualTo("True");
+        assertThatThrownBy(() -> stream.repr())
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).isEqualTo("ValueError: I/O operation on uninitialized object"));
+        assertThatThrownBy(() -> Slots.getAttr(stream, "errors"))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).isEqualTo("ValueError: I/O operation on uninitialized object"));
+
+        reinit(stream, layer(true, false, false, 0, "ok", new ArrayList<>(), new ArrayList<>()));
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("utf-8");
+        assertThat(Slots.str(call(stream, "read", PyInt.of(2)))).isEqualTo("ok");
+    }
+
+    /**
+     * A name refused after the clear leaves no buffer to ask, and a buffer that is not an object is stored
+     * before the first question reaches it.
+     *
+     * <p>The unknown name is looked up before the buffer is stored, so {@code buffer} itself refuses with
+     * the uninitialized sentence; the saved layer is what puts the stream back. An integer buffer is
+     * stored, and the encoding set, before {@code readable} is asked of it, so the stream answers the
+     * integer for {@code buffer} and hears its own {@code AttributeError} from the questions aimed at it.
+     */
+    @Test
+    void aRefusalAfterTheClearLeavesNoBufferOrTheWrongOne() {
+        List<String> asked = new ArrayList<>();
+        PyObject saved = layer(true, false, false, 0, "back", new ArrayList<>(), asked);
+        PyStream stream = reading("");
+
+        assertThatThrownBy(() -> reinit(stream, saved, PyStr.of("nope")))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).isEqualTo("LookupError: unknown encoding: nope"));
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("None");
+        assertThat(Slots.str(Slots.getAttr(stream, "closed"))).isEqualTo("True");
+        assertThatThrownBy(() -> Slots.getAttr(stream, "buffer"))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).isEqualTo("ValueError: I/O operation on uninitialized object"));
+
+        reinit(stream, saved);
+        assertThat(Slots.str(call(stream, "read", PyInt.of(4)))).isEqualTo("back");
+
+        assertThatThrownBy(() -> reinit(stream, PyInt.of(1)))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).contains("AttributeError"));
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("utf-8");
+        assertThat(Slots.str(Slots.getAttr(stream, "buffer"))).isEqualTo("1");
+        assertThatThrownBy(() -> call(stream, "readable"))
+                .isInstanceOfSatisfying(
+                        PyRaise.class,
+                        refused -> assertThat(refused.getMessage()).contains("AttributeError"));
+    }
+
+    /**
+     * A rebuilt writer encodes into its new buffer, and the newline is what flushes it.
+     *
+     * <p>{@code write} hands the layer octets rather than text, so the codec the constructor built is
+     * visible in what arrives; {@code line_buffering} adds the flush after a text that holds a newline and
+     * not after one that does not, while {@code write_through} writes immediately and leaves the flush to
+     * the program — the reference's two flags differ in exactly that.
+     */
+    @Test
+    void aRebuiltWriterEncodesIntoItsNewBuffer() {
+        List<byte[]> written = new ArrayList<>();
+        List<String> asked = new ArrayList<>();
+        PyObject layer = layer(false, true, false, 0, null, written, asked);
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        PyStream stream =
+                new PyStream("<stdout>", new PrintStream(sink, true, StandardCharsets.UTF_8), 1, "backslashreplace", false);
+
+        reinit(stream, layer, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE, PyInt.of(1));
+        assertThat(Slots.str(Slots.getAttr(stream, "encoding"))).isEqualTo("utf-8");
+        assertThat(Slots.str(call(stream, "write", PyStr.of("a\n")))).isEqualTo("2");
+        assertThat(asked).containsExactly("readable", "writable", "seekable", "write", "flush");
+        assertThat(written.get(0)).isEqualTo(new byte[] {'a', '\n'});
+        assertThat(sink.toByteArray()).isEmpty();
+
+        Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of("b")}, null);
+        assertThat(asked).containsExactly("readable", "writable", "seekable", "write", "flush", "write");
+
+        reinit(stream, layer, PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE, PyInt.of(0), PyStr.of("1"));
+        Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of("c\n")}, null);
+        assertThat(asked).containsExactly("readable", "writable", "seekable", "write", "flush", "write", "readable", "writable", "seekable", "write");
+        assertThat(written.get(2)).isEqualTo(new byte[] {'c', '\n'});
+    }
+
+    /**
+     * The mark {@code utf-16} writes belongs to the window the constructor looks through: a seekable layer
+     * at position zero arms it, and one that is not at zero does not.
+     *
+     * <p>The two layers differ in nothing but what they answer {@code tell}. The first write of each is
+     * the native-order unit with the mark in front for the armed one, and the same units without it for
+     * the layer that was already past the start.
+     */
+    @Test
+    void aRebuiltUtf16WriterWritesItsMarkOnlyAtTheStartOfASeekableLayer() {
+        List<byte[]> atStart = new ArrayList<>();
+        PyStream armed =
+                new PyStream("<stdout>", new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8), 1, "backslashreplace", false);
+        reinit(armed, layer(false, true, true, 0, null, atStart, new ArrayList<>()), PyStr.of("utf-16"));
+        Slots.call(Slots.getAttr(armed, "write"), new PyObject[] {PyStr.of("hi")}, null);
+        assertThat(atStart.get(0)).isEqualTo(new byte[] {(byte) 0xff, (byte) 0xfe, 'h', 0, 'i', 0});
+
+        List<byte[]> later = new ArrayList<>();
+        PyStream unarmed =
+                new PyStream("<stdout>", new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8), 1, "backslashreplace", false);
+        reinit(unarmed, layer(false, true, true, 5, null, later, new ArrayList<>()), PyStr.of("utf-16"));
+        Slots.call(Slots.getAttr(unarmed, "write"), new PyObject[] {PyStr.of("hi")}, null);
+        assertThat(later.get(0)).isEqualTo(new byte[] {'h', 0, 'i', 0});
+    }
 }

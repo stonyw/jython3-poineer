@@ -85,6 +85,9 @@ public final class PyStream extends PyIterator {
                     .filedUnder("_io.TextIOWrapper")
                     .documented(PyType.TEXTIOWRAPPER_DOC);
 
+    /** What {@code CHECK_INITIALIZED} says once an {@code __init__} has failed part-way. */
+    private static final String UNINITIALIZED = "I/O operation on uninitialized object";
+
     /** What {@code _io} says when a method of the stream itself meets a closed descriptor. */
     private static final String CLOSED = "I/O operation on closed file.";
 
@@ -130,11 +133,35 @@ public final class PyStream extends PyIterator {
     private final String name;
     private final PrintStream out;
 
-    /** The two layers under a reading stream, and nothing at all under a writing one. */
-    private final PyBufferedReader buffer;
+    /**
+     * {@code self->buffer}: the layer under the text, which {@code __init__} replaces.
+     *
+     * <p>A writing stream built by this runtime starts without one, which is the one place the layer is
+     * missing rather than detached; a stream that has been detached keeps the reference it handed over.
+     */
+    private PyObject buffer;
 
     /** {@code self->raw}: the descriptor the buffer rests on, cached to ask it about closedness. */
-    private final PyFileIO raw;
+    private PyFileIO raw;
+
+    /**
+     * {@code self->ok}: whether the last {@code __init__} ran to the end.
+     *
+     * <p>The reference clears it first and sets it last, so every failure inside the impl leaves a stream
+     * that only {@code encoding}, the two flags and {@code _finalizing} still answer for — and a second
+     * {@code __init__} is what makes it usable again.
+     */
+    private boolean initialized = true;
+
+    /** What the buffer answered when the stream was last built, which is the direction its rows refuse by. */
+    private boolean readableLayer;
+    private boolean writableLayer;
+
+    /** What {@code seekable} answered then, remembered because {@code utf-16}'s mark is armed by it. */
+    private boolean seekableLayer;
+
+    /** Whether the buffer has the {@code read1} the chunk loop prefers over {@code read}. */
+    private boolean hasRead1 = true;
 
     /** {@code self->encoding}: reported as it was handed over, which is why {@code reconfigure} keeps its spelling. */
     private String encoding = "utf-8";
@@ -238,6 +265,7 @@ public final class PyStream extends PyIterator {
         this.errors = errors;
         this.lineBuffered = autoFlush;
         this.fd = fd;
+        this.writableLayer = true;
         declareMode("w");
     }
 
@@ -246,13 +274,15 @@ public final class PyStream extends PyIterator {
         super(TYPE);
         this.name = name;
         this.out = null;
-        this.buffer = new PyBufferedReader(new PyFileIO(name, source, fd, false));
+        PyBufferedReader reading = new PyBufferedReader(new PyFileIO(name, source, fd, false));
+        this.buffer = reading;
         // `_textiowrapper_detect_buffer_attributes` caches the descriptor as the answer to `closed`, and
         // keeps answering from the cache after the buffer has been detached from it.
-        this.raw = this.buffer.descriptor();
+        this.raw = reading.descriptor();
         this.errors = errors;
         this.lineBuffered = false;
         this.fd = fd;
+        this.readableLayer = true;
         declareMode("r");
     }
 
@@ -263,32 +293,77 @@ public final class PyStream extends PyIterator {
 
     /** Write from Java, the way {@code print} does, without going through the {@code write} slot. */
     public void writeText(String text) {
-        if (closed) {
-            throw Slots.valueError(CLOSED);
+        if (buffer == null) {
+            if (closed) {
+                throw Slots.valueError(CLOSED);
+            }
+            writeTextToDescriptor(text);
+        } else {
+            writeTextToBuffer(text);
         }
+    }
+
+    /** The writing stream's opening path: the encoder's octets straight into the descriptor. */
+    private void writeTextToDescriptor(String text) {
         boolean sig = codec.equals("utf_8_sig");
         if (text.isEmpty() && !sig) {
             // The one-byte and UTF-8 funcs answer the empty string with nothing at all, so no octet and no
             // handler lookup; utf-8-sig is not one of those funcs, and its encoder writes its mark here.
             return;
         }
-        String name = codec;
-        if (sig) {
-            name = encoderAtStart ? "utf_8_sig" : "utf_8";
-        } else if (codec.equals("utf_16")) {
-            // `utf16_encode` writes a mark only when the stream's window is open, and a descriptor that
-            // cannot seek never opens it: the octets are the native-order units, which are little-endian.
-            name = "utf_16_le";
-        }
-        byte[] octets = Encoder.encode(text, name, errors).getValue();
+        byte[] octets = Encoder.encode(text, encoderName(), errors).getValue();
         out.write(octets, 0, octets.length);
         if (sig) {
             encoderAtStart = false;
         }
     }
 
+    /**
+     * A stream whose buffer {@code __init__} replaced: the octets go to that buffer's {@code write}.
+     *
+     * <p>{@code _textiowrapper_write_impl} keeps the bytes in the text layer until its own flush, but the
+     * only two things that flush them here are the same two the reference names — a newline on a
+     * line-buffered stream, and {@code write_through}, which this runtime already honours by writing at
+     * once. Neither of those two calls the buffer's {@code flush} except the newline, which is why a
+     * {@code write_through} stream leaves that call to the program.
+     */
+    private void writeTextToBuffer(String text) {
+        boolean sig = codec.equals("utf_8_sig");
+        if (text.isEmpty() && !sig) {
+            return;
+        }
+        byte[] octets = Encoder.encode(text, encoderName(), errors).getValue();
+        if (octets.length != 0) {
+            Slots.call(
+                    Slots.getAttr(attached(), "write"), new PyObject[] {PyBytes.of(octets)}, null);
+        }
+        if (sig) {
+            encoderAtStart = false;
+        }
+        if (lineBuffered && (text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0)) {
+            askBuffer("flush", new PyObject[0]);
+        }
+    }
+
+    /** Which codec the writer asks for, which is where {@code utf-16}'s and {@code utf-8-sig}'s marks live. */
+    private String encoderName() {
+        if (codec.equals("utf_8_sig")) {
+            // The mark is carried by the encoder itself, so a fresh one writes it and a rebuilt one that
+            // has been moved off the start does not.
+            return encoderAtStart ? "utf_8_sig" : "utf_8";
+        }
+        if (codec.equals("utf_16")) {
+            // `utf16_encode` writes a mark only when the stream's window is open, and only a seekable
+            // buffer at position zero opens it: every other stream writes native-order units.
+            return seekableLayer && encoderAtStart ? "utf_16" : "utf_16_le";
+        }
+        return codec;
+    }
+
     public void flush() {
-        if (!reading()) {
+        if (buffer != null) {
+            askBuffer("flush", new PyObject[0]);
+        } else if (out != null) {
             out.flush();
         }
     }
@@ -297,10 +372,10 @@ public final class PyStream extends PyIterator {
         return buffer != null;
     }
 
-    /** {@code buffer_access_safe} and {@code CHECK_ATTACHED}: the buffer, if this stream still has one. */
-    private PyBufferedReader attached() {
-        if (detached) {
-            throw Slots.valueError(DETACHED);
+    /** {@code buffer_access_safe}: the buffer, if this stream still has one. */
+    private PyObject attached() {
+        if (detached || buffer == null) {
+            throw Slots.valueError(initialized ? DETACHED : UNINITIALIZED);
         }
         return buffer;
     }
@@ -412,7 +487,150 @@ public final class PyStream extends PyIterator {
         return PyNone.INSTANCE;
     }
 
-    /** {@code utf-8-sig}'s mark, which is dropped from the first octets of the stream and nowhere else. */
+    /**
+     * {@code TextIOWrapper.__init__} on a stream that already exists: the layer is replaced, not added to.
+     *
+     * <p>{@code _io_TextIOWrapper___init___impl} clears {@code ok} first and sets it last, so what a
+     * failure leaves behind is decided by where it happened. A bad {@code encoding} or {@code newline}
+     * is refused by the clinic wrapper before the impl runs and changes nothing; a bad {@code errors}, or
+     * an unknown encoding, or a buffer that cannot answer {@code readable}, leaves the stream
+     * uninitialized and only a second call can make it answer again.
+     *
+     * <p>The order inside the impl is the reference's: the newline's value is checked, every field is
+     * cleared, the name is looked up in the codecs and the codec resolved, the three settings and the
+     * flags take their new values, the buffer is stored, and only then is it asked what it can do. The
+     * questions come in the order {@code textio.c} asks them — {@code readable}, {@code writable},
+     * {@code seekable}, {@code read1} — because each answer decides whether the next is asked at all.
+     */
+    PyObject reinitialize(PyObject[] args, String[] kwNames) {
+        PyObject[] values =
+                Arguments.unpackKeywords(
+                        "TextIOWrapper",
+                        args,
+                        kwNames,
+                        new String[] {
+                            "buffer", "encoding", "errors", "newline", "line_buffering",
+                            "write_through"
+                        },
+                        1,
+                        6);
+        // The two clinic conversions, and the two flags' truth, all happen before `ok` is cleared.
+        String newEncoding = textArgument("encoding", values[1]);
+        String newNewline = textArgument("newline", values[3]);
+        boolean newLineBuffering = values[4] != null && Slots.truth(values[4]);
+        boolean newWriteThrough = values[5] != null && Slots.truth(values[5]);
+        initialized = false;
+        detached = false;
+        // `errors` is an ordinary object in the impl's signature, and its conversion is the first thing
+        // the impl does: it is therefore after `ok = 0` and leaves a stream that a second call must fix.
+        String newErrors = textArgument("errors", values[2]);
+        if (newNewline != null
+                && !newNewline.isEmpty()
+                && !newNewline.equals("\n")
+                && !newNewline.equals("\r")
+                && !newNewline.equals("\r\n")) {
+            throw Slots.valueError("illegal newline value: %s", newNewline);
+        }
+        clearState();
+        // The impl clears the buffer before it looks the name up, which is why an unknown name leaves a
+        // stream whose own `buffer` refuses instead of answering the layer it used to hold.
+        buffer = null;
+        raw = null;
+        encoding = null;
+        codec = null;
+        errors = newErrors == null ? "strict" : newErrors;
+        newline = newNewline;
+        lineBuffered = newLineBuffering;
+        writeThrough = newWriteThrough;
+        String chosen =
+                newEncoding == null
+                        ? "utf-8"
+                        : newEncoding.equals("locale")
+                                ? System.getProperty("native.encoding", "UTF-8")
+                                : newEncoding;
+        // The lookup runs before the buffer is stored, which is why an unknown name leaves the stream
+        // with no encoding at all rather than with the one it had before the call.
+        codec = Encoder.codec(chosen);
+        encoding = chosen;
+        buffer = values[0];
+        raw = null;
+        readableLayer = Slots.truth(askBuffer("readable", new PyObject[0]));
+        writableLayer = Slots.truth(askBuffer("writable", new PyObject[0]));
+        // `_textiowrapper_detect_buffer_attributes` caches the descriptor only for the three buffered
+        // types, and only when the layer below that buffer is exactly a FileIO.
+        if (buffer instanceof PyBufferedReader reader) {
+            raw = reader.descriptor();
+        }
+        seekableLayer = Slots.truth(askBuffer("seekable", new PyObject[0]));
+        hasRead1 = hasAttribute(buffer, "read1");
+        encoderAtStart = false;
+        fixEncoderState();
+        initialized = true;
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code _textiowrapper_fix_encoder_state}: whether a markful encoder still sits at the start.
+     *
+     * <p>Only a seekable stream with an encoder has an answer to keep: the reference arms the mark and
+     * then asks the buffer for its position, and a position other than zero moves the encoder off the
+     * start, so {@code utf-16} writes no mark into the middle of a file.
+     */
+    private void fixEncoderState() {
+        if (!seekableLayer || !writableLayer) {
+            return;
+        }
+        encoderAtStart = true;
+        PyObject position = askBuffer("tell", new PyObject[0]);
+        if (!Slots.compareTrue(CompareOp.EQ, position, PyInt.of(0))) {
+            encoderAtStart = false;
+        }
+    }
+
+    /** A cleared stream's fields, all but the ones {@code __init__} itself is about to assign. */
+    private void clearState() {
+        chunkSize = 8192;
+        pending = "";
+        pendingUsed = 0;
+        carried = new byte[0];
+        bytesPerChar = 0;
+        carriedReturn = false;
+        hasDecoded = false;
+        seenNewlines = 0;
+        atStart = true;
+        utf16Big = false;
+        closed = false;
+        readableLayer = false;
+        writableLayer = false;
+        seekableLayer = false;
+        hasRead1 = true;
+    }
+
+    /** One of {@code __init__}'s text arguments, converted the way its clinic signature converts them. */
+    private static String textArgument(String parameter, PyObject value) {
+        if (value == null || value == PyNone.INSTANCE) {
+            return null;
+        }
+        if (!(value instanceof PyStr text)) {
+            throw Slots.typeError(
+                    "TextIOWrapper() argument '%s' must be str or None, not %s",
+                    parameter, Slots.argumentName(value));
+        }
+        return text.getValue();
+    }
+
+    /** {@code PyObject_HasAttrWithError}: a missing name is False, any other failure still propagates. */
+    private static boolean hasAttribute(PyObject target, String name) {
+        try {
+            Slots.getAttr(target, name);
+            return true;
+        } catch (PyRaise missing) {
+            if (missing.value().getType() == ExceptionTypes.ATTRIBUTE_ERROR) {
+                return false;
+            }
+            throw missing;
+        }
+    }
     private static final byte[] UTF8_BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
 
     /** A fresh decoder, as {@code _textiowrapper_set_decoder} builds one: no carried octets and no marks read. */
@@ -452,7 +670,16 @@ public final class PyStream extends PyIterator {
      * below rather than the refusal of the layer between.
      */
     private boolean isClosed() {
-        return reading() ? raw.closedFlag() : closed;
+        if (!initialized) {
+            return true;
+        }
+        if (buffer == null) {
+            return closed;
+        }
+        if (raw != null) {
+            return raw.closedFlag();
+        }
+        return Slots.truth(Slots.getAttr(attached(), "closed"));
     }
 
     /** {@code _PyIOBase_check_closed}: the derived attribute, which is the buffer's answer. */
@@ -464,11 +691,16 @@ public final class PyStream extends PyIterator {
 
     /** What reading {@code s.closed} answers, from whichever layer the reference reads it. */
     private PyObject closedValue() {
-        return reading() ? Slots.getAttr(attached(), "closed") : PyBool.of(closed);
+        if (!initialized) {
+            // `closed_get_impl` answers True whenever `ok` is not 1, before it ever reaches the buffer.
+            return PyBool.TRUE;
+        }
+        return buffer == null ? PyBool.of(closed) : Slots.getAttr(attached(), "closed");
     }
 
     /** {@code CHECK_CLOSED}, the guard every method of the stream itself runs first. */
     private void checkOpen() {
+        checkInitialized();
         if (isClosed()) {
             throw Slots.valueError(CLOSED);
         }
@@ -476,6 +708,7 @@ public final class PyStream extends PyIterator {
 
     /** The same guard as the rows that refuse with no full stop, which is the writing stream's own. */
     private void checkGetter() {
+        checkInitialized();
         if (isClosed()) {
             throw Slots.valueError(CLOSED_GETTER);
         }
@@ -485,13 +718,21 @@ public final class PyStream extends PyIterator {
     private void checkReadable() {
         checkAttached();
         checkOpen();
-        if (!reading()) {
+        if (!readableLayer) {
             throw Slots.unsupportedOperation("not readable");
+        }
+    }
+
+    /** {@code CHECK_INITIALIZED}: the guard that follows a failed {@code __init__}. */
+    private void checkInitialized() {
+        if (!initialized) {
+            throw Slots.valueError(UNINITIALIZED);
         }
     }
 
     /** {@code CHECK_ATTACHED}, the guard of every row that reaches the text or the buffer at all. */
     private void checkAttached() {
+        checkInitialized();
         if (detached) {
             throw Slots.valueError(DETACHED);
         }
@@ -528,7 +769,7 @@ public final class PyStream extends PyIterator {
         }
         checkAttached();
         checkOpen();
-        if (reading()) {
+        if (!writableLayer) {
             throw Slots.unsupportedOperation("not writable");
         }
         writeText(value);
@@ -803,9 +1044,10 @@ public final class PyStream extends PyIterator {
         return -1;
     }
 
-    /** {@code buffer.read1(n)}: the octets one chunk is built from, however the store holds them. */
+    /** {@code buffer.read1(n)}, or {@code buffer.read(n)} under a buffer that has no {@code read1}. */
     private byte[] readOctets(long wanted) {
-        return octetsOf(askBuffer("read1", new PyObject[] {PyInt.of(wanted)}));
+        return octetsOf(
+                askBuffer(hasRead1 ? "read1" : "read", new PyObject[] {PyInt.of(wanted)}));
     }
 
     /** {@code buffer.read()}: the rest of the store and of the descriptor under it. */
@@ -1202,21 +1444,39 @@ public final class PyStream extends PyIterator {
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             // The five rows that ask only of the stream itself, whatever the layer below it says.
-            case "encoding" -> PyStr.of(encoding);
-            case "errors" -> PyStr.of(errors);
+            // `encoding` is a `T_OBJECT` member, so it answers whatever the field holds — `None` after an
+            // `__init__` that got as far as clearing it, the old spelling when the failure came earlier.
+            case "encoding" -> encoding == null ? PyNone.INSTANCE : PyStr.of(encoding);
+            case "errors" -> {
+                checkInitialized();
+                yield errors == null ? PyNone.INSTANCE : PyStr.of(errors);
+            }
             case "line_buffering" -> PyBool.of(lineBuffered);
             case "write_through" -> PyBool.of(writeThrough);
             case "_finalizing" -> PyBool.of(finalizing);
-            case "name" -> reading() ? Slots.getAttr(attached(), "name") : PyStr.of(name);
+            case "name" -> {
+                if (buffer != null) {
+                    // `buffer_getattr` asks `buffer_access_safe` rather than `CHECK_INITIALIZED`, so a
+                    // half-built stream still answers with the name of the buffer it has.
+                    yield Slots.getAttr(attached(), "name");
+                }
+                checkInitialized();
+                yield PyStr.of(name);
+            }
             case "closed" -> closedValue();
             case "buffer" -> {
-                if (!reading()) {
-                    // A writing stream has no buffer of its own in this runtime, so the row that would
-                    // report one is the AttributeError of a name that was never filed: see the deviation
-                    // note in PLAN-progress.md.
-                    yield Members.find(this, attribute);
+                if (buffer != null) {
+                    yield attached();
                 }
-                yield attached();
+                if (!initialized) {
+                    // `buffer_access_safe` refuses the missing layer by the init flag before it ever
+                    // considers it detached.
+                    checkInitialized();
+                }
+                // A writing stream has no buffer of its own in this runtime, so the row that would
+                // report one is the AttributeError of a name that was never filed: see the deviation
+                // note in PLAN-progress.md.
+                yield Members.find(this, attribute);
             }
             // The reference works this out as it reads, which is why the answer is the set of endings the
             // chunks have actually carried rather than anything the opening mode predicts: a stream that
@@ -1327,6 +1587,9 @@ public final class PyStream extends PyIterator {
 
     @Override
     public String repr() {
+        // `textio.c` opens its repr with `CHECK_INITIALIZED`, so a stream an `__init__` left half-built
+        // refuses before it reads a name or an encoding.
+        checkInitialized();
         PyObject name;
         try {
             name = Slots.getAttr(this, "name");
@@ -1347,7 +1610,7 @@ public final class PyStream extends PyIterator {
                 + (name == null ? "" : " name=" + Slots.repr(name))
                 + (mode == null ? "" : " mode=" + Slots.repr(mode))
                 + " encoding="
-                + Slots.repr(PyStr.of(encoding))
+                + (encoding == null ? "None" : Slots.repr(PyStr.of(encoding)))
                 + ">";
     }
 

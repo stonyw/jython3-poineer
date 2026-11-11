@@ -359,7 +359,11 @@ class Jy3LauncherTest {
                 Arguments.of("147_reconfigure_names_refused_and_accepted.py", NAMES_OCTETS),
                 Arguments.of("148_reconfigure_encoding_writes_with_the_new_codec.py", NO_OCTETS),
                 Arguments.of("149_reconfigure_utf16_writes_native_order_without_a_mark.py", NO_OCTETS),
-                Arguments.of("150_reconfigure_write_names_refused_and_accepted.py", NO_OCTETS));
+                Arguments.of("150_reconfigure_write_names_refused_and_accepted.py", NO_OCTETS),
+                Arguments.of("151_textio_init_rebuilds_the_layer.py", LATIN1_OCTETS),
+                Arguments.of("152_textio_init_refusals_before_the_clear.py", LATIN1_OCTETS),
+                Arguments.of("153_textio_init_refusals_after_the_clear.py", LATIN1_OCTETS),
+                Arguments.of("154_textio_init_calling_convention.py", LATIN1_OCTETS));
     }
 
     /**
