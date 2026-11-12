@@ -187,6 +187,18 @@ public abstract class PyObject {
     }
 
     /**
+     * {@code object.__getattribute__(self, name)}: the read that never consults a declared {@code
+     * __getattribute__}.
+     *
+     * <p>Only a class Python wrote can declare that hook, and {@link PyInstance} overrides this to do the
+     * generic walk itself. Every other value answers through {@link Slots#getAttr}, which is already the
+     * generic read for it, so the two spellings of the same name agree.
+     */
+    PyObject genericGetAttr(String name) {
+        return Slots.getAttr(this, name);
+    }
+
+    /**
      * {@code self.name = value}, for the values whose type declares no attribute writing of its own.
      *
      * <p>That is CPython's {@code tp_setattro == PyObject_GenericSetAttr}, and almost every built-in type is

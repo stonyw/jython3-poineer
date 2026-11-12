@@ -6607,14 +6607,16 @@ final class TypeDict {
     // --- the attribute slots ---------------------------------------------------------------
 
     /**
-     * {@code object.__getattribute__(x, name)}: the lookup every value inherits.
+     * {@code object.__getattribute__(x, name)}: the generic lookup, never a declared hook.
      *
-     * <p>The name is checked before anything is read, and the read is the ordinary one — a slot wrapper
-     * calls {@code PyObject_GetAttr}, which starts the lookup again from the top rather than reaching into
-     * the dictionary beside it.
+     * <p>The name is checked before anything is read, and the read is the generic walk — not the
+     * {@code PyObject_GetAttr} a slot wrapper elsewhere performs. A class that declares
+     * {@code __getattribute__} and delegates to this one would otherwise come back round to itself on
+     * every read; {@link PyObject#genericGetAttr} is the half that skips that lookup, and every value
+     * whose type writes no hook answers through it unchanged.
      */
     private static PyObject objectGetAttribute(PyObject[] args, String[] kwNames, String qualified) {
-        return Slots.getAttr(args[0], attributeName(args[1]));
+        return args[0].genericGetAttr(attributeName(args[1]));
     }
 
     /**

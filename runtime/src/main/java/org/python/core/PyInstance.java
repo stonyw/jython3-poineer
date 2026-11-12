@@ -148,23 +148,55 @@ public class PyInstance extends PyObject {
     // --- attributes ----------------------------------------------------------------------
 
     /**
-     * {@code self.name}, in CPython's order: a descriptor that writes, then the instance's own
-     * dictionary, then the class and its bases, then {@code __getattr__}.
+     * {@code self.name}: {@code slot_tp_getattr_hook} when the class declares {@code __getattribute__},
+     * and the generic read otherwise.
      *
-     * <p>The class is consulted first and the answer run through {@link Descriptors} because that is
-     * what the descriptor protocol is: a function found there comes back bound, which is the whole of how
-     * {@code p.as_text()} passes {@code p} as {@code self} without anyone writing that down, and a member
-     * that can write owns the name outright. A member that can only read is the one thing the dictionary
-     * outranks, which is what lets {@code a.quiet = "mine"} shadow it.
+     * <p>CPython's hook is two calls, not one. The class's {@code __getattribute__} is asked first and
+     * owns every name outright; only an {@code AttributeError} from it lets {@code __getattr__} be asked,
+     * and a hook that declines in any other way has already answered. The generic read stays the ordinary
+     * path for a class that declares neither name, which is every class the built-in types and the
+     * hot path below are made of.
      *
-     * <p>{@code __dict__} is answered by that walk rather than here, by the {@code getset_descriptor}
-     * {@link Classes} files on the class that introduces the storage. A class that files no descriptor —
-     * one under {@code object} that declares {@code __slots__}, or {@code object} itself — keeps no
-     * dictionary for its values either, so the name is not there to read.
+     * <p>{@code object.__getattribute__} is the generic read and not the hook: a class that overrides the
+     * name and delegates to {@code object}'s copy must not come back round to itself. That is why the
+     * explicit fallback goes to {@link #genericGetAttr}, which skips the lookup of the hook entirely.
      */
     @Override
     public PyObject getAttr(String name) {
-        return owned(name);
+        PyObject hook = Specials.lookUp(type, "__getattribute__");
+        if (hook == null) {
+            return owned(name);
+        }
+        try {
+            return call(hook, PyStr.of(name));
+        } catch (PyRaise raised) {
+            if (!raised.value().exceptionType().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                throw raised;
+            }
+            PyObject fallback = callHook("__getattr__", PyStr.of(name));
+            if (!Slots.declined(fallback)) {
+                return fallback;
+            }
+            throw raised;
+        }
+    }
+
+    /**
+     * {@code object.__getattribute__(self, name)}: the generic read, never the declared hook.
+     *
+     * <p>This is the half a hook delegates to. It walks the order the same way {@link #owned} does but
+     * stops at the missing name with CPython's ordinary sentence instead of asking {@code __getattr__},
+     * because the {@code __getattr__} fallback belongs to the hook that called it, not to the generic
+     * read underneath.
+     */
+    @Override
+    PyObject genericGetAttr(String name) {
+        PyObject held = genericLookup(name);
+        if (!Slots.declined(held)) {
+            return held;
+        }
+        throw Slots.attributeError(
+                "'%s' object has no attribute '%s'", getType().filedName(), name);
     }
 
     /**
@@ -179,6 +211,18 @@ public class PyInstance extends PyObject {
      * same way it outranks the instance dictionary.
      */
     private PyObject owned(String name) {
+        PyObject held = genericLookup(name);
+        return Slots.declined(held) ? callHook("__getattr__", PyStr.of(name)) : held;
+    }
+
+    /**
+     * The walk without the hooks: a descriptor that writes, the instance dictionary, the class order, and
+     * {@code __class__}.
+     *
+     * <p>Shared by the ordinary read and by {@code object.__getattribute__}, which differ only in what
+     * they do with a name nothing holds — one asks {@code __getattr__}, the other raises.
+     */
+    private PyObject genericLookup(String name) {
         PyObject member = Specials.lookUp(type, name);
         if (member != null && Descriptors.writes(member)) {
             return Descriptors.get(member, this, type);
@@ -194,9 +238,25 @@ public class PyInstance extends PyObject {
         if (!Slots.declined(inherited)) {
             return inherited;
         }
-        return name.equals("__class__")
-                ? type
-                : Specials.invoke(this, "__getattr__", PyStr.of(name));
+        return name.equals(ClassAttribute.NAME) ? type : Slots.DECLINED;
+    }
+
+    /**
+     * The member the class order files under {@code hook}, bound to this value and called; or
+     * {@link Slots#DECLINED} when nothing in the order names it.
+     *
+     * <p>Binding goes through {@link Descriptors} so that every way a class can write the hook works:
+     * a plain function arrives bound to this value, a {@code staticmethod} arrives bare, and
+     * {@code object}'s own wrapper arrives as the bound generic read. The lookup is made afresh on every
+     * call because a class is allowed to gain or lose one of these names at any time.
+     */
+    private PyObject callHook(String hook, PyObject... arguments) {
+        PyObject member = Specials.lookUp(type, hook);
+        return member == null ? Slots.DECLINED : call(member, arguments);
+    }
+
+    private PyObject call(PyObject member, PyObject... arguments) {
+        return Slots.call(Descriptors.get(member, this, type), arguments, PyTuple.EMPTY);
     }
 
     /**
@@ -246,9 +306,9 @@ public class PyInstance extends PyObject {
      */
     @Override
     public PyObject setAttr(String name, PyObject value) {
-        PyObject hook = Specials.lookUp(type, "__setattr__");
-        if (hook instanceof PyFunction function) {
-            return function.call(new PyObject[] {this, PyStr.of(name), value}, null);
+        PyObject hook = callHook("__setattr__", PyStr.of(name), value);
+        if (!Slots.declined(hook)) {
+            return hook;
         }
         GenericAttributes.write(this, name, value);
         return PyNone.INSTANCE;
@@ -260,9 +320,9 @@ public class PyInstance extends PyObject {
      */
     @Override
     public PyObject delAttr(String name) {
-        PyObject hook = Specials.lookUp(type, "__delattr__");
-        if (hook instanceof PyFunction function) {
-            return function.call(new PyObject[] {this, PyStr.of(name)}, null);
+        PyObject hook = callHook("__delattr__", PyStr.of(name));
+        if (!Slots.declined(hook)) {
+            return hook;
         }
         GenericAttributes.delete(this, name);
         return PyNone.INSTANCE;
