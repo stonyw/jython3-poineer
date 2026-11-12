@@ -278,6 +278,7 @@ final class Classes {
                 || base == PyType.DICT
                 || base == PyType.INT
                 || base == PyType.STR
+                || base == PyType.TUPLE
                 || base.matches(ExceptionTypes.BASE_EXCEPTION)
                 || base == PyType.CLASS_METHOD
                 || base == PyType.STATIC_METHOD
@@ -879,6 +880,10 @@ final class Classes {
         if (kind.parent() == PyType.STR) {
             PyStr made = (PyStr) Constructors.instantiate(PyType.STR, args, kwNames);
             return new PyStrSubclass(made.getValue(), kind);
+        }
+        if (kind.parent() == PyType.TUPLE) {
+            PyTuple made = (PyTuple) Constructors.instantiate(PyType.TUPLE, args, kwNames);
+            return new PyTupleSubclass(made.getArray(), kind);
         }
         if (excess(args, kwNames) && inheritsOnlyObjectInit(kind)) {
             throw Slots.typeError("%s() takes no arguments", kind.name());

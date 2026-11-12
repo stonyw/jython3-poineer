@@ -4388,10 +4388,13 @@ final class TypeDict {
         PyObject made =
                 Constructors.instantiate(
                         declaring, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
-        // Only `str` has a shape a dictionary can sit beside; the other four types on this path build
-        // their own structs and are never derived from.
+        // Only `str` and `tuple` have a shape a dictionary can sit beside; the other three types on this
+        // path build their own structs and are never derived from.
         if (declaring == PyType.STR && kind != PyType.STR && made instanceof PyStr text) {
             return new PyStrSubclass(text.getValue(), kind);
+        }
+        if (declaring == PyType.TUPLE && kind != PyType.TUPLE && made instanceof PyTuple tuple) {
+            return new PyTupleSubclass(tuple.getArray(), kind);
         }
         return made;
     }
@@ -5555,13 +5558,13 @@ final class TypeDict {
         }
         // `object.__init__` asks whether this class's `tp_new` is `object.__new__`. It is not when the
         // class writes `__new__` somewhere in its mro, and it is not for a class under an immutable
-        // built-in either: `int` and `str` already consumed the arguments being complained about, which
-        // is why `Meter(5)` is fine although `Meter` inherits `object.__init__`.
+        // built-in either: `int`, `str` and `tuple` already consumed the arguments being complained
+        // about, which is why `Meter(5)` is fine although `Meter` inherits `object.__init__`.
         if (Specials.lookUp(kind, "__new__") != null) {
             return true;
         }
         for (PyType owner : kind.mro()) {
-            if (owner == PyType.INT || owner == PyType.STR) {
+            if (owner == PyType.INT || owner == PyType.STR || owner == PyType.TUPLE) {
                 return true;
             }
         }
