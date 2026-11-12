@@ -276,12 +276,111 @@ class Jy3LauncherTest {
             __all__ = ["ok", 1]
             """;
 
+    /** A package whose body records when it ran, so its child can prove the order. */
+    private static final String M4_ORDER_PACKAGE = """
+            ORDER = ["init"]
+            """;
+
+    /** The child that appends to that record while its own module body runs. */
+    private static final String M4_ORDER_LEAF = """
+            import orderpkg
+            orderpkg.ORDER.append("leaf")
+            """;
+
+    /** A package that counts its own executions, so a second import can prove it never reran. */
+    private static final String M4_ONCE_PACKAGE = """
+            RUNS = 0
+            RUNS += 1
+            """;
+
+    /** A package body that reads the names the import system filled in before it ran. */
+    private static final String M4_INIT_PACKAGE = """
+            import sys
+
+            print("init-sees:", __name__, repr(__package__), __spec__.name)
+            print("init-file:", __file__.endswith("/initpkg/__init__.py"))
+            print("init-path:", type(__path__).__name__, __path__[0].endswith("/initpkg"))
+            print("init-filed:", __name__ in sys.modules)
+            VALUE = "init"
+            """;
+
+    /** A plain module of that package, printing the same names from inside its own body. */
+    private static final String M4_INIT_CHILD = """
+            print("child-sees:", __name__, repr(__package__), __spec__.name)
+            print("child-file:", __file__.endswith("/initpkg/child.py"))
+            print("child-path:", "__path__" in globals())
+            """;
+
+    /** A package that imports one of its own submodules while it is being loaded. */
+    private static final String M4_SELF_PACKAGE = """
+            from . import helper
+
+            VALUE = helper.VALUE
+            """;
+
+    private static final String M4_SELF_HELPER = """
+            VALUE = "self-helper"
+            """;
+
+    /** A package that loads, with a subpackage beside it whose own body raises. */
+    private static final String M4_BAD_PARENT = """
+            PARENT = "ok"
+            """;
+
+    private static final String M4_BAD_CHILD = """
+            raise KeyError("bad child")
+            """;
+
+    /** A package whose own body raises, so the import that asked for it leaves no entry. */
+    private static final String M4_BAD_PACKAGE = """
+            raise ValueError("bad package")
+            """;
+
+    private static final String M4_BAD_MODULE = """
+            raise RuntimeError("bad submodule")
+            """;
+
+    /** A name both spelled as a package and written as a file beside it: the package wins. */
+    private static final String M4_DUPE_MODULE = """
+            KIND = "module"
+            """;
+
+    private static final String M4_DUPE_PACKAGE = """
+            KIND = "package"
+            """;
+
+    /** The middle package the corpus reaches its leaf module through. */
+    private static final String M4_DEEP_PACKAGE = """
+            VALUE = "deep"
+            """;
+
+    private static final String M4_DEEP_MODULE = """
+            VALUE = "mod"
+            """;
+
+    /** A module two levels down whose relative imports climb to the package above. */
+    private static final String M4_SUB_INNER = """
+            from .. import sibling
+            from ..sibling import VALUE as SIBLING_VALUE
+
+            VALUE = "inner"
+            """;
+
+    /** A module in a directory only reachable once the package's {@code __path__} is extended. */
+    private static final String M4_EXTRA_MODULE = """
+            VALUE = "extra"
+            """;
+
     /**
      * M4's import slices, under {@code src/test/resources/m4/corpus}.
      *
      * <p>The fixtures are written beside each script because a path finder needs a path to find: a plain
-     * module, a package with a module and a subpackage, and two packages that publish names through
-     * {@code __all__}. Both interpreters see the same files and the same directory as {@code sys.path[0]}.
+     * module, a package with a module and a subpackage, two packages that publish names through
+     * {@code __all__}, and from slice 109 the packages the fifth script reads the package object itself
+     * from — one that counts its executions, one whose body prints the names it was handed before it
+     * ran, one that imports its own submodule, one whose child raises, and one reached only through a
+     * directory appended to {@code __path__}. Both interpreters see the same files and the same directory
+     * as {@code sys.path[0]}.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("m4Corpus")
@@ -300,6 +399,33 @@ class Jy3LauncherTest {
         Files.createDirectories(work.resolve("pkbad"));
         write("pkbad/__init__.py", M4_BAD_ALL);
 
+        Files.createDirectories(work.resolve("pkg/deep"));
+        write("pkg/deep/__init__.py", M4_DEEP_PACKAGE);
+        write("pkg/deep/mod.py", M4_DEEP_MODULE);
+        write("pkg/dupe.py", M4_DUPE_MODULE);
+        Files.createDirectories(work.resolve("pkg/dupe"));
+        write("pkg/dupe/__init__.py", M4_DUPE_PACKAGE);
+        write("pkg/bad.py", M4_BAD_MODULE);
+        write("pkg/sub/inner.py", M4_SUB_INNER);
+        Files.createDirectories(work.resolve("orderpkg"));
+        write("orderpkg/__init__.py", M4_ORDER_PACKAGE);
+        write("orderpkg/leaf.py", M4_ORDER_LEAF);
+        Files.createDirectories(work.resolve("oncepkg"));
+        write("oncepkg/__init__.py", M4_ONCE_PACKAGE);
+        Files.createDirectories(work.resolve("initpkg"));
+        write("initpkg/__init__.py", M4_INIT_PACKAGE);
+        write("initpkg/child.py", M4_INIT_CHILD);
+        Files.createDirectories(work.resolve("selfpkg"));
+        write("selfpkg/__init__.py", M4_SELF_PACKAGE);
+        write("selfpkg/helper.py", M4_SELF_HELPER);
+        Files.createDirectories(work.resolve("badparent/child"));
+        write("badparent/__init__.py", M4_BAD_PARENT);
+        write("badparent/child/__init__.py", M4_BAD_CHILD);
+        Files.createDirectories(work.resolve("badpkg"));
+        write("badpkg/__init__.py", M4_BAD_PACKAGE);
+        Files.createDirectories(work.resolve("extra"));
+        write("extra/extra.py", M4_EXTRA_MODULE);
+
         answersExactlyAsCpython("m4/corpus", scriptName);
     }
 
@@ -308,7 +434,8 @@ class Jy3LauncherTest {
                 "01_the_foundation.py",
                 "02_the_path_finder.py",
                 "03_the_import_builtin.py",
-                "04_from_imports.py");
+                "04_from_imports.py",
+                "05_the_package_object.py");
     }
 
     private static List<String> m3Corpus() {

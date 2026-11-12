@@ -459,7 +459,15 @@ public final class PyRuntime {
         PyModule module = created instanceof PyModule made ? made : new PyModule(name);
         modules.put(PyStr.interned(name), module);
         initialiseAttributes(module, spec);
-        Slots.call(Slots.getAttr(loader, "exec_module"), new PyObject[] {module}, null);
+        try {
+            Slots.call(Slots.getAttr(loader, "exec_module"), new PyObject[] {module}, null);
+        } catch (PyRaise failure) {
+            // `_load_unlocked` takes the name back out when the module's body raises, so that a failed
+            // import leaves no half-built module for the next one to find. A package whose child failed
+            // keeps its own entry: only the name being loaded is removed.
+            modules.remove(PyStr.interned(name));
+            throw failure;
+        }
         return module;
     }
 
