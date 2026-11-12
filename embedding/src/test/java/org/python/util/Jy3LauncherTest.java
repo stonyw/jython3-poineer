@@ -541,7 +541,10 @@ class Jy3LauncherTest {
         return List.of(
                 "01_ast_nodes_and_parse.py",
                 "02_random_mt19937.py",
-                "03_unicodedata_normal_forms.py");
+                "03_unicodedata_normal_forms.py",
+                "04_resource_limits.py",
+                "05_monitoring_api.py",
+                "06_typing_surface.py");
     }
 
     private static List<String> m3Corpus() {

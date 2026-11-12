@@ -354,7 +354,11 @@ final class Classes {
                 // `random.py` is `class Random(_random.Random)` and asks `super().seed(a)` before any
                 // generator exists, so a program-written class has to be able to sit over this one and
                 // keep the generator beside its own dictionary.
-                || base == PyType.RANDOM;
+                || base == PyType.RANDOM
+                // `typing.py` builds `Generic` subclasses itself: `Protocol` is `class Protocol(Generic,
+                // metaclass=_ProtocolMeta)`, and every user class written in the type-parameter syntax
+                // lands here too.
+                || base == PyType.TYPING_GENERIC;
     }
 
     /**
@@ -425,8 +429,11 @@ final class Classes {
         }
         kind.order = linearize(kind, bases);
         addSlotDescriptors(kind, dict);
+        // A field the body declared under the name `__doc__` is already a member descriptor here, and it
+        // is what the name must keep: `_SpecialForm` stores its own sentence through that slot, and the
+        // default the build files below would otherwise make it read-only.
         if (!docWritten) {
-            dict.put(docKey, PyNone.INSTANCE);
+            putDefault(dict, "__doc__", PyNone.INSTANCE);
         }
         propagateCells(dict, kind);
         setNames(dict, kind);

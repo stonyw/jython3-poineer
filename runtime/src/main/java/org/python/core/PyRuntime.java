@@ -46,7 +46,7 @@ public final class PyRuntime {
             {"builtins", "sys", "_ast", "_io", "_tokenize", "_opcode", "_signal", "_string", "_types",
                 "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections",
-                "unicodedata"};
+                "unicodedata", "resource", "_typing"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -200,6 +200,12 @@ public final class PyRuntime {
         // `test.support.os_helper` normalizes a file name with this module on `darwin`, and every
         // test target imports that helper at module scope.
         PyModule unicodeDataModule = UnicodeDataModule.newModule();
+        // `test.support` reads and lowers the core-file and stack limits at import time, and every one
+        // of the seven criterion targets imports it.
+        PyModule resourceModule = ResourceModule.newModule();
+        // The C half of `typing`, which `typing.py` imports on its first line: `TypeVar` and the rest
+        // of the type-parameter family are types this runtime declares, `Generic` included.
+        PyModule typingModule = TypingModule.newModule();
         PyModule structModule = StructModule.newModule();
         PyModule binasciiModule = BinasciiModule.newModule();
         PyModule errnoModule = ErrnoModule.newModule();
@@ -240,6 +246,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_imp"), impModule);
         modules.put(PyStr.interned("_random"), randomModule);
         modules.put(PyStr.interned("unicodedata"), unicodeDataModule);
+        modules.put(PyStr.interned("resource"), resourceModule);
+        modules.put(PyStr.interned("_typing"), typingModule);
         modules.put(PyStr.interned("_struct"), structModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
         modules.put(PyStr.interned("errno"), errnoModule);
@@ -286,6 +294,8 @@ public final class PyRuntime {
         belongTo(impModule);
         belongTo(randomModule);
         belongTo(unicodeDataModule);
+        belongTo(resourceModule);
+        belongTo(typingModule);
         belongTo(structModule);
         belongTo(binasciiModule);
         belongTo(errnoModule);
@@ -1379,8 +1389,13 @@ public final class PyRuntime {
                         PyStr.of("atexit"),
                         PyStr.of("_imp"),
                         PyStr.of("_random"),
-                        PyStr.of("unicodedata")));
+                        PyStr.of("unicodedata"),
+                        PyStr.of("resource"),
+                        PyStr.of("_typing")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
+        // `bdb.py` reads `sys.monitoring.events` at module scope and registers itself as a tool when the
+        // attribute exists, so a debugger cannot be imported without it.
+        sys.set("monitoring", Monitoring.newModule());
         sys.set("getdefaultencoding", noArguments(
                 "getdefaultencoding", () -> PyStr.of("utf-8"),
                 "getdefaultencoding($module, /)\n"

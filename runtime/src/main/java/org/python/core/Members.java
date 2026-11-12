@@ -82,6 +82,19 @@ final class Members {
             // `time.struct_time` is the other named sequence, and its table is read through the type for the
             // same reason: `struct_time.n_fields` answers before `gmtime` has ever been called.
             Map.entry(PyType.STRUCT_TIME, PyStructTime.class),
+            // `resource.struct_rusage` answers its sixteen names through the type too, so a program can
+            // read `struct_rusage.n_fields` without any usage sample having been taken.
+            Map.entry(PyType.STRUCT_RUSAGE, ResourceModule.StructRusage.class),
+            // The ten members of `_typing` are declared by the module that builds them, so a program can
+            // read `TypeVar.__name__` or ask `Union[int]` before making any value of its own.
+            Map.entry(PyType.TYPE_VAR, TypingModule.class),
+            Map.entry(PyType.PARAM_SPEC, TypingModule.class),
+            Map.entry(PyType.TYPE_VAR_TUPLE, TypingModule.class),
+            Map.entry(PyType.PARAM_SPEC_ARGS, TypingModule.class),
+            Map.entry(PyType.PARAM_SPEC_KWARGS, TypingModule.class),
+            Map.entry(PyType.TYPE_ALIAS_TYPE, TypingModule.class),
+            Map.entry(PyType.TYPING_GENERIC, TypingModule.class),
+            Map.entry(PyType.UNION_TYPE, TypingModule.class),
             // `os.stat_result` answers its fifteen names through the type as well; `os.stat` has not had
             // to be called for `stat_result.n_fields` to be readable.
             Map.entry(PyType.STAT_RESULT, PyStatResult.class),

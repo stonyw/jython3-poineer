@@ -1563,7 +1563,67 @@ public class PyType extends PyObject {
                     .filedUnder("_random.Random")
                     .documented("Random() -> create a random number generator with its own internal state.");
 
+    /**
+     * {@code resource.struct_rusage}: the sixteen counters {@code getrusage} answers with.
+     *
+     * <p>It is a tuple subclass, like the other two named sequences, and a program may build one from
+     * any sixteen-item sequence.
+     */
+    public static final PyType STRUCT_RUSAGE =
+            sequence("resource.struct_rusage")
+                    .documented("struct_rusage: Result from getrusage.\n"
+                            + "\n"
+                            + "This object may be accessed either as a tuple of\n"
+                            + "    (utime,stime,maxrss,ixrss,idrss,isrss,minflt,majflt,\n"
+                            + "    nswap,inblock,oublock,msgsnd,msgrcv,nsignals,nvcsw,nivcsw)\n"
+                            + "or via the attributes ru_utime, ru_stime, ru_maxrss, and so on.");
+
     private String name;
+
+    /**
+     * {@code typing.Generic}: the base every generic class in the standard library is written on.
+     *
+     * <p>It is the type {@code typing.py} takes from {@code _typing} rather than a class it builds, and
+     * that identity is what lets {@code typing._generic_class_getitem} recognise it: {@code Generic[int]}
+     * and {@code Generic[]} are refused by comparing against the same object a program holds. It is
+     * instantiable and a valid base, both of which {@code typing.Protocol} relies on.
+     */
+    public static final PyType TYPING_GENERIC =
+            builtin("Generic")
+                    .filedUnder("typing.Generic")
+                    .documented("Abstract base class for generic types.");
+
+    /** {@code typing.TypeVar}: a parameter standing for one type. */
+    public static final PyType TYPE_VAR =
+            builtin("TypeVar").filedUnder("typing.TypeVar");
+
+    /** {@code typing.ParamSpec}: a parameter standing for a callable's whole signature. */
+    public static final PyType PARAM_SPEC =
+            builtin("ParamSpec").filedUnder("typing.ParamSpec");
+
+    /** {@code typing.TypeVarTuple}: a parameter standing for any number of types. */
+    public static final PyType TYPE_VAR_TUPLE =
+            builtin("TypeVarTuple").filedUnder("typing.TypeVarTuple");
+
+    /** {@code typing.ParamSpecArgs}: the {@code P.args} half of a {@code ParamSpec}. */
+    public static final PyType PARAM_SPEC_ARGS =
+            builtin("ParamSpecArgs").filedUnder("typing.ParamSpecArgs");
+
+    /** {@code typing.ParamSpecKwargs}: the {@code P.kwargs} half of a {@code ParamSpec}. */
+    public static final PyType PARAM_SPEC_KWARGS =
+            builtin("ParamSpecKwargs").filedUnder("typing.ParamSpecKwargs");
+
+    /** {@code typing.TypeAliasType}: a lazily evaluated name for a type, made by {@code type X = ...}. */
+    public static final PyType TYPE_ALIAS_TYPE =
+            builtin("TypeAliasType").filedUnder("typing.TypeAliasType");
+
+    /**
+     * {@code NoDefaultType}: the type of the one {@code typing.NoDefault} sentinel.
+     *
+     * <p>Its module is {@code builtins} because that is where the reference files the C type; asking it
+     * for an instance answers the sentinel itself rather than building a second one.
+     */
+    public static final PyType NO_DEFAULT_TYPE = builtin("NoDefaultType");
 
     /**
      * The name this type is written down with, which is CPython's {@code tp_name}.

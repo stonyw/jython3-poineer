@@ -263,6 +263,33 @@ final class Constructors {
         if (type == PyType.STRUCT_TIME) {
             return PyStructTime.called(args, kwNames);
         }
+        if (type == PyType.STRUCT_RUSAGE) {
+            return ResourceModule.StructRusage.called(args, kwNames);
+        }
+        if (type == PyType.TYPE_VAR) {
+            return TypingModule.typeVar(args, keywordNames);
+        }
+        if (type == PyType.PARAM_SPEC) {
+            return TypingModule.paramSpec(args, keywordNames);
+        }
+        if (type == PyType.TYPE_VAR_TUPLE) {
+            return TypingModule.typeVarTuple(args, keywordNames);
+        }
+        if (type == PyType.TYPE_ALIAS_TYPE) {
+            return TypingModule.typeAliasType(args, keywordNames);
+        }
+        if (type == PyType.PARAM_SPEC_ARGS) {
+            return TypingModule.paramSpecArgs(args, keywordNames);
+        }
+        if (type == PyType.PARAM_SPEC_KWARGS) {
+            return TypingModule.paramSpecKwargs(args, keywordNames);
+        }
+        if (type == PyType.TYPING_GENERIC) {
+            return TypingModule.generic(args, keywordNames);
+        }
+        if (type == PyType.NO_DEFAULT_TYPE) {
+            return TypingModule.noDefault(args, keywordNames);
+        }
         if (type == PyType.CONTEXT_VAR) {
             return PyContextVar.construct(args, keywordNames);
         }
