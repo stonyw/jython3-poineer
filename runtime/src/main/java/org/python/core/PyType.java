@@ -1375,6 +1375,23 @@ public class PyType extends PyObject {
     public static final PyType NAMESPACE =
             builtin("SimpleNamespace").filedUnder("types.SimpleNamespace");
 
+    /**
+     * {@code re.Pattern}: a compiled expression, made by {@code _sre.compile}.
+     *
+     * <p>{@code re/__init__.py} takes this type from a compiled empty pattern rather than declaring a
+     * class, so the name has to exist before {@code import re} finishes.
+     */
+    public static final PyType SRE_PATTERN =
+            builtin("Pattern").filedUnder("re.Pattern");
+
+    /** {@code re.Match}: one successful match, taken from {@code Pattern.match} of the empty pattern. */
+    public static final PyType SRE_MATCH =
+            builtin("Match").filedUnder("re.Match");
+
+    /** {@code functools._lru_cache_wrapper}: what {@code lru_cache} wraps a function in. */
+    public static final PyType LRU_CACHE_WRAPPER =
+            builtin("_lru_cache_wrapper").filedUnder("functools._lru_cache_wrapper");
+
     private String name;
 
     /**

@@ -146,7 +146,14 @@ final class Members {
             Map.entry(PyType.WEAK_CALLABLE_PROXY, PyWeakProxy.class),
             // Every spec the finder answers carries a loader of this class, and a program asks it for
             // its filename before any module has been imported, so the table is filed by its value class.
-            Map.entry(PyType.SOURCE_FILE_LOADER, PySourceFileLoader.class));
+            Map.entry(PyType.SOURCE_FILE_LOADER, PySourceFileLoader.class),
+            // `re` takes both types from values it compiles at import, and a program can ask the type
+            // for `Pattern.groupindex` or `Match.regs` before either value exists.
+            Map.entry(PyType.SRE_PATTERN, PySrePattern.class),
+            Map.entry(PyType.SRE_MATCH, PySreMatch.class),
+            // The wrapper `functools.lru_cache` returns files three rows, and `cache_clear` is asked
+            // through the type by `re.purge` even before a template has been cached.
+            Map.entry(PyType.LRU_CACHE_WRAPPER, FunctoolsModule.Wrapper.class));
 
     private final PyType owner;
 

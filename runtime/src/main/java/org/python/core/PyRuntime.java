@@ -171,6 +171,10 @@ public final class PyRuntime {
         PyModule codecsModule = CodecsModule.newModule();
         PyModule mathModule = MathModule.newModule();
         PyModule timeModule = TimeModule.newModule();
+        // The two modules `re` needs before any of its own Python code can run: the engine boundary
+        // and the one decorator `re/__init__.py` imports at module scope.
+        PyModule sreModule = SreModule.newModule();
+        PyModule functoolsModule = FunctoolsModule.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -188,6 +192,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_codecs"), codecsModule);
         modules.put(PyStr.interned("math"), mathModule);
         modules.put(PyStr.interned("time"), timeModule);
+        modules.put(PyStr.interned("_sre"), sreModule);
+        modules.put(PyStr.interned("functools"), functoolsModule);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -217,6 +223,8 @@ public final class PyRuntime {
         belongTo(codecsModule);
         belongTo(mathModule);
         belongTo(timeModule);
+        belongTo(sreModule);
+        belongTo(functoolsModule);
         belongTo(stringPackage);
     }
 
