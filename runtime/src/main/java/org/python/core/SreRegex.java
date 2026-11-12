@@ -42,8 +42,10 @@ final class SreRegex {
      *     {@code re.error}
      * @throws java.util.regex.PatternSyntaxException for anything else Java refuses
      */
-    static Pattern compile(String source, int flags, Map<String, Integer> names) {
-        boolean ascii = (flags & (ASCII | LOCALE)) != 0;
+    static Pattern compile(String source, int flags, boolean bytes, Map<String, Integer> names) {
+        // A bytes pattern has no Unicode flag and never will: every character class and every case
+        // fold is the ASCII one, exactly as for a str pattern written with `re.ASCII`.
+        boolean ascii = bytes || (flags & (ASCII | LOCALE)) != 0;
         int javaFlags = 0;
         if ((flags & IGNORECASE) != 0) {
             javaFlags |= Pattern.CASE_INSENSITIVE;

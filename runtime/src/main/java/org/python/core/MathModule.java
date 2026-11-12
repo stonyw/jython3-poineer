@@ -15,9 +15,10 @@ import java.util.List;
  * result too large to represent. The integer functions ({@code factorial}, {@code isqrt}, {@code comb},
  * {@code perm}, {@code gcd}, {@code lcm}) do their arithmetic in {@link BigInteger} and never round.
  *
- * <p>Four names are absent: {@code gamma}, {@code lgamma}, {@code erf} and {@code erfc}. Java's standard
- * library has no implementation of them, and none of the standard-library modules this runtime can import
- * asks for one.
+ * <p>Two names are absent: {@code erf} and {@code erfc}. Java's standard library has no implementation of
+ * them, and no library module this runtime can import asks for one. {@code gamma} and {@code lgamma} are
+ * here, but as a Lanczos approximation rather than a libm call, so a value may differ from the reference
+ * in the last ulp — the deviation {@code PLAN.md} names.
  */
 final class MathModule {
 
@@ -163,6 +164,8 @@ final class MathModule {
         module.set("modf", unaryPair("modf", MathModule::modf));
         module.set("isclose", isclose());
         module.set("ulp", unary("ulp", MathModule::ulp));
+        module.set("gamma", unary("gamma", MathModule::gamma));
+        module.set("lgamma", unary("lgamma", MathModule::logGamma));
 
         module.set("factorial", new PyNativeFunction("factorial", (args, kwNames) -> {
             Arguments.exactlyOne("math.factorial()", args, kwNames);
@@ -224,6 +227,61 @@ final class MathModule {
         module.set("fsum", fsum());
         module.set("sumprod", sumprod());
         return module;
+    }
+
+    // --- the Lanczos approximation -----------------------------------------------------------------
+
+    /** The nine coefficients of the g=7, n=9 Lanczos sum. */
+    private static final double[] LANCZOS = {
+        0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+        771.32342877765313, -176.61502916214059, 12.507343278686905,
+        -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
+    };
+
+    /** {@code gamma(x)}, through the Lanczos sum because libm's {@code tgamma} is not reachable. */
+    private static double gamma(double x) {
+        if (Double.isNaN(x)) {
+            return x;
+        }
+        if (x == 0 || (x < 0 && x == Math.floor(x))) {
+            throw Slots.valueError("expected a noninteger or positive integer, got %s",
+                    PyFloat.of(x).repr());
+        }
+        if (Double.isInfinite(x)) {
+            return x;
+        }
+        if (x < 0.5) {
+            return Math.PI / (Math.sin(Math.PI * x) * gamma(1 - x));
+        }
+        double answer = Math.exp(logGamma(x));
+        if (Double.isInfinite(answer)) {
+            throw Slots.overflowError("math range error");
+        }
+        return answer;
+    }
+
+    /** {@code lgamma(x)}: the log of the absolute value, finite where gamma is not. */
+    private static double logGamma(double x) {
+        if (Double.isNaN(x)) {
+            return x;
+        }
+        if (Double.isInfinite(x)) {
+            return Double.POSITIVE_INFINITY;
+        }
+        if (x == 0 || (x < 0 && x == Math.floor(x))) {
+            throw Slots.valueError("expected a noninteger or positive integer, got %s",
+                    PyFloat.of(x).repr());
+        }
+        if (x < 0.5) {
+            return Math.log(Math.PI / Math.abs(Math.sin(Math.PI * x))) - logGamma(1 - x);
+        }
+        x -= 1;
+        double sum = LANCZOS[0];
+        double t = x + 7.5;
+        for (int i = 1; i < LANCZOS.length; i++) {
+            sum += LANCZOS[i] / (x + i);
+        }
+        return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(sum);
     }
 
     // --- conversion and the two errno answers ------------------------------------------------------

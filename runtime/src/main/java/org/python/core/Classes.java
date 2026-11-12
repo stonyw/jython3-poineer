@@ -289,7 +289,14 @@ final class Classes {
                 // `weakref.ref` is a base the standard library writes: `weakref.WeakMethod` is a
                 // `class WeakMethod(ref)` whose slots and methods a Python class body supplies, and
                 // the reference's own storage is what `allocate` keeps beside the dictionary.
-                || base == PyType.WEAK_REFERENCE;
+                || base == PyType.WEAK_REFERENCE
+                // `io.py` is written over the four `_io` bases and over nothing else: `IOBase`,
+                // `RawIOBase`, `BufferedIOBase` and `TextIOBase` are the ABCs the module declares, and
+                // every concrete stream is one of the Java values the module only registers with them.
+                || base == PyType.IO_BASE
+                || base == PyType.TEXT_IO_BASE
+                || base == PyType.RAW_IO_BASE
+                || base == PyType.BUFFERED_IO_BASE;
     }
 
     /**
@@ -874,6 +881,12 @@ final class Classes {
         PyObject wrapper = allocateWrapper(kind);
         if (wrapper != null) {
             return wrapper;
+        }
+        // A class written over one of the four `_io` bases inherits the base's value: an instance
+        // dictionary and the rows the base files. The concrete streams stay the Java values `_io` names;
+        // what `io.py` adds here is the ABC layer that registers them.
+        if (kind.matches(PyType.IO_BASE)) {
+            return new IoBases.Value(kind);
         }
         // A class whose first base is an immutable value inherits that value's creator, not `object`'s:
         // the value is fixed here, by whatever `int` or `str` would have made of the arguments, and the

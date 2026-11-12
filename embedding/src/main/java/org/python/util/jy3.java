@@ -238,7 +238,7 @@ public final class jy3 {
         PyRuntime.startup();
         // After startup, because the finders it installs go into the module table startup builds.
         JavaInterop.install();
-        PyRuntime.setSourceCompiler(Cpython314Compiler::compileSource);
+        PyRuntime.setSourceCompiler(Cpython314Compiler.COMPILER);
     }
 
     /**

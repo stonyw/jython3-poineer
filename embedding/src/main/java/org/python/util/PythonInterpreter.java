@@ -64,7 +64,7 @@ public class PythonInterpreter {
     public PythonInterpreter(PyModule module) {
         // The runtime reads imported source through this hand-in, because by design it cannot see the
         // compiler itself; an embedder that imports a module needs the same one the launcher uses.
-        PyRuntime.setSourceCompiler(Cpython314Compiler::compileSource);
+        PyRuntime.setSourceCompiler(Cpython314Compiler.COMPILER);
         JavaInterop.install();
         this.namespace = module;
     }

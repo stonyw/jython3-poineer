@@ -1,6 +1,7 @@
 package org.python.core;
 
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,7 +34,7 @@ final class PySrePattern extends PyObject {
 
     private static final Members METHODS = Members.of(PyType.SRE_PATTERN)
             .addField("pattern", "The pattern string from which the pattern object was compiled.",
-                    self -> PyStr.of(((PySrePattern) self).source))
+                    self -> ((PySrePattern) self).sourceObject)
             .addField("flags", "The flags the pattern was compiled with.",
                     self -> PyInt.of(((PySrePattern) self).flags))
             .addField("groups", "The number of capturing groups in the pattern.",
@@ -59,8 +60,14 @@ final class PySrePattern extends PyObject {
             .addNoArgument("__copy__", self -> self)
             .addOne("__deepcopy__", (self, memo) -> self);
 
-    /** The pattern as Python wrote it. */
+    /** The pattern as Python wrote it: a {@link PyStr}, or the {@link PyBytes} of a bytes pattern. */
+    private final PyObject sourceObject;
+
+    /** The pattern as the engine reads it, one character per byte for a bytes pattern. */
     private final String source;
+
+    /** Whether the pattern is bytes, which decides what subjects and groups come back as. */
+    private final boolean bytes;
 
     /** The flag word {@code _sre.compile} was given, UNICODE included for a str pattern. */
     private final int flags;
@@ -77,9 +84,12 @@ final class PySrePattern extends PyObject {
     /** The Java pattern the source was translated into. */
     private final java.util.regex.Pattern compiled;
 
-    PySrePattern(String source, int flags, int groups, Map<String, Integer> names) {
+    PySrePattern(PyObject sourceObject, String source, boolean bytes, int flags, int groups,
+            Map<String, Integer> names) {
         super(PyType.SRE_PATTERN);
+        this.sourceObject = sourceObject;
         this.source = source;
+        this.bytes = bytes;
         this.flags = flags;
         this.groups = groups;
         this.names = new LinkedHashMap<>(names);
@@ -88,7 +98,12 @@ final class PySrePattern extends PyObject {
             index.put(PyStr.interned(entry.getKey()), PyInt.of(entry.getValue()));
         }
         this.groupindexProxy = PyMappingProxy.of(index);
-        this.compiled = SreRegex.compile(source, flags, this.names);
+        this.compiled = SreRegex.compile(source, flags, bytes, this.names);
+    }
+
+    /** Whether this pattern was written as bytes. */
+    boolean isBytes() {
+        return bytes;
     }
 
     int groups() {
@@ -143,23 +158,41 @@ final class PySrePattern extends PyObject {
         return value.intValue();
     }
 
-    /** The subject as a Java string, with the reference's complaint for anything else. */
-    private static String wantString(PyObject value) {
-        if (value instanceof PyStr text) {
+    /**
+     * The subject as a Java string, one character per octet for a bytes pattern.
+     *
+     * <p>{@code str} and bytes are not interchangeable here, and the reference says so: a str pattern
+     * refuses a bytes subject and a bytes pattern refuses a str one.
+     */
+    private String subject(PyObject value) {
+        if (bytes) {
+            if (value instanceof PyBytes raw) {
+                return new String(raw.getValue(), StandardCharsets.ISO_8859_1);
+            }
+            if (value instanceof PyStr) {
+                throw Slots.typeError("cannot use a bytes pattern on a string-like object");
+            }
+        } else if (value instanceof PyStr text) {
             return text.getValue();
-        }
-        if (value instanceof PyBytes) {
+        } else if (value instanceof PyBytes) {
             throw Slots.typeError("cannot use a string pattern on a bytes-like object");
         }
         throw Slots.typeError("expected string or bytes-like object, got '%s'",
                 value.getType().filedName());
     }
 
+    /** One matched piece of text as the pattern's own type: bytes for a bytes pattern. */
+    PyObject text(String value) {
+        return bytes
+                ? PyBytes.of(value.getBytes(StandardCharsets.ISO_8859_1))
+                : PyStr.of(value);
+    }
+
     /** The three anchored forms: {@code 0} is {@code match}, {@code 1} {@code fullmatch}, {@code 2} {@code search}. */
     private PyObject match(PyObject[] args, String[] kwNames, int kind) {
         String plain = kind == 0 ? "match" : kind == 1 ? "fullmatch" : "search";
         Arguments.between(plain, args, kwNames, 1, 3);
-        String text = wantString(args[0]);
+        String text = subject(args[0]);
         int length = text.codePointCount(0, text.length());
         int pos = args.length > 1 ? clamp(Numbers.asIndex(args[1]), length) : 0;
         int endpos = args.length > 2 ? clamp(Numbers.asIndex(args[2]), length) : length;
@@ -177,7 +210,7 @@ final class PySrePattern extends PyObject {
 
     private PyObject findall(PyObject[] args, String[] kwNames) {
         Arguments.between("findall", args, kwNames, 1, 3);
-        String text = wantString(args[0]);
+        String text = subject(args[0]);
         int length = text.codePointCount(0, text.length());
         int pos = args.length > 1 ? clamp(Numbers.asIndex(args[1]), length) : 0;
         int endpos = args.length > 2 ? clamp(Numbers.asIndex(args[2]), length) : length;
@@ -188,7 +221,7 @@ final class PySrePattern extends PyObject {
         Matcher matcher = bound(text, pos, endpos);
         while (matcher.find()) {
             if (groups == 0) {
-                out.add(PyStr.of(text.substring(matcher.start(), matcher.end())));
+                out.add(text(text.substring(matcher.start(), matcher.end())));
             } else if (groups == 1) {
                 out.add(findallText(text, matcher, 1));
             } else {
@@ -206,25 +239,25 @@ final class PySrePattern extends PyObject {
      * One group's text for {@code findall}, which answers the empty string for a group that did not
      * take part — the one place a group reads as {@code ''} rather than {@code None}.
      */
-    private static PyObject findallText(String text, Matcher matcher, int group) {
+    private PyObject findallText(String text, Matcher matcher, int group) {
         int start = matcher.start(group);
         if (start < 0) {
-            return PyStr.of("");
+            return text("");
         }
-        return PyStr.of(text.substring(start, matcher.end(group)));
+        return text(text.substring(start, matcher.end(group)));
     }
 
-    private static PyObject groupText(String text, Matcher matcher, int group) {
+    private PyObject groupText(String text, Matcher matcher, int group) {
         int start = matcher.start(group);
         if (start < 0) {
             return PyNone.INSTANCE;
         }
-        return PyStr.of(text.substring(start, matcher.end(group)));
+        return text(text.substring(start, matcher.end(group)));
     }
 
     private PyObject finditer(PyObject[] args, String[] kwNames) {
         Arguments.between("finditer", args, kwNames, 1, 3);
-        String text = wantString(args[0]);
+        String text = subject(args[0]);
         int length = text.codePointCount(0, text.length());
         int pos = args.length > 1 ? clamp(Numbers.asIndex(args[1]), length) : 0;
         int endpos = args.length > 2 ? clamp(Numbers.asIndex(args[2]), length) : length;
@@ -242,10 +275,13 @@ final class PySrePattern extends PyObject {
         String plain = wantCount ? "subn" : "sub";
         Arguments.between(plain, args, kwNames, 2, 3);
         PyObject replacement = args[0];
-        String text = wantString(args[1]);
+        String text = subject(args[1]);
         int limit = args.length > 2 ? Numbers.asIndex(args[2]).intValue() : 0;
         int length = text.codePointCount(0, text.length());
-        PyObject parsed = replacement instanceof PyStr template ? template(template, this) : null;
+        PyObject parsed = null;
+        if (replacement instanceof PyStr || replacement instanceof PyBytes) {
+            parsed = template(replacement, this);
+        }
         Matcher matcher = bound(text, 0, length);
         StringBuilder out = new StringBuilder(text.length());
         int last = 0;
@@ -257,23 +293,32 @@ final class PySrePattern extends PyObject {
             } else {
                 PySreMatch match = PySreMatch.of(this, text, 0, length, matcher);
                 PyObject value = Slots.call(replacement, new PyObject[] {match}, null);
-                if (!(value instanceof PyStr part)) {
-                    throw Slots.typeError("sequence item 0: expected str instance, %s found",
-                            Slots.argumentName(value));
+                if (bytes) {
+                    if (!(value instanceof PyBytes part)) {
+                        throw Slots.typeError(
+                                "sequence item 0: expected a bytes-like object, %s found",
+                                Slots.argumentName(value));
+                    }
+                    out.append(new String(part.getValue(), StandardCharsets.ISO_8859_1));
+                } else {
+                    if (!(value instanceof PyStr part)) {
+                        throw Slots.typeError("sequence item 0: expected str instance, %s found",
+                                Slots.argumentName(value));
+                    }
+                    out.append(part.getValue());
                 }
-                out.append(part.getValue());
             }
             last = matcher.end();
             done++;
         }
         out.append(text, last, text.length());
-        PyStr result = PyStr.of(out.toString());
+        PyObject result = text(out.toString());
         return wantCount ? PyTuple.of(result, PyInt.of(done)) : result;
     }
 
     private PyObject split(PyObject[] args, String[] kwNames) {
         Arguments.between("split", args, kwNames, 1, 2);
-        String text = wantString(args[0]);
+        String text = subject(args[0]);
         int maxsplit = args.length > 1 ? Numbers.asIndex(args[1]).intValue() : 0;
         int length = text.codePointCount(0, text.length());
         Matcher matcher = bound(text, 0, length);
@@ -281,14 +326,14 @@ final class PySrePattern extends PyObject {
         int last = 0;
         int done = 0;
         while ((maxsplit <= 0 || done < maxsplit) && matcher.find()) {
-            out.add(PyStr.of(text.substring(last, matcher.start())));
+            out.add(text(text.substring(last, matcher.start())));
             for (int i = 1; i <= groups; i++) {
                 out.add(groupText(text, matcher, i));
             }
             last = matcher.end();
             done++;
         }
-        out.add(PyStr.of(text.substring(last)));
+        out.add(text(text.substring(last)));
         return out;
     }
 
@@ -298,7 +343,7 @@ final class PySrePattern extends PyObject {
      * <p>Reusing it is what gives {@code sub} and {@code expand} the same template grammar and the
      * same complaints, including the index of the offending backslash.
      */
-    static PyObject template(PyStr template, PySrePattern pattern) {
+    static PyObject template(PyObject template, PySrePattern pattern) {
         PyObject parser = PyRuntime.importModule("re._parser");
         PyObject reader = parser instanceof PyModule module ? module.get("parse_template") : null;
         if (reader == null) {
@@ -316,10 +361,14 @@ final class PySrePattern extends PyObject {
             PyObject part = parts.at(i);
             if (part instanceof PyStr text) {
                 out.append(text.getValue());
+            } else if (part instanceof PyBytes raw) {
+                out.append(new String(raw.getValue(), StandardCharsets.ISO_8859_1));
             } else {
                 PyObject value = match.groupAt(Numbers.asIndex(part).intValue());
                 if (value instanceof PyStr text) {
                     out.append(text.getValue());
+                } else if (value instanceof PyBytes raw) {
+                    out.append(new String(raw.getValue(), StandardCharsets.ISO_8859_1));
                 }
             }
         }
@@ -334,7 +383,7 @@ final class PySrePattern extends PyObject {
     @Override
     public String repr() {
         StringBuilder out = new StringBuilder("re.compile(");
-        out.append(PyStr.of(source).repr());
+        out.append(sourceObject.repr());
         int shown = flags & ~SreRegex.UNICODE;
         List<String> named = new ArrayList<>();
         for (int i = 0; i < REPR_FLAGS.length; i++) {

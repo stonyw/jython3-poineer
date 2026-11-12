@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.python.core.PyCode;
+import org.python.core.SourceCompiler;
 
 /**
  * Stage A of decision D1: CPython 3.14 is the compiler, and this class is the whole seam.
@@ -84,6 +85,23 @@ public final class Cpython314Compiler {
 
     private Cpython314Compiler() {
     }
+
+    /**
+     * The compiler as the runtime's seam: {@code import} asks for a module, {@code eval()} for an
+     * expression, and the reference compiler answers both.
+     */
+    public static final SourceCompiler COMPILER =
+            new SourceCompiler() {
+                @Override
+                public PyCode compile(String source, String fileName) {
+                    return compileSource(source, fileName);
+                }
+
+                @Override
+                public PyCode compileExpression(String source, String fileName) {
+                    return Cpython314Compiler.compileExpression(source, fileName);
+                }
+            };
 
     /** The compiled unit plus the name CPython gave its code object, which is also {@code __file__}. */
     public record Compiled(PyCode code, String fileName) {}

@@ -18,7 +18,7 @@ final class PySreMatch extends PyObject {
             .addField("re", "The pattern object whose match this is.",
                     self -> ((PySreMatch) self).pattern)
             .addField("string", "The string the match was found in.",
-                    self -> PyStr.of(((PySreMatch) self).string))
+                    self -> ((PySreMatch) self).pattern.text(((PySreMatch) self).string))
             .addField("pos", "The position the search started at.",
                     self -> PyInt.of(((PySreMatch) self).pos))
             .addField("endpos", "The position the search ended at.",
@@ -117,7 +117,7 @@ final class PySreMatch extends PyObject {
         if (start < 0) {
             return PyNone.INSTANCE;
         }
-        return PyStr.of(string.substring(offset(start), offset(end)));
+        return pattern.text(string.substring(offset(start), offset(end)));
     }
 
     private int offset(int codePoints) {
@@ -199,14 +199,14 @@ final class PySreMatch extends PyObject {
 
     private PyObject expand(PyObject[] args, String[] kwNames) {
         Arguments.exactlyOne("expand", args, kwNames);
-        if (!(args[0] instanceof PyStr template)) {
+        if (!(args[0] instanceof PyStr) && !(args[0] instanceof PyBytes)) {
             throw Slots.typeError("expected str instance, %s found",
                     Slots.argumentName(args[0]));
         }
-        PyObject parsed = PySrePattern.template(template, pattern);
+        PyObject parsed = PySrePattern.template(args[0], pattern);
         StringBuilder out = new StringBuilder();
         PySrePattern.expandInto(out, parsed, this);
-        return PyStr.of(out.toString());
+        return pattern.text(out.toString());
     }
 
     private PyTuple regsTuple() {
@@ -244,6 +244,6 @@ final class PySreMatch extends PyObject {
                     + text.substring(0, text.offsetByCodePoints(0, PySrePattern.REPR_LIMIT - 1))
                     + ">";
         }
-        return head + PyStr.of(text).repr() + ">";
+        return head + pattern.text(text).repr() + ">";
     }
 }

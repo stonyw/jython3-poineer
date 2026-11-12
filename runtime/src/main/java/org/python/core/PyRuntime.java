@@ -159,6 +159,8 @@ public final class PyRuntime {
         // The module whose classes and functions predate it: `_io` gathers the streams under the
         // names the reference files them with.
         PyModule ioModule = Io.newModule();
+        // The one name `tokenize.py` takes from C, which is what `traceback.py` imports at module scope.
+        PyModule tokenizeModule = TokenizeModule.newModule();
         // The two module objects whose names are types this runtime already had, and the seven the
         // class system cannot make yet: they are gathered here so that a program can ask a type's name
         // and module without importing the Python wrapper, `types` or `weakref`.
@@ -186,6 +188,8 @@ public final class PyRuntime {
         // cannot import without: `contextlib` imports `deque` from there at module scope.
         PyModule posixModule = PosixModule.newModule();
         PyModule collectionsModule = CollectionsModule.newModule();
+        // The collector's control surface, which `test_generators` and `test_descr` import first.
+        PyModule gcModule = GcModule.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -195,6 +199,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("importlib.machinery"), machinery);
         modules.put(PyStr.interned("zipimport"), zipImport);
         modules.put(PyStr.interned("_io"), ioModule);
+        modules.put(PyStr.interned("_tokenize"), tokenizeModule);
         modules.put(PyStr.interned("_types"), typesModule);
         modules.put(PyStr.interned("_weakref"), weakrefModule);
         modules.put(PyStr.interned("itertools"), itertoolsModule);
@@ -211,6 +216,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("contextvars"), contextvarsWrapper);
         modules.put(PyStr.interned("posix"), posixModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
+        modules.put(PyStr.interned("gc"), gcModule);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -232,6 +238,7 @@ public final class PyRuntime {
         belongTo(machinery);
         belongTo(zipImport);
         belongTo(ioModule);
+        belongTo(tokenizeModule);
         belongTo(typesModule);
         belongTo(weakrefModule);
         belongTo(itertoolsModule);
@@ -248,6 +255,7 @@ public final class PyRuntime {
         belongTo(contextvarsWrapper);
         belongTo(posixModule);
         belongTo(collectionsModule);
+        belongTo(gcModule);
         belongTo(stringPackage);
     }
 
@@ -1003,6 +1011,25 @@ public final class PyRuntime {
         return sourceCompiler.compile(source, fileName);
     }
 
+    /** Compile one expression with the installed compiler, which is what {@code eval()} runs. */
+    static PyCode compileExpression(String source, String fileName) {
+        if (sourceCompiler == null) {
+            throw Slots.notImplemented("eval() needs a compiler (setSourceCompiler)");
+        }
+        return sourceCompiler.compileExpression(source, fileName);
+    }
+
+    /**
+     * Run a code object in the pair of namespaces a caller supplied, as {@code exec()} and {@code eval()}
+     * do.
+     *
+     * <p>Only an {@code eval}-mode code object returns a value; a module's and a {@code single} one's
+     * answer is {@code None} by construction.
+     */
+    static PyObject runIn(PyCode code, PyDict globals, PyDict locals) {
+        return Interpreter.run(new Frame(code, globals, locals, new PyObject[code.localCount()]));
+    }
+
     /** Drain both streams, which a process about to exit must do because stdout is block-buffered. */
     public static void flushStreams() {
         if (stdout != null) {
@@ -1133,10 +1160,12 @@ public final class PyRuntime {
                         PyStr.of("builtins"),
                         PyStr.of("sys"),
                         PyStr.of("_io"),
+                        PyStr.of("_tokenize"),
                         PyStr.of("_types"),
                         PyStr.of("_weakref"),
                         PyStr.of("posix"),
-                        PyStr.of("_collections")));
+                        PyStr.of("_collections"),
+                        PyStr.of("gc")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
         sys.set("getdefaultencoding", noArguments(
                 "getdefaultencoding", () -> PyStr.of("utf-8"),
@@ -1159,6 +1188,25 @@ public final class PyRuntime {
                         + "--\n"
                         + "\n"
                         + "Return the error mode used to convert Unicode filenames to OS filenames."));
+        // `collections.namedtuple` interns the typename before it builds the class, and `tokenize.py`
+        // calls it at module scope, so the name has to answer before `unittest` can import.
+        sys.set("intern", new PyNativeFunction(
+                        "intern",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("intern", args, kwNames);
+                            if (!(args[0] instanceof PyStr text)) {
+                                throw Slots.typeError("intern() argument must be str, not %s",
+                                        args[0].getType().filedName());
+                            }
+                            return PyStr.interned(text.getValue());
+                        })
+                .documented("intern($module, string, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "\"\"Intern'' the given string.\n"
+                        + "\n"
+                        + "This enters the string in the (global) table of interned strings whose\n"
+                        + "purpose is to speed up dictionary lookups."));
         sys.set(
                 "exc_info",
                 noArguments(

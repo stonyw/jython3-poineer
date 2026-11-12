@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.security.SecureRandom;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -181,6 +182,9 @@ final class PosixModule {
     private static Path cwd =
             Path.of(System.getProperty("user.dir", ".")).toAbsolutePath();
 
+    /** The source {@code urandom} draws from; a fresh {@link SecureRandom} seeds itself on first use. */
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     /** {@code posix.environ}: bytes keys and bytes values, shared with {@code os.environ}. */
     private static PyDict environ;
 
@@ -246,6 +250,20 @@ final class PosixModule {
                 (args, kwNames) -> {
                     Arguments.none("getcwdb", args, kwNames);
                     return PyBytes.of(cwd.toString().getBytes(StandardCharsets.UTF_8));
+                }));
+        module.set("urandom", function(
+                "urandom",
+                "urandom($module, size, /)\n--\n\n"
+                        + "Return a bytes object containing random bytes of length size.",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("urandom", args, kwNames);
+                    int size = Numbers.asIndex(args[0]).intValueExact();
+                    if (size < 0) {
+                        throw Slots.valueError("negative argument not allowed");
+                    }
+                    byte[] bytes = new byte[size];
+                    RANDOM.nextBytes(bytes);
+                    return PyBytes.of(bytes);
                 }));
         module.set("chdir", function(
                 "chdir",

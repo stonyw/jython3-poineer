@@ -8,9 +8,11 @@ import java.util.List;
  * {@code itertools}: the cursors the reference builds in {@code itertoolsmodule.c}, over the same iterable
  * protocol every other cursor here uses.
  *
- * <p>Only the ones whose whole state is a few fields are here. {@code tee}, {@code groupby} and the four
- * combinatorial generators are not: they are nothing but a different walk of the same protocol, and the
- * plan files them under the same "missing C module" heading as the rest of the absent surface.
+ * <p>Only the ones whose whole state is a few fields are here. {@code tee}, {@code groupby},
+ * {@code combinations} and {@code combinations_with_replacement} are not: they are nothing but a different
+ * walk of the same protocol, and the plan files them under the same "missing C module" heading as the rest
+ * of the absent surface. {@code permutations} and {@code product} arrived with the M6-a verification
+ * slice, because {@code tokenize} enumerates the string-prefix permutations at import.
  *
  * <p>Each type is filed under {@code itertools.name} so that {@code type(count(1)).__name__} and
  * {@code __module__} answer as in the reference. {@code count} and {@code repeat} print their state, as
@@ -58,6 +60,8 @@ final class Itertools {
         module.set("zip_longest", PyType.ZIP_LONGEST);
         module.set("batched", PyType.BATCHED);
         module.set("pairwise", PyType.PAIRWISE);
+        module.set("permutations", PyType.PERMUTATIONS);
+        module.set("product", PyType.PRODUCT);
         return module;
     }
 
@@ -794,5 +798,174 @@ final class Itertools {
         PyObject[] iterables = new PyObject[positional];
         System.arraycopy(args, 0, iterables, 0, positional);
         return new ZipLongest(iterables, fillValue);
+    }
+
+    /** The items of an iterable, read once: the pool the two combinatorial cursors index into. */
+    private static PyObject[] drain(PyObject iterable) {
+        List<PyObject> items = new ArrayList<>();
+        PyIterator source = Slots.iterator(iterable);
+        PyObject item;
+        while ((item = source.nextOrNull()) != null) {
+            items.add(item);
+        }
+        return items.toArray(new PyObject[0]);
+    }
+
+    /**
+     * {@code permutations(iterable, r=None)}: the pool kept, and the index rotations the reference cycles.
+     *
+     * <p>This is {@code itertoolsmodule.c}'s own algorithm, {@code cycles} and all, so the order is the
+     * documented one — every arrangement of the first {@code r} indices before the prefix advances.
+     */
+    static final class Permutations extends Cursor {
+        private final PyObject[] pool;
+        private final int r;
+        private final int[] indices;
+        private final int[] cycles;
+        private boolean first = true;
+        private boolean done;
+
+        Permutations(PyObject iterable, BigInteger requested) {
+            super(PyType.PERMUTATIONS);
+            this.pool = drain(iterable);
+            if (requested == null) {
+                this.r = pool.length;
+            } else if (requested.compareTo(BigInteger.valueOf(pool.length)) > 0) {
+                // Any r past the pool is an empty result, and keeping the count as n + 1 says so
+                // without sizing an array by a number the caller chose.
+                this.r = pool.length + 1;
+            } else {
+                this.r = requested.intValue();
+            }
+            this.indices = new int[pool.length];
+            for (int i = 0; i < indices.length; i++) {
+                indices[i] = i;
+            }
+            this.cycles = new int[Math.max(r, 0)];
+            for (int i = 0; i < cycles.length; i++) {
+                cycles[i] = pool.length - i;
+            }
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            if (done) {
+                return null;
+            }
+            if (first) {
+                first = false;
+                if (r > pool.length) {
+                    done = true;
+                    return null;
+                }
+                return row();
+            }
+            for (int i = r - 1; i >= 0; i--) {
+                if (--cycles[i] == 0) {
+                    int head = indices[i];
+                    System.arraycopy(indices, i + 1, indices, i, pool.length - i - 1);
+                    indices[pool.length - 1] = head;
+                    cycles[i] = pool.length - i;
+                } else {
+                    int other = pool.length - cycles[i];
+                    int swap = indices[i];
+                    indices[i] = indices[other];
+                    indices[other] = swap;
+                    return row();
+                }
+            }
+            done = true;
+            return null;
+        }
+
+        private PyObject row() {
+            PyObject[] items = new PyObject[r];
+            for (int i = 0; i < r; i++) {
+                items[i] = pool[indices[i]];
+            }
+            return PyTuple.of(items);
+        }
+    }
+
+    /** {@code permutations(iterable, r=None)}: the pool is built here, so an iterator is too. */
+    static PyObject permuting(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("permutations()", kwNames);
+        Arguments.between("permutations", args, kwNames, 1, 2);
+        BigInteger r = null;
+        if (args.length == 2 && args[1] != PyNone.INSTANCE) {
+            r = Numbers.asIndex(args[1]);
+            if (r.signum() < 0) {
+                throw Slots.valueError("r must be non-negative");
+            }
+        }
+        return new Permutations(args[0], r);
+    }
+
+    /** {@code product(*iterables, repeat=1)}: every pool kept, and an odometer reading one index each. */
+    static final class Product extends Cursor {
+        private final PyObject[][] pools;
+        private final int[] indices;
+        private boolean first = true;
+        private boolean done;
+
+        Product(PyObject[] iterables, int repeat) {
+            super(PyType.PRODUCT);
+            this.pools = new PyObject[iterables.length * repeat][];
+            for (int i = 0; i < pools.length; i++) {
+                pools[i] = drain(iterables[i % iterables.length]);
+                if (pools[i].length == 0) {
+                    done = true;
+                }
+            }
+            this.indices = new int[pools.length];
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            if (done) {
+                return null;
+            }
+            if (first) {
+                first = false;
+                return row();
+            }
+            for (int i = pools.length - 1; i >= 0; i--) {
+                if (++indices[i] < pools[i].length) {
+                    return row();
+                }
+                indices[i] = 0;
+            }
+            done = true;
+            return null;
+        }
+
+        private PyObject row() {
+            PyObject[] items = new PyObject[pools.length];
+            for (int i = 0; i < pools.length; i++) {
+                items[i] = pools[i][indices[i]];
+            }
+            return PyTuple.of(items);
+        }
+    }
+
+    /** {@code product(*iterables, repeat=1)}: any number of pools, one keyword. */
+    static PyObject producing(PyObject[] args, String[] kwNames) {
+        int positional = Arguments.positional(args, kwNames);
+        BigInteger repeat = BigInteger.ONE;
+        if (kwNames != null) {
+            for (int i = 0; i < kwNames.length; i++) {
+                if (!kwNames[i].equals("repeat")) {
+                    throw Slots.typeError(
+                            "product() got an unexpected keyword argument '%s'", kwNames[i]);
+                }
+                repeat = Numbers.asIndex(args[positional + i]);
+            }
+        }
+        if (repeat.signum() < 0) {
+            throw Slots.valueError("repeat argument cannot be negative");
+        }
+        PyObject[] iterables = new PyObject[positional];
+        System.arraycopy(args, 0, iterables, 0, positional);
+        return new Product(iterables, repeat.bitLength() > 31 ? Integer.MAX_VALUE : repeat.intValue());
     }
 }

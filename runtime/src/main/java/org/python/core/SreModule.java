@@ -1,5 +1,6 @@
 package org.python.core;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.PatternSyntaxException;
@@ -91,8 +92,18 @@ final class SreModule {
      */
     private static PyObject compile(PyObject[] args, String[] kwNames) {
         Arguments.between("compile", args, kwNames, 6, 6);
-        String source = Numbers.asText(args[0]);
-        if (source == null) {
+        String source;
+        PyObject sourceObject = args[0];
+        boolean bytes;
+        if (sourceObject instanceof PyStr text) {
+            source = text.getValue();
+            bytes = false;
+        } else if (sourceObject instanceof PyBytes raw) {
+            // One character per octet, which is what makes a Java `Pattern` agree with a bytes pattern:
+            // every escape the parser left behind stands for a byte, and `.` spans one octet.
+            source = new String(raw.getValue(), StandardCharsets.ISO_8859_1);
+            bytes = true;
+        } else {
             throw Slots.typeError("first argument must be string or compiled pattern");
         }
         int flags = Numbers.asIndex(args[1]).intValue();
@@ -104,7 +115,7 @@ final class SreModule {
             }
         }
         try {
-            return new PySrePattern(source, flags, groups, names);
+            return new PySrePattern(sourceObject, source, bytes, flags, groups, names);
         } catch (PatternSyntaxException e) {
             throw PyRaise.of(error(e.getDescription()));
         } catch (IllegalArgumentException e) {

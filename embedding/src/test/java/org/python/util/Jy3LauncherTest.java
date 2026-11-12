@@ -516,7 +516,8 @@ class Jy3LauncherTest {
                 "04_os_constants_and_environ.py",
                 "05_contextlib_paths.py",
                 "06_weakref_ref_subclass.py",
-                "07_copy_module.py");
+                "07_copy_module.py",
+                "08_eval_partial_and_gc.py");
     }
 
     private static List<String> m3Corpus() {

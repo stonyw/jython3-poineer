@@ -171,6 +171,9 @@ final class Members {
             // The wrapper `functools.lru_cache` returns files three rows, and `cache_clear` is asked
             // through the type by `re.purge` even before a template has been cached.
             Map.entry(PyType.LRU_CACHE_WRAPPER, FunctoolsModule.Wrapper.class),
+            // `partial` files three read-only fields over its value class, so the table is loaded
+            // whenever a program asks the type for `func`, `args` or `keywords`.
+            Map.entry(PyType.PARTIAL, FunctoolsModule.Partial.class),
             // `warnings` asks `_contextvars` for these three names before any variable exists, and a
             // program reads `Token.MISSING` off the token it was handed rather than off the class.
             Map.entry(PyType.CONTEXT, PyContext.class),

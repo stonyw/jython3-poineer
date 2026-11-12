@@ -873,6 +873,18 @@ public class PyType extends PyObject {
                     .withoutNew();
 
     /**
+     * {@code _tokenize.TokenizerIter}: the tokenizer {@code tokenize.py} drives since 3.14.
+     *
+     * <p>Only the name exists. Reading tokens is the reference compiler's job, and this runtime has no
+     * tokenizer of its own; what the standard library needs here is the name, because {@code
+     * traceback.py} imports {@code tokenize} at module scope and {@code tokenize.py} imports this
+     * module at its own. Construction therefore refuses, and {@code tokenize.generate_tokens} stays a
+     * named deviation rather than a call that answers wrong.
+     */
+    public static final PyType TOKENIZER_ITER =
+            builtin("TokenizerIter").filedUnder("_tokenize.TokenizerIter").withoutNew();
+
+    /**
      * {@code types.CapsuleType}'s sentence, which wraps a C pointer a program cannot open.
      *
      * <p>It carries no argument table, so {@code __text_signature__} is {@code None} and the whole text
@@ -1353,6 +1365,42 @@ public class PyType extends PyObject {
                                     + "defaults to None or can be specified by a keyword"
                                     + " argument.\n");
 
+    static final PyType PERMUTATIONS =
+            builtin("permutations")
+                    .filedUnder("itertools.permutations")
+                    .documented(
+                            "Return successive r-length permutations of elements in the iterable.\n"
+                                    + "\n"
+                                    + "permutations(range(3), 2) --> (0,1), (0,2), (1,0), (1,2), (2,0),"
+                                    + " (2,1)");
+    static final PyType PRODUCT =
+            builtin("product")
+                    .filedUnder("itertools.product")
+                    .documented(
+                            "product(*iterables, repeat=1) --> product object\n"
+                                    + "\n"
+                                    + "Cartesian product of input iterables.  Equivalent to nested"
+                                    + " for-loops.\n"
+                                    + "\n"
+                                    + "For example, product(A, B) returns the same as:  ((x,y) for x"
+                                    + " in A for y in B).\n"
+                                    + "The leftmost iterators are in the outermost for-loop, so the"
+                                    + " output tuples\n"
+                                    + "cycle in a manner similar to an odometer (with the rightmost"
+                                    + " element changing\n"
+                                    + "on every iteration).\n"
+                                    + "\n"
+                                    + "To compute the product of an iterable with itself, specify the"
+                                    + " number\n"
+                                    + "of repetitions with the optional repeat keyword argument. For"
+                                    + " example,\n"
+                                    + "product(A, repeat=4) means the same as product(A, A, A, A).\n"
+                                    + "\n"
+                                    + "product('ab', range(3)) --> ('a',0) ('a',1) ('a',2) ('b',0)"
+                                    + " ('b',1) ('b',2)\n"
+                                    + "product((0,1), (0,1), (0,1)) --> (0,0,0) (0,0,1) (0,1,0) (0,1,1)"
+                                    + " (1,0,0) ...");
+
     /*
      * `_thread`'s two lock types. One process runs one thread here, so both are modelled by the one
      * Java class: a counter of how many times the current thread holds it, which makes `RLock`
@@ -1465,6 +1513,10 @@ public class PyType extends PyObject {
     /** {@code functools._lru_cache_wrapper}: what {@code lru_cache} wraps a function in. */
     public static final PyType LRU_CACHE_WRAPPER =
             builtin("_lru_cache_wrapper").filedUnder("functools._lru_cache_wrapper");
+
+    /** {@code functools.partial}: a callable with some of its arguments already bound. */
+    public static final PyType PARTIAL =
+            builtin("partial").filedUnder("functools.partial");
 
     /** {@code _contextvars.Context}: the mapping a callable runs in. */
     public static final PyType CONTEXT =

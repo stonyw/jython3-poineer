@@ -1,6 +1,7 @@
 package org.python.core;
 
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -10,11 +11,13 @@ import java.util.List;
  *
  * The entries are the ones M1's done-criterion needs — the type constructors, the exception names a
  * script can raise or catch, and the functions that arithmetic, branching, looping and calling a
- * function are written with. What is absent is deliberate and short: {@code exec}, {@code eval} and
- * {@code compile} are the code-evaluation path, {@code super} is the class system's other half,
- * {@code open} plus the rest of the file API is M4, and {@code property}, {@code classmethod} and
- * {@code staticmethod} are here as the descriptor builtins they are. A name that is not here raises
- * {@code NameError}, which points at the missing feature; a half-implemented one would point at nothing.
+ * function are written with. What is absent is deliberate and short: {@code super} is the class
+ * system's other half, {@code open} plus the rest of the file API is M4, and {@code property},
+ * {@code classmethod} and {@code staticmethod} are here as the descriptor builtins they are. A name
+ * that is not here raises {@code NameError}, which points at the missing feature; a half-implemented one
+ * would point at nothing. {@code eval}, {@code exec} and {@code compile} arrived with the M6-a
+ * verification slice, because {@code collections.namedtuple} — and through it {@code tokenize}, and
+ * through that {@code unittest} — evaluates a generated lambda at import.
  *
  * Every message is as CPython 3.14 words it, including the count family a builtin belongs to —
  * {@code len() takes exactly one argument (2 given)} against {@code min expected at least 1 argument,
@@ -536,6 +539,53 @@ final class Builtins {
                                 + "    of its bases.\n"
                                 + "  for any other object: its attributes, its class's attributes, and\n"
                                 + "    recursively the attributes of its class's base classes."));
+        put(out, "eval", new PyNativeFunction("eval", Builtins::evaluate)
+                .documented(
+                        "eval($module, source, globals=None, locals=None, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Evaluate the given source in the context of globals and locals.\n"
+                                + "\n"
+                                + "The source may be a string representing a Python expression\n"
+                                + "or a code object as returned by compile().\n"
+                                + "The globals must be a dictionary and locals can be any mapping,\n"
+                                + "defaulting to the current globals and locals.\n"
+                                + "If only globals is given, locals defaults to it."));
+        put(out, "exec", new PyNativeFunction("exec", Builtins::execute)
+                .documented(
+                        "exec($module, source, globals=None, locals=None, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Execute the given source in the context of globals and locals.\n"
+                                + "\n"
+                                + "The source may be a string representing one or more Python statements\n"
+                                + "or a code object as returned by compile().\n"
+                                + "The globals must be a dictionary and locals can be any mapping,\n"
+                                + "defaulting to the current globals and locals.\n"
+                                + "If only globals is given, locals defaults to it."));
+        put(out, "compile", new PyNativeFunction("compile", Builtins::compileCode)
+                .documented(
+                        "compile($module, /, source, filename, mode, flags=0,\n"
+                                + "        dont_inherit=False, optimize=-1)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Compile the source into a code or AST object.  Code objects can be executed\n"
+                                + "by exec() or eval().  source can either be a normal string, a byte\n"
+                                + "string, or an AST object.  Refer to the ast module documentation\n"
+                                + "for information on how to work with AST objects.\n"
+                                + "\n"
+                                + "The filename argument should give the file from which the code was read;\n"
+                                + "pass some recognizable value if it wasn't read from a file (<string> is\n"
+                                + "commonly used).\n"
+                                + "\n"
+                                + "The mode argument specifies what kind of code must be compiled; it can be\n"
+                                + "'exec' if source consists of a sequence of statements, 'eval' if it\n"
+                                + "consists of a single expression, or 'single' if it consists of a single\n"
+                                + "interactive statement (in the latter case, expression statements that\n"
+                                + "evaluate to something other than None will be printed).\n"
+                                + "\n"
+                                + "The optional arguments flags and dont_inherit control the compiler options.\n"
+                                + "The optimize argument sets the optimization level."));
         put(out, "__build_class__", new PyNativeFunction("__build_class__", Classes::buildClass)
                 .documented(
                         "__build_class__(func, name, /, *bases, [metaclass], **kwds) -> class\n"
@@ -1270,6 +1320,157 @@ final class Builtins {
      * dictionary this runtime hands back, and the reason {@code globals()} is never {@code None} here.
      */
     private static PyObject currentLocals() {
+        Frame frame = Interpreter.currentFrame();
+        return frame == null ? PyRuntime.mainModule().dictionary() : frame.localValues();
+    }
+
+    // --- code builtins ---------------------------------------------------------------------
+
+    private static final String[] NAMESPACE_NAMES = {"source", "globals", "locals"};
+    private static final PyObject[] NAMESPACE_DEFAULTS = {PyNone.INSTANCE, PyNone.INSTANCE};
+
+    private static final String[] COMPILE_NAMES = {
+        "source", "filename", "mode", "flags", "dont_inherit", "optimize"
+    };
+    private static final PyObject[] COMPILE_DEFAULTS = {
+        PyInt.of(0), PyBool.FALSE, PyInt.of(-1)
+    };
+
+    /** {@code eval(source, globals=None, locals=None)}: one expression's value. */
+    private static PyObject evaluate(PyObject[] args, String[] kwNames) {
+        PyObject[] given = Arguments.fill("eval", args, kwNames, NAMESPACE_NAMES, NAMESPACE_DEFAULTS);
+        Arguments.required("eval", NAMESPACE_NAMES, given, 0);
+        PyCode code = codeOf("eval", given[0], "<string>", true);
+        PyDict globals;
+        PyDict locals;
+        if (given[1] == PyNone.INSTANCE) {
+            globals = runningGlobals();
+            locals = localValues();
+        } else {
+            globals = namespaceOf("eval", given[1], "globals");
+            locals = given[2] == PyNone.INSTANCE
+                    ? globals
+                    : namespaceOf("eval", given[2], "locals");
+        }
+        return PyRuntime.runIn(code, globals, locals);
+    }
+
+    /** {@code exec(source, globals=None, locals=None)}: statements, answering None. */
+    private static PyObject execute(PyObject[] args, String[] kwNames) {
+        PyObject[] given = Arguments.fill("exec", args, kwNames, NAMESPACE_NAMES, NAMESPACE_DEFAULTS);
+        Arguments.required("exec", NAMESPACE_NAMES, given, 0);
+        PyCode code = codeOf("exec", given[0], "<string>", false);
+        PyDict globals;
+        PyDict locals;
+        if (given[1] == PyNone.INSTANCE) {
+            globals = runningGlobals();
+            locals = localValues();
+        } else {
+            globals = namespaceOf("exec", given[1], "globals");
+            locals = given[2] == PyNone.INSTANCE
+                    ? globals
+                    : namespaceOf("exec", given[2], "locals");
+        }
+        return PyRuntime.runIn(code, globals, locals);
+    }
+
+    /**
+     * {@code compile(source, filename, mode, flags=0, dont_inherit=False, optimize=-1)}.
+     *
+     * <p>Only the two modes {@code eval} and {@code exec} compile here — the ones {@code eval} and
+     * {@code exec} run. {@code single} is the interactive prompt's mode and is refused by name, as are
+     * nonzero compiler flags and an optimization level other than the default, because silently
+     * ignoring any of the three would compile something the caller did not ask for.
+     */
+    private static PyObject compileCode(PyObject[] args, String[] kwNames) {
+        PyObject[] given = Arguments.fill("compile", args, kwNames, COMPILE_NAMES, COMPILE_DEFAULTS);
+        for (int i = 0; i < 3; i++) {
+            Arguments.required("compile", COMPILE_NAMES, given, i);
+        }
+        String fileName = textOf("compile", given[1], 2);
+        String mode;
+        if (!(given[2] instanceof PyStr modeText)) {
+            throw Slots.typeError(
+                    "compile() argument 3 must be str, not %s", given[2].getType().name());
+        }
+        mode = modeText.getValue();
+        if (!mode.equals("exec") && !mode.equals("eval")) {
+            if (mode.equals("single")) {
+                throw Slots.notImplemented("compile() mode 'single' (M6-a)");
+            }
+            throw Slots.valueError("compile() mode must be 'exec', 'eval' or 'single'");
+        }
+        if (Slots.truth(given[3]) && !(given[3] instanceof PyInt flags && flags.getValue().signum() == 0)) {
+            throw Slots.notImplemented("compile() with compiler flags (M6-a)");
+        }
+        if (Slots.truth(given[4])) {
+            throw Slots.notImplemented("compile() dont_inherit (M6-a)");
+        }
+        if (!(given[5] instanceof PyInt optimize) || optimize.getValue().intValue() != -1) {
+            throw Slots.notImplemented(
+                    "compile() with an explicit optimization level (M6-a)");
+        }
+        PyCode code = codeOf("compile", given[0], fileName, mode.equals("eval"));
+        return (PyObject) code;
+    }
+
+    /** The code object a source argument names, compiling text or bytes the way {@code expr} says. */
+    private static PyCode codeOf(String name, PyObject source, String fileName, boolean expression) {
+        if (source instanceof PyCode code) {
+            return code;
+        }
+        String text;
+        if (source instanceof PyStr string) {
+            text = string.getValue();
+        } else if (source instanceof PyBytes bytes) {
+            text = new String(bytes.getValue(), StandardCharsets.UTF_8);
+        } else {
+            throw Slots.typeError(
+                    "%s() arg 1 must be a string, bytes or code object", name);
+        }
+        return expression
+                ? PyRuntime.compileExpression(text, fileName)
+                : PyRuntime.compileSource(text, fileName);
+    }
+
+    /** A {@code filename} argument: str, or bytes read as UTF-8. */
+    private static String textOf(String name, PyObject value, int position) {
+        if (value instanceof PyStr text) {
+            return text.getValue();
+        }
+        if (value instanceof PyBytes bytes) {
+            return new String(bytes.getValue(), StandardCharsets.UTF_8);
+        }
+        throw Slots.typeError(
+                "%s() argument %d must be str, not %s", name, position, value.getType().name());
+    }
+
+    /**
+     * A namespace argument of {@code eval} and {@code exec}: the dictionary given, with
+     * {@code __builtins__} added when it is not already there, as CPython does before running code
+     * in a caller's dictionary.
+     */
+    private static PyDict namespaceOf(String name, PyObject value, String role) {
+        if (!(value instanceof PyDict dict)) {
+            throw Slots.typeError(
+                    "%s() %s must be a dict, not %s", name, role, value.getType().name());
+        }
+        if (dict.get(BUILTINS_NAME) == null) {
+            dict.put(BUILTINS_NAME, PyRuntime.builtins());
+        }
+        return dict;
+    }
+
+    private static final PyStr BUILTINS_NAME = PyStr.interned("__builtins__");
+
+    /** The globals of the running frame, or {@code __main__}'s when a builtin is called from Java. */
+    private static PyDict runningGlobals() {
+        Frame frame = Interpreter.currentFrame();
+        return frame == null ? PyRuntime.mainModule().dictionary() : frame.globals();
+    }
+
+    /** The locals of the running frame as a dictionary, the {@code locals()} answer. */
+    private static PyDict localValues() {
         Frame frame = Interpreter.currentFrame();
         return frame == null ? PyRuntime.mainModule().dictionary() : frame.localValues();
     }

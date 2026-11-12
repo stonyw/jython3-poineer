@@ -170,6 +170,12 @@ final class Constructors {
         if (type == PyType.ZIP_LONGEST) {
             return Itertools.zipLongest(args, keywordNames);
         }
+        if (type == PyType.PERMUTATIONS) {
+            return Itertools.permuting(args, keywordNames);
+        }
+        if (type == PyType.PRODUCT) {
+            return Itertools.producing(args, keywordNames);
+        }
         if (type == PyType.LOCK) {
             return ThreadModule.lockType(args, keywordNames);
         }
@@ -237,6 +243,9 @@ final class Constructors {
         }
         if (type == PyType.WEAK_REFERENCE) {
             return Weakref.newRef(args, keywordNames);
+        }
+        if (type == PyType.PARTIAL) {
+            return FunctoolsModule.newPartial(args, keywordNames);
         }
         if (type == PyType.STRUCT_TIME) {
             return PyStructTime.called(args, kwNames);

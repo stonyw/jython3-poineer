@@ -36,12 +36,34 @@ final class FunctoolsModule {
             Arguments.exactlyOne("cache", args, kwNames);
             return new Wrapper(args[0], -1);
         }));
+        module.set("partial", PyType.PARTIAL);
         module.set("WRAPPER_ASSIGNMENTS", WRAPPER_ASSIGNMENTS);
         module.set("WRAPPER_UPDATES", WRAPPER_UPDATES);
         module.set("update_wrapper", new PyNativeFunction("update_wrapper",
                 FunctoolsModule::updateWrapper));
         module.set("wraps", new PyNativeFunction("wraps", FunctoolsModule::wraps));
         return module;
+    }
+
+    /**
+     * {@code partial(func, /, *args, **keywords)}: the arguments a call is given are bound now.
+     *
+     * <p>{@code func} is positional-only, which is why the count checked here is of the positional
+     * arguments rather than of all of them: {@code partial(func=len)} is refused in the reference too.
+     */
+    static PyObject newPartial(PyObject[] args, String[] kwNames) {
+        int names = kwNames == null ? 0 : kwNames.length;
+        int positional = args.length - names;
+        if (positional < 1) {
+            throw Slots.typeError("type 'partial' takes at least one argument");
+        }
+        PyObject[] bound = new PyObject[positional - 1];
+        System.arraycopy(args, 1, bound, 0, bound.length);
+        PyDict keywords = PyDict.empty();
+        for (int i = 0; i < names; i++) {
+            keywords.put(PyStr.interned(kwNames[i]), args[positional + i]);
+        }
+        return new Partial(args[0], bound, keywords);
     }
 
     private static PyObject updateWrapper(PyObject[] args, String[] kwNames) {
@@ -111,11 +133,20 @@ final class FunctoolsModule {
         throw Slots.typeError("attribute name must be string, not '%s'", name.getType().name());
     }
 
-    /** {@code lru_cache(maxsize=128, typed=False)}: the reference's decorator, minus the statistics. */
+    /**
+     * {@code lru_cache(maxsize=128, typed=False)}: the reference's decorator, minus the statistics.
+     *
+     * <p>The first argument may be the function itself, which is the bare {@code @lru_cache} spelling
+     * 3.14 accepts: a callable maxsize means "the defaults, wrapping this function", as CPython's own
+     * {@code elif callable(maxsize)} arm decides.
+     */
     private static PyObject lruCache(PyObject[] args, String[] kwNames) {
         PyObject[] values = Arguments.fill("lru_cache", args, kwNames,
                 new String[] {"maxsize", "typed"},
                 new PyObject[] {PyInt.of(128), PyBool.FALSE});
+        if (Slots.isCallable(values[0])) {
+            return new Wrapper(values[0], 128);
+        }
         int maxsize = values[0] instanceof PyNone ? -1 : Numbers.asIndex(values[0]).intValue();
         return new PyNativeFunction("decorator", (callArgs, callNames) -> {
             Arguments.exactlyOne("decorator", callArgs, callNames);
@@ -207,6 +238,91 @@ final class FunctoolsModule {
         @Override
         public long hash() {
             return System.identityHashCode(this);
+        }
+    }
+
+    /**
+     * {@code functools.partial}: a callable with some of its arguments bound.
+     *
+     * <p>The bound arguments go in front of the ones the call supplies, and the bound keywords are
+     * overridden by the call's, which is the merge {@code partial_call} performs. Pickling a partial is a
+     * named gap: no {@code __reduce__} is filed, so {@code pickle} has nothing to write it with.
+     */
+    static final class Partial extends PyObject {
+
+        private static final Members METHODS = Members.of(PyType.PARTIAL)
+                .addField("func", "The function to be used by this partial.",
+                        self -> ((Partial) self).function)
+                .addField("args", "The positional arguments to be used by this partial.",
+                        self -> PyTuple.of(((Partial) self).arguments))
+                .addField("keywords", "The keyword arguments to be used by this partial.",
+                        self -> ((Partial) self).keywords);
+
+        private final PyObject function;
+
+        private final PyObject[] arguments;
+
+        private final PyDict keywords;
+
+        Partial(PyObject function, PyObject[] arguments, PyDict keywords) {
+            super(PyType.PARTIAL);
+            this.function = function;
+            this.arguments = arguments;
+            this.keywords = keywords;
+        }
+
+        @Override
+        public PyObject call(PyObject[] args, PyTuple kwNames) {
+            int names = kwNames == null ? 0 : kwNames.size();
+            int positional = args.length - names;
+            PyObject[] all = new PyObject[arguments.length + positional];
+            System.arraycopy(arguments, 0, all, 0, arguments.length);
+            System.arraycopy(args, 0, all, arguments.length, positional);
+            if (names == 0 && keywords.size() == 0) {
+                return Slots.call(function, all, null);
+            }
+            PyDict merged = PyDict.empty();
+            PyIterator stored = Slots.iterator(keywords);
+            PyObject key;
+            while ((key = stored.nextOrNull()) != null) {
+                merged.put(key, keywords.get(key));
+            }
+            for (int i = 0; i < names; i++) {
+                merged.put(kwNames.at(i), args[positional + i]);
+            }
+            PyObject[] mergedNames = new PyObject[merged.size()];
+            PyObject[] values = new PyObject[merged.size()];
+            PyObject[] callArgs = new PyObject[all.length + merged.size()];
+            System.arraycopy(all, 0, callArgs, 0, all.length);
+            PyIterator entries = Slots.iterator(merged);
+            int index = 0;
+            while ((key = entries.nextOrNull()) != null) {
+                mergedNames[index] = key;
+                values[index] = merged.get(key);
+                index++;
+            }
+            System.arraycopy(values, 0, callArgs, all.length, values.length);
+            return Slots.call(function, callArgs, PyTuple.of(mergedNames));
+        }
+
+        @Override
+        public boolean isCallable() {
+            return true;
+        }
+
+        @Override
+        public String repr() {
+            StringBuilder text = new StringBuilder("functools.partial(").append(Slots.repr(function));
+            for (PyObject argument : arguments) {
+                text.append(", ").append(Slots.repr(argument));
+            }
+            PyIterator keys = Slots.iterator(keywords);
+            PyObject key;
+            while ((key = keys.nextOrNull()) != null) {
+                text.append(", ").append(Slots.str(key)).append('=')
+                        .append(Slots.repr(keywords.get(key)));
+            }
+            return text.append(')').toString();
         }
     }
 }

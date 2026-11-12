@@ -12,4 +12,12 @@ public interface SourceCompiler {
 
     /** Compile {@code source} as a module's top level, reporting errors against {@code fileName}. */
     PyCode compile(String source, String fileName);
+
+    /**
+     * Compile {@code source} as one expression, the way {@code eval()} does rather than {@code exec()}.
+     *
+     * <p>The difference is in the code object: an expression's top level leaves its value as the return
+     * value, while a module's returns {@code None} and speaks only through its namespace.
+     */
+    PyCode compileExpression(String source, String fileName);
 }
