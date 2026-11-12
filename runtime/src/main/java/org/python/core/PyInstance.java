@@ -1,6 +1,8 @@
 package org.python.core;
 
 import java.math.BigInteger;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * A value of a class Python wrote: the receiver every method found on {@link PyClass} gets, and the
@@ -27,16 +29,15 @@ public class PyInstance extends PyObject {
      * <p>Not final, because {@code self.__dict__ = {...}} replaces the whole dictionary rather than writing
      * a name into it, and {@code del self.__dict__} leaves an empty one behind for the next read.
      *
-     * <p>A class that declares {@code __slots__} without {@code __dict__} among them has no use for this
-     * one, and CPython gives its values none at all; here the dictionary is still there but nothing reaches
-     * it, because {@link GenericAttributes} asks {@link PyType#hasValueDict()} rather than whether this
-     * field is null.
+     * <p>A class that declares {@code __slots__} without {@code __dict__} among them has none: this field
+     * is null for its values, as CPython leaves the pointer null, and {@code hasattr(value, "__dict__")}
+     * is false because the class files no descriptor for the name.
      */
     private PyDict dictionary;
 
     PyInstance(PyType kind) {
         super(kind);
-        this.dictionary = kind == PyType.OBJECT ? null : PyDict.empty();
+        this.dictionary = kind.hasValueDict() ? PyDict.empty() : null;
     }
 
     /** {@code subtype_dict}: the read of the descriptor a class files for the storage it introduces. */
@@ -79,12 +80,20 @@ public class PyInstance extends PyObject {
      * The values of the fields this class declared in {@code __slots__}, kept apart from {@code __dict__}
      * because CPython keeps them apart too: {@code __slots__ = ("__dict__", "b")} stores {@code b} in an
      * offset beside the dictionary, so setting it leaves the name out of {@code vars(self)} all the same.
+     *
+     * <p>Keyed by the declaring class as well as the name, because a subclass may declare a field its base
+     * already declared and CPython gives the two descriptors different offsets: {@code Sub.a = 1} writes
+     * the subclass's cell while {@code Base.__dict__["a"].__get__(sub)} reads the base's, which is empty
+     * and so raises.
      */
-    private PyDict slotValues;
+    private Map<SlotKey, PyObject> slotValues;
+
+    /** One declared field: the class that laid it out and the name it gave it. */
+    private record SlotKey(PyType owner, String name) {}
 
     @Override
-    PyObject slotValue(String name) {
-        PyObject held = slotValues == null ? null : slotValues.get(PyStr.interned(name));
+    PyObject slotValue(PyType owner, String name) {
+        PyObject held = slotValues == null ? null : slotValues.get(new SlotKey(owner, name));
         if (held == null) {
             throw Slots.attributeError(
                     "'%s' object has no attribute '%s'", getType().filedName(), name);
@@ -93,8 +102,8 @@ public class PyInstance extends PyObject {
     }
 
     @Override
-    void writeSlot(String name, PyObject value) {
-        PyStr key = PyStr.interned(name);
+    void writeSlot(PyType owner, String name, PyObject value) {
+        SlotKey key = new SlotKey(owner, name);
         if (value == null) {
             // `member_object_set` reached by `del`, which finds nothing to empty and complains with the
             // bare name: no class, no attribute sentence, only `AttributeError: a`.
@@ -105,9 +114,35 @@ public class PyInstance extends PyObject {
             return;
         }
         if (slotValues == null) {
-            slotValues = PyDict.empty();
+            slotValues = new HashMap<>();
         }
         slotValues.put(key, value);
+    }
+
+    /**
+     * {@code x.__class__ = Y}: the type changes, and the fields this value fills stay filled.
+     *
+     * <p>CPython keeps a declared field at an offset, and two classes are only swapped when they agree on
+     * their fields, so the cell a name was written to is the cell the new class's descriptor reads. The
+     * store here is keyed by the class that declared the field, so the entries this value's own class
+     * declared are re-keyed to the class taking over; the ones an ancestor declared keep their owner,
+     * because that descriptor is still the one the lookup finds.
+     */
+    @Override
+    void reassignedTo(PyType kind) {
+        PyType previous = type;
+        super.reassignedTo(kind);
+        if (slotValues == null || previous == kind) {
+            return;
+        }
+        Map<SlotKey, PyObject> moved = new HashMap<>();
+        for (Map.Entry<SlotKey, PyObject> entry : slotValues.entrySet()) {
+            SlotKey key = entry.getKey();
+            moved.put(
+                    key.owner() == previous ? new SlotKey(kind, key.name()) : key,
+                    entry.getValue());
+        }
+        slotValues = moved;
     }
 
     // --- attributes ----------------------------------------------------------------------
@@ -124,9 +159,8 @@ public class PyInstance extends PyObject {
      *
      * <p>{@code __dict__} is answered by that walk rather than here, by the {@code getset_descriptor}
      * {@link Classes} files on the class that introduces the storage. A class that files no descriptor —
-     * one under {@code object} that declares {@code __slots__}, or {@code object} itself — therefore has no
-     * {@code __dict__} to read even though this runtime has not taken its dictionary away from it, which is
-     * the named deviation about slot layout wearing a second hat.
+     * one under {@code object} that declares {@code __slots__}, or {@code object} itself — keeps no
+     * dictionary for its values either, so the name is not there to read.
      */
     @Override
     public PyObject getAttr(String name) {

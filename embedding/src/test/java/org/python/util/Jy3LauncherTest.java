@@ -550,7 +550,8 @@ class Jy3LauncherTest {
                 "09_pyc.py",
                 "10_compile_syntax_errors.py",
                 "11_bytesio_buffer_and_chmod.py",
-                "12_mutable_bases.py");
+                "12_mutable_bases.py",
+                "13_slots.py");
     }
 
     private static List<String> m3Corpus() {

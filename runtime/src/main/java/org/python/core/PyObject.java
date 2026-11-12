@@ -223,6 +223,25 @@ public abstract class PyObject {
     }
 
     /**
+     * The same read asked by the class that filed the descriptor, because CPython's descriptor carries an
+     * offset rather than a name.
+     *
+     * <p>{@code class Base: __slots__ = ("a",)} and {@code class Sub(Base): __slots__ = ("a",)} keep two
+     * cells, so {@code sub.a} and {@code Base.__dict__["a"].__get__(sub)} reach different ones even
+     * though both are spelled {@code a}. A store keyed by name alone cannot tell them apart, so the
+     * descriptor hands its owner over too. The default forwards to the name-keyed pair for the value
+     * shapes that keep one storage under the names their class filed.
+     */
+    PyObject slotValue(PyType owner, String name) {
+        return slotValue(name);
+    }
+
+    /** The writing half of {@link #slotValue(PyType, String)}. */
+    void writeSlot(PyType owner, String name, PyObject value) {
+        writeSlot(name, value);
+    }
+
+    /**
      * The dictionary a generic write puts a name into — {@code _PyObject_ComputedDictPointer} and its
      * managed-dict cousin, which CPython reaches as a pointer and so reads as absent for a value whose type
      * keeps no storage.

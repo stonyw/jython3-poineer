@@ -18,12 +18,11 @@ package org.python.core;
  * the value's own type, so {@code type(x)} changes with it and the value's dictionary stays where it was,
  * and it allows that only between two types whose storage agrees. Everything else is refused by one of
  * three sentences, in this order: the value handed over is not a class, one of the two types is a built-in
- * that cannot be swapped for another, the two layouts differ. {@link #write} runs that order, and answers
- * the layout question the way {@code compatible_for_assignment} does for the types this runtime can build
- * — walk each one up past the classes Python wrote, to the built-in type whose storage both of them
- * inherit, and compare that. What has no model here is {@code __slots__}, which {@link Classes} already
- * declines to build: two written classes differing only in their slots would be refused by CPython's
- * layout check and swapped here.
+ * that cannot be swapped for another, the two layouts differ. {@link #write} runs that order and answers
+ * the layout question by the same walk {@code type.__bases__} uses — {@link
+ * Classes#compatibleForAssignment}, which compares the solid bases, the fields each adds and the two
+ * preheader flags. The swap itself keeps the value's storage: a declared field is found again by the new
+ * class because the two classes had to agree on their fields to get this far.
  */
 final class ClassAttribute {
 
@@ -54,11 +53,7 @@ final class ClassAttribute {
             throw Slots.typeError(
                     "__class__ assignment only supported for mutable types or ModuleType subclasses");
         }
-        if (inheritedFrom(current) != inheritedFrom(claimed)) {
-            throw Slots.typeError(
-                    "__class__ assignment: '%s' object layout differs from '%s'",
-                    claimed.name(), current.name());
-        }
+        Classes.compatibleForAssignment(current, claimed, "__class__");
         target.reassignedTo(claimed);
     }
 
@@ -84,18 +79,5 @@ final class ClassAttribute {
 
     private static boolean builtByPython(PyType kind) {
         return kind instanceof PyClass;
-    }
-
-    /**
-     * The built-in type whose storage a type inherits, which is what CPython compares before it allows a
-     * swap: {@code class E(Exception)} and {@code class E2(E)} both rest on {@code Exception} and may be
-     * swapped for each other, while {@code E} and a plain class rest on different types and may not.
-     */
-    private static PyType inheritedFrom(PyType kind) {
-        PyType built = kind;
-        while (builtByPython(built)) {
-            built = built.parent();
-        }
-        return built;
     }
 }

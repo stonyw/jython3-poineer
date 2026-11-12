@@ -1667,8 +1667,12 @@ public class PyStr extends PyObject {
      * {@code isidentifier}: the Unicode category rules Java keeps, which agree with Python's
      * {@code XID_Start} and {@code XID_Continue} for the scripts that matter here and drift for a
      * handful of code points that are letters in one table and numbers in the other.
+     *
+     * <p>Java also counts every ISO control character as an ignorable part of an identifier, which
+     * Python does not: {@code 'a\0b'.isidentifier()} is false there, and {@code __slots__ = ["a\0b"]}
+     * is the case that reads the answer.
      */
-    private static boolean isIdentifier(String text) {
+    static boolean isIdentifier(String text) {
         if (text.isEmpty()) {
             return false;
         }
@@ -1679,7 +1683,8 @@ public class PyStr extends PyObject {
         for (int at = Character.charCount(first); at < text.length(); ) {
             int code = text.codePointAt(at);
             at += Character.charCount(code);
-            if (code != '_' && !Character.isUnicodeIdentifierPart(code)) {
+            if (code != '_'
+                    && (Character.isISOControl(code) || !Character.isUnicodeIdentifierPart(code))) {
                 return false;
             }
         }

@@ -1,5 +1,7 @@
 package org.python.core;
 
+import java.util.List;
+
 /**
  * A class Python wrote: a {@link PyType} whose members live in a dictionary rather than in a Java
  * table, and whose values are {@link PyInstance}s.
@@ -42,6 +44,28 @@ public class PyClass extends PyType {
 
     private boolean weakRefs;
 
+    /**
+     * CPython's {@code tp_basicsize}, as far as this runtime needs it: the shape a class's values
+     * occupy, which is what two bases are compared by when one replaces the other.
+     *
+     * <p>Nothing is allocated from this number — a Python value is always one {@link PyInstance} — and it
+     * is not an absolute size: the walk starts at 16, {@code object}'s own {@code tp_basicsize}, for a
+     * compiled-in base. A field declared in {@code __slots__} adds one pointer, so {@code __slots__ =
+     * ("x",)} is eight bytes more than its base while {@code __slots__ = ("__dict__",)} is the same size,
+     * the dictionary and the weak-reference list being kept outside the value.
+     */
+    private int instanceSize;
+
+    /**
+     * CPython's {@code ht_slots}: the fields the body declared, sorted, with duplicates kept; null for a
+     * body that wrote no {@code __slots__} at all.
+     *
+     * <p>Null and an empty list differ only to a reader of {@code __slots__}: for layout they add the same
+     * nothing, which is what makes {@code __slots__ = ()} interchangeable with no declaration when the
+     * two classes are compared.
+     */
+    private List<String> slotLayout;
+
     PyClass(
             String name,
             PyTuple bases,
@@ -62,6 +86,22 @@ public class PyClass extends PyType {
 
     void storesWeakRefs(boolean stored) {
         weakRefs = stored;
+    }
+
+    /** The instance shape and declared fields, told to it by the class system as it files the slots. */
+    void layout(int size, List<String> slots) {
+        instanceSize = size;
+        slotLayout = slots;
+    }
+
+    /** This class's part of CPython's {@code tp_basicsize}; see {@link #instanceSize}. */
+    int instanceSize() {
+        return instanceSize;
+    }
+
+    /** The declared field names as {@code ht_slots} holds them, or null with no {@code __slots__}. */
+    List<String> slotLayout() {
+        return slotLayout;
     }
 
     @Override

@@ -24,9 +24,9 @@ import java.util.Map;
  * metatype so that {@code C.__class__} and every class-level read go through it. When that metatype is
  * not {@code type} but wins the derivation, {@code type_new}'s last word is a call to the winner's own
  * {@code __new__} — that is how {@code EnumType} receives {@code boundary} and {@code _simple}. What is
- * left out is the part of {@code type_new} that has no model here: {@code __slots__} and instance
- * layout, {@code __mro_entries__} and {@code __orig_bases__}, and subclassing a built-in type whose
- * members are Java slots.
+ * left out is {@code __mro_entries__} and {@code __orig_bases__}, and the {@code tp_basicsize} of a
+ * compiled-in base other than {@code object} — every built-in root is taken to be sixteen bytes wide,
+ * which is the named deviation {@link #solidBase} carries.
  */
 final class Classes {
 
@@ -432,6 +432,10 @@ final class Classes {
             kind.documented(stated.getValue());
         }
         kind.order = linearize(kind, bases);
+        // `type_new_set_classcell` runs before the members are filed, so a class that names one of the
+        // two cells in `__slots__` ends with the member descriptor under that name rather than the cell:
+        // the cell is filled and taken out of the dictionary first.
+        propagateCells(dict, kind);
         addSlotDescriptors(kind, dict);
         // A field the body declared under the name `__doc__` is already a member descriptor here, and it
         // is what the name must keep: `_SpecialForm` stores its own sentence through that slot, and the
@@ -439,7 +443,6 @@ final class Classes {
         if (!docWritten) {
             putDefault(dict, "__doc__", PyNone.INSTANCE);
         }
-        propagateCells(dict, kind);
         setNames(dict, kind);
         initSubclass(kind, keywordValues, kwNames);
         return kind;
@@ -463,16 +466,21 @@ final class Classes {
      * Sub().x = 1} works — because the entry belongs to the class that introduced the storage and the
      * lookup walks up to it.
      *
-     * <p>{@code __slots__} changes the answer in one way that has nothing to do with layout: a body that
-     * declares slots takes only the two names it writes down there, so {@code __slots__ = ()} files
-     * neither and {@code __slots__ = ("__dict__",)} files one. Each of those two is filed as {@code
-     * PyDict_SetDefaultRef} does it, so a body that wrote one of them keeps what it wrote and the class
-     * simply has no descriptor to answer with.
+     * <p>{@code __slots__} also changes which storages are taken: a body that declares slots takes only
+     * the two names it writes down there, so {@code __slots__ = ()} files neither and {@code __slots__ =
+     * ("__dict__",)} files one. Each of those two is filed as {@code PyDict_SetDefaultRef} does it, so a
+     * body that wrote one of them keeps what it wrote and the class simply has no descriptor to answer
+     * with. The declared fields themselves also give the class its shape — one pointer each, recorded
+     * through {@link PyClass#layout} — which is what {@code __bases__} compares.
      */
     private static void addSlotDescriptors(PyClass kind, PyDict dict) {
         PyType base = kind.parent();
         PyObject slots = dict.get(PyStr.interned("__slots__"));
-        Declared declared = collect(slots);
+        Declared declared = collect(slots, kind.name());
+        // `type_new_set_attrs`: the size grows by one pointer per declared field, and by nothing for the
+        // two storages that live outside the value. A compiled-in root stands for `object`'s own 16.
+        int baseSize = size(base);
+        kind.layout(baseSize + 8 * declared.layout().size(), slots == null ? null : declared.layout());
         if (!base.matches(PyType.TYPE)) {
             for (String field : declared.fields()) {
                 // `collect_slots` asks the class dictionary before it lays out a single offset, so a body
@@ -486,15 +494,35 @@ final class Classes {
                                 kind,
                                 field,
                                 null,
-                                self -> self.slotValue(field),
-                                (self, value) -> self.writeSlot(field, value)));
+                                self -> self.slotValue(kind, field),
+                                (self, value) -> self.writeSlot(kind, field, value)));
             }
         }
-        boolean dictSlot = takesStorage(slots, declared.dict(), base.hasValueDict(), "__dict__");
-        boolean weakSlot =
-                takesStorage(slots, declared.weak(), base.hasWeakRefList(), "__weakref__");
-        kind.storesValueDict(dictSlot || base.hasValueDict());
-        kind.storesWeakRefs(weakSlot || base.hasWeakRefList());
+        boolean primaryHasDict = base.hasValueDict();
+        boolean primaryHasWeak = base.hasWeakRefList();
+        boolean dictSlot = takesStorage(slots, declared.dict(), primaryHasDict, "__dict__");
+        boolean weakSlot = takesStorage(slots, declared.weak(), primaryHasWeak, "__weakref__");
+        // `type_new_slots_bases`: a class over two bases takes either storage when a secondary base has
+        // it, which is what makes `class C(A, B)` with `A` slotted and `B` plain carry both — the new
+        // class files the descriptor its primary base lacks, and the storage is the one `B`'s own values
+        // use. Only the storages the primary base left open are looked at this way.
+        PyType[] allBases = kind.bases();
+        if (allBases.length > 1
+                && ((!primaryHasDict && !dictSlot) || (!primaryHasWeak && !weakSlot))) {
+            for (PyType other : allBases) {
+                if (other == base) {
+                    continue;
+                }
+                if (!primaryHasDict && !dictSlot && other.hasValueDict()) {
+                    dictSlot = true;
+                }
+                if (!primaryHasWeak && !weakSlot && other.hasWeakRefList()) {
+                    weakSlot = true;
+                }
+            }
+        }
+        kind.storesValueDict(dictSlot || primaryHasDict);
+        kind.storesWeakRefs(weakSlot || primaryHasWeak);
         if (dictSlot) {
             putDefault(
                     dict,
@@ -518,12 +546,21 @@ final class Classes {
         }
     }
 
-    /** What a body's {@code __slots__} declares: the fields it names, and which storages it asks for. */
-    private record Declared(List<String> fields, boolean dict, boolean weak) {}
+    /**
+     * What a body's {@code __slots__} declares: the fields it names, which storages it asks for, and the
+     * shape those fields give the values.
+     *
+     * <p>{@code fields} is what descriptors are filed for, so a name written twice appears once — the
+     * second descriptor would overwrite the first. {@code layout} is CPython's {@code ht_slots}, where a
+     * repeated name keeps its second pointer, and it is sorted the way CPython sorts the tuple before
+     * laying out offsets, so two classes that name the same fields in a different order compare equal.
+     */
+    private record Declared(
+            List<String> fields, boolean dict, boolean weak, List<String> layout) {}
 
     /**
-     * {@code collect_slots}: the names read out of {@code __slots__}, in the order the body wrote them and
-     * with the duplicates and the two storage names set apart from the fields.
+     * {@code collect_slots}: the names read out of {@code __slots__}, sorted, with the duplicates and the
+     * two storage names set apart from the fields.
      *
      * <p>Three shapes are legal — a bare string is the one field it names, a dictionary declares its keys,
      * and anything else is iterated — and only a string is an item, which is the difference between {@code
@@ -531,14 +568,19 @@ final class Classes {
      * iterable} a bare number reaches before any item is looked at. {@code __slots__} itself stays in the
      * class dictionary beside the descriptors it produced, which is what makes {@code C.__slots__} a
      * question about the body rather than about the layout.
+     *
+     * <p>A field written with two leading underscores and no trailing pair is mangled against the class
+     * name before anything is filed, exactly as the body's own {@code self.__a} was, so the descriptor and
+     * the access are spelled the same way. {@code __slots__} itself keeps the names the body wrote.
      */
-    private static Declared collect(PyObject slots) {
+    private static Declared collect(PyObject slots, String className) {
         if (slots == null) {
-            return new Declared(List.of(), false, false);
+            return new Declared(List.of(), false, false, List.of());
         }
         List<PyObject> items =
                 slots instanceof PyStr only ? List.of(only) : Constructors.materialise(slots);
         List<String> fields = new ArrayList<>();
+        List<String> layout = new ArrayList<>();
         boolean dict = false;
         boolean weak = false;
         for (PyObject item : items) {
@@ -546,17 +588,50 @@ final class Classes {
                 throw Slots.typeError(
                         "__slots__ items must be strings, not '%s'", item.getType().filedName());
             }
-            switch (name.str()) {
+            String field = mangle(name.str(), className);
+            if (!PyStr.isIdentifier(field)) {
+                throw Slots.typeError("__slots__ must be identifiers");
+            }
+            switch (field) {
                 case "__dict__" -> dict = declares(dict, "__dict__");
                 case "__weakref__" -> weak = declares(weak, "__weakref__");
                 default -> {
-                    if (!fields.contains(name.str())) {
-                        fields.add(name.str());
+                    layout.add(field);
+                    if (!fields.contains(field)) {
+                        fields.add(field);
                     }
                 }
             }
         }
-        return new Declared(fields, dict, weak);
+        // `collect_slots` sorts what it collected before any offset is laid out, so the shape two classes
+        // are compared by does not depend on the order their bodies wrote the names in.
+        layout.sort(null);
+        fields.sort(null);
+        return new Declared(fields, dict, weak, layout);
+    }
+
+    /**
+     * {@code _Py_Mangle}: the name a private attribute is filed under.
+     *
+     * <p>Only a name with two leading underscores and no trailing pair is private, and the class part
+     * loses its own leading underscores — {@code ___E} mangles as {@code _E}. A class name made only of
+     * underscores has nothing to mangle with and leaves the name alone.
+     */
+    private static String mangle(String name, String className) {
+        if (name.length() < 2
+                || name.charAt(0) != '_'
+                || name.charAt(1) != '_'
+                || name.endsWith("__")) {
+            return name;
+        }
+        int at = 0;
+        while (at < className.length() && className.charAt(at) == '_') {
+            at++;
+        }
+        if (at == className.length()) {
+            return name;
+        }
+        return "_" + className.substring(at) + name;
     }
 
     /** The second time a body writes one of the two storage names is the time it is refused. */
@@ -839,11 +914,11 @@ final class Classes {
      * undo}/{@code bail}, and it is what makes {@code test_mutable_bases_with_failing_mro} leave {@code
      * D} deriving from what it derived from before the custom {@code mro} raised.
      *
-     * <p>Slot layout is not modelled in this slice: CPython's {@code shape_differs} compares {@code
-     * tp_basicsize}, and this runtime keeps every value's slots in a side dictionary rather than in the
-     * value, so no class written here changes the shape it inherits. A class that declares
-     * {@code __slots__} is therefore compared only by the dictionary and weak-reference flags its base
-     * introduced, which is the named deviation this slice leaves to the {@code __slots__} slice.
+     * <p>The layout comparison is CPython's {@code shape_differs} over {@link PyClass#instanceSize} and
+     * {@code same_slots_added} over {@link PyClass#slotLayout}: a class that declared fields has a
+     * different shape from one that did not, even when its base is the same. A Python value is still one
+     * {@link PyInstance} whatever its class declares, so those sizes are a model rather than an
+     * allocation, and a compiled-in base contributes {@code object}'s sixteen bytes whichever one it is.
      */
     static void setBases(PyClass type, PyTuple newBases) {
         if (newBases.size() == 0) {
@@ -922,34 +997,46 @@ final class Classes {
     /**
      * {@code solid_base}: the nearest ancestor whose instance shape this type keeps.
      *
-     * <p>CPython compares {@code tp_basicsize}/{@code tp_itemsize} and stops at the first difference;
-     * in this runtime no heap class changes either — a Python value is one {@link PyInstance} whatever
-     * its class declares, and {@code __slots__} currently lives in a side dictionary — so the walk
-     * reaches the built-in root of the chain. That root is what distinguishes {@code L(list)} from a
-     * plain class over {@code object}, which is the whole of what the layout comparison below needs.
+     * <p>CPython walks up while {@code shape_differs} is false for {@code tp_basicsize}/{@code
+     * tp_itemsize} and returns the first ancestor that differs. Here that is {@link PyClass#instanceSize}
+     * alone, since every value is one {@link PyInstance} and no class has items. Every built-in root is
+     * sixteen bytes wide in that model — the named deviation when the real {@code tp_basicsize} differs —
+     * and that is still enough to keep {@code L(list)} and {@code object} apart, because {@code list} is
+     * its own solid base either way.
      */
     private static PyType solidBase(PyType type) {
         if (!(type instanceof PyClass held)) {
             return type;
         }
         PyType parent = held.parent();
-        return parent == null ? type : solidBase(parent);
+        if (parent == null) {
+            return type;
+        }
+        PyType base = solidBase(parent);
+        return held.instanceSize() == size(base) ? base : type;
+    }
+
+    /** CPython's {@code tp_basicsize} as this runtime models it: sixteen for a compiled-in root. */
+    private static int size(PyType type) {
+        return type instanceof PyClass held ? held.instanceSize() : 16;
     }
 
     /**
      * {@code compatible_with_tp_base}: whether this class keeps its parent's storage and allocator.
      *
-     * <p>CPython compares sizes, both offsets, the GC flag and {@code tp_dealloc}. Here the only two
-     * storages a Python class can carry are the dictionary and the weak-reference list, so those flags
-     * plus "the parent is itself written in Python" stand in for the rest: a class over a built-in
-     * base inherits that base's allocator and can never be compatible with it.
+     * <p>CPython compares sizes, both offsets, the GC flag and {@code tp_dealloc}. Of those, this runtime
+     * can differ on the size and on whether the dictionary or weak-reference storage moved into the
+     * preheader, so those three are compared and the rest are constants: a class over a built-in base
+     * inherits that base's allocator and can never be compatible with it, which is what the "parent is
+     * itself written in Python" test says.
      */
     private static boolean compatibleWithBase(PyType type) {
         if (!(type instanceof PyClass held)) {
             return false;
         }
         PyType parent = held.parent();
-        return parent instanceof PyClass
+        return parent instanceof PyClass written
+                && held.instanceSize() == written.instanceSize()
                 && held.hasValueDict() == parent.hasValueDict()
                 && held.hasWeakRefList() == parent.hasWeakRefList();
     }
@@ -960,11 +1047,13 @@ final class Classes {
      * <p>The deallocator sentence compares the two classes this assignment swaps between, and it comes
      * first: a heap class and a compiled-in one do not free their values the same way. The layout
      * sentence compares what is left after walking each side up its compatible chain, and it names the
-     * new base before the old one, as CPython does. An empty {@code __slots__} on both sides would make
-     * {@code same_slots_added} true there; that half is not modelled yet, so only the dictionary and
-     * weak-reference flags are compared — the named deviation in {@link #setBases}.
+     * new base before the old one, as CPython does. After those sizes, CPython makes two more comparisons
+     * that it reports with the same sentence: whether the dictionary is inlined into the value and
+     * whether the value carries a preheader at all. Both follow from the two storage flags here, and both
+     * are checked after the size comparison so that the sentence is raised for the same reason it is in
+     * CPython.
      */
-    private static void compatibleForAssignment(
+    static void compatibleForAssignment(
             PyType oldto, PyType newto, String attribute) {
         if (newto != null && oldto != null && gcAllocated(oldto) != gcAllocated(newto)) {
             throw Slots.typeError(
@@ -983,7 +1072,9 @@ final class Classes {
                 && (newbase == null
                         || oldbase == null
                         || newbase.parent() != oldbase.parent()
-                        || !sameStorage(newbase, oldbase))) {
+                        || !sameSlotsAdded(newbase, oldbase)
+                        || inlinesValues(oldto) != inlinesValues(newto)
+                        || hasWeakRefs(oldto) != hasWeakRefs(newto))) {
             throw Slots.typeError(
                     "%s assignment: '%s' object layout differs from '%s'",
                     attribute, newto.filedName(), oldto.filedName());
@@ -991,18 +1082,42 @@ final class Classes {
     }
 
     /**
-     * {@code same_slots_added}: whether two classes add the same storage over the same parent.
+     * {@code same_slots_added}: whether two classes add the same fields over the same parent.
      *
-     * <p>CPython requires both to be heap types, compares their {@code ht_slots} and then their sizes.
-     * Here the slots half is the named deviation: what is compared is the parent, the dictionary flag
-     * and the weak-reference flag.
+     * <p>CPython requires the same {@code tp_base}, both {@code ht_slots} tuples to be equal when either
+     * declares any, and the resulting size to fall out of the field count. That is exactly what the
+     * sorted {@link PyClass#slotLayout} and the modelled {@code tp_basicsize} say here: a null layout is
+     * no declaration and an empty one is {@code __slots__ = ()}, and both add nothing, so they stand for
+     * the same zero fields.
      */
-    private static boolean sameStorage(PyType a, PyType b) {
-        return a instanceof PyClass first
-                && b instanceof PyClass second
-                && first.parent() == second.parent()
-                && first.hasValueDict() == second.hasValueDict()
-                && first.hasWeakRefList() == second.hasWeakRefList();
+    private static boolean sameSlotsAdded(PyType a, PyType b) {
+        if (!(a instanceof PyClass first) || !(b instanceof PyClass second)) {
+            return false;
+        }
+        if (first.parent() != second.parent()) {
+            return false;
+        }
+        List<String> declared = first.slotLayout();
+        List<String> other = second.slotLayout();
+        if (declared != null && other != null && !declared.equals(other)) {
+            return false;
+        }
+        return fields(declared) == fields(other);
+    }
+
+    /** How many pointers a layout accounts for, with no declaration counting as none. */
+    private static int fields(List<String> layout) {
+        return layout == null ? 0 : layout.size();
+    }
+
+    /** {@code Py_TPFLAGS_INLINE_VALUES}: a heap class whose dictionary lives in the value. */
+    private static boolean inlinesValues(PyType type) {
+        return type.hasValueDict();
+    }
+
+    /** {@code Py_TPFLAGS_MANAGED_WEAKREF}, the other half of the preheader comparison. */
+    private static boolean hasWeakRefs(PyType type) {
+        return type.hasWeakRefList();
     }
 
     /**

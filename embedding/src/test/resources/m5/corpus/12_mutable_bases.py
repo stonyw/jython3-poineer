@@ -4,9 +4,9 @@ The refusals are checked as they read, because the texts are CPython's: the tupl
 shape, a non-class item, an inheritance cycle, an immutable type, an unacceptable
 base, a deallocator change and a lay-out conflict.  The order is checked on the
 class and on its subclasses, and the last block checks that a failing custom mro
-leaves the hierarchy as it was.  The one message this file cannot reach is
+leaves the hierarchy as it was.  The one message this file does not reach is
 "object layout differs": two classes differ in instance layout only when one of
-them declares __slots__, which is the next slice.
+them declares __slots__, which `13_slots.py` covers.
 """
 
 
