@@ -45,7 +45,10 @@ public final class Cpython314Compiler {
      *
      * <p>Argv is {@code payload-kind payload fileName code-kind}: the first {@code kind} says whether
      * the payload is a path ({@code f}) or the source itself ({@code s}), the second which compile
-     * mode to ask for ({@code exec} for a module's top level, {@code eval} for one expression).
+     * mode to ask for ({@code exec} for a module's top level, {@code eval} for one expression) or,
+     * when it starts with {@code ast-}, which parse mode to hand {@code ast.parse}. An AST answer is
+     * the tree written the way {@code ast.dump} writes it, not a code object: the runtime owns the
+     * node classes, so the only thing that crosses is their constructor expression.
      * {@code dont_inherit=True} is not decoration — without it, a compile flag inherited from the
      * parent ({@code -O}, or {@code __debug__} off) would change the bytecode the launcher never
      * asked for. {@code -O} has to be an explicit decision of ours, at the point where
@@ -73,14 +76,45 @@ public final class Cpython314Compiler {
             else:
                 source = payload.encode("utf-8")
             try:
-                code = compile(source, file_name, code_kind, dont_inherit=True)
+                if code_kind.startswith("ast-"):
+                    import ast
+
+                    # A constructor expression for the tree, carrying every field the parser set --
+                    # including the optional ones it left as None.  `ast.dump` drops those None fields,
+                    # and a rebuilt _ast node never puts a dropped field back, so the round trip needs
+                    # its own writer rather than dump's readable form.  Positions come last, in the
+                    # order `_attributes` names them.
+                    def write(node):
+                        if isinstance(node, ast.AST):
+                            parts = []
+                            for name in node._fields:
+                                try:
+                                    value = getattr(node, name)
+                                except AttributeError:
+                                    continue
+                                parts.append("%s=%s" % (name, write(value)))
+                            for name in node._attributes:
+                                try:
+                                    value = getattr(node, name)
+                                except AttributeError:
+                                    continue
+                                parts.append("%s=%s" % (name, write(value)))
+                            return "%s(%s)" % (type(node).__name__, ", ".join(parts))
+                        if isinstance(node, list):
+                            return "[%s]" % ", ".join(write(item) for item in node)
+                        return repr(node)
+
+                    tree = ast.parse(source.decode("utf-8"), file_name, code_kind[4:])
+                    sys.stdout.buffer.write(write(tree).encode("utf-8"))
+                else:
+                    code = compile(source, file_name, code_kind, dont_inherit=True)
+                    sys.stdout.buffer.write(marshal.dumps(code))
             except (SyntaxError, ValueError) as error:
                 # The report the interpreter would have printed for the script, and nothing of the
                 # driver: a traceback through this string would be ours to explain, not the user's.
                 # ValueError is what an expression compile mode gives for a statement source.
                 sys.stderr.write("".join(traceback.format_exception_only(error)))
                 raise SystemExit(1)
-            sys.stdout.buffer.write(marshal.dumps(code))
             """;
 
     private Cpython314Compiler() {
@@ -100,6 +134,11 @@ public final class Cpython314Compiler {
                 @Override
                 public PyCode compileExpression(String source, String fileName) {
                     return Cpython314Compiler.compileExpression(source, fileName);
+                }
+
+                @Override
+                public String parseAst(String source, String fileName, String mode) {
+                    return Cpython314Compiler.parseAst(source, fileName, mode);
                 }
             };
 
@@ -141,6 +180,20 @@ public final class Cpython314Compiler {
         return compile("s", source, fileName, "eval");
     }
 
+    /**
+     * Parse {@code source} and answer the tree as the constructor text {@code _ast} rebuilds.
+     *
+     * <p>The reference parser is the authority on the shape of a tree; the runtime is the authority on
+     * the node classes. What crosses the seam is therefore neither object nor class, but the text
+     * {@code ast.dump} writes — one expression naming classes the runtime defines.
+     *
+     * @param mode the {@code ast.parse} mode: {@code exec}, {@code eval}, {@code single} or
+     *     {@code func_type}
+     */
+    public static String parseAst(String source, String fileName, String mode) {
+        return new String(run("s", source, fileName, "ast-" + mode), StandardCharsets.UTF_8);
+    }
+
     /** The reference interpreter this build will invoke, for reporting and for tests. */
     public static String executable() {
         String configured = System.getProperty(EXECUTABLE_PROPERTY);
@@ -158,24 +211,34 @@ public final class Cpython314Compiler {
     }
 
     private static PyCode compile(String payloadKind, String payload, String fileName, String codeKind) {
+        return MarshalReader.readCode(run(payloadKind, payload, fileName, codeKind), 0);
+    }
+
+    /**
+     * Run the driver and answer the bytes it wrote on stdout — marshalled code, or an AST dump.
+     *
+     * <p>Every failure is turned into one of the two exceptions here, because both callers explain a
+     * refusal the same way: CPython's own report is the user's, anything else is ours.
+     */
+    private static byte[] run(String payloadKind, String payload, String fileName, String codeKind) {
         File diagnostics = temporaryFile();
         try {
             Process process = invoke(payloadKind, payload, fileName, codeKind, diagnostics);
-            byte[] marshal;
-            try (InputStream out = process.getInputStream()) {
-                marshal = out.readAllBytes();
+            byte[] out;
+            try (InputStream stream = process.getInputStream()) {
+                out = stream.readAllBytes();
             }
             int status = waitFor(process);
             if (status == 0) {
-                return MarshalReader.readCode(marshal, 0);
+                return out;
             }
             String report = read(diagnostics);
             if (status == WRONG_VERSION) {
                 throw new CompilerUnavailable(report.strip());
             }
-            if (marshal.length != 0) {
+            if (out.length != 0) {
                 throw new CompilerUnavailable(
-                        "the reference compiler exited " + status + " after writing bytecode: "
+                        "the reference compiler exited " + status + " after writing output: "
                                 + report.strip());
             }
             throw new CompilationRefused(report);

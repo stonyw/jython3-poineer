@@ -566,26 +566,22 @@ final class Builtins {
         put(out, "compile", new PyNativeFunction("compile", Builtins::compileCode)
                 .documented(
                         "compile($module, /, source, filename, mode, flags=0,\n"
-                                + "        dont_inherit=False, optimize=-1)\n"
+                                + "        dont_inherit=False, optimize=-1, *, _feature_version=-1)\n"
                                 + "--\n"
                                 + "\n"
-                                + "Compile the source into a code or AST object.  Code objects can be executed\n"
-                                + "by exec() or eval().  source can either be a normal string, a byte\n"
-                                + "string, or an AST object.  Refer to the ast module documentation\n"
-                                + "for information on how to work with AST objects.\n"
+                                + "Compile source into a code object that can be executed by exec() or eval().\n"
                                 + "\n"
-                                + "The filename argument should give the file from which the code was read;\n"
-                                + "pass some recognizable value if it wasn't read from a file (<string> is\n"
-                                + "commonly used).\n"
-                                + "\n"
-                                + "The mode argument specifies what kind of code must be compiled; it can be\n"
-                                + "'exec' if source consists of a sequence of statements, 'eval' if it\n"
-                                + "consists of a single expression, or 'single' if it consists of a single\n"
-                                + "interactive statement (in the latter case, expression statements that\n"
-                                + "evaluate to something other than None will be printed).\n"
-                                + "\n"
-                                + "The optional arguments flags and dont_inherit control the compiler options.\n"
-                                + "The optimize argument sets the optimization level."));
+                                + "The source code may represent a Python module, statement or\n"
+                                + "expression.\n"
+                                + "The filename will be used for run-time error messages.\n"
+                                + "The mode must be 'exec' to compile a module, 'single' to compile a\n"
+                                + "single (interactive) statement, or 'eval' to compile an expression.\n"
+                                + "The flags argument, if present, controls which future statements\n"
+                                + "influence the compilation of the code.\n"
+                                + "The dont_inherit argument, if true, stops the compilation inheriting\n"
+                                + "the effects of any future statements in effect in the code calling\n"
+                                + "compile; if absent or false these statements do influence the\n"
+                                + "compilation, in addition to any features explicitly specified."));
         put(out, "__build_class__", new PyNativeFunction("__build_class__", Classes::buildClass)
                 .documented(
                         "__build_class__(func, name, /, *bases, [metaclass], **kwds) -> class\n"
@@ -1330,11 +1326,14 @@ final class Builtins {
     private static final PyObject[] NAMESPACE_DEFAULTS = {PyNone.INSTANCE, PyNone.INSTANCE};
 
     private static final String[] COMPILE_NAMES = {
-        "source", "filename", "mode", "flags", "dont_inherit", "optimize"
+        "source", "filename", "mode", "flags", "dont_inherit", "optimize", "_feature_version"
     };
     private static final PyObject[] COMPILE_DEFAULTS = {
-        PyInt.of(0), PyBool.FALSE, PyInt.of(-1)
+        PyInt.of(0), PyBool.FALSE, PyInt.of(-1), PyInt.of(-1)
     };
+
+    /** {@code PyCF_ONLY_AST} from CPython's {@code compile.h}: answer a tree, not a code object. */
+    private static final int ONLY_AST = 1024;
 
     /** {@code eval(source, globals=None, locals=None)}: one expression's value. */
     private static PyObject evaluate(PyObject[] args, String[] kwNames) {
@@ -1375,12 +1374,16 @@ final class Builtins {
     }
 
     /**
-     * {@code compile(source, filename, mode, flags=0, dont_inherit=False, optimize=-1)}.
+     * {@code compile(source, filename, mode, flags=0, dont_inherit=False, optimize=-1, *,
+     * _feature_version=-1)}.
      *
-     * <p>Only the two modes {@code eval} and {@code exec} compile here — the ones {@code eval} and
-     * {@code exec} run. {@code single} is the interactive prompt's mode and is refused by name, as are
-     * nonzero compiler flags and an optimization level other than the default, because silently
-     * ignoring any of the three would compile something the caller did not ask for.
+     * <p>Two modes compile here — {@code eval} and {@code exec} — and, when the flags ask for a tree,
+     * {@code single} and {@code func_type} as well; {@code single} without that flag is the interactive
+     * prompt's mode and is refused by name. The one compiler flag that is honoured is
+     * {@code PyCF_ONLY_AST}, which is how {@code ast.parse} asks for a tree: the answer is the
+     * {@code _ast} nodes this runtime defines. Every other flag, an explicit optimization level and a
+     * feature version all say what this compiler cannot yet promise, so they are refused by name rather
+     * than silently ignored.
      */
     private static PyObject compileCode(PyObject[] args, String[] kwNames) {
         PyObject[] given = Arguments.fill("compile", args, kwNames, COMPILE_NAMES, COMPILE_DEFAULTS);
@@ -1394,14 +1397,33 @@ final class Builtins {
                     "compile() argument 3 must be str, not %s", given[2].getType().name());
         }
         mode = modeText.getValue();
+        int flags = 0;
+        if (given[3] instanceof PyInt flagValue) {
+            flags = flagValue.getValue().intValue();
+        } else if (Slots.truth(given[3])) {
+            throw Slots.typeError(
+                    "compile() argument 4 must be int, not %s", given[3].getType().name());
+        }
+        boolean onlyAst = (flags & ONLY_AST) != 0;
+        if ((flags & ~ONLY_AST) != 0) {
+            throw Slots.notImplemented("compile() with compiler flags (M6-a)");
+        }
         if (!mode.equals("exec") && !mode.equals("eval")) {
             if (mode.equals("single")) {
-                throw Slots.notImplemented("compile() mode 'single' (M6-a)");
+                if (!onlyAst) {
+                    throw Slots.notImplemented("compile() mode 'single' (M6-a)");
+                }
+            } else if (mode.equals("func_type")) {
+                // Only the parser takes this one: a func_type tree is not a code object's shape.
+                if (!onlyAst) {
+                    throw Slots.valueError(
+                            "compile() mode 'func_type' requires flag PyCF_ONLY_AST");
+                }
+            } else {
+                throw Slots.valueError(onlyAst
+                        ? "compile() mode must be 'exec', 'eval', 'single' or 'func_type'"
+                        : "compile() mode must be 'exec', 'eval' or 'single'");
             }
-            throw Slots.valueError("compile() mode must be 'exec', 'eval' or 'single'");
-        }
-        if (Slots.truth(given[3]) && !(given[3] instanceof PyInt flags && flags.getValue().signum() == 0)) {
-            throw Slots.notImplemented("compile() with compiler flags (M6-a)");
         }
         if (Slots.truth(given[4])) {
             throw Slots.notImplemented("compile() dont_inherit (M6-a)");
@@ -1409,6 +1431,13 @@ final class Builtins {
         if (!(given[5] instanceof PyInt optimize) || optimize.getValue().intValue() != -1) {
             throw Slots.notImplemented(
                     "compile() with an explicit optimization level (M6-a)");
+        }
+        if (!(given[6] instanceof PyInt featureVersion)
+                || featureVersion.getValue().intValue() != -1) {
+            throw Slots.notImplemented("compile() with a feature version (M5)");
+        }
+        if (onlyAst) {
+            return PyRuntime.parseAst(sourceText("compile", given[0]), fileName, mode);
         }
         PyCode code = codeOf("compile", given[0], fileName, mode.equals("eval"));
         return (PyObject) code;
@@ -1419,18 +1448,22 @@ final class Builtins {
         if (source instanceof PyCode code) {
             return code;
         }
-        String text;
-        if (source instanceof PyStr string) {
-            text = string.getValue();
-        } else if (source instanceof PyBytes bytes) {
-            text = new String(bytes.getValue(), StandardCharsets.UTF_8);
-        } else {
-            throw Slots.typeError(
-                    "%s() arg 1 must be a string, bytes or code object", name);
-        }
+        String text = sourceText(name, source);
         return expression
                 ? PyRuntime.compileExpression(text, fileName)
                 : PyRuntime.compileSource(text, fileName);
+    }
+
+    /** The text of a source argument: a string as it is, or bytes read as UTF-8. */
+    private static String sourceText(String name, PyObject source) {
+        if (source instanceof PyStr string) {
+            return string.getValue();
+        }
+        if (source instanceof PyBytes bytes) {
+            return new String(bytes.getValue(), StandardCharsets.UTF_8);
+        }
+        throw Slots.typeError(
+                "%s() arg 1 must be a string, bytes or code object", name);
     }
 
     /** A {@code filename} argument: str, or bytes read as UTF-8. */

@@ -42,8 +42,8 @@ public final class PyRuntime {
      * extension modules, which are imports this runtime answers in Java instead.
      */
     private static final String[] BUILTIN_MODULE_NAMES =
-            {"builtins", "sys", "_io", "_types", "_weakref", "itertools", "_thread", "_struct",
-                "binascii", "_codecs", "errno", "math", "time", "posix", "_collections"};
+            {"builtins", "sys", "_ast", "_io", "_types", "_weakref", "itertools", "_thread",
+                "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -513,6 +513,12 @@ public final class PyRuntime {
         PyObject module = modules.get(PyStr.interned(dotted));
         if (module != null) {
             return cached(module, dotted);
+        }
+        // `_ast` is a built-in that cannot be built at startup: its node classes are written in Python
+        // and need the injected compiler, which is handed in after `startup()` runs. The first import
+        // builds it, and every later one reads the mapping like any other module.
+        if (dotted.equals("_ast")) {
+            return cached(AstModule.install(), dotted);
         }
         int dot = dotted.lastIndexOf('.');
         if (dot <= 0) {
@@ -1002,6 +1008,42 @@ public final class PyRuntime {
         sourceCompiler = compiler;
     }
 
+    /** Whether a compiler has been handed in, which {@code _ast} needs to build its node classes. */
+    static boolean hasSourceCompiler() {
+        return sourceCompiler != null;
+    }
+
+    /**
+     * File a module this runtime built for itself, so later imports answer from the mapping.
+     *
+     * <p>{@code _ast} is built on first import rather than at startup, and this is where that build
+     * lands: one write, the same one {@code startup()} makes for every module it builds eagerly.
+     */
+    static void registerBuiltInModule(String name, PyModule module) {
+        modules.put(PyStr.interned(name), module);
+    }
+
+    /**
+     * Parse {@code source} into the tree of {@code _ast} nodes, rebuilding it on this side of the seam.
+     *
+     * <p>The compiler answers a constructor expression — {@code Module(body=[Assign(...)])} — written
+     * against the node classes this runtime defines. Compiling and running it here is what makes the
+     * objects runtime-owned: nothing in {@code runtime} knows how the reference parser lays out a
+     * tree, and nothing in the reference interpreter knows what these node objects are.
+     *
+     * @param mode the {@code ast.parse} mode: {@code exec}, {@code eval}, {@code single} or
+     *     {@code func_type}
+     */
+    static PyObject parseAst(String source, String fileName, String mode) {
+        if (sourceCompiler == null) {
+            throw Slots.notImplemented("ast needs a compiler (setSourceCompiler)");
+        }
+        String text = sourceCompiler.parseAst(source, fileName, mode);
+        PyModule ast = (PyModule) importModule("_ast");
+        PyDict globals = ast.dictionary();
+        return runIn(compileExpression(text, "<ast>"), globals, globals);
+    }
+
     /** Compile the text of an imported file with the installed compiler. */
     static PyCode compileSource(String source, String fileName) {
         if (sourceCompiler == null) {
@@ -1159,6 +1201,7 @@ public final class PyRuntime {
                 PyTuple.of(
                         PyStr.of("builtins"),
                         PyStr.of("sys"),
+                        PyStr.of("_ast"),
                         PyStr.of("_io"),
                         PyStr.of("_tokenize"),
                         PyStr.of("_types"),

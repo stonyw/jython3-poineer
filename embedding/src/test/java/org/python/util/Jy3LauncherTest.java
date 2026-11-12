@@ -520,6 +520,26 @@ class Jy3LauncherTest {
                 "08_eval_partial_and_gc.py");
     }
 
+    /**
+     * M5 slice 1: the {@code _ast} module, and the reference {@code ast.py} built on it.
+     *
+     * <p>One script measures the whole seam: the node classes' {@code _fields} and {@code _attributes},
+     * a tree from every statement form {@code ast.parse} takes, the dumps {@code ast.dump} writes with
+     * and without positions and indentation, the three modes, {@code literal_eval}, and the walks and
+     * position fix-ups {@code ast} writes in Python over {@code _attributes}. The tree itself is parsed
+     * by the reference interpreter, so a line here that disagrees is the rebuild's fault, not the
+     * parser's.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("m5Corpus")
+    void anM5CorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
+        answersExactlyAsCpython("m5/corpus", scriptName);
+    }
+
+    private static List<String> m5Corpus() {
+        return List.of("01_ast_nodes_and_parse.py");
+    }
+
     private static List<String> m3Corpus() {
         return List.of(
                 "01_handlers.py",
