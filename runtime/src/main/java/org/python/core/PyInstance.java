@@ -15,7 +15,7 @@ import java.math.BigInteger;
  * virtual method on the value; the two land on the same answer, and this is the half that says which
  * name is asked for which operation.
  */
-public final class PyInstance extends PyObject {
+public class PyInstance extends PyObject {
 
     /**
      * {@code self.__dict__}: the attributes this one value holds, which a class does not.
@@ -150,9 +150,28 @@ public final class PyInstance extends PyObject {
         if (member != null) {
             return Descriptors.get(member, this, type);
         }
+        PyObject inherited = inherited(name);
+        if (!Slots.declined(inherited)) {
+            return inherited;
+        }
         return name.equals("__class__")
                 ? type
                 : Specials.invoke(this, "__getattr__", PyStr.of(name));
+    }
+
+    /**
+     * A member this value inherits from a built-in base rather than from the class Python wrote.
+     *
+     * <p>{@link Specials#lookUp} only sees the class namespaces, which is enough for a class whose
+     * whole order is written in Python. A subclass of a built-in base also inherits that base's own
+     * dictionary, and those names have to be answered before {@code __class__} and
+     * {@code __getattr__} — the same place CPython's walk of the type order reaches them. A value
+     * whose bases are all Python classes has nothing to add here.
+     *
+     * @return the member, or {@link Slots#DECLINED} for a name no built-in base declares
+     */
+    PyObject inherited(String name) {
+        return Slots.DECLINED;
     }
 
     /**
@@ -494,7 +513,7 @@ public final class PyInstance extends PyObject {
     }
 
     /** CPython's {@code object.__repr__} says where the value is; an address this runtime has no use for. */
-    private String defaultDisplay() {
+    String defaultDisplay() {
         return "<" + type.name() + " object at " + System.identityHashCode(this) + ">";
     }
 }

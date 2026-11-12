@@ -461,7 +461,8 @@ class Jy3LauncherTest {
                 "12_weakref_module.py",
                 "13_union_types.py",
                 "14_stdlib_reprlib.py",
-                "15_stdlib_struct_base64.py");
+                "15_stdlib_struct_base64.py",
+                "16_dict_subclasses.py");
     }
 
     private static List<String> m3Corpus() {

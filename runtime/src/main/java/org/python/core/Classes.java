@@ -95,17 +95,21 @@ final class Classes {
                                 prepare,
                                 joined(new PyObject[] {name, bases}, keywords),
                                 PyBoundMethod.keywordTuple(left));
-        if (!(namespace instanceof PyDict dict)) {
+        // A dict subclass is a mapping as far as the class statement is concerned: its entries live in a
+        // dictionary of its own, and the body's writes go through the mapping itself so that an override
+        // of __setitem__ sees every name.
+        PyDict dict = PyDict.bodyOf(namespace);
+        if (dict == null) {
             throw Slots.typeError(
                     "%s.__prepare__() must return a mapping, not %s",
                     isclass ? ((PyType) meta).name() : "<metaclass>", namespace.getType().name());
         }
 
-        PyObject returned = body.runClassBody(dict);
+        PyObject returned = body.runClassBody(dict, namespace);
         PyObject built =
                 Slots.call(
                         meta,
-                        joined(new PyObject[] {name, bases, dict}, keywords),
+                        joined(new PyObject[] {name, bases, namespace}, keywords),
                         PyBoundMethod.keywordTuple(left));
         checkClassCell(returned, name, built);
         return built;
@@ -196,7 +200,10 @@ final class Classes {
             throw Slots.typeError(
                     "type.__new__() argument 2 must be tuple, not %s", args[1].getType().name());
         }
-        if (!(args[2] instanceof PyDict namespace)) {
+        // A dict subclass is accepted here as CPython accepts it: the check is PyDict_Check, not
+        // PyDict_CheckExact, so an EnumDict built by the class statement reaches this call.
+        PyDict namespace = PyDict.bodyOf(args[2]);
+        if (namespace == null) {
             throw Slots.typeError(
                     "type.__new__() argument 3 must be dict, not %s", args[2].getType().name());
         }
@@ -253,6 +260,7 @@ final class Classes {
         return base instanceof PyClass
                 || base == PyType.OBJECT
                 || base == PyType.TYPE
+                || base == PyType.DICT
                 || base.matches(ExceptionTypes.BASE_EXCEPTION)
                 || base == PyType.CLASS_METHOD
                 || base == PyType.STATIC_METHOD
@@ -844,6 +852,9 @@ final class Classes {
         }
         if (excess(args, kwNames) && inheritsOnlyObjectInit(kind)) {
             throw Slots.typeError("%s() takes no arguments", kind.name());
+        }
+        if (kind.matches(PyType.DICT)) {
+            return new PyDictInstance(kind);
         }
         return new PyInstance(kind);
     }

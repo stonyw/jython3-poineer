@@ -188,12 +188,13 @@ public final class Interpreter {
                         break;
                     }
                     case Opcodes.LOAD_LOCALS:
-                        // The frame's own dictionary, handed out as it is: the compiler stands this on the
+                        // The frame's own namespace, handed out as it is: the compiler stands this on the
                         // stack twice in a class body, once to fill the hidden `__classdict__` cell and once
-                        // directly before `LOAD_FROM_DICT_OR_DEREF`. Both want the dictionary the body is
+                        // directly before `LOAD_FROM_DICT_OR_DEREF`. Both want the mapping the body is
                         // still writing into, not a copy of one moment of it — a method the body itself
-                        // calls reads back the names written before that call.
-                        frame.push(nameSpace(frame));
+                        // calls reads back the names written before that call. When the metaclass prepared
+                        // a mapping other than a plain dict, this is that mapping rather than its storage.
+                        frame.push(frame.nameHolder());
                         break;
                     case Opcodes.LOAD_FROM_DICT_OR_DEREF: {
                         // The body of a class nested in a function reads an enclosing local through the
@@ -203,8 +204,8 @@ public final class Interpreter {
                         // the compiler sends that to `LOAD_NAME` — so the dictionary is asked what came in
                         // through `__prepare__`, which is how the same spelling can name two different
                         // objects in one body.
-                        PyDict written = (PyDict) frame.pop();
-                        PyObject taken = written.get(PyStr.interned(frame.slotName(arg)));
+                        PyObject written = frame.pop();
+                        PyObject taken = readMapping(written, PyStr.interned(frame.slotName(arg)));
                         if (taken == null) {
                             PyObject fromCell = frame.cell(arg).value();
                             if (fromCell == null) {
@@ -220,9 +221,9 @@ public final class Interpreter {
                         // the dictionary the body was filling, so a name the metaclass supplied beats
                         // the module's: the dictionary is asked first, and globals — then builtins —
                         // answer only what it does not hold.
-                        PyDict written = (PyDict) frame.pop();
+                        PyObject written = frame.pop();
                         String name = frame.name(arg);
-                        PyObject taken = written.get(PyStr.interned(name));
+                        PyObject taken = readMapping(written, PyStr.interned(name));
                         frame.push(taken != null ? taken : lookupGlobal(frame, name));
                         break;
                     }
@@ -312,13 +313,25 @@ public final class Interpreter {
                     case Opcodes.STORE_NAME:
                         storeName(frame, frame.name(arg), frame.pop());
                         break;
-                    case Opcodes.DELETE_NAME:
-                        if (nameSpace(frame).get(PyStr.interned(frame.name(arg))) == null) {
-                            throw Slots.nameError(frame.name(arg));
+                    case Opcodes.DELETE_NAME: {
+                        PyStr key = PyStr.interned(frame.name(arg));
+                        PyObject holder = frame.nameHolder();
+                        if (holder instanceof PyDict dict) {
+                            if (dict.get(key) == null) {
+                                throw Slots.nameError(frame.name(arg));
+                            }
+                            dict.getItems().remove(key);
+                        } else {
+                            try {
+                                Slots.delItem(holder, key);
+                            } catch (PyRaise failed) {
+                                // CPython reports a failed DELETE_NAME as a NameError whatever the
+                                // mapping raised, because the name is what the body could not delete.
+                                throw Slots.nameError(frame.name(arg));
+                            }
                         }
-                        nameSpace(frame).getItems()
-                                .remove(PyStr.interned(frame.name(arg)));
                         break;
+                    }
                     case Opcodes.LOAD_GLOBAL: {
                         String name = frame.name(arg >> 1);
                         PyObject value = lookupGlobal(frame, name);
@@ -1029,10 +1042,10 @@ public final class Interpreter {
                     }
 
                     case Opcodes.SETUP_ANNOTATIONS: {
-                        PyDict namespace = nameSpace(frame);
+                        PyObject holder = frame.nameHolder();
                         PyStr key = PyStr.interned("__annotations__");
-                        if (namespace.get(key) == null) {
-                            namespace.put(key, PyDict.empty());
+                        if (readMapping(holder, key) == null) {
+                            putMapping(holder, key, PyDict.empty());
                         }
                         break;
                     }
@@ -1135,21 +1148,40 @@ public final class Interpreter {
 
     // --- names ---------------------------------------------------------------------------
 
-    private static PyDict nameSpace(Frame frame) {
-        PyDict locals = frame.locals();
-        return locals == null ? frame.globals() : locals;
+    /**
+     * Read {@code name} from the mapping a class body is filling, or null when it does not hold it.
+     *
+     * <p>An exact dict answers directly. Any other mapping — a dict subclass is the case that matters,
+     * because {@code __prepare__} may return one — is asked through its own {@code __getitem__}, and the
+     * KeyError that means "not here" answers null, which is how CPython's {@code PyObject_GetItem}
+     * fallback behaves.
+     */
+    private static PyObject readMapping(PyObject mapping, PyStr name) {
+        if (mapping instanceof PyDict dict) {
+            return dict.get(name);
+        }
+        try {
+            return Slots.getItem(mapping, name);
+        } catch (PyRaise missing) {
+            if (!missing.value().exceptionType().matches(ExceptionTypes.KEY_ERROR)) {
+                throw missing;
+            }
+            return null;
+        }
+    }
+
+    private static void putMapping(PyObject mapping, PyStr name, PyObject value) {
+        if (mapping instanceof PyDict dict) {
+            dict.put(name, value);
+        } else {
+            Slots.setItem(mapping, name, value);
+        }
     }
 
     private static PyObject loadName(Frame frame, String name) {
         PyStr key = PyStr.interned(name);
-        PyDict locals = frame.locals();
-        if (locals != null) {
-            PyObject value = locals.get(key);
-            if (value != null) {
-                return value;
-            }
-        }
-        return lookupGlobal(frame, name);
+        PyObject value = readMapping(frame.nameHolder(), key);
+        return value != null ? value : lookupGlobal(frame, name);
     }
 
     /** Globals, then builtins: CPython's order for a name that is not local. */
@@ -1167,7 +1199,7 @@ public final class Interpreter {
     }
 
     private static void storeName(Frame frame, String name, PyObject value) {
-        nameSpace(frame).put(PyStr.interned(name), value);
+        putMapping(frame.nameHolder(), PyStr.interned(name), value);
     }
 
     // --- containers ----------------------------------------------------------------------

@@ -4195,7 +4195,7 @@ final class TypeDict {
      * because {@code dict_init} passes {@code "dict"} as the name {@code _PyArg_CheckPositional} writes.
      */
     private static PyObject dictInit(PyObject[] args, String[] kwNames, String qualified) {
-        ((PyDict) args[0]).mergeFrom(tail(args, kwNames), kwNames, "dict");
+        PyDict.bodyOf(args[0]).mergeFrom(tail(args, kwNames), kwNames, "dict");
         return PyNone.INSTANCE;
     }
 
@@ -4205,11 +4205,13 @@ final class TypeDict {
      * <p>{@code dict.__new__(dict, 'ab')} is an empty dict where {@code dict('ab')} is a {@code
      * TypeError}, because the constructor also runs {@code dict_init} over the argument and the slot does
      * not — the same difference {@code list} files, and the same one {@code int} and {@code str} do not,
-     * since those two need their argument just to know how big to make the value.
+     * since those two need their argument just to know how big to make the value. A class written under
+     * {@code dict} gets a value of that class, as CPython's {@code dict_new} allocates the subtype it was
+     * handed.
      */
     private static PyObject dictsNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.DICT, args, kwNames);
-        return PyDict.empty();
+        PyType kind = declaredClass(PyType.DICT, args, kwNames);
+        return kind == PyType.DICT ? PyDict.empty() : new PyDictInstance(kind);
     }
 
     /**
@@ -7202,7 +7204,13 @@ final class TypeDict {
         @Override
         public PyObject call(PyObject[] args, PyTuple kwNames) {
             String[] keywords = PyBoundMethod.keywordNames(kwNames);
-            PyObject[] withReceiver = prepend(receiver, args);
+            // The receiver reported by `__self__` and the one the body reads are two questions: a
+            // method found on a built-in base that a Python class derives from was written against
+            // the base's own value shape, and `adaptedFor` says what that is. It is also what keeps
+            // `super().__setitem__(key, value)` from coming back to the override it started in.
+            PyObject written =
+                    receiver == null ? null : receiver.adaptedFor(declaring);
+            PyObject[] withReceiver = prepend(written, args);
             if (shape == Shape.WRAPPER) {
                 wrapperCall(declaring, name, withReceiver, keywords);
             }

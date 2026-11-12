@@ -161,7 +161,26 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
      * {@code __class__} and {@code None} when it does not.
      */
     PyObject runClassBody(PyDict namespace) {
-        Frame frame = new Frame(code, globals, namespace, new PyObject[code.localCount()]);
+        return runClassBody(namespace, null);
+    }
+
+    /**
+     * Run this function as a class body whose writes go through {@code mapping}.
+     *
+     * <p>{@code namespace} is still the dictionary the names land in — a dict subclass keeps its entries
+     * in one of its own — while {@code mapping} is the object {@code __prepare__} returned, which is what
+     * every {@code STORE_NAME} in the body has to pass through. An {@code EnumDict} needs the second: its
+     * {@code __setitem__} is what turns an assignment into an enum member. Null when the prepared namespace
+     * was a plain dictionary, and then the two are the same.
+     */
+    PyObject runClassBody(PyDict namespace, PyObject mapping) {
+        Frame frame =
+                new Frame(
+                        code,
+                        globals,
+                        namespace,
+                        mapping == null || mapping == namespace ? null : mapping,
+                        new PyObject[code.localCount()]);
         frame.function = this;
         return Interpreter.run(frame);
     }
@@ -309,6 +328,17 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
      */
     private String signature() {
         return qualName.str();
+    }
+
+    /**
+     * {@code func_hash}: a function hashes by identity, as {@code object}'s slot does.
+     *
+     * <p>A function defines {@code __eq__} only as identity, so {@code {None, object.__new__}} is a legal
+     * set in CPython and has to be one here: {@code enum}'s own import builds exactly that set.
+     */
+    @Override
+    public long hash() {
+        return PyHash.avoidMinusOne(System.identityHashCode(this));
     }
 
     /**

@@ -33,6 +33,24 @@ public final class PyDict extends PyObject {
         return new PyDict(new LinkedHashMap<>());
     }
 
+    /**
+     * The storage a value contributes where a dictionary is expected: itself for a plain {@code dict},
+     * the embedded dictionary for an instance of a class written under one.
+     *
+     * <p>The second case is why this exists. A subclass's entries live in a {@link PyDict} of their
+     * own rather than in the value, so every operation that reads or writes the mapping — the
+     * inherited methods, {@code dict.update}, {@code ==}, {@code |}, and {@code type.__new__}'s third
+     * argument, which CPython accepts from any dict subclass — asks here rather than casting.
+     *
+     * @return the dictionary, or {@code null} when the value is not a dict at all
+     */
+    static PyDict bodyOf(PyObject value) {
+        if (value instanceof PyDict dict) {
+            return dict;
+        }
+        return value instanceof PyDictInstance custom ? custom.entries() : null;
+    }
+
     /** The entry count for Java; {@link #length()} is the Python slot. */
     public int size() {
         return items.size();
@@ -149,12 +167,13 @@ public final class PyDict extends PyObject {
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
         if (op == BinaryOp.OR) {
-            if (!(other instanceof PyDict dict)) {
+            PyDict right = bodyOf(other);
+            if (right == null) {
                 // Declining is what lets `{1: 2} | 1` be an operand error rather than an iterable one.
                 return PyNotImplemented.INSTANCE;
             }
             PyDict merged = copy();
-            merged.putAll(dict);
+            merged.putAll(right);
             return merged;
         }
         return PyNotImplemented.INSTANCE;
@@ -186,7 +205,8 @@ public final class PyDict extends PyObject {
      */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
-        if (!(other instanceof PyDict dict) || cmp != CompareOp.EQ && cmp != CompareOp.NE) {
+        PyDict dict = bodyOf(other);
+        if (dict == null || cmp != CompareOp.EQ && cmp != CompareOp.NE) {
             return PyNotImplemented.INSTANCE;
         }
         boolean equal = eq(dict);
@@ -196,9 +216,11 @@ public final class PyDict extends PyObject {
     @Override
     public boolean eq(PyObject other) {
         // A window over a dict compares as the dict underneath it, which is what makes `dict(p) == p` and
-        // `{x: p} == {x: p}` answer rather than fall back to identity.
+        // `{x: p} == {x: p}` answer rather than fall back to identity. A subclass instance contributes the
+        // dictionary it holds, so `{'a': 1} == D(a=1)` answers too.
         PyObject compared = other instanceof PyMappingProxy window ? window.mapping() : other;
-        return compared instanceof PyDict d && items.equals(d.items);
+        PyDict d = bodyOf(compared);
+        return d != null && items.equals(d.items);
     }
 
     /** Mutable, therefore unhashable; {@link #hashCode()} inherits the same refusal. */
@@ -298,8 +320,9 @@ public final class PyDict extends PyObject {
      * {@link Slots#isMapping} still cannot tell a class that declares {@code keys} from one that does not.
      */
     void merge(PyObject source) {
-        if (source instanceof PyDict dict) {
-            putAll(dict);
+        PyDict direct = bodyOf(source);
+        if (direct != null) {
+            putAll(direct);
             return;
         }
         if (source instanceof PyMappingProxy window) {
@@ -492,13 +515,20 @@ public final class PyDict extends PyObject {
                         // One value shared by every key, which CPython also does: fromkeys([1,2], [])
                         // keeps two names for the same list.
                         PyObject value = args.length > 1 ? args[1] : PyNone.INSTANCE;
-                        PyDict dict = empty();
+                        // A subclass answers an instance of itself, made by calling the class the way
+                        // `dict_fromkeys` does; the entries then go straight into that instance's
+                        // storage, because CPython's `PyDict_SetItem` never asks `__setitem__`.
+                        PyObject made =
+                                kind == PyType.DICT
+                                        ? null
+                                        : Slots.call(kind, new PyObject[0], null);
+                        PyDict dict = made == null ? empty() : PyDict.bodyOf(made);
                         PyIterator keys = Slots.iterator(args[0]);
                         PyObject key;
                         while ((key = keys.nextOrNull()) != null) {
                             dict.put(key, value);
                         }
-                        return dict;
+                        return made == null ? dict : made;
                     })
             .addNoArgument(
                     "clear",

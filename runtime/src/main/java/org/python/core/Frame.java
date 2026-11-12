@@ -18,6 +18,19 @@ public final class Frame {
     private final PyDict globals;
     /** {@code f_locals}: the module's dictionary at module level, null in optimized code. */
     private final PyDict locals;
+
+    /**
+     * The mapping a class body writes into when the metaclass's {@code __prepare__} returned something
+     * other than a plain dictionary.
+     *
+     * <p>An {@code EnumDict} is the case that needs it: every name the body binds has to pass through
+     * its {@code __setitem__}, which is what turns an assignment into an enum member. {@link #locals}
+     * still holds the storage the names land in — a dict subclass keeps its entries in a dictionary of
+     * its own — so reads and {@code f_locals} keep working while writes go through the mapping. Null
+     * for every other frame.
+     */
+    private final PyObject namespace;
+
     private final PyObject[] slots;
 
     private PyObject[] stack;
@@ -109,9 +122,22 @@ public final class Frame {
      * and the module's only for a name the body has not defined.
      */
     Frame(PyCode code, PyDict globals, PyDict locals, PyObject[] slots) {
+        this(code, globals, locals, null, slots);
+    }
+
+    /**
+     * A class-body frame whose writes go through a mapping rather than straight into its dictionary.
+     *
+     * <p>{@code namespace} is the object {@code __prepare__} returned when that was not a plain dict,
+     * and {@code locals} is the dictionary underneath it. CPython runs the body against the mapping
+     * itself, which is how {@code EnumDict.__setitem__} sees every member; keeping the dictionary too
+     * lets {@code LOAD_NAME} and {@code f_locals} read the same names back without a mapping call.
+     */
+    Frame(PyCode code, PyDict globals, PyDict locals, PyObject namespace, PyObject[] slots) {
         this.code = code;
         this.globals = globals;
         this.locals = locals;
+        this.namespace = namespace;
         this.slots = slots;
         // co_stacksize bounds the frame's own needs; the extra room is for the values a call opcode
         // has not yet moved into the callee.
@@ -129,6 +155,17 @@ public final class Frame {
     /** The dictionary {@code LOAD_NAME} and {@code STORE_NAME} address, or null when there is none. */
     public PyDict locals() {
         return locals;
+    }
+
+    /**
+     * The object {@code LOAD_LOCALS} hands over and {@code STORE_NAME} writes into: the mapping the
+     * class body was given, or the dictionary behind it. Never null at module or class level.
+     */
+    PyObject nameHolder() {
+        if (namespace != null) {
+            return namespace;
+        }
+        return locals != null ? locals : globals;
     }
 
     /** The frame whose call this one is an activation of, or null for the outermost one. */

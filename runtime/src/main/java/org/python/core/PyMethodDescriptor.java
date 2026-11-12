@@ -12,10 +12,10 @@ import java.util.Arrays;
  * sorted(words, key=str.lower)} work, and it is the same shape a Java class's unbound method
  * has, which is why the interop layer hands out nothing else.
  *
- * <p>The call is handed to the receiver's own attribute lookup rather than to the table body, so that
- * the two spellings of the same method can never disagree: {@code int.bit_length(True)} answers exactly
- * what {@code True.bit_length()} does, including when the value's type reports that it has no such
- * method. That check against the receiver happens first, because a {@link ClassCastException} from
+ * <p>The call is handed to the body the descriptor names, bound to the receiver, rather than to a
+ * name lookup on the receiver: {@code int.bit_length(True)} answers exactly what {@code
+ * True.bit_length()} does, and a Python subclass that overrides the name does not intercept either
+ * spelling. The check against the receiver happens first, because a {@link ClassCastException} from
  * inside a {@link Members} body would be a runtime bug dressed up as a Python error.
  */
 public final class PyMethodDescriptor extends PyObject implements Descriptors.Protocol {
@@ -51,7 +51,7 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
         }
         PyObject self = checked(args[0]);
         return Slots.call(
-                Slots.getAttr(self, name),
+                implementationOf(self),
                 Arrays.copyOfRange(args, 1, args.length),
                 kwNames);
     }
@@ -69,7 +69,22 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
      */
     @Override
     public PyObject asAttribute(PyObject obj, PyObject unused) {
-        return obj == null ? this : Slots.getAttr(checked(obj), name);
+        return obj == null ? this : implementationOf(checked(obj));
+    }
+
+    /**
+     * The body this descriptor names, bound to {@code self}, rather than whatever the name answers.
+     *
+     * <p>{@code PyObject_GetAttr} would be the wrong lookup: a Python class may override a slot that a
+     * built-in base declares, and {@code super().__getitem__(key)} has to reach the base's own C function
+     * rather than the override it started in. {@link Members#find} asks the built-in tables along the
+     * value's MRO and keeps {@code self} as the reported receiver while the body reads the adapted value,
+     * which is exactly {@code method_get}'s answer. The attribute lookup is kept as the fallback for a
+     * row no table declares, which is where a refusal already lives.
+     */
+    private PyObject implementationOf(PyObject self) {
+        PyObject method = Members.find(self, name);
+        return method != Slots.DECLINED ? method : Slots.getAttr(self, name);
     }
 
     /** The receiver, checked against the type whose method this is. */
