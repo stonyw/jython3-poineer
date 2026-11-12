@@ -196,7 +196,7 @@ public final class jy3 {
         if (stdin) {
             start(importPath(""));
             PyRuntime.setArgv("-", operands);
-            return execute(Cpython314Compiler.compileSource(readStdin(), "<stdin>"), null);
+            return execute(Cpython314Compiler.compileSource(readStdin(), "<stdin>"), "<stdin>");
         }
         if (operands.isEmpty()) {
             return notImplemented(
@@ -284,9 +284,16 @@ public final class jy3 {
         return false;
     }
 
+    /**
+     * Run the program in {@code __main__}, the same namespace an embedder reaches through
+     * {@code PythonInterpreter.interp()}.
+     *
+     * <p>The file name is what tells the three forms apart inside the runtime: a script's path, the
+     * word {@code <stdin>}, or null for {@code -c}, which is a program with no file and therefore no
+     * {@code __file__} at all.
+     */
     private static int execute(PyCode code, String fileName) {
-        // Into __main__, the same namespace an embedder reaches with PythonInterpreter.interp().
-        PyRuntime.exec(code, PyRuntime.mainModule(), fileName);
+        PyRuntime.execMain(code, fileName);
         return PASSED;
     }
 

@@ -42,9 +42,19 @@ final class AnnotationLib {
 
     /** Build the module the runtime files under {@code annotationlib}. */
     static PyModule newModule() {
+        String origin = PyRuntime.STDLIB + "/annotationlib.py";
+        PySourceFileLoader loader = new PySourceFileLoader("annotationlib", origin);
+        PyModuleSpec spec = PyModuleSpec.source("annotationlib", loader, origin, null);
         PyModule module = new PyModule("annotationlib");
         module.set("__doc__", PyStr.of(DOC));
         module.set("__package__", PyStr.of(""));
+        module.set("__loader__", loader);
+        module.set("__spec__", spec);
+        // The module is built here rather than read from disk, but it reports the metadata a
+        // `SourceFileLoader` would have given it, so `__spec__.origin` and `__cached__` agree with
+        // `__file__` and with each other.
+        module.set("__file__", Slots.getAttr(spec, "origin"));
+        module.set("__cached__", Slots.getAttr(spec, "cached"));
         module.set("Format", PyType.FORMAT);
         module.set("ForwardRef", PyType.FORWARD_REF);
         module.set("get_annotations", new PyNativeFunction("get_annotations", AnnotationLib::getAnnotations));
@@ -69,7 +79,9 @@ final class AnnotationLib {
             PyStr.of("annotations_to_string"),
             PyStr.of("type_repr")
         }));
-        return module;
+        // A module's globals always carry `__builtins__`; the names the runtime wrote above are the
+        // only ones this module's own code would have added.
+        return PyRuntime.namespace(module);
     }
 
     // --- get_annotations -------------------------------------------------------------------

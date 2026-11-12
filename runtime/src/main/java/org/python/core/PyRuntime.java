@@ -157,6 +157,10 @@ public final class PyRuntime {
         modules.put(PyStr.interned("annotationlib"), annotationLib);
         modules.put(PyStr.interned("importlib"), importLib);
         modules.put(PyStr.interned("importlib.util"), importLibUtil);
+        // The package is built after its child is filed, so the `string.templatelib` a program reaches
+        // through the package is the same object it reaches through `sys.modules`.
+        PyModule stringPackage = buildStringPackage();
+        modules.put(PyStr.interned("string"), stringPackage);
         // The two modules CPython builds during initialization are imported from built-in code, so
         // their loader is the one loader that answers without a finder, and their spec says the same:
         // origin 'built-in', no search locations. The order of the three writes is the order the
@@ -173,27 +177,77 @@ public final class PyRuntime {
         belongTo(annotationLib);
         belongTo(importLib);
         belongTo(importLibUtil);
+        belongTo(stringPackage);
+    }
+
+    /**
+     * Where the modules this runtime builds for itself are said to live.
+     *
+     * <p>Nothing is read from here: those modules exist because this runtime implements them, and a
+     * {@code SourceFileLoader} spec still has to name an origin for {@code __file__},
+     * {@code __spec__.origin} and the {@code __cached__} derived from them. The prefix is the only
+     * part a script could tell apart from an installed interpreter's, so the corpus reads the tail.
+     */
+    static final String STDLIB = "/usr/local/lib/python3.14";
+
+    /**
+     * {@code string}: the package whose {@code templatelib} this runtime answers for itself.
+     *
+     * <p>Only what a script can see is here. The package's own constants and functions are not
+     * carried yet; {@code __file__}, {@code __cached__} and the spec are, because
+     * {@code string.templatelib}'s parent has to exist before the child can be found again.
+     */
+    private static PyModule buildStringPackage() {
+        String directory = STDLIB + "/string";
+        String origin = directory + "/__init__.py";
+        PySourceFileLoader loader = new PySourceFileLoader("string", origin);
+        PyModuleSpec spec = PyModuleSpec.source("string", loader, origin, directory);
+        PyModule module = new PyModule("string");
+        module.set("__doc__", PyStr.of("A collection of string constants."));
+        module.set("__package__", PyStr.of("string"));
+        module.set("__loader__", loader);
+        module.set("__spec__", spec);
+        module.set("__file__", Slots.getAttr(spec, "origin"));
+        module.set("__cached__", Slots.getAttr(spec, "cached"));
+        module.set("__path__", Slots.getAttr(spec, "submodule_search_locations"));
+        // Bound here as `import string.templatelib` would bind it on the parent, unless a program
+        // dropped the child from `sys.modules` and has not asked for it again.
+        PyObject child = modules.get(PyStr.interned("string.templatelib"));
+        if (child != null) {
+            module.set("templatelib", child);
+        }
+        return namespace(module);
     }
 
     /**
      * {@code string.templatelib}: the two types a t-string literal produces and the two helpers PEP 750
      * files beside them.
      *
-     * <p>Only {@code string.templatelib} is registered, not a {@code string} package around it, because
-     * the import system that would build the parent is M4. {@code import string.templatelib} therefore
-     * still fails; the module is reachable through whatever imports this runtime answers.
+     * <p>The module is built here rather than read from disk, but it reports the metadata a
+     * {@code SourceFileLoader} would give it: an origin under {@link #STDLIB}, the bytecode path
+     * derived from that origin, and a loader whose {@code name} is the dotted name. Without those, a
+     * script that compares {@code __spec__.origin} with {@code __file__} would see a module no loader
+     * could have produced.
      */
     private static PyModule buildTemplateLib() {
+        String directory = STDLIB + "/string";
+        String origin = directory + "/templatelib.py";
+        PySourceFileLoader loader = new PySourceFileLoader("string.templatelib", origin);
+        PyModuleSpec spec = PyModuleSpec.source("string.templatelib", loader, origin, null);
         PyModule module = new PyModule("string.templatelib");
         module.set("__doc__", PyStr.of("Support for template string literals (t-strings)."));
         module.set("__package__", PyStr.of("string"));
+        module.set("__loader__", loader);
+        module.set("__spec__", spec);
+        module.set("__file__", Slots.getAttr(spec, "origin"));
+        module.set("__cached__", Slots.getAttr(spec, "cached"));
         module.set("Template", PyType.TEMPLATE);
         module.set("Interpolation", PyType.INTERPOLATION);
         module.set("convert", new PyNativeFunction("convert", PyRuntime::templateConvert)
                 .documented("Convert *obj* using formatted string literal semantics."));
         module.set("_template_unpickle",
                 new PyNativeFunction("_template_unpickle", PyRuntime::templateUnpickle));
-        return module;
+        return namespace(module);
     }
 
     /**
@@ -439,6 +493,11 @@ public final class PyRuntime {
                 return found;
             }
         }
+        PyModule rebuilt = rebuild(dotted);
+        if (rebuilt != null) {
+            modules.put(PyStr.interned(dotted), rebuilt);
+            return rebuilt;
+        }
         throw missingModule("No module named '" + dotted + "'", dotted);
     }
 
@@ -478,7 +537,40 @@ public final class PyRuntime {
                 return spec;
             }
         }
-        return null;
+        PyModule rebuilt = rebuild(dotted);
+        if (rebuilt == null) {
+            return null;
+        }
+        PyObject spec = rebuilt.get("__spec__");
+        return spec instanceof PyModuleSpec answer ? answer : null;
+    }
+
+    /**
+     * Build again a module this runtime answers for itself, by name, or {@code null}.
+     *
+     * <p>These modules are filed at startup, so an ordinary import finds them in {@code sys.modules}
+     * and never asks a finder. Once a program deletes one, the finder walk has no file to find — the
+     * origin in each spec names a module this runtime builds, not one it reads — so the answer comes
+     * from the same place the module first came from. CPython's own finders do this for its frozen and
+     * built-in modules. {@code sys} and {@code builtins} are deliberately not here: a second import of
+     * those answers a half-initialized shell in the reference, which comes from initialization rather
+     * than from a finder, and imitating it would leave a program with a {@code sys} it cannot use.
+     */
+    private static PyModule rebuild(String dotted) {
+        switch (dotted) {
+            case "string":
+                return buildStringPackage();
+            case "string.templatelib":
+                return buildTemplateLib();
+            case "annotationlib":
+                return AnnotationLib.newModule();
+            case "importlib":
+                return Importlib.newModule();
+            case "importlib.util":
+                return Importlib.newUtil();
+            default:
+                return null;
+        }
     }
 
     /** A {@code ModuleNotFoundError} that names the module a program can read back from {@code e.name}. */
@@ -628,6 +720,9 @@ public final class PyRuntime {
         startup();
         if (main == null) {
             main = namespace(new PyModule("__main__"));
+            // `__main__` is the one module CPython gives the builtins module itself for
+            // `__builtins__`; every other module carries the builtins dictionary.
+            main.set("__builtins__", modules.get(PyStr.interned("builtins")));
             modules.put(PyStr.interned("__main__"), main);
         }
         return main;
@@ -641,9 +736,10 @@ public final class PyRuntime {
      * interpreter's and answer with the names a module holds rather than with the ones a script wrote.
      * Three of them really are {@code None} for a script run by its path — {@code __package__},
      * {@code __spec__} and {@code __cached__} — {@code __doc__} is the module's own docstring and only
-     * stays {@code None} when it has none, and {@code __loader__} alone is a placeholder here: the
-     * reference interpreter's is a {@code SourceFileLoader}, and the import machinery that would own one
-     * is M4's.
+     * stays {@code None} when it has none, and {@code __loader__} is the placeholder a module has
+     * before anything says where it came from. The launcher fills that last one in for
+     * {@code __main__} through {@link #execMain}, which is where the three ways a program can be
+     * named start to differ.
      */
     public static PyModule namespace(PyModule module) {
         startup();
@@ -675,6 +771,37 @@ public final class PyRuntime {
         }
         // A module's top level returns None; what a script means is the namespace it leaves behind.
         Interpreter.run(frame(code, namespace(module)));
+    }
+
+    /**
+     * Run the top-level code of the program a launcher was handed, in {@code __main__}.
+     *
+     * <p>The three ways CPython can be named differ only in what {@code __main__} says about itself,
+     * and the difference is made here: a script has its own path in {@code __file__} and a
+     * {@code SourceFileLoader} over that path; standard input has {@code '<stdin>'} there and the
+     * built-in importer in the loader slot; a {@code -c} command has neither {@code __file__} nor
+     * {@code __cached__}, because it has no file at all. {@code __spec__} is {@code None} in all
+     * three — the top level is run, not imported — and {@code __cached__}, wherever it exists, is
+     * {@code None} because nothing is written beside the source.
+     *
+     * @param fileName the script's resolved path, {@code "<stdin>"} for standard input, or null for
+     *     {@code -c}
+     */
+    public static void execMain(PyCode code, String fileName) {
+        PyModule module = mainModule();
+        namespace(module);
+        if (fileName == null) {
+            module.set("__loader__", BuiltinImporter.type());
+            module.dictionary().remove(PyStr.interned("__file__"));
+            module.dictionary().remove(PyStr.interned("__cached__"));
+        } else {
+            module.set("__file__", PyStr.of(fileName));
+            module.set("__cached__", PyNone.INSTANCE);
+            module.set("__loader__", fileName.equals("<stdin>")
+                    ? BuiltinImporter.type()
+                    : new PySourceFileLoader("__main__", fileName));
+        }
+        Interpreter.run(frame(code, module));
     }
 
     /**

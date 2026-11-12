@@ -448,7 +448,8 @@ class Jy3LauncherTest {
                 "03_the_import_builtin.py",
                 "04_from_imports.py",
                 "05_the_package_object.py",
-                "06_importlib.py");
+                "06_importlib.py",
+                "07_module_metadata.py");
     }
 
     private static List<String> m3Corpus() {
@@ -1014,6 +1015,48 @@ class Jy3LauncherTest {
         Result jy3 = jy3(arguments, program);
         assertThat(jy3.out()).isEqualTo("['-', 'a', 'b']\nfrom stdin\n");
         assertThat(jy3.out()).isEqualTo(cpython(arguments, program).out());
+    }
+
+    /**
+     * A {@code -c} command has no file at all, so {@code __main__} has neither {@code __file__} nor
+     * {@code __cached__}, and the loader slot holds the built-in importer rather than a file loader.
+     */
+    @Test
+    void aCommandHasNoFileMetadataAndTheBuiltinImporter() throws Exception {
+        List<String> program = List.of("""
+                import sys
+                main = sys.modules["__main__"]
+                print("__file__" in vars(main), "__cached__" in vars(main))
+                print(main.__spec__, main.__package__)
+                print(type(main.__loader__).__name__, hasattr(main.__loader__, "name"))
+                print(main.__name__)
+                """);
+
+        Result jy3 = jy3(commandOptions(program, List.of()));
+        Result reference = cpython(commandOptions(program, List.of()));
+        assertThat(jy3.exit()).isEqualTo(reference.exit());
+        assertThat(jy3.out()).isEqualTo(reference.out());
+    }
+
+    /**
+     * Standard input is named {@code '<stdin>'} in {@code __file__}, with {@code __cached__} None and
+     * the built-in importer as the loader: the pipe is the one form that has a name but no path.
+     */
+    @Test
+    void aProgramOnStdinNamesItselfInFile() throws Exception {
+        String program = """
+                import sys
+                main = sys.modules["__main__"]
+                print(main.__file__, main.__cached__)
+                print(main.__spec__, main.__package__)
+                print(type(main.__loader__).__name__, hasattr(main.__loader__, "name"))
+                print(main.__name__)
+                """;
+
+        Result jy3 = jy3(List.of("-"), program);
+        Result reference = cpython(List.of("-"), program);
+        assertThat(jy3.exit()).isEqualTo(reference.exit());
+        assertThat(jy3.out()).isEqualTo(reference.out());
     }
 
     @Test
