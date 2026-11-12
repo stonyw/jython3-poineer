@@ -18,6 +18,15 @@ package org.python.core;
  */
 final class ImpModule {
 
+    /**
+     * {@code pyc_magic_number_token}: bytes 1–2 of the {@code .pyc} header, as one integer.
+     *
+     * <p>It is the magic CPython 3.14 writes, {@code 0x0A0D0E2B}, read little-endian. Both users of it
+     * stay here: {@code importlib._bootstrap_external.MAGIC_NUMBER} is its four little-endian bytes,
+     * and {@code source_hash} takes it as its key.
+     */
+    static final int PYC_MAGIC_NUMBER_TOKEN = 0x0A0D0E2B;
+
     private ImpModule() {
     }
 
@@ -87,7 +96,115 @@ final class ImpModule {
                                 + "--\n"
                                 + "\n"
                                 + "Returns True if the module name corresponds to a frozen module."));
+        module.set("pyc_magic_number_token", PyInt.of(PYC_MAGIC_NUMBER_TOKEN));
+        module.set(
+                "source_hash",
+                PyNativeFunction.positional("source_hash", args -> {
+                    Arguments.exactly("_imp.source_hash", args, null, 2);
+                    if (!(args[1] instanceof PyBytes || args[1] instanceof PyByteArray)) {
+                        throw Slots.typeError(
+                                "source_hash() argument 2 must be read-only bytes-like object, not %s",
+                                Slots.argumentName(args[1]));
+                    }
+                    long key = Numbers.asIndex(args[0]).longValue();
+                    return PyBytes.of(sourceHash(key, PyBytes.octets(args[1])));
+                }).documented(
+                        "source_hash($module, key, source, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the hash of a source bytes-like object."));
         return module;
+    }
+
+    /**
+     * {@code _imp.source_hash}: eight bytes of siphash13 keyed by the magic number.
+     *
+     * <p>The reference writes {@code Py_HashBuffer} over the source with {@code key} as the first half
+     * of the siphash key and zero as the second, and answers the result little-endian. Nothing else in
+     * this runtime needs that digest — {@code hash()} is Java's and is not this — so the rounds are
+     * written out here rather than taken from a shared hasher. {@code importlib.util.source_hash} is
+     * this same function with the magic number as its key, so it calls this one rather than repeating
+     * the rounds.
+     */
+    static byte[] sourceHash(long key, byte[] source) {
+        long k0 = key;
+        long k1 = 0;
+        long v0 = 0x736f6d6570736575L ^ k0;
+        long v1 = 0x646f72616e646f6dL ^ k1;
+        long v2 = 0x6c7967656e657261L ^ k0;
+        long v3 = 0x7465646279746573L ^ k1;
+        int length = source.length;
+        int whole = length & ~7;
+        for (int at = 0; at < whole; at += 8) {
+            long word = littleEndian64(source, at);
+            v3 ^= word;
+            v0 += v1;
+            v1 = Long.rotateLeft(v1, 13);
+            v1 ^= v0;
+            v0 = Long.rotateLeft(v0, 32);
+            v2 += v3;
+            v3 = Long.rotateLeft(v3, 16);
+            v3 ^= v2;
+            v0 += v3;
+            v3 = Long.rotateLeft(v3, 21);
+            v3 ^= v0;
+            v2 += v1;
+            v1 = Long.rotateLeft(v1, 17);
+            v1 ^= v2;
+            v2 = Long.rotateLeft(v2, 32);
+            v0 ^= word;
+        }
+        long tail = ((long) length & 0xff) << 56;
+        for (int i = 0; i < (length & 7); i++) {
+            tail |= ((long) (source[whole + i] & 0xff)) << (8 * i);
+        }
+        v3 ^= tail;
+        v0 += v1;
+        v1 = Long.rotateLeft(v1, 13);
+        v1 ^= v0;
+        v0 = Long.rotateLeft(v0, 32);
+        v2 += v3;
+        v3 = Long.rotateLeft(v3, 16);
+        v3 ^= v2;
+        v0 += v3;
+        v3 = Long.rotateLeft(v3, 21);
+        v3 ^= v0;
+        v2 += v1;
+        v1 = Long.rotateLeft(v1, 17);
+        v1 ^= v2;
+        v2 = Long.rotateLeft(v2, 32);
+        v0 ^= tail;
+        v2 ^= 0xff;
+        for (int round = 0; round < 3; round++) {
+            v0 += v1;
+            v1 = Long.rotateLeft(v1, 13);
+            v1 ^= v0;
+            v0 = Long.rotateLeft(v0, 32);
+            v2 += v3;
+            v3 = Long.rotateLeft(v3, 16);
+            v3 ^= v2;
+            v0 += v3;
+            v3 = Long.rotateLeft(v3, 21);
+            v3 ^= v0;
+            v2 += v1;
+            v1 = Long.rotateLeft(v1, 17);
+            v1 ^= v2;
+            v2 = Long.rotateLeft(v2, 32);
+        }
+        long hash = v0 ^ v1 ^ v2 ^ v3;
+        byte[] out = new byte[8];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) (hash >>> (8 * i));
+        }
+        return out;
+    }
+
+    private static long littleEndian64(byte[] data, int at) {
+        long word = 0;
+        for (int i = 0; i < 8; i++) {
+            word |= ((long) (data[at + i] & 0xff)) << (8 * i);
+        }
+        return word;
     }
 
     /** The name argument, refused the way {@code _imp}'s own C functions refuse a non-string. */

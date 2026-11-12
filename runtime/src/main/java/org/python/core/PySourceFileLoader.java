@@ -3,7 +3,9 @@ package org.python.core;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.time.Instant;
 
 /**
  * {@code SourceFileLoader}: the loader {@link PathFinder} hands back for a {@code .py} file.
@@ -36,7 +38,13 @@ public final class PySourceFileLoader extends PyObject {
             .add("get_source", "Return the text of the source file.",
                     PySourceFileLoader::getSource)
             .add("get_code", "Compile the source file and return its code object.",
-                    PySourceFileLoader::getCode);
+                    PySourceFileLoader::getCode)
+            .add("get_data", "Return the file's bytes, which is what a cache writer is handed.",
+                    PySourceFileLoader::getData)
+            .add("source_to_code", "Compile source bytes or text into a code object.",
+                    PySourceFileLoader::sourceToCode)
+            .add("path_stats", "Return the mtime and size a timestamp cache compares.",
+                    PySourceFileLoader::pathStats);
 
     private final PyDict dictionary;
 
@@ -125,6 +133,71 @@ public final class PySourceFileLoader extends PyObject {
         // A front end's code object implements PyCode and is a PyObject, which is the same assumption
         // `PyFunction.__code__` makes when it hands one to a program.
         return (PyObject) ((PySourceFileLoader) self).codeFor(args[0]);
+    }
+
+    /**
+     * {@code get_data(path)}: the file's bytes, which is what {@code py_compile} hands to
+     * {@code source_to_code} and later hashes.
+     */
+    private static PyObject getData(PyObject self, PyObject[] args, String[] kwNames) {
+        ImportArguments.bind(
+                "SourceFileLoader.get_data", args, kwNames, new String[] {"path"}, 1);
+        String path = ImportlibExternal.pathString(args[0]);
+        try {
+            return PyBytes.of(Files.readAllBytes(Path.of(path)));
+        } catch (NoSuchFileException missing) {
+            // `_io.open_code` reports a missing file as ENOENT, which is what `py_compile` turns into
+            // its "can't open file" report.
+            throw PyRaise.of(PyOSError.create(
+                    ExceptionTypes.FILE_NOT_FOUND_ERROR,
+                    new PyObject[] {
+                        PyInt.of(2), PyStr.of("No such file or directory"), PyStr.of(path)
+                    }));
+        } catch (IOException unreadable) {
+            throw Slots.osError(
+                    "%s", unreadable.getMessage() == null ? path : unreadable.getMessage());
+        }
+    }
+
+    /**
+     * {@code source_to_code(data, path, *, _optimize=-1)}.
+     *
+     * <p>{@code data} may be text or bytes, as {@code compile} allows; bytes go through the same
+     * UTF-8 decoding {@code importlib._bootstrap_external.decode_source} uses. {@code _optimize} is
+     * accepted and ignored: this runtime compiles at the one level {@code sys.flags.optimize} reports,
+     * and {@link PyRuntime#compileSource} has no other.
+     */
+    private static PyObject sourceToCode(PyObject self, PyObject[] args, String[] kwNames) {
+        PyObject[] values = Arguments.unpackKeywords(
+                "SourceLoader.source_to_code", args, kwNames,
+                new String[] {"data", "path", "_optimize"}, 2, 2);
+        String source;
+        if (values[0] instanceof PyStr text) {
+            source = text.getValue();
+        } else if (values[0] instanceof PyBytes || values[0] instanceof PyByteArray) {
+            source = ImportlibExternal.decodeSourceText(values[0]);
+        } else {
+            throw Slots.typeError("compile() arg 1 must be a string, bytes or AST object");
+        }
+        return (PyObject) PyRuntime.compileSource(source, ImportlibExternal.pathString(values[1]));
+    }
+
+    /** {@code path_stats(path)}: the two fields timestamp invalidation compares. */
+    private static PyObject pathStats(PyObject self, PyObject[] args, String[] kwNames) {
+        ImportArguments.bind(
+                "SourceFileLoader.path_stats", args, kwNames, new String[] {"path"}, 1);
+        String path = ImportlibExternal.pathString(args[0]);
+        try {
+            Instant modified = Files.getLastModifiedTime(Path.of(path)).toInstant();
+            PyDict stats = PyDict.empty();
+            stats.put(PyStr.interned("mtime"),
+                    PyFloat.of(modified.getEpochSecond() + modified.getNano() / 1_000_000_000.0));
+            stats.put(PyStr.interned("size"), PyInt.of(Files.size(Path.of(path))));
+            return stats;
+        } catch (IOException unreadable) {
+            throw Slots.osError(
+                    "%s", unreadable.getMessage() == null ? path : unreadable.getMessage());
+        }
     }
 
     // --- underneath ----------------------------------------------------------------------

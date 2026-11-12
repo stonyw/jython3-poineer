@@ -162,11 +162,15 @@ public final class PyRuntime {
         // `importlib.util` is a submodule of `importlib`, so the parent holds it as an attribute
         // before either is filed: `import importlib.util` then reads the one this runtime built.
         PyModule importLib = Importlib.newModule();
-        PyModule importLibUtil = Importlib.newUtil();
+        // The file-naming half of the import machinery, which `py_compile` imports at module scope
+        // and whose four names `importlib.util` re-publishes, so it is built before util is.
+        PyModule bootstrapExternal = ImportlibExternal.newModule();
+        PyModule importLibUtil = Importlib.newUtil(bootstrapExternal);
         PyModule machinery = Importlib.newMachinery();
         PyModule zipImport = ZipImport.newModule();
         importLib.set("util", importLibUtil);
         importLib.set("machinery", machinery);
+        importLib.set("_bootstrap_external", bootstrapExternal);
         // The module whose classes and functions predate it: `_io` gathers the streams under the
         // names the reference files them with.
         PyModule ioModule = Io.newModule();
@@ -236,6 +240,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("importlib"), importLib);
         modules.put(PyStr.interned("importlib.util"), importLibUtil);
         modules.put(PyStr.interned("importlib.machinery"), machinery);
+        modules.put(PyStr.interned("importlib._bootstrap_external"), bootstrapExternal);
         modules.put(PyStr.interned("zipimport"), zipImport);
         modules.put(PyStr.interned("_io"), ioModule);
         modules.put(PyStr.interned("_tokenize"), tokenizeModule);
@@ -287,6 +292,7 @@ public final class PyRuntime {
         belongTo(importLib);
         belongTo(importLibUtil);
         belongTo(machinery);
+        belongTo(bootstrapExternal);
         belongTo(zipImport);
         belongTo(ioModule);
         belongTo(tokenizeModule);
@@ -724,9 +730,11 @@ public final class PyRuntime {
             case "importlib":
                 return Importlib.newModule();
             case "importlib.util":
-                return Importlib.newUtil();
+                return Importlib.newUtil(ImportlibExternal.newModule());
             case "importlib.machinery":
                 return Importlib.newMachinery();
+            case "importlib._bootstrap_external":
+                return ImportlibExternal.newModule();
             case "zipimport":
                 return ZipImport.newModule();
             default:
@@ -1180,19 +1188,21 @@ public final class PyRuntime {
     /**
      * {@code sys.flags}: the interpreter's start-up switches.
      *
-     * <p>Only {@code context_aware_warnings} and {@code ignore_environment} are answered, because they
-     * are the only members this tree reads: {@code _py_warnings} asks the first once at module scope to
-     * decide whether {@code catch_warnings} keeps its filters in a context variable or in the global
-     * list, and {@code _colorize.can_colorize} asks the second before it looks at
-     * {@code PYTHON_COLORS}. Both values are 0 — the reference's without {@code -X
-     * context_aware_warnings} and without {@code -E} respectively — so the global filter list and the
-     * environment are the paths taken. The rest of the reference's members — {@code verbose},
-     * {@code utf8_mode} and the others — are not answered yet, and the milestone notes name the gap.
+     * <p>Only {@code context_aware_warnings}, {@code ignore_environment} and {@code optimize} are
+     * answered, because they are the only members this tree reads: {@code _py_warnings} asks the first
+     * once at module scope to decide whether {@code catch_warnings} keeps its filters in a context
+     * variable or in the global list, {@code _colorize.can_colorize} asks the second before it looks at
+     * {@code PYTHON_COLORS}, and {@code importlib._bootstrap_external.cache_from_source} asks the third
+     * before it chooses a cache name. All three are 0 — the reference's without {@code -X
+     * context_aware_warnings}, without {@code -E} and without {@code -O} respectively. The rest of the
+     * reference's members — {@code verbose}, {@code utf8_mode} and the others — are not answered yet,
+     * and the milestone notes name the gap.
      */
     private static PyNamespace flags() {
         PyNamespace namespace = new PyNamespace();
         namespace.set("context_aware_warnings", PyInt.of(0));
         namespace.set("ignore_environment", PyInt.of(0));
+        namespace.set("optimize", PyInt.of(0));
         return namespace;
     }
 
@@ -1284,12 +1294,22 @@ public final class PyRuntime {
     private static PyNamespace implementation() {
         PyNamespace namespace = new PyNamespace();
         namespace.set("name", PyStr.of("cpython"));
-        namespace.set("cache_tag", PyStr.of("cpython-" + VERSION_MAJOR + VERSION_MINOR));
+        namespace.set("cache_tag", PyStr.of(cacheTag()));
         namespace.set("version", PyVersionInfo.current());
         namespace.set("hexversion", PyInt.of(hexVersion()));
         namespace.set("_multiarch", PyStr.of(multiarch()));
         namespace.set("supports_isolated_interpreters", PyBool.FALSE);
         return namespace;
+    }
+
+    /**
+     * {@code sys.implementation.cache_tag}, and the tag {@code __pycache__} names carry.
+     *
+     * <p>One string in one place because two modules build names from it: {@link #implementation()}
+     * publishes it and {@link ImportlibExternal#newModule()} interpolates it into a cache filename.
+     */
+    static String cacheTag() {
+        return "cpython-" + VERSION_MAJOR + VERSION_MINOR;
     }
 
     /**
@@ -1365,6 +1385,9 @@ public final class PyRuntime {
         // `_py_warnings` reads both at module scope: the flags to choose between the context-variable
         // and the global filter list, and the option list to replay `-W` switches.
         sys.set("flags", flags());
+        // `importlib._bootstrap_external.cache_from_source` branches on this; with `None` there is no
+        // `-X pycache_prefix` redirect, so the cache sits in `__pycache__` beside its source.
+        sys.set("pycache_prefix", PyNone.INSTANCE);
         sys.set("warnoptions", PyList.of());
         sys.set("argv", PyList.of(PyStr.of("jy3")));
         sys.set("path", pathList());

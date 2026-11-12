@@ -109,6 +109,9 @@ public final class MarshalReader {
                     ? "expected a code object, found null"
                     : "expected a code object, found " + value.getType().name());
         }
+        if (offset == 0 && code instanceof Cpython314Code top) {
+            top.marshalStream(data);
+        }
         return code;
     }
 

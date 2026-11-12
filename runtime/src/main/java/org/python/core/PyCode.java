@@ -241,4 +241,21 @@ public interface PyCode {
      * table by hand hears the reference's sentence rather than a Java one.
      */
     PyCode newCode(Fields fields);
+
+    /**
+     * The marshal stream this object was read from, or {@code null} where it was not read from one.
+     *
+     * <p>This is not part of the code object CPython exposes; it is the bytes a writer of {@code .pyc}
+     * files needs. CPython's {@code _code_to_timestamp_pyc} glues {@code marshal.dumps(code)} behind a
+     * header, and Stage A already has exactly those bytes: they are what {@link org.python.core.PyCode}
+     * was decoded from, handed back by the reference compiler as one payload. Keeping them turns
+     * {@code py_compile} into a header plus a copy rather than a second marshal format to write.
+     *
+     * <p>A body this runtime builds itself ({@code code.replace()}, {@code code.__new__()}) was never
+     * read from a stream and answers {@code null}; the one caller that writes {@code .pyc} files says so
+     * rather than inventing bytes that could not be loaded back.
+     */
+    default byte[] marshalStream() {
+        return null;
+    }
 }

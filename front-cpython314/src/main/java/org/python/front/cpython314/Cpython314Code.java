@@ -57,6 +57,14 @@ public final class Cpython314Code extends PyObject implements PyCode {
     private final Wordcode instructions;
     private final ExceptionTable handlers;
 
+    /**
+     * The marshal stream this object was decoded from, when the reader kept it.
+     *
+     * <p>Only a writer of {@code .pyc} files reads it, and only the top-level body of one payload has
+     * it: the nested bodies appear inside that same stream rather than beside it.
+     */
+    private byte[] marshalStream;
+
     Cpython314Code(
             int argCount,
             int posOnlyArgCount,
@@ -567,5 +575,15 @@ public final class Cpython314Code extends PyObject implements PyCode {
                 + "\", line "
                 + firstLine
                 + ">";
+    }
+
+    /** Record the payload this object was the first thing in, so a {@code .pyc} writer can copy it. */
+    void marshalStream(byte[] stream) {
+        this.marshalStream = stream;
+    }
+
+    @Override
+    public byte[] marshalStream() {
+        return marshalStream;
     }
 }

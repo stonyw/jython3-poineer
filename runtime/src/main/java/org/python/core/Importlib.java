@@ -120,7 +120,15 @@ final class Importlib {
         return module;
     }
 
-    static PyModule newUtil() {
+    /**
+     * {@code importlib.util}: the helpers a program that builds imports by hand reaches for.
+     *
+     * <p>The five names the reference re-exports from {@code importlib._bootstrap_external} are the
+     * same objects here, because {@code util.py} imports them rather than wrapping them: a program
+     * that asks whether {@code importlib.util.cache_from_source is
+     * importlib._bootstrap_external.cache_from_source} still gets {@code True}.
+     */
+    static PyModule newUtil(PyModule bootstrapExternal) {
         PyModule module = new PyModule("importlib.util");
         module.set("__doc__", PyStr.of("Utility code for constructing importers, etc."));
         module.set("__package__", PyStr.of("importlib"));
@@ -138,6 +146,27 @@ final class Importlib {
         module.set("module_from_spec",
                 new PyNativeFunction("module_from_spec", Importlib::moduleFromSpec)
                         .documented("Create a module from a spec."));
+        // The five names `importlib.util` re-exports from `_bootstrap_external` in the reference,
+        // minus the two loaders and `spec_from_loader` this runtime has none of.
+        module.set("MAGIC_NUMBER", bootstrapExternal.getAttr("MAGIC_NUMBER"));
+        module.set("cache_from_source", bootstrapExternal.getAttr("cache_from_source"));
+        module.set("source_from_cache", bootstrapExternal.getAttr("source_from_cache"));
+        module.set("decode_source", bootstrapExternal.getAttr("decode_source"));
+        module.set("source_hash", new PyNativeFunction("source_hash", (args, kwNames) -> {
+            PyObject[] values = Arguments.unpackKeywords(
+                    "source_hash", args, kwNames, new String[] {"source_bytes"}, 1, 1);
+            if (!(values[0] instanceof PyBytes) && !(values[0] instanceof PyByteArray)) {
+                throw Slots.typeError(
+                        "source_hash() argument 1 must be read-only bytes-like object, not %s",
+                        Slots.argumentName(values[0]));
+            }
+            return PyBytes.of(ImpModule.sourceHash(
+                    ImpModule.PYC_MAGIC_NUMBER_TOKEN, PyBytes.octets(values[0])));
+        }).documented("Return the hash of a source bytes-like object."));
+        module.set("__all__", names(
+                "MAGIC_NUMBER", "cache_from_source", "decode_source", "find_spec",
+                "module_from_spec", "resolve_name", "source_from_cache", "source_hash",
+                "spec_from_file_location"));
         return module;
     }
 
