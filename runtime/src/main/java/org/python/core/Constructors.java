@@ -161,6 +161,9 @@ final class Constructors {
         if (type == PyType.BYTES_IO) {
             return PyBytesIO.create(args, keywordNames);
         }
+        if (type == PyType.WEAK_REFERENCE) {
+            return Weakref.newRef(args, keywordNames);
+        }
         if (IoBases.owns(type)) {
             return IoBases.instantiate(type, args, kwNames);
         }

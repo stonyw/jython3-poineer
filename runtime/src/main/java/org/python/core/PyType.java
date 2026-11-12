@@ -831,6 +831,50 @@ public class PyType extends PyObject {
                     .withoutNew();
 
     /**
+     * {@code types.CapsuleType}'s sentence, which wraps a C pointer a program cannot open.
+     *
+     * <p>It carries no argument table, so {@code __text_signature__} is {@code None} and the whole text
+     * is {@code __doc__}. The type refuses construction: a capsule is made by a C extension, and nothing
+     * here can make one.
+     */
+    private static final String CAPSULE_DOC =
+            "Capsule objects let you wrap a C \"void *\" pointer in a Python\n"
+                    + "object.  They're a way of passing data through the Python interpreter\n"
+                    + "without creating your own custom type.\n"
+                    + "\n"
+                    + "Capsules are used for communication between extension modules.\n"
+                    + "They provide a way for an extension module to export a C interface\n"
+                    + "to other extension modules, so that extension modules can use the\n"
+                    + "Python import mechanism to link to one another.\n";
+
+    /** {@code types.UnionType}'s sentence, the one type filed under a module other than builtins. */
+    private static final String UNION_TYPE_DOC = "Represent a union type\n\nE.g. for int | str";
+
+    /*
+     * The seven names `_types` and `_weakref` hand out. Only the three weak-reference types have
+     * Python-side values; the other four are names a program can print and compare, with no
+     * constructor behind them — a capsule, a coroutine and an async generator are all made by
+     * something this runtime does not run yet, and a union comes from `|` rather than from a call.
+     */
+
+    public static final PyType ASYNC_GENERATOR = builtin("async_generator").withoutNew();
+
+    public static final PyType CAPSULE = builtin("PyCapsule").documented(CAPSULE_DOC).withoutNew();
+
+    public static final PyType COROUTINE = builtin("coroutine").withoutNew();
+
+    public static final PyType UNION_TYPE =
+            builtin("Union").filedUnder("typing.Union").documented(UNION_TYPE_DOC).withoutNew();
+
+    public static final PyType WEAK_REFERENCE =
+            builtin("ReferenceType").filedUnder("weakref.ReferenceType");
+
+    public static final PyType WEAK_PROXY = builtin("ProxyType").filedUnder("weakref.ProxyType");
+
+    public static final PyType WEAK_CALLABLE_PROXY =
+            builtin("CallableProxyType").filedUnder("weakref.CallableProxyType");
+
+    /**
      * {@code type(co.co_lines())} and {@code type(co.co_positions())}.
      *
      * <p>Neither name is reachable from Python, and neither type has a method of its own: each is a cursor

@@ -41,7 +41,8 @@ public final class PyRuntime {
      * module?" is exactly this list; the reference interpreter's is longer because it also holds the
      * extension modules, which are imports this runtime answers in Java instead.
      */
-    private static final String[] BUILTIN_MODULE_NAMES = {"builtins", "sys", "_io"};
+    private static final String[] BUILTIN_MODULE_NAMES =
+            {"builtins", "sys", "_io", "_types", "_weakref"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -154,6 +155,11 @@ public final class PyRuntime {
         // The module whose classes and functions predate it: `_io` gathers the streams under the
         // names the reference files them with.
         PyModule ioModule = Io.newModule();
+        // The two module objects whose names are types this runtime already had, and the seven the
+        // class system cannot make yet: they are gathered here so that a program can ask a type's name
+        // and module without importing the Python wrapper, `types` or `weakref`.
+        PyModule typesModule = TypesModule.newModule();
+        PyModule weakrefModule = Weakref.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -161,6 +167,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("importlib"), importLib);
         modules.put(PyStr.interned("importlib.util"), importLibUtil);
         modules.put(PyStr.interned("_io"), ioModule);
+        modules.put(PyStr.interned("_types"), typesModule);
+        modules.put(PyStr.interned("_weakref"), weakrefModule);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -180,6 +188,8 @@ public final class PyRuntime {
         belongTo(importLib);
         belongTo(importLibUtil);
         belongTo(ioModule);
+        belongTo(typesModule);
+        belongTo(weakrefModule);
         belongTo(stringPackage);
     }
 
@@ -1022,7 +1032,9 @@ public final class PyRuntime {
                 PyTuple.of(
                         PyStr.of("builtins"),
                         PyStr.of("sys"),
-                        PyStr.of("_io")));
+                        PyStr.of("_io"),
+                        PyStr.of("_types"),
+                        PyStr.of("_weakref")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
         sys.set("getdefaultencoding", noArguments(
                 "getdefaultencoding", () -> PyStr.of("utf-8"),

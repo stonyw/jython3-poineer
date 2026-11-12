@@ -131,6 +131,11 @@ final class Members {
             // is askable through the type before any stream exists.
             Map.entry(PyType.STRING_IO, PyStringIO.class),
             Map.entry(PyType.BYTES_IO, PyBytesIO.class),
+            // The three reference types file their rows in the two classes that make them: a proxy
+            // answers every attribute through the object it stands for, so it has no rows of its own.
+            Map.entry(PyType.WEAK_REFERENCE, PyWeakRef.class),
+            Map.entry(PyType.WEAK_PROXY, PyWeakProxy.class),
+            Map.entry(PyType.WEAK_CALLABLE_PROXY, PyWeakProxy.class),
             // Every spec the finder answers carries a loader of this class, and a program asks it for
             // its filename before any module has been imported, so the table is filed by its value class.
             Map.entry(PyType.SOURCE_FILE_LOADER, PySourceFileLoader.class));
