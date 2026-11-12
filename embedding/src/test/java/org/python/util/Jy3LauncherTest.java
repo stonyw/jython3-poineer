@@ -468,7 +468,8 @@ class Jy3LauncherTest {
                 "19_tuple_subclasses.py",
                 "20_codecs_errors.py",
                 "21_re.py",
-                "22_contextvars.py");
+                "22_contextvars.py",
+                "23_translate_object.py");
     }
 
     private static List<String> m3Corpus() {

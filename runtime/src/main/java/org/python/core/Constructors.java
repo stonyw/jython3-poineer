@@ -194,6 +194,14 @@ final class Constructors {
         if (type == PyType.CODE) {
             return CodeMembers.construct(args, keywordNames);
         }
+        if (type == PyType.OBJECT) {
+            // `object()` is the one value with nothing at all to say, and it says the same thing for a
+            // keyword as for a position: `object_new` counts neither differently.
+            if (args.length != 0 || kwNames != null) {
+                throw Slots.typeError("object() takes no arguments");
+            }
+            return new PyInstance(PyType.OBJECT);
+        }
         if (type == PyType.NONE) {
             return theOneValue(PyNone.INSTANCE, "NoneType", args, keywordNames);
         }

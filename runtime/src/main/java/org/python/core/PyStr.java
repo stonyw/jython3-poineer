@@ -441,10 +441,7 @@ public class PyStr extends PyObject {
                     edges(self, args, kwNames, "startswith", true))
             .add("strip", (self, args, kwNames) -> trim(self, args, kwNames, "strip", true, true))
             .addNoArgument("swapcase", self -> PyStr.of(swapCase(text(self))))
-            .add("translate", (self, args, kwNames) -> {
-                Arguments.exactlyOne("str.translate()", args, kwNames);
-                throw Slots.notImplemented("str.translate");
-            })
+            .add("translate", (self, args, kwNames) -> translated(self, args, kwNames))
             .addNoArgument("title", self -> PyStr.of(capitalize(text(self), true)))
             .addNoArgument("upper", self -> PyStr.of(text(self).toUpperCase(Locale.ROOT)))
             .addOne("zfill", (self, width) -> zeroFilled(self, text(self), Numbers.size(width)))
@@ -1010,6 +1007,52 @@ public class PyStr extends PyObject {
             }
         }
         return built;
+    }
+
+    /**
+     * {@code str.translate(table)}: every code point is looked up in the table, and what it answers
+     * decides the character — no answer at all keeps it, {@code None} drops it, and an {@code int} or
+     * a {@code str} replaces it.
+     *
+     * <p>The lookup goes through the ordinary subscript protocol, which is why a {@code None} table is
+     * refused as {@code 'NoneType' object is not subscriptable} rather than silently ignored, and why
+     * a {@code KeyError} or {@code IndexError} from a mapping, a list or a class is the "no answer"
+     * case. Any other exception is the table's and is left to travel.
+     */
+    private static PyObject translated(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.exactlyOne("str.translate()", args, kwNames);
+        String source = text(self);
+        StringBuilder out = new StringBuilder(source.length());
+        for (int at = 0; at < source.length(); ) {
+            int point = source.codePointAt(at);
+            at += Character.charCount(point);
+            PyObject mapped;
+            try {
+                mapped = Slots.getItem(args[0], PyInt.of(point));
+            } catch (PyRaise missing) {
+                if (missing.value().exceptionType().matches(ExceptionTypes.LOOKUP_ERROR)) {
+                    out.appendCodePoint(point);
+                    continue;
+                }
+                throw missing;
+            }
+            if (mapped == PyNone.INSTANCE) {
+                continue;
+            }
+            if (mapped instanceof PyStr replacement) {
+                out.append(replacement.value);
+                continue;
+            }
+            BigInteger ordinal = Numbers.asInteger(mapped);
+            if (ordinal == null) {
+                throw Slots.typeError("character mapping must return integer, None or str");
+            }
+            if (ordinal.signum() < 0 || ordinal.compareTo(BigInteger.valueOf(0x110000)) >= 0) {
+                throw Slots.valueError("character mapping must be in range(0x110000)");
+            }
+            out.appendCodePoint(ordinal.intValue());
+        }
+        return PyStr.of(out.toString());
     }
 
     /** The code points of a text, which is what {@code maketrans} pairs up and counts by. */
