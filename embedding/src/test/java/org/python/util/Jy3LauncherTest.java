@@ -371,6 +371,16 @@ class Jy3LauncherTest {
             VALUE = "extra"
             """;
 
+    /** A plain module that slice 110's script builds a spec and a module from by hand. */
+    private static final String M4_LOOSE_MODULE = """
+            VALUE = "loose"
+            """;
+
+    /** A module that counts its own executions, so a reload can prove the body ran again. */
+    private static final String M4_COUNTER_MODULE = """
+            RUNS = globals().get("RUNS", 0) + 1
+            """;
+
     /**
      * M4's import slices, under {@code src/test/resources/m4/corpus}.
      *
@@ -425,6 +435,8 @@ class Jy3LauncherTest {
         write("badpkg/__init__.py", M4_BAD_PACKAGE);
         Files.createDirectories(work.resolve("extra"));
         write("extra/extra.py", M4_EXTRA_MODULE);
+        write("loose.py", M4_LOOSE_MODULE);
+        write("counter.py", M4_COUNTER_MODULE);
 
         answersExactlyAsCpython("m4/corpus", scriptName);
     }
@@ -435,7 +447,8 @@ class Jy3LauncherTest {
                 "02_the_path_finder.py",
                 "03_the_import_builtin.py",
                 "04_from_imports.py",
-                "05_the_package_object.py");
+                "05_the_package_object.py",
+                "06_importlib.py");
     }
 
     private static List<String> m3Corpus() {

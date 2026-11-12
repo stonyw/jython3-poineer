@@ -47,6 +47,17 @@ public final class PyModuleSpec extends PyObject {
             String name, PySourceFileLoader loader, String origin, String packageDirectory) {
         PyObject locations =
                 packageDirectory == null ? PyNone.INSTANCE : PyList.of(PyStr.of(packageDirectory));
+        return located(name, loader, origin, locations);
+    }
+
+    /**
+     * A spec for something on disk whose search locations the caller already decided.
+     *
+     * <p>{@code importlib.util.spec_from_file_location} builds this directly: it may be handed a
+     * loader of its own, and a caller may say whether the file is a package at all.
+     */
+    static PyModuleSpec located(
+            String name, PyObject loader, String origin, PyObject locations) {
         return new PyModuleSpec(fields(
                 PyStr.of(name), loader, PyStr.of(origin), PyNone.INSTANCE, locations, true));
     }

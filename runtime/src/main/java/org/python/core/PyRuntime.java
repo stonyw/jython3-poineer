@@ -146,10 +146,17 @@ public final class PyRuntime {
         PyModule home = new PyModule("builtins", builtins);
         PyModule templateLib = buildTemplateLib();
         PyModule annotationLib = AnnotationLib.newModule();
+        // `importlib.util` is a submodule of `importlib`, so the parent holds it as an attribute
+        // before either is filed: `import importlib.util` then reads the one this runtime built.
+        PyModule importLib = Importlib.newModule();
+        PyModule importLibUtil = Importlib.newUtil();
+        importLib.set("util", importLibUtil);
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
         modules.put(PyStr.interned("annotationlib"), annotationLib);
+        modules.put(PyStr.interned("importlib"), importLib);
+        modules.put(PyStr.interned("importlib.util"), importLibUtil);
         // The two modules CPython builds during initialization are imported from built-in code, so
         // their loader is the one loader that answers without a finder, and their spec says the same:
         // origin 'built-in', no search locations. The order of the three writes is the order the
@@ -164,6 +171,8 @@ public final class PyRuntime {
         belongTo(sysModule);
         belongTo(templateLib);
         belongTo(annotationLib);
+        belongTo(importLib);
+        belongTo(importLibUtil);
     }
 
     /**
@@ -433,6 +442,45 @@ public final class PyRuntime {
         throw missingModule("No module named '" + dotted + "'", dotted);
     }
 
+    /**
+     * {@code _find_spec}: what the finders answer for a name, without loading anything.
+     *
+     * <p>The walk is {@link #find}'s, and the difference is what the caller does with the answer: this
+     * one is handed back to Python, so a name nothing owns is {@code null} here rather than a raised
+     * error. A name already in {@code sys.modules} keeps the spec it was loaded from — that spec is
+     * the only one {@code reload} may reuse.
+     *
+     * @param path the parent package's {@code __path__} for a dotted name, {@code None} for a top-level one
+     * @param target the module being reloaded, or {@code null} when nothing is being reloaded
+     */
+    static PyModuleSpec findSpec(String dotted, PyObject path, PyObject target) {
+        PyObject metaPath = sysAttribute("meta_path");
+        long findersInPath = Numbers.size(Slots.length(metaPath));
+        boolean isReload = existingModule(dotted) != null;
+        for (long i = 0; i < findersInPath; i++) {
+            PyObject finder = metaPath.getItem(PyInt.of(i));
+            PyObject found = Slots.call(
+                    Slots.getAttr(finder, "find_spec"),
+                    new PyObject[] {
+                        PyStr.of(dotted), path, target == null ? PyNone.INSTANCE : target
+                    },
+                    null);
+            if (found instanceof PyModuleSpec spec) {
+                if (!isReload) {
+                    PyObject loaded = existingModule(dotted);
+                    if (loaded != null) {
+                        PyObject filed = Slots.findAttr(loaded, "__spec__");
+                        if (filed instanceof PyModuleSpec existing) {
+                            return existing;
+                        }
+                    }
+                }
+                return spec;
+            }
+        }
+        return null;
+    }
+
     /** A {@code ModuleNotFoundError} that names the module a program can read back from {@code e.name}. */
     private static PyRaise missingModule(String message, String name) {
         PyBaseException error = (PyBaseException) Slots.call(
@@ -472,7 +520,7 @@ public final class PyRuntime {
     }
 
     /** {@code _init_module_attrs}: the six names a freshly built module takes from its spec. */
-    private static void initialiseAttributes(PyModule module, PyModuleSpec spec) {
+    static void initialiseAttributes(PyModule module, PyModuleSpec spec) {
         if (module.get("__package__") == null) {
             module.set("__package__", Slots.getAttr(spec, "parent"));
         }
