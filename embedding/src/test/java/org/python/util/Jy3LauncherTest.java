@@ -545,7 +545,8 @@ class Jy3LauncherTest {
                 "04_resource_limits.py",
                 "05_monitoring_api.py",
                 "06_typing_surface.py",
-                "07_subprocess_run.py");
+                "07_subprocess_run.py",
+                "08_type_params.py");
     }
 
     private static List<String> m3Corpus() {

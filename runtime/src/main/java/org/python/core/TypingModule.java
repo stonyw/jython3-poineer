@@ -52,8 +52,9 @@ final class TypingModule {
                     self -> PyBool.of(((TypeVarValue) self).inferVariance))
             .addField("__bound__", null, self -> ((TypeVarValue) self).boundOrNone())
             .addField("__constraints__", null,
-                    self -> PyTuple.of(((TypeVarValue) self).constraints))
-            .addField("__default__", null, self -> ((TypeVarValue) self).defaultValue)
+                    self -> constraintsOf(((TypeVarValue) self).constraints))
+            .addField("__default__", null,
+                    self -> force(((TypeVarValue) self).defaultValue))
             .addNoArgument("has_default", self -> PyBool.of(((TypeVarValue) self).hasDefault()))
             .addOne("__typing_subst__", (self, argument) -> argument)
             .add("__typing_prepare_subst__",
@@ -68,7 +69,8 @@ final class TypingModule {
             .addField("__infer_variance__", null,
                     self -> PyBool.of(((ParamSpecValue) self).inferVariance))
             .addField("__bound__", null, self -> ((ParamSpecValue) self).boundOrNone())
-            .addField("__default__", null, self -> ((ParamSpecValue) self).defaultValue)
+            .addField("__default__", null,
+                    self -> force(((ParamSpecValue) self).defaultValue))
             // Not cached: the reference builds a fresh view for every read, and only compares equal.
             .addField("args", null, self -> new ParamSpecArgsValue((ParamSpecValue) self))
             .addField("kwargs", null, self -> new ParamSpecKwargsValue((ParamSpecValue) self))
@@ -80,7 +82,8 @@ final class TypingModule {
     private static final Members TYPE_VAR_TUPLE_MEMBERS = Members.of(PyType.TYPE_VAR_TUPLE)
             .addField("__name__", null, self -> ((TypeVarTupleValue) self).name)
             .addField("__module__", null, self -> ((TypeVarTupleValue) self).module)
-            .addField("__default__", null, self -> ((TypeVarTupleValue) self).defaultValue)
+            .addField("__default__", null,
+                    self -> force(((TypeVarTupleValue) self).defaultValue))
             .addNoArgument("has_default",
                     self -> PyBool.of(((TypeVarTupleValue) self).hasDefault()))
             .addOne("__typing_subst__", (self, argument) -> {
@@ -99,7 +102,7 @@ final class TypingModule {
     private static final Members TYPE_ALIAS_TYPE_MEMBERS = Members.of(PyType.TYPE_ALIAS_TYPE)
             .addField("__name__", null, self -> ((TypeAliasTypeValue) self).name)
             .addField("__module__", null, self -> ((TypeAliasTypeValue) self).module)
-            .addField("__value__", null, self -> ((TypeAliasTypeValue) self).value)
+            .addField("__value__", null, self -> force(((TypeAliasTypeValue) self).value))
             .addField("__type_params__", null,
                     self -> PyTuple.of(((TypeAliasTypeValue) self).typeParams))
             .addField("__parameters__", null,
@@ -314,6 +317,139 @@ final class TypingModule {
 
     // --- the values ---------------------------------------------------------------------------
 
+    /**
+     * The thunk a PEP 695 parameter or alias carries in place of a value.
+     *
+     * <p>The compiler cannot evaluate a bound, a default or a {@code type} statement's value where it
+     * builds the parameter, because a name it mentions may not exist yet; it leaves a function of the
+     * annotation format instead. Every read runs it at {@code Format.VALUE} and keeps the answer, which
+     * is why defining {@code class C[T: Missing]} succeeds and reading {@code __bound__} raises {@code
+     * NameError}.
+     */
+    static final class Lazy extends PyObject {
+
+        private final PyObject thunk;
+        private PyObject value;
+
+        private Lazy(PyObject thunk) {
+            super(PyType.OBJECT);
+            this.thunk = thunk;
+        }
+
+        private PyObject force() {
+            if (value == null) {
+                value = Slots.call(thunk, new PyObject[] {PyInt.of(PyFunction.VALUE_FORMAT)}, null);
+            }
+            return value;
+        }
+
+        @Override
+        public String repr() {
+            return "<type parameter thunk>";
+        }
+
+        @Override
+        public long hash() {
+            return System.identityHashCode(this);
+        }
+    }
+
+    private static PyObject lazy(PyObject thunk) {
+        return new Lazy(thunk);
+    }
+
+    /** {@code value}, run first if it is a thunk; {@code null} stays {@code null}. */
+    static PyObject force(PyObject value) {
+        return value instanceof Lazy lazy ? lazy.force() : value;
+    }
+
+    /** The constraints a {@code TypeVar} was declared with, evaluating them on first read. */
+    private static PyObject constraintsOf(PyObject[] constraints) {
+        if (constraints.length == 1 && constraints[0] instanceof Lazy lazy) {
+            PyObject evaluated = lazy.force();
+            return evaluated instanceof PyTuple tuple
+                    ? tuple
+                    : PyTuple.of(new PyObject[] {evaluated});
+        }
+        return PyTuple.of(constraints);
+    }
+
+    // --- what the compiler's PEP 695 intrinsics build -----------------------------------------
+    //
+    // A parameter the compiler makes is distinguishable from one a person writes: its module is
+    // `typing`, and its variance is inferred rather than declared. The reference hardcodes both in
+    // `_Py_make_typevar`, and they are observable — `repr` drops the tilde for an inferred variable.
+
+    private static final PyStr PARAMETER_MODULE = PyStr.interned("typing");
+
+    /** {@code INTRINSIC_TYPEVAR}: {@code TypeVar(name)} in the module whose frame declared it. */
+    static PyObject typeVarParameter(PyStr name) {
+        return new TypeVarValue(name, PARAMETER_MODULE, false, false, true, null, new PyObject[0],
+                NoDefault.INSTANCE);
+    }
+
+    /** {@code INTRINSIC_PARAMSPEC}: {@code ParamSpec(name)} for the {@code **P} spelling. */
+    static PyObject paramSpecParameter(PyStr name) {
+        return new ParamSpecValue(name, PARAMETER_MODULE, false, false, true, null,
+                NoDefault.INSTANCE);
+    }
+
+    /** {@code INTRINSIC_TYPEVARTUPLE}: {@code TypeVarTuple(name)} for the {@code *Ts} spelling. */
+    static PyObject typeVarTupleParameter(PyStr name) {
+        return new TypeVarTupleValue(name, PARAMETER_MODULE, NoDefault.INSTANCE);
+    }
+
+    /** {@code INTRINSIC_TYPEVAR_WITH_BOUND}: the bound is read from {@code thunk} on demand. */
+    static PyObject typeVarWithBound(PyStr name, PyObject thunk) {
+        return new TypeVarValue(name, PARAMETER_MODULE, false, false, true, lazy(thunk),
+                new PyObject[0], NoDefault.INSTANCE);
+    }
+
+    /** {@code INTRINSIC_TYPEVAR_WITH_CONSTRAINTS}: the thunk answers the whole constraint tuple. */
+    static PyObject typeVarWithConstraints(PyStr name, PyObject thunk) {
+        return new TypeVarValue(name, PARAMETER_MODULE, false, false, true, null,
+                new PyObject[] {lazy(thunk)}, NoDefault.INSTANCE);
+    }
+
+    /** {@code INTRINSIC_SET_TYPEPARAM_DEFAULT}: the default is a thunk, read like a bound is. */
+    static PyObject withDefault(PyObject parameter, PyObject thunk) {
+        PyObject held = lazy(thunk);
+        if (parameter instanceof TypeVarValue value) {
+            value.defaultValue = held;
+        } else if (parameter instanceof ParamSpecValue value) {
+            value.defaultValue = held;
+        } else if (parameter instanceof TypeVarTupleValue value) {
+            value.defaultValue = held;
+        } else {
+            throw Slots.typeError("Expected a type parameter, got '%s'",
+                    parameter.getType().filedName());
+        }
+        return parameter;
+    }
+
+    /** {@code INTRINSIC_SET_FUNCTION_TYPE_PARAMS}: the function keeps the tuple and is handed back. */
+    static PyObject setFunctionTypeParams(PyObject function, PyObject params) {
+        function.setAttr("__type_params__", params);
+        return function;
+    }
+
+    /**
+     * {@code INTRINSIC_SUBSCRIPT_GENERIC}: {@code Generic[params]}, the base a {@code class C[T]} has.
+     *
+     * <p>It goes through typing's own {@code _generic_class_getitem} rather than building an alias here,
+     * so the base a PEP 695 class gets is exactly the one a person writes as {@code Generic[T]}; the
+     * subscription's arguments travel as one tuple, which is how {@code Generic[T, U]} spells them.
+     */
+    static PyObject genericBase(PyObject params) {
+        return typingCall("_generic_class_getitem",
+                new PyObject[] {PyType.TYPING_GENERIC, params}, null);
+    }
+
+    /** {@code INTRINSIC_TYPEALIAS}: a {@code type} statement, whose value waits for a read. */
+    static PyObject typeAlias(PyStr name, PyObject thunk, PyObject[] typeParams) {
+        return new TypeAliasTypeValue(name, callerModule(), lazy(thunk), typeParams);
+    }
+
     /** The sentinel {@code typing.NoDefault}, whose type is {@code builtins.NoDefaultType}. */
     static final class NoDefault extends PyObject {
 
@@ -344,7 +480,7 @@ final class TypingModule {
         private final boolean inferVariance;
         private final PyObject bound;
         private final PyObject[] constraints;
-        private final PyObject defaultValue;
+        private PyObject defaultValue;
 
         private TypeVarValue(PyStr name, PyStr module, boolean covariant, boolean contravariant,
                 boolean inferVariance, PyObject bound, PyObject[] constraints,
@@ -361,7 +497,7 @@ final class TypingModule {
         }
 
         private PyObject boundOrNone() {
-            return bound == null ? PyNone.INSTANCE : bound;
+            return bound == null ? PyNone.INSTANCE : force(bound);
         }
 
         private boolean hasDefault() {
@@ -410,7 +546,7 @@ final class TypingModule {
         private final boolean contravariant;
         private final boolean inferVariance;
         private final PyObject bound;
-        private final PyObject defaultValue;
+        private PyObject defaultValue;
 
         private ParamSpecValue(PyStr name, PyStr module, boolean covariant, boolean contravariant,
                 boolean inferVariance, PyObject bound, PyObject defaultValue) {
@@ -425,7 +561,7 @@ final class TypingModule {
         }
 
         private PyObject boundOrNone() {
-            return bound == null ? PyNone.INSTANCE : bound;
+            return bound == null ? PyNone.INSTANCE : force(bound);
         }
 
         private boolean hasDefault() {
@@ -469,7 +605,7 @@ final class TypingModule {
 
         private final PyStr name;
         private final PyStr module;
-        private final PyObject defaultValue;
+        private PyObject defaultValue;
 
         private TypeVarTupleValue(PyStr name, PyStr module, PyObject defaultValue) {
             super(PyType.TYPE_VAR_TUPLE);

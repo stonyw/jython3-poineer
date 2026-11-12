@@ -46,6 +46,9 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
     /** The PEP 649 annotate function, or null when the compiler attached none. */
     private PyObject annotate;
 
+    /** {@code __type_params__}: the PEP 695 parameters, which an intrinsic on the function sets. */
+    private PyObject typeParams = PyTuple.EMPTY;
+
     /**
      * What {@link #annotate} answered for {@code Format.VALUE}, kept the first time it is asked.
      *
@@ -456,6 +459,7 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__globals__" -> globals;
             case "__annotate__" -> annotate == null ? PyNone.INSTANCE : annotate;
             case "__annotations__" -> annotations();
+            case "__type_params__" -> typeParams;
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
             default -> {
@@ -479,6 +483,7 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__qualname__" -> qualName = value;
             case "__doc__" -> doc = value;
             case "__module__" -> module = value;
+            case "__type_params__" -> typeParams = value;
             default -> attributes().put(PyStr.interned(attribute), value);
         }
         return PyNone.INSTANCE;

@@ -1635,6 +1635,28 @@ public final class Interpreter {
                 error2.setContext(error);
                 return error2;
             }
+            case 7:
+                // PEP 695's `T` in `class C[T]` or `def f[T]`: a TypeVar named from the constant.
+                return TypingModule.typeVarParameter(PyStr.of(Slots.str(frame.pop())));
+            case 8:
+                return TypingModule.paramSpecParameter(PyStr.of(Slots.str(frame.pop())));
+            case 9:
+                return TypingModule.typeVarTupleParameter(PyStr.of(Slots.str(frame.pop())));
+            case 10:
+                // `class C[T](Base)`: the whole parameter tuple becomes `Generic[params]`, and the
+                // `__init_subclass__` that alias drives puts the parameters on the class being built.
+                return TypingModule.genericBase(frame.pop());
+            case 11: {
+                // `type X[T] = value`: the compiler builds (name, params-or-None, value thunk) and the
+                // value is only run when `__value__` is read, which is why a forward reference is
+                // allowed here. A non-generic alias spells its empty parameter list as None.
+                PyTuple args = (PyTuple) frame.pop();
+                PyObject params = args.at(1);
+                return TypingModule.typeAlias(
+                        PyStr.of(Slots.str(args.at(0))),
+                        args.at(2),
+                        params instanceof PyTuple tuple ? tuple.elements() : new PyObject[0]);
+            }
             default:
                 throw Slots.notImplemented("intrinsic " + id);
         }
@@ -1653,15 +1675,33 @@ public final class Interpreter {
     private static PyObject intrinsic2(Frame frame, int id) {
         PyObject left = frame.pop();
         PyObject original = frame.pop();
-        if (id != 1) {
-            throw Slots.notImplemented("intrinsic 2 " + id);
+        switch (id) {
+            case 1 -> {
+                if (!(left instanceof PyList clauses)) {
+                    // Unreachable from compiled code, which only ever builds the list with BUILD_LIST; the
+                    // refusal is CPython's own for the one entry point that checks rather than asserts.
+                    throw Slots.typeError("excs must be a list of exception instances");
+                }
+                return PyBaseExceptionGroup.prepareReraise(original, clauses);
+            }
+            case 2 -> {
+                // `class C[T: bound]`: the bound arrives as a thunk and is run at `__bound__`'s first read.
+                return TypingModule.typeVarWithBound(PyStr.of(Slots.str(original)), left);
+            }
+            case 3 -> {
+                // `class C[T: (int, str)]`: the thunk answers the whole constraint tuple when read.
+                return TypingModule.typeVarWithConstraints(PyStr.of(Slots.str(original)), left);
+            }
+            case 4 -> {
+                // `def f[T](...)`: the function under the tuple keeps it as `__type_params__`.
+                return TypingModule.setFunctionTypeParams(original, left);
+            }
+            case 5 -> {
+                // `class C[T = int]`: the default is a thunk too, and only its read evaluates it.
+                return TypingModule.withDefault(original, left);
+            }
+            default -> throw Slots.notImplemented("intrinsic 2 " + id);
         }
-        if (!(left instanceof PyList clauses)) {
-            // Unreachable from compiled code, which only ever builds the list with BUILD_LIST; the refusal
-            // is CPython's own for the one entry point that checks rather than asserts.
-            throw Slots.typeError("excs must be a list of exception instances");
-        }
-        return PyBaseExceptionGroup.prepareReraise(original, clauses);
     }
 
     private static java.util.List<PyObject> drain(PyIterator iterator) {
