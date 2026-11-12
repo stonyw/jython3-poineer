@@ -811,6 +811,10 @@ final class TypeDict {
             propertyTable(into);
             return;
         }
+        if (owner == PyType.WEAK_REFERENCE) {
+            weakRefTable(into);
+            return;
+        }
         if (owner == PyType.BYTES) {
             bytesTable(into);
             return;
@@ -1614,6 +1618,41 @@ final class TypeDict {
                 null,
                 self -> ((PyProperty) self).abstractFlag(),
                 null);
+    }
+
+    /**
+     * {@code weakref.ref}'s own dictionary: the creator, the five rows its subclasses call back into, and
+     * the read-only {@code __callback__}.
+     *
+     * <p>The rows live here rather than in a {@link Members} table because they have to be reached the way
+     * a class dictionary is reached — {@code WeakMethod.__call__}'s {@code super().__call__()} goes through
+     * {@link Specials#declared}, and {@code __hash__ = ref.__hash__} copies the descriptor out of this
+     * dictionary. {@link Members} already holds the bodies and hands each of them either a plain {@code
+     * PyWeakRef} or a subclass instance, which is what lets one row serve both.
+     *
+     * <p>{@code __new__} is filed as a {@code raw} row, because {@code WeakMethod}'s own {@code __new__}
+     * calls {@code ref.__new__(cls, obj, callback)}: the first argument is the subclass to build rather
+     * than the object to refer to, and {@link #declaredClass} is what validates it before the reference is
+     * made.
+     */
+    private static void weakRefTable(PyDict into) {
+        Table table = new Table(PyType.WEAK_REFERENCE, into);
+        table.raw(
+                "__new__",
+                NEW_DOC,
+                (args, kwNames, qualified) -> {
+                    PyType declared = declaredClass(PyType.WEAK_REFERENCE, args, kwNames);
+                    return Weakref.newRef(declared, tail(args, kwNames), kwNames);
+                });
+        table.wrapper("__init__", INIT_DOC, TypeDict::objectInit);
+        table.named("__call__");
+        table.named("__repr__");
+        table.named("__hash__");
+        table.named("__eq__");
+        table.named("__ne__");
+        table.member(
+                "__callback__", null, self -> Weakref.callbackOf((Weakref.Holder) self), null);
+        table.value("__doc__", docValue(PyType.WEAK_REFERENCE));
     }
 
     /**
@@ -4452,17 +4491,17 @@ final class TypeDict {
      */
     private static PyType declaredClass(PyType declaring, PyObject[] args, String[] kwNames) {
         if (Arguments.positional(args, kwNames) < 1) {
-            throw Slots.typeError("%s.__new__(): not enough arguments", declaring.name());
+            throw Slots.typeError("%s.__new__(): not enough arguments", declaring.filedName());
         }
         if (!(args[0] instanceof PyType subtype)) {
             throw Slots.typeError(
                     "%s.__new__(X): X is not a type object (%s)",
-                    declaring.name(), args[0].getType().name());
+                    declaring.filedName(), args[0].getType().name());
         }
         if (!subtype.matches(declaring)) {
             throw Slots.typeError(
                     "%s.__new__(%s): %s is not a subtype of %s",
-                    declaring.name(), subtype.name(), subtype.name(), declaring.name());
+                    declaring.filedName(), subtype.filedName(), subtype.filedName(), declaring.filedName());
         }
         PyType staticBase = staticBaseOf(subtype);
         if (staticBase.declaresNoInstances()) {
@@ -4472,7 +4511,7 @@ final class TypeDict {
         if (creatorOf(staticBase) != creatorOf(declaring)) {
             throw Slots.typeError(
                     "%s.__new__(%s) is not safe, use %s.__new__()",
-                    declaring.name(), subtype.name(), staticBase.name());
+                    declaring.filedName(), subtype.filedName(), staticBase.filedName());
         }
         return subtype;
     }
@@ -5601,7 +5640,12 @@ final class TypeDict {
             return true;
         }
         for (PyType owner : kind.mro()) {
-            if (owner == PyType.INT || owner == PyType.STR || owner == PyType.TUPLE) {
+            if (owner == PyType.INT
+                    || owner == PyType.STR
+                    || owner == PyType.TUPLE
+                    // A subclass of `weakref.ref` inherits a creator written in C that has already taken
+                    // the object it refers to and its callback, so `object.__init__` has nothing to refuse.
+                    || owner == PyType.WEAK_REFERENCE) {
                 return true;
             }
         }
@@ -6650,9 +6694,13 @@ final class TypeDict {
      * {@code object.__reduce_ex__(protocol)}: pickle's other helper.
      *
      * <p>The reference interpreter answers a real recipe here — {@code copyreg.__newobj__} plus the value
-     * and its state — for a protocol of two or more, and this runtime has no {@code copyreg} to reach.
-     * The refusal is the one {@code __reduce__} gives, which is what CPython falls back to for protocol
-     * zero and one.
+     * and its state for a protocol of two or more, {@code copyreg._reconstructor} below that — and a class
+     * that wrote its own {@code __reduce__} is asked that instead. Both recipes are built here rather than
+     * by handing the question back to {@code copyreg._reduce_ex}, because the value is always a plain
+     * instance: one whose class reaches {@code object} directly, has a dictionary of its own, and was made
+     * by {@code object.__new__}. A value the runtime has no faithful recipe for — a {@code dict} subclass,
+     * a {@code weakref.ref} subclass, or any built-in — is refused the way the reference refuses one whose
+     * {@code tp_new} the type system did not hand down.
      *
      * <p>Both halves name themselves {@code object.__reduce_ex__} however they were reached:
      * {@code A().__reduce_ex__(1, 2)} says {@code object.__reduce_ex__() takes exactly one argument (2
@@ -6660,13 +6708,84 @@ final class TypeDict {
      * sentence is written into {@code object.c} rather than built from the value.
      */
     private static PyObject objectReduceEx(PyObject[] args, String[] kwNames, String qualified) {
-        Arguments.exactlyOne(qualified + "()", tail(args, kwNames), kwNames);
-        return unpicklable(args[0]);
+        PyObject[] given = tail(args, kwNames);
+        Arguments.exactlyOne(qualified + "()", given, kwNames);
+        PyObject value = args[0];
+        PyObject declared = Specials.member(value.getType(), "__reduce__");
+        if (declared != null && declared != objectReduceRow()) {
+            return Slots.call(
+                    Descriptors.get(declared, value, value.getType()), new PyObject[0], null);
+        }
+        return reduceRecipe(value, Numbers.cInteger(given[0]));
     }
 
     private static PyObject objectReduce(PyObject[] args, String[] kwNames, String qualified) {
         Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
-        return unpicklable(args[0]);
+        PyObject value = args[0];
+        PyObject declared = Specials.member(value.getType(), "__reduce__");
+        if (declared != null && declared != objectReduceRow()) {
+            return Slots.call(
+                    Descriptors.get(declared, value, value.getType()), new PyObject[0], null);
+        }
+        return reduceRecipe(value, 0);
+    }
+
+    /** The row {@code object.__reduce__} is filed as, which a class that inherits it must not re-call. */
+    private static PyObject objectReduceRow() {
+        return PyType.OBJECT.namespace().get(PyStr.interned("__reduce__"));
+    }
+
+    /**
+     * The recipe for a plain instance: {@code __newobj__} above protocol two, {@code _reconstructor}
+     * below it, and the instance dictionary as the state in both cases.
+     */
+    private static PyObject reduceRecipe(PyObject value, int protocol) {
+        PyObject state = instanceState(value);
+        PyObject copyreg = PyRuntime.importModule("copyreg");
+        PyType kind = value.getType();
+        if (protocol >= 2) {
+            PyObject newobj = copyreg.getAttr("__newobj__");
+            return PyTuple.of(
+                    newobj,
+                    PyTuple.of(kind),
+                    state,
+                    PyNone.INSTANCE,
+                    PyNone.INSTANCE);
+        }
+        PyObject reconstructor = copyreg.getAttr("_reconstructor");
+        PyTuple recipe = PyTuple.of(kind, PyType.OBJECT, PyNone.INSTANCE);
+        return state == PyNone.INSTANCE
+                ? PyTuple.of(reconstructor, recipe)
+                : PyTuple.of(reconstructor, recipe, state);
+    }
+
+    /**
+     * {@code object.__getstate__()}: the instance dictionary, or {@code None} when there is none.
+     *
+     * <p>A built-in value and a subclass of one answer {@code None} here, which is what the reference
+     * does: the state of a {@code list} is its items and of a {@code dict} its entries, and neither is
+     * part of this question.
+     */
+    private static PyObject stateOf(PyObject value) {
+        PyObject found = Slots.findAttr(value, "__dict__");
+        return found instanceof PyDict held && held.size() > 0 ? held : PyNone.INSTANCE;
+    }
+
+    /**
+     * The state a plain instance contributes to its reduce recipe, refusing the values this runtime has no
+     * faithful recipe for.
+     *
+     * <p>A {@code dict} subclass and a {@code weakref.ref} subclass are both refused although both answer
+     * {@code __getstate__}: the first stores its items outside its dictionary and the second is built by a
+     * creator this recipe would not reach, so a copy of either would silently be missing data.
+     */
+    private static PyObject instanceState(PyObject value) {
+        if (value instanceof PyInstance instance
+                && !(value instanceof PyDictInstance)
+                && !(value instanceof PyWeakRefSubclass)) {
+            return stateOf(value);
+        }
+        return unpicklable(value);
     }
 
     /** The one sentence both halves of pickle's protocol answer with, naming the value's class. */

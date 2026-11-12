@@ -10,10 +10,18 @@ import java.lang.ref.WeakReference;
  * runtime does not have — so a reference whose referent has been collected simply answers
  * {@code None}, and the callback, if any, is remembered and never called. That is the one deviation
  * the corpus in this slice does not exercise.
+ *
+ * <p>A class Python writes over this one is a {@link PyWeakRefSubclass}, which carries the same
+ * referent and callback in a value that also has a class's dictionary; the five bodies below are
+ * written against {@link Weakref.Holder} rather than this class so that both kinds share them.
  */
 final class PyWeakRef extends PyObject implements Weakref.Holder {
 
     static final Members METHODS = Members.of(PyType.WEAK_REFERENCE)
+            .add("__repr__", (self, args, kwNames) -> PyStr.of(Weakref.describe((Weakref.Holder) self)))
+            .add("__hash__", (self, args, kwNames) -> PyInt.of(Weakref.hashOf((Weakref.Holder) self)))
+            .add("__eq__", PyWeakRef::eqRow)
+            .add("__ne__", PyWeakRef::neRow)
             .add("__call__", PyWeakRef::callRow);
 
     private final WeakReference<PyObject> referent;
@@ -33,64 +41,50 @@ final class PyWeakRef extends PyObject implements Weakref.Holder {
     }
 
     @Override
+    public PyObject callback() {
+        return callback;
+    }
+
+    @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
-        int keywords = kwNames == null ? 0 : kwNames.size();
-        if (args.length != 0 || keywords != 0) {
-            throw Slots.typeError(
-                    "weakref expected 0 arguments, got %d", args.length + keywords);
-        }
-        PyObject live = referent.get();
-        return live == null ? PyNone.INSTANCE : live;
+        return Weakref.call(this, args, kwNames);
     }
 
     private static PyObject callRow(PyObject self, PyObject[] args, String[] kwNames) {
         Arguments.noKeywords("weakref", kwNames);
-        return ((PyWeakRef) self).call(args, null);
+        return Weakref.call((Weakref.Holder) self, args, null);
+    }
+
+    private static PyObject eqRow(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.exactly("__eq__", args, kwNames, 1);
+        return PyBool.of(Weakref.equal((Weakref.Holder) self, args[0]));
+    }
+
+    private static PyObject neRow(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.exactly("__ne__", args, kwNames, 1);
+        return PyBool.of(!Weakref.equal((Weakref.Holder) self, args[0]));
     }
 
     @Override
     public long hash() {
-        PyObject live = referent.get();
-        if (live == null) {
-            throw Slots.typeError("weak object has gone away");
-        }
-        return live.hash();
+        return Weakref.hashOf(this);
     }
 
     @Override
     public boolean eq(PyObject other) {
-        if (other instanceof PyWeakRef otherRef) {
-            PyObject mine = referent.get();
-            PyObject theirs = otherRef.referent.get();
-            if (mine == null || theirs == null) {
-                return this == other;
-            }
-            return mine == theirs;
-        }
-        return false;
+        return Weakref.equal(this, other);
     }
 
     @Override
     public PyObject getAttr(String attribute) {
         if (attribute.equals("__callback__")) {
-            return callback == null ? PyNone.INSTANCE : callback;
+            return Weakref.callbackOf(this);
         }
         return super.getAttr(attribute);
     }
 
     @Override
     public String repr() {
-        String at = "0x" + Integer.toHexString(System.identityHashCode(this));
-        PyObject live = referent.get();
-        if (live == null) {
-            return "<weakref at " + at + "; dead>";
-        }
-        return "<weakref at "
-                + at
-                + "; to '"
-                + live.getType().name()
-                + "' at 0x"
-                + Integer.toHexString(System.identityHashCode(live))
-                + ">";
+        return Weakref.describe(this);
     }
 }

@@ -285,7 +285,11 @@ final class Classes {
                 || base == PyType.PROPERTY
                 // `types.GenericAlias` is a base since 3.11, which `_collections_abc` uses for the
                 // `__class_getitem__` of the callable ABCs.
-                || base == PyType.GENERIC_ALIAS;
+                || base == PyType.GENERIC_ALIAS
+                // `weakref.ref` is a base the standard library writes: `weakref.WeakMethod` is a
+                // `class WeakMethod(ref)` whose slots and methods a Python class body supplies, and
+                // the reference's own storage is what `allocate` keeps beside the dictionary.
+                || base == PyType.WEAK_REFERENCE;
     }
 
     /**
@@ -887,6 +891,12 @@ final class Classes {
         if (kind.parent() == PyType.TUPLE) {
             PyTuple made = (PyTuple) Constructors.instantiate(PyType.TUPLE, args, kwNames);
             return new PyTupleSubclass(made.getArray(), kind);
+        }
+        // A class written over `weakref.ref` inherits the reference's creator: the referent and the
+        // callback are read off the same two positionals, and the value is the subclass's, which is
+        // what lets `class X(ref)` keep a dictionary beside the reference.
+        if (kind.matches(PyType.WEAK_REFERENCE)) {
+            return Weakref.newRef(kind, args, names);
         }
         if (excess(args, kwNames) && inheritsOnlyObjectInit(kind)) {
             throw Slots.typeError("%s() takes no arguments", kind.name());

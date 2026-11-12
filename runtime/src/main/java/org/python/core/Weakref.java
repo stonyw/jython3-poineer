@@ -28,6 +28,11 @@ final class Weakref {
 
         /** The live referent, or null once it has been collected. */
         PyObject target();
+
+        /** The callback given when the reference was made, or null for none. */
+        default PyObject callback() {
+            return null;
+        }
     }
 
     /** Newest first, which is the order the reference lists a type's weak references in. */
@@ -93,14 +98,85 @@ final class Weakref {
      * argument-count sentence is what a wrong call reads, and the keyword refusal is the type's own.
      */
     static PyObject newRef(PyObject[] args, String[] kwNames) {
-        if (kwNames != null) {
+        return newRef(PyType.WEAK_REFERENCE, args, kwNames);
+    }
+
+    /**
+     * The same constructor for a class written over {@code weakref.ref}, where the class decides which
+     * kind of value the referent is stored in.
+     *
+     * <p>{@code ref.__new__(cls, obj, callback)} reaches this with {@code cls} as {@code declared}, and
+     * {@code class X(ref)} reaches it through {@link Classes} with {@code X} in that place, which is what
+     * keeps a subclass from quietly becoming a plain reference.
+     */
+    static PyObject newRef(PyType declared, PyObject[] args, String[] kwNames) {
+        if (kwNames != null && kwNames.length > 0) {
             throw Slots.typeError("ref() takes no keyword arguments");
         }
         Arguments.between("__new__", args, null, 1, 2);
         PyObject referent = checked(args[0]);
-        PyWeakRef made = new PyWeakRef(referent, args.length > 1 ? args[1] : null);
+        PyObject callback = args.length > 1 ? args[1] : null;
+        Holder made =
+                declared == PyType.WEAK_REFERENCE
+                        ? new PyWeakRef(referent, callback)
+                        : new PyWeakRefSubclass(declared, referent, callback);
         remember(made);
-        return made;
+        return (PyObject) made;
+    }
+
+    /** {@code ref()}: no arguments, the referent while it lives and {@code None} after. */
+    static PyObject call(Holder holder, PyObject[] args, PyTuple kwNames) {
+        int keywords = kwNames == null ? 0 : kwNames.size();
+        if (args.length != 0 || keywords != 0) {
+            throw Slots.typeError(
+                    "weakref expected 0 arguments, got %d", args.length + keywords);
+        }
+        PyObject live = holder.target();
+        return live == null ? PyNone.INSTANCE : live;
+    }
+
+    /** {@code hash(ref)}: the referent's hash, and the refusal once it is gone. */
+    static long hashOf(Holder holder) {
+        PyObject live = holder.target();
+        if (live == null) {
+            throw Slots.typeError("weak object has gone away");
+        }
+        return live.hash();
+    }
+
+    /**
+     * {@code a == b} for two references: whether both point at the same live object.
+     *
+     * <p>A dead reference stands for {@code None}, as {@code PyWeakref_GET_OBJECT} answers, so two dead
+     * references are equal to each other and to nothing else.
+     */
+    static boolean equal(Holder self, PyObject other) {
+        if (!(other instanceof Holder theirs)) {
+            return false;
+        }
+        return self.target() == theirs.target();
+    }
+
+    /** {@code ref.__callback__}: the callback, or {@code None} when there is none. */
+    static PyObject callbackOf(Holder holder) {
+        PyObject callback = holder.callback();
+        return callback == null ? PyNone.INSTANCE : callback;
+    }
+
+    /** {@code repr(ref)}: where the reference is, and what it points at when it still points at anything. */
+    static String describe(Holder holder) {
+        String at = "0x" + Integer.toHexString(System.identityHashCode(holder));
+        PyObject live = holder.target();
+        if (live == null) {
+            return "<weakref at " + at + "; dead>";
+        }
+        return "<weakref at "
+                + at
+                + "; to '"
+                + live.getType().name()
+                + "' at 0x"
+                + Integer.toHexString(System.identityHashCode(live))
+                + ">";
     }
 
     private static PyObject proxy(PyObject[] args, String[] kwNames) {

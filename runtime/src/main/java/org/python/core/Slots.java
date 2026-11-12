@@ -460,6 +460,13 @@ public final class Slots {
         // or is not a string leaves the sentence without one, which is the reference's `module has no
         // attribute '...'`.
         if (target instanceof PyModule module) {
+            // A module's own read answers only its dictionary, so the walk over its type — module has
+            // object as its base — is what a missing name still has to make before the refusal, and is
+            // where `copy.copy(module)` reads `__reduce_ex__` from.
+            PyObject published = TypeDict.read(target, name);
+            if (published != DECLINED) {
+                return published;
+            }
             PyObject shown = module.get("__name__");
             if (shown instanceof PyStr text) {
                 throw failedRead(
