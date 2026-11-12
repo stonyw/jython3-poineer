@@ -1,9 +1,7 @@
 package org.python.core;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * The {@code _codecs} module: the registry the {@code codecs} module is written on top of.
@@ -46,9 +44,6 @@ final class CodecsModule {
     /** The search functions {@code codecs.register} filed, most recent last. */
     private static final List<PyObject> SEARCHES = new ArrayList<>();
 
-    /** The error handlers {@code codecs.register_error} filed. */
-    private static final Map<String, PyObject> ERRORS = new LinkedHashMap<>();
-
     private CodecsModule() {
     }
 
@@ -87,19 +82,39 @@ final class CodecsModule {
             SEARCHES.remove(args[0]);
             return PyNone.INSTANCE;
         }));
-        module.set("register_error", PyNativeFunction.positional("register_error", args -> {
-            Arguments.exactly("register_error", args, null, 2);
-            ERRORS.put(Numbers.asText(args[0]).toLowerCase(java.util.Locale.ROOT), args[1]);
+        module.set("register_error", new PyNativeFunction("register_error", (args, kwNames) -> {
+            if (kwNames != null) {
+                throw Slots.typeError("_codecs.register_error() takes no keyword arguments");
+            }
+            if (args.length != 2) {
+                throw Slots.typeError("register_error expected 2 arguments, got %d", args.length);
+            }
+            ErrorHandlers.register(
+                    name(args[0], "register_error() argument 1 must be str, not %s"), args[1]);
             return PyNone.INSTANCE;
         }));
-        module.set("lookup_error", PyNativeFunction.positional("lookup_error", args -> {
-            Arguments.exactlyOne("lookup_error", args, null);
-            return lookupError(Numbers.asText(args[0]));
+        module.set("lookup_error", new PyNativeFunction("lookup_error", (args, kwNames) -> {
+            if (kwNames != null) {
+                throw Slots.typeError("_codecs.lookup_error() takes no keyword arguments");
+            }
+            if (args.length != 1) {
+                throw Slots.typeError(
+                        "_codecs.lookup_error() takes exactly one argument (%d given)", args.length);
+            }
+            return ErrorHandlers.lookup(
+                    name(args[0], "lookup_error() argument must be str, not %s"));
         }));
-        module.set("_unregister_error", PyNativeFunction.positional("_unregister_error", args -> {
-            Arguments.exactlyOne("_unregister_error", args, null);
-            ERRORS.remove(Numbers.asText(args[0]).toLowerCase(java.util.Locale.ROOT));
-            return PyNone.INSTANCE;
+        module.set("_unregister_error", new PyNativeFunction("_unregister_error", (args, kwNames) -> {
+            if (kwNames != null) {
+                throw Slots.typeError("_codecs._unregister_error() takes no keyword arguments");
+            }
+            if (args.length != 1) {
+                throw Slots.typeError(
+                        "_codecs._unregister_error() takes exactly one argument (%d given)",
+                        args.length);
+            }
+            return PyBool.of(ErrorHandlers.unregister(
+                    name(args[0], "_unregister_error() argument must be str, not %s")));
         }));
 
         for (String[] codec : CODECS) {
@@ -161,12 +176,17 @@ final class CodecsModule {
         throw Slots.lookupError("unknown encoding: " + name);
     }
 
-    private static PyObject lookupError(String name) {
-        PyObject handler = ERRORS.get(name.toLowerCase(java.util.Locale.ROOT));
-        if (handler == null) {
-            throw Slots.lookupError("unknown error handler name '" + name + "'");
+    /**
+     * The text of an argument the registry requires to be a str, refused the way {@code PyArg_Parse}
+     * refuses it — with the name of the type it was handed, and {@code None} rather than {@code
+     * NoneType}, which is the {@code tp_name} that type files.
+     */
+    private static String name(PyObject value, String format) {
+        if (!(value instanceof PyStr text)) {
+            throw Slots.typeError(
+                    format, value == PyNone.INSTANCE ? "None" : value.getType().name());
         }
-        return handler;
+        return text.getValue();
     }
 
     private static PyObject codecInfo(String canonical, String display) {

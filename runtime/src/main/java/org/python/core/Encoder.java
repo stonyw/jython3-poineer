@@ -472,13 +472,95 @@ final class Encoder {
     }
 
     /** {@code codec_handler_write_unicode_hex} (Python/codecs.c:719): the width the character is worth. */
-    private static String escapeOf(int codePoint) {
+    static String escapeOf(int codePoint) {
         if (codePoint >= 0x10000) {
             return String.format("\\U%08x", codePoint);
         }
         return codePoint >= 0x100
                 ? String.format("\\u%04x", codePoint)
                 : String.format("\\x%02x", codePoint);
+    }
+
+    /**
+     * {@code surrogatepass} from the exception side, encoding: the code units a run of characters needs, or
+     * null where the codec the exception names cannot carry a surrogate at all.
+     *
+     * <p>The name is read the way a call reads one, and a name this runtime has no codec for is a refusal
+     * like any other rather than a lookup error: the handler has an exception in hand, and its answer to "I
+     * cannot spell this" is to re-raise it. {@code utf-8-sig} is refused along with the one-byte family
+     * because its caller would have to place a byte order mark, which a run of one character has no room
+     * for; {@code utf-16} does write one, which is why the code units here carry none.
+     */
+    static PyBytes surrogateUnits(String text, String encoding) {
+        String name;
+        Codec codec;
+        try {
+            name = codec(encoding);
+            codec = codecOf(encoding);
+        } catch (PyRaise unknown) {
+            return null;
+        }
+        if (name.equals("utf_8_sig") || !codec.carriesSurrogates()) {
+            return null;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        for (int codePoint : text.codePoints().toArray()) {
+            codec.write(out, codePoint);
+        }
+        return PyBytes.wrap(out.toByteArray());
+    }
+
+    /**
+     * {@code surrogatepass} from the exception side, decoding: the one character exactly one code unit of
+     * the codec spells, or null where the run is not one unit wide or the unit is no surrogate.
+     *
+     * <p>UTF-8, UTF-16 and UTF-32 are the only codecs here; the two UTF families read the octets in the
+     * order their name asks for, and the unqualified {@code utf-16} and {@code utf-32} are little-endian
+     * the way their decoders are.
+     */
+    static PyStr surrogateCharacter(byte[] data, String encoding, long start, long end) {
+        String name;
+        try {
+            name = codec(encoding);
+        } catch (PyRaise unknown) {
+            return null;
+        }
+        int width = switch (name) {
+            case "utf_8" -> 3;
+            case "utf_16", "utf_16_le", "utf_16_be" -> 2;
+            case "utf_32", "utf_32_le", "utf_32_be" -> 4;
+            default -> 0;
+        };
+        if (width == 0 || end - start != width) {
+            return null;
+        }
+        int at = (int) start;
+        int unit;
+        if (width == 3) {
+            int lead = data[at] & 0xff;
+            int middle = data[at + 1] & 0xff;
+            int last = data[at + 2] & 0xff;
+            if ((lead & 0xf0) != 0xe0 || (middle & 0xc0) != 0x80 || (last & 0xc0) != 0x80) {
+                return null;
+            }
+            unit = ((lead & 0x0f) << 12) | ((middle & 0x3f) << 6) | (last & 0x3f);
+        } else if (width == 2) {
+            int first = data[at] & 0xff;
+            int second = data[at + 1] & 0xff;
+            unit = name.endsWith("_be") ? (first << 8) | second : (second << 8) | first;
+        } else {
+            int first = data[at] & 0xff;
+            int second = data[at + 1] & 0xff;
+            int third = data[at + 2] & 0xff;
+            int fourth = data[at + 3] & 0xff;
+            unit = name.endsWith("_be")
+                    ? (first << 24) | (second << 16) | (third << 8) | fourth
+                    : (fourth << 24) | (third << 16) | (second << 8) | first;
+        }
+        if (unit < 0xD800 || unit > 0xDFFF) {
+            return null;
+        }
+        return PyStr.of(String.valueOf((char) unit));
     }
 
     /**

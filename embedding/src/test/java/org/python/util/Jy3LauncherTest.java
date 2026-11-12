@@ -465,7 +465,8 @@ class Jy3LauncherTest {
                 "16_dict_subclasses.py",
                 "17_enum_types.py",
                 "18_stdlib_codecs_errno_math_time.py",
-                "19_tuple_subclasses.py");
+                "19_tuple_subclasses.py",
+                "20_codecs_errors.py");
     }
 
     private static List<String> m3Corpus() {

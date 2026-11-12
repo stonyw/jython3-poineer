@@ -310,11 +310,18 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
             // `m_module`: the module whose table files this function sets it, and every method a read
             // makes — bound or declared by a type — answers None, as CPython's methodobject.c does.
             case "__module__" -> module != null ? module : PyNone.INSTANCE;
+            // `m_self`, and `None` where there is none to name: a function the registry built and no
+            // module filed — an error handler — reads None rather than refusing the attribute, because
+            // `methodobject.c` files the field unconditionally. Only the dictionary's own
+            // classmethod_descriptor has no such field at all.
             case "__self__" -> receiver != null
                     ? receiver
                     : declaredBy != null
                             ? PyNone.INSTANCE
-                            : home != null ? home : Slots.DECLINED;
+                            : home != null ? home
+                                    : onType && declaring != null && receiver == null
+                                            ? Slots.DECLINED
+                                            : PyNone.INSTANCE;
             // Only the dictionary's own entry has an owner to name; the method a read makes has none.
             case "__objclass__" -> declaring != null && receiver == null
                     ? declaring
