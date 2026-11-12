@@ -26,7 +26,7 @@ import java.util.Locale;
  * refusal comes from the call site before the body has counted anything, which is why
  * {@code find("a", 0, 3, start=1)} complains about the keyword and not about the four arguments.
  */
-public final class PyStr extends PyObject {
+public class PyStr extends PyObject {
 
     private final String value;
     private final boolean interned;
@@ -36,6 +36,17 @@ public final class PyStr extends PyObject {
         super(PyType.STR);
         this.value = value;
         this.interned = interned;
+        this.codePoints = value.codePointCount(0, value.length());
+    }
+
+    /**
+     * The constructor a class Python wrote under {@code str} uses: the value is already known, and the
+     * type is the class whose name the value answers with. {@link PyStrSubclass} adds the storage.
+     */
+    PyStr(String value, PyType type) {
+        super(type);
+        this.value = value;
+        this.interned = false;
         this.codePoints = value.codePointCount(0, value.length());
     }
 

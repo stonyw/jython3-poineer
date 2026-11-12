@@ -237,6 +237,15 @@ public abstract class PyObject {
     }
 
     /**
+     * Replaces the dictionary {@link #attributeStore()} answers with: the write half of {@code
+     * self.__dict__ = value}. Only a value shape that keeps storage of its own overrides this.
+     */
+    void replaceAttributeStore(PyDict store) {
+        throw Slots.attributeError(
+                "'%s' object has no attribute '__dict__'", getType().filedName());
+    }
+
+    /**
      * Whether {@code name} is one this value's own class files, rather than one {@code object} answers.
      *
      * <p>The question is only asked about {@code __class__}, and only a class built at Python level can

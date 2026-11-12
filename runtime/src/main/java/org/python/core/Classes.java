@@ -21,12 +21,12 @@ import java.util.Map;
  * {@code metaclass=}, by the class of its first base, or by the most derived of the bases' own classes —
  * lets that metatype choose the namespace the body writes into with {@code __prepare__}, hands it the
  * leftover keyword arguments as well as the three it always gets, and files the result under that
- * metatype so that {@code C.__class__} and every class-level read go through it. What is left out is the
- * part of {@code type_new} that has no model here: {@code __slots__} and instance layout,
- * {@code __mro_entries__} and {@code __orig_bases__}, subclassing a built-in type whose members are Java
- * slots, and the {@code tp_new} delegation that lets a metatype whose own creator is not {@code type}
- * build the class instead — every metatype this runtime makes is built by {@code type_new}, so there is
- * nothing to delegate to.
+ * metatype so that {@code C.__class__} and every class-level read go through it. When that metatype is
+ * not {@code type} but wins the derivation, {@code type_new}'s last word is a call to the winner's own
+ * {@code __new__} — that is how {@code EnumType} receives {@code boundary} and {@code _simple}. What is
+ * left out is the part of {@code type_new} that has no model here: {@code __slots__} and instance
+ * layout, {@code __mro_entries__} and {@code __orig_bases__}, and subclassing a built-in type whose
+ * members are Java slots.
  */
 final class Classes {
 
@@ -219,8 +219,19 @@ final class Classes {
                     "type() doesn't support MRO entry resolution; use types.new_class()");
         }
         PyType winner = calculateMetaclass(metatype, bases);
-        // CPython hands the class to the winner's own `tp_new` when that is not `type_new`. Every
-        // metatype here is built by `type_new`, so there is nothing to hand it to.
+        // CPython hands the class to the winner's own `tp_new` when that is not `type_new`. A metatype
+        // written in Python declares `__new__`, and `enum`'s `EnumType.__new__` is the one the standard
+        // library needs here: `type('Color', (IntEnum,), body, boundary=..., _simple=True)` has to let
+        // that method consume its keywords rather than let `object.__init_subclass__` refuse them.
+        if (winner != metatype) {
+            PyObject delegated = Specials.lookUp(winner, "__new__");
+            if (delegated != null) {
+                PyObject[] withMetatype = withSelf(args, winner);
+                return delegated instanceof PyFunction creator
+                        ? creator.call(withMetatype, PyBoundMethod.keywordTuple(kwNames))
+                        : Slots.call(delegated, withMetatype, PyBoundMethod.keywordTuple(kwNames));
+            }
+        }
         for (int i = 0; i < bases.size(); i++) {
             PyObject base = bases.at(i);
             if (!(base instanceof PyType kind)) {
@@ -247,20 +258,26 @@ final class Classes {
      * exactly that way and a class made by {@link #newType} needs nothing a {@link PyClass} does not
      * have. {@code object} and the exception hierarchy are the two other built-in families whose values
      * this runtime already builds — an exception class carries its args and traceback whatever Python
-     * class derives from it — and every other built-in has Java slots no dictionary can stand in for,
-     * which is the refusal a {@code class C(str)} still gets.
+     * class derives from it — and every other built-in has Java slots no dictionary can stand in for.
      *
      * <p>The three descriptor wrappers are the exception on that last point: they have Java slots, but
      * {@link #allocateWrapper} can make the struct with the subclass as its type, so a class written over
      * one of them keeps the behaviour its members read. They are here because the standard library writes
      * exactly that — {@code abc}'s deprecated {@code abstractclassmethod}, {@code abstractstaticmethod} and
      * {@code abstractproperty} — and their absence kept {@code import abc} from getting past line 28.
+     *
+     * <p>{@code int} and {@code str} are the fourth kind: the two immutable values whose storage is a
+     * single field, so a subclass is the same value with a dictionary beside it. {@link #allocate} gives
+     * them {@code PyIntSubclass} and {@code PyStrSubclass}, and {@code enum} needs both — its
+     * {@code IntEnum} and {@code StrEnum} are written exactly as {@code class IntEnum(int, ReprEnum)}.
      */
     private static boolean canDeriveFrom(PyType base) {
         return base instanceof PyClass
                 || base == PyType.OBJECT
                 || base == PyType.TYPE
                 || base == PyType.DICT
+                || base == PyType.INT
+                || base == PyType.STR
                 || base.matches(ExceptionTypes.BASE_EXCEPTION)
                 || base == PyType.CLASS_METHOD
                 || base == PyType.STATIC_METHOD
@@ -849,6 +866,19 @@ final class Classes {
         PyObject wrapper = allocateWrapper(kind);
         if (wrapper != null) {
             return wrapper;
+        }
+        // A class whose first base is an immutable value inherits that value's creator, not `object`'s:
+        // the value is fixed here, by whatever `int` or `str` would have made of the arguments, and the
+        // shape the subtype keeps it in is decided by the class being instantiated. `__init__` still runs
+        // afterwards (`construct` asks the order for it), which is how an `IntEnum` writes `_value_` and
+        // friends beside a number that could not change.
+        if (kind.parent() == PyType.INT) {
+            PyInt made = (PyInt) Constructors.parsedInteger(args, names);
+            return new PyIntSubclass(made.getValue(), kind);
+        }
+        if (kind.parent() == PyType.STR) {
+            PyStr made = (PyStr) Constructors.instantiate(PyType.STR, args, kwNames);
+            return new PyStrSubclass(made.getValue(), kind);
         }
         if (excess(args, kwNames) && inheritsOnlyObjectInit(kind)) {
             throw Slots.typeError("%s() takes no arguments", kind.name());

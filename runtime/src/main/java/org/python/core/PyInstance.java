@@ -41,11 +41,13 @@ public class PyInstance extends PyObject {
 
     /** {@code subtype_dict}: the read of the descriptor a class files for the storage it introduces. */
     static PyObject valueDict(PyObject self) {
-        PyInstance held = (PyInstance) self;
-        if (held.dictionary == null) {
-            held.dictionary = PyDict.empty();
+        if (self instanceof PyInstance held) {
+            if (held.dictionary == null) {
+                held.dictionary = PyDict.empty();
+            }
+            return held.dictionary;
         }
-        return held.dictionary;
+        return self.attributeStore();
     }
 
     /**
@@ -57,16 +59,20 @@ public class PyInstance extends PyObject {
      * dictionary standing for the next read to find.
      */
     static void writeDict(PyObject self, PyObject value) {
-        PyInstance held = (PyInstance) self;
+        PyDict replacement;
         if (value == null) {
-            held.dictionary = PyDict.empty();
-            return;
-        }
-        if (!(value instanceof PyDict replacement)) {
+            replacement = PyDict.empty();
+        } else if (value instanceof PyDict dict) {
+            replacement = dict;
+        } else {
             throw Slots.typeError(
                     "__dict__ must be set to a dictionary, not a '%s'", value.getType().filedName());
         }
-        held.dictionary = replacement;
+        if (self instanceof PyInstance held) {
+            held.dictionary = replacement;
+            return;
+        }
+        self.replaceAttributeStore(replacement);
     }
 
     /**

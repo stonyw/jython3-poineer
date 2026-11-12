@@ -176,6 +176,9 @@ final class Constructors {
         if (type == PyType.STRUCT) {
             return StructModule.compile(args, keywordNames);
         }
+        if (type == PyType.MAPPING_PROXY) {
+            return TypeDict.proxyNew(args, keywordNames, "mappingproxy");
+        }
         if (type == PyType.PROPERTY) {
             return property(args, keywordNames);
         }
@@ -482,9 +485,10 @@ final class Constructors {
     private static PyObject integerFromNumber(PyObject value) {
         if (value instanceof PyInt i) {
             // PyNumber_Long hands the int it was given back rather than rebuilding it, which is
-            // what makes `int(x) is x` hold for a value too big for the small-int cache. A bool is not
-            // that int: it answers with the number it stands for.
-            return i;
+            // what makes `int(x) is x` hold for a value too big for the small-int cache. A subclass is
+            // not that int: `int(IntEnum.S)` is the exact type and not the enum member, because the
+            // number a subclass carries is the whole of what `int()` promises.
+            return i.getType() == PyType.INT ? i : PyInt.of(i.getValue());
         }
         BigInteger converted = Numbers.longOf(value);
         if (converted == null) {
@@ -1060,7 +1064,12 @@ final class Constructors {
         PyObject[] given = Arguments.fill("str", args, kwNames, STR_NAMES, STR_DEFAULTS);
         PyObject value = given[0];
         if (Arguments.count(args, kwNames) < 2) {
-            return value instanceof PyStr s ? s : PyStr.of(value.str());
+            // `str(s)` of an exact str is that str; of a subclass it is a plain copy of the value
+            // `PyObject_Str` reads, so `type(str(tag))` is `str` and not `Tag`.
+            if (value instanceof PyStr s) {
+                return s.getType() == PyType.STR ? s : PyStr.of(value.str());
+            }
+            return PyStr.of(value.str());
         }
         String codec = given[1] == PyNone.INSTANCE
                 ? "utf-8"

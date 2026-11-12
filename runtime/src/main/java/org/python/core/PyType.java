@@ -2015,7 +2015,11 @@ public class PyType extends PyObject {
         if (enumeration) {
             return PyTuple.of(PyFormat.members().values()).iterator();
         }
-        return super.iterator();
+        // A class whose metatype declares `__iter__` is iterable in its metatype's sense, which is what
+        // `enum` relies on: `FlagBoundary` is a class, and unpacking it runs `EnumType.__iter__` over the
+        // members rather than reading the class dictionary. No other metatype files the name, so an
+        // ordinary class still refuses in `Slots`' words.
+        return Specials.invoke(this, "__iter__");
     }
 
     @Override
@@ -2027,6 +2031,13 @@ public class PyType extends PyObject {
                 }
             }
             return PyBool.FALSE;
+        }
+        // The counterpart of `iterator`: `EnumType.__contains__` is what makes `1 in Color` ask the
+        // values as well as the names, and it is found in the metatype rather than in the class.
+        PyObject declared = Specials.lookUp(getType(), "__contains__");
+        if (declared != null) {
+            return Slots.call(
+                    Descriptors.get(declared, this, getType()), new PyObject[] {item}, null);
         }
         return super.contains(item);
     }

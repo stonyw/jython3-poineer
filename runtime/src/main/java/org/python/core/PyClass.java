@@ -258,6 +258,22 @@ public class PyClass extends PyType {
      */
     @Override
     public String repr() {
+        // A class whose metatype declares `__repr__` answers with it, the way every value answers with
+        // its type's: that is what makes `repr(Color)` read `<enum 'Color'>` rather than
+        // `<class 'enum.Color'>`, since `EnumType` declares one. `Specials.lookUp` walks class
+        // dictionaries only, so `type`'s own `__repr__` is not seen here and `repr(Plain)` cannot end
+        // up asking itself for the same answer.
+        PyObject declared = Specials.lookUp(getType(), "__repr__");
+        if (declared != null) {
+            PyObject answer =
+                    Slots.call(
+                            Descriptors.get(declared, this, getType()), new PyObject[0], null);
+            if (!(answer instanceof PyStr text)) {
+                throw Slots.typeError(
+                        "__repr__ returned non-string (type %s)", answer.getType().name());
+            }
+            return text.getValue();
+        }
         return "<class '" + qualifiedName() + "'>";
     }
 

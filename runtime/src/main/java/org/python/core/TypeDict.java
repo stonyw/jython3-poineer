@@ -2393,6 +2393,21 @@ final class TypeDict {
     }
 
     /**
+     * The {@link PyStr} behind a {@code str} slot's first argument, as an exact {@code str}.
+     *
+     * <p>A subclass's text is the one thing it does not decide: {@code str.__repr__} and
+     * {@code str.__str__} are slots of the text, so they read the field and never ask the class.
+     */
+    private static PyStr textOf(PyObject self) {
+        return PyStr.of(((PyStr) self).getValue());
+    }
+
+    /** {@code unicode_str}: the text itself when it is an exact str, a plain copy when it is not. */
+    private static PyObject textStripped(PyObject self) {
+        return self.getType() == PyType.STR ? self : textOf(self);
+    }
+
+    /**
      * {@code str}'s own dictionary: the seventy names a run of text files.
      *
      * <p>The same nineteen slots as {@code bytes}, less {@code __buffer__} — a string has no memory to
@@ -2406,9 +2421,14 @@ final class TypeDict {
         PyType owner = PyType.STR;
         Table table = new Table(owner, into);
         table.raw("__new__", NEW_DOC, TypeDict::textNew);
-        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        // The text is read off the value rather than asked of the receiver. `unicode_repr` and
+        // `unicode_str` are slots of the text itself, so `str.__repr__` of a subclass prints the
+        // subclass's text and `str.__str__` of one answers a plain str copy — and that is also what
+        // keeps `__str__ = str.__str__` (which `enum` writes onto `StrEnum`) from calling back into
+        // the subclass's own `__str__` for ever.
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(textOf(args[0]).repr()));
         table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
-        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
+        table.wrapper("__str__", STR_DOC, args -> textStripped(args[0]));
         table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
         table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
         table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
@@ -4011,8 +4031,9 @@ final class TypeDict {
      * most 2 arguments (3 given)}.
      */
     private static PyObject intsNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.INT, args, kwNames);
-        return Constructors.parsedInteger(tail(args, kwNames), kwNames);
+        PyType kind = declaredClass(PyType.INT, args, kwNames);
+        PyInt made = (PyInt) Constructors.parsedInteger(tail(args, kwNames), kwNames);
+        return kind == PyType.INT ? made : new PyIntSubclass(made.getValue(), kind);
     }
 
     /**
@@ -4363,9 +4384,16 @@ final class TypeDict {
      * the {@code TypeError} about a missing encoding.
      */
     private static PyObject constructorNew(PyType declaring, PyObject[] args, String[] kwNames) {
-        declaredClass(declaring, args, kwNames);
-        return Constructors.instantiate(
-                declaring, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
+        PyType kind = declaredClass(declaring, args, kwNames);
+        PyObject made =
+                Constructors.instantiate(
+                        declaring, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
+        // Only `str` has a shape a dictionary can sit beside; the other four types on this path build
+        // their own structs and are never derived from.
+        if (declaring == PyType.STR && kind != PyType.STR && made instanceof PyStr text) {
+            return new PyStrSubclass(text.getValue(), kind);
+        }
+        return made;
     }
 
     /**
@@ -5522,7 +5550,22 @@ final class TypeDict {
         if (kind == PyType.OBJECT) {
             return false;
         }
-        return !(kind instanceof PyClass) || Specials.lookUp(kind, "__new__") != null;
+        if (!(kind instanceof PyClass)) {
+            return true;
+        }
+        // `object.__init__` asks whether this class's `tp_new` is `object.__new__`. It is not when the
+        // class writes `__new__` somewhere in its mro, and it is not for a class under an immutable
+        // built-in either: `int` and `str` already consumed the arguments being complained about, which
+        // is why `Meter(5)` is fine although `Meter` inherits `object.__init__`.
+        if (Specials.lookUp(kind, "__new__") != null) {
+            return true;
+        }
+        for (PyType owner : kind.mro()) {
+            if (owner == PyType.INT || owner == PyType.STR) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** {@code object.__repr__}: the address this runtime gives a value, which is not CPython's. */
@@ -5679,7 +5722,7 @@ final class TypeDict {
     }
 
     /** {@code mappingproxy(mapping)}: a window over the mapping that was handed over. */
-    private static PyObject proxyNew(PyObject[] args, String[] kwNames, String qualified) {
+    static PyObject proxyNew(PyObject[] args, String[] kwNames, String qualified) {
         if (Arguments.positional(args, kwNames) != 1) {
             throw Slots.typeError("mappingproxy() takes exactly one argument (%d given)",
                     Arguments.positional(args, kwNames));
