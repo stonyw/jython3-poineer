@@ -155,6 +155,12 @@ final class Constructors {
         if (type == PyType.SOURCE_FILE_LOADER) {
             return PySourceFileLoader.called(args, keywordNames);
         }
+        if (type == PyType.STRING_IO) {
+            return PyStringIO.create(args, keywordNames);
+        }
+        if (type == PyType.BYTES_IO) {
+            return PyBytesIO.create(args, keywordNames);
+        }
         if (IoBases.owns(type)) {
             return IoBases.instantiate(type, args, kwNames);
         }

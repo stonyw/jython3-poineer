@@ -44,8 +44,14 @@ final class Open {
     private Open() {
     }
 
+    /** The one function {@code builtins} and {@code _io} both file, so {@code _io.open is open}. */
+    private static final class Holder {
+        static final PyNativeFunction FUNCTION =
+                new PyNativeFunction("open", Open::open).documented(DOC).moduleNamed("_io");
+    }
+
     static PyNativeFunction function() {
-        return new PyNativeFunction("open", Open::open).documented(DOC).moduleNamed("_io");
+        return Holder.FUNCTION;
     }
 
     private static PyObject open(PyObject[] args, String[] kwNames) {

@@ -127,6 +127,10 @@ final class Members {
             Map.entry(PyType.TEXT_IO_BASE, IoBases.class),
             Map.entry(PyType.RAW_IO_BASE, IoBases.class),
             Map.entry(PyType.BUFFERED_IO_BASE, IoBases.class),
+            // The two in-memory streams file their rows beside their values, so `_io.StringIO.readline`
+            // is askable through the type before any stream exists.
+            Map.entry(PyType.STRING_IO, PyStringIO.class),
+            Map.entry(PyType.BYTES_IO, PyBytesIO.class),
             // Every spec the finder answers carries a loader of this class, and a program asks it for
             // its filename before any module has been imported, so the table is filed by its value class.
             Map.entry(PyType.SOURCE_FILE_LOADER, PySourceFileLoader.class));

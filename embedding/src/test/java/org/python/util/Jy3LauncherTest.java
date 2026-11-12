@@ -452,7 +452,8 @@ class Jy3LauncherTest {
                 "06_importlib.py",
                 "07_module_metadata.py",
                 "08_descriptor_subclasses.py",
-                "09_sys_implementation.py");
+                "09_sys_implementation.py",
+                "10_io_module.py");
     }
 
     private static List<String> m3Corpus() {

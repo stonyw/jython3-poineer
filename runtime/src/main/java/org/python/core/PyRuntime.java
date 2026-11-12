@@ -41,7 +41,7 @@ public final class PyRuntime {
      * module?" is exactly this list; the reference interpreter's is longer because it also holds the
      * extension modules, which are imports this runtime answers in Java instead.
      */
-    private static final String[] BUILTIN_MODULE_NAMES = {"builtins", "sys"};
+    private static final String[] BUILTIN_MODULE_NAMES = {"builtins", "sys", "_io"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -151,12 +151,16 @@ public final class PyRuntime {
         PyModule importLib = Importlib.newModule();
         PyModule importLibUtil = Importlib.newUtil();
         importLib.set("util", importLibUtil);
+        // The module whose classes and functions predate it: `_io` gathers the streams under the
+        // names the reference files them with.
+        PyModule ioModule = Io.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
         modules.put(PyStr.interned("annotationlib"), annotationLib);
         modules.put(PyStr.interned("importlib"), importLib);
         modules.put(PyStr.interned("importlib.util"), importLibUtil);
+        modules.put(PyStr.interned("_io"), ioModule);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -167,9 +171,7 @@ public final class PyRuntime {
         // reference's dictionaries are measured in.
         for (PyModule builtIn : new PyModule[] {home, sysModule}) {
             String name = ((PyStr) builtIn.get("__name__")).getValue();
-            builtIn.set("__package__", PyStr.of(""));
-            builtIn.set("__loader__", BuiltinImporter.type());
-            builtIn.set("__spec__", PyModuleSpec.builtin(name, BuiltinImporter.type()));
+            markBuiltIn(builtIn, name);
         }
         belongTo(home);
         belongTo(sysModule);
@@ -177,7 +179,21 @@ public final class PyRuntime {
         belongTo(annotationLib);
         belongTo(importLib);
         belongTo(importLibUtil);
+        belongTo(ioModule);
         belongTo(stringPackage);
+    }
+
+    /**
+     * The three metadata writes every built-in module carries, in the order the reference makes them.
+     *
+     * <p>Called from a module's own builder right after its {@code __doc__}, because a dictionary keeps
+     * insertion order and the reference lists {@code __package__}, {@code __loader__} and {@code __spec__}
+     * before any of the module's own names.
+     */
+    static void markBuiltIn(PyModule module, String name) {
+        module.set("__package__", PyStr.of(""));
+        module.set("__loader__", BuiltinImporter.type());
+        module.set("__spec__", PyModuleSpec.builtin(name, BuiltinImporter.type()));
     }
 
     /**
@@ -1003,7 +1019,10 @@ public final class PyRuntime {
         sys.set("meta_path", PyList.of(BuiltinImporter.type(), PathFinder.type()));
         sys.set("modules", modules);
         sys.set("builtin_module_names",
-                PyTuple.of(PyStr.of("builtins"), PyStr.of("sys")));
+                PyTuple.of(
+                        PyStr.of("builtins"),
+                        PyStr.of("sys"),
+                        PyStr.of("_io")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
         sys.set("getdefaultencoding", noArguments(
                 "getdefaultencoding", () -> PyStr.of("utf-8"),

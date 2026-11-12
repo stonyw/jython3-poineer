@@ -760,6 +760,76 @@ public class PyType extends PyObject {
     public static final PyType FILE_IO =
             declare("FileIO", RAW_IO_BASE).filedUnder("_io.FileIO").documented(FILE_IO_DOC);
 
+    private static final String STRING_IO_DOC =
+            "Text I/O implementation using an in-memory buffer.\n"
+                    + "\n"
+                    + "The initial_value argument sets the value of object.  The newline\n"
+                    + "argument is like the one of TextIOWrapper's constructor.";
+
+    private static final String BYTES_IO_DOC =
+            "Buffered I/O implementation using an in-memory bytes buffer.";
+
+    private static final String BUFFERED_RW_PAIR_DOC =
+            "A buffered reader and writer object together.\n"
+                    + "\n"
+                    + "A buffered reader object and buffered writer object put together to\n"
+                    + "form a sequential IO object that can read and write. This is typically\n"
+                    + "used with a socket or two-way pipe.\n"
+                    + "\n"
+                    + "reader and writer are RawIOBase objects that are readable and\n"
+                    + "writeable respectively. If the buffer_size is omitted it defaults to\n"
+                    + "DEFAULT_BUFFER_SIZE.";
+
+    private static final String INCREMENTAL_NEWLINE_DECODER_DOC =
+            "Codec used when reading a file in universal newlines mode.\n"
+                    + "\n"
+                    + "It wraps another incremental decoder, translating \\r\\n and \\r into \\n.\n"
+                    + "It also records the types of newlines encountered.  When used with\n"
+                    + "translate=False, it ensures that the newline sequence is returned in\n"
+                    + "one piece. When used with decoder=None, it expects unicode strings as\n"
+                    + "decode input and translates newlines without first invoking an external\n"
+                    + "decoder.";
+
+    /** {@code _io.StringIO}: the text stream over an in-memory buffer. */
+    public static final PyType STRING_IO =
+            declare("StringIO", TEXT_IO_BASE)
+                    .filedUnder("_io.StringIO")
+                    .documented(STRING_IO_DOC);
+
+    /** {@code _io.BytesIO}: the octet stream over an in-memory buffer. */
+    public static final PyType BYTES_IO =
+            declare("BytesIO", BUFFERED_IO_BASE)
+                    .filedUnder("_io.BytesIO")
+                    .documented(BYTES_IO_DOC);
+
+    /**
+     * {@code _io.BufferedRWPair}: a reader and a writer over one stream.
+     *
+     * <p>Nothing here builds one; the name is filed so {@code _io}'s dictionary is complete and so a
+     * program that names the class reads its sentence.
+     */
+    public static final PyType BUFFERED_RW_PAIR =
+            declare("BufferedRWPair", BUFFERED_IO_BASE)
+                    .filedUnder("_io.BufferedRWPair")
+                    .documented(BUFFERED_RW_PAIR_DOC)
+                    .withoutNew();
+
+    /**
+     * {@code _io._BytesIOBuffer}: the object {@code BytesIO.getbuffer()} answers with.
+     *
+     * <p>Only the name exists: this runtime's {@code BytesIO.getbuffer} raises {@code UnsupportedOperation},
+     * which is named in the milestone notes.
+     */
+    public static final PyType BYTES_IO_BUFFER =
+            builtin("_BytesIOBuffer").filedUnder("_io._BytesIOBuffer").withoutNew();
+
+    /** {@code _io.IncrementalNewlineDecoder}: the codec half of universal-newline reading. */
+    public static final PyType INCREMENTAL_NEWLINE_DECODER =
+            declare("IncrementalNewlineDecoder", OBJECT)
+                    .filedUnder("_io.IncrementalNewlineDecoder")
+                    .documented(INCREMENTAL_NEWLINE_DECODER_DOC)
+                    .withoutNew();
+
     /**
      * {@code type(co.co_lines())} and {@code type(co.co_positions())}.
      *
