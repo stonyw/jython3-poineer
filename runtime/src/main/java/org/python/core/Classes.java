@@ -321,8 +321,12 @@ final class Classes {
      * single field, so a subclass is the same value with a dictionary beside it. {@link #allocate} gives
      * them {@code PyIntSubclass} and {@code PyStrSubclass}, and {@code enum} needs both — its
      * {@code IntEnum} and {@code StrEnum} are written exactly as {@code class IntEnum(int, ReprEnum)}.
+     *
+     * <p>Package-private because {@link #setBases} asks the same question: CPython's {@code best_base}
+     * refuses a base without {@code Py_TPFLAGS_BASETYPE} with {@code type 'X' is not an acceptable base
+     * type}, which is the refusal behind {@code X.__bases__ = (type(None),)}.
      */
-    private static boolean canDeriveFrom(PyType base) {
+    static boolean canDeriveFrom(PyType base) {
         return base instanceof PyClass
                 || base == PyType.OBJECT
                 || base == PyType.TYPE
@@ -817,6 +821,327 @@ final class Classes {
         }
         return Slots.typeError(
                 "Cannot create a consistent method resolution order (MRO) for bases %s", names);
+    }
+
+    // --- type_set_bases ---------------------------------------------------------------------
+
+    /**
+     * {@code type_set_bases}: {@code C.__bases__ = (...)}, with every refusal CPython makes first.
+     *
+     * <p>The checks run in the order {@code type_set_bases_unlocked} runs them, because a program can
+     * see which one answered: the tuple's shape, then each item's type, then the inheritance cycle, then
+     * {@link #bestBase} and the layout comparison against the base the class has now. Only after all of
+     * them does the tuple replace the old one, and only then is the order recomputed — for this class and
+     * every class below it, since their linearizations name it.
+     *
+     * <p>A failure while recomputing puts every order back in reverse, and puts this class's bases and
+     * parent back too unless a reentrant assignment replaced them meanwhile. That is CPython's {@code
+     * undo}/{@code bail}, and it is what makes {@code test_mutable_bases_with_failing_mro} leave {@code
+     * D} deriving from what it derived from before the custom {@code mro} raised.
+     *
+     * <p>Slot layout is not modelled in this slice: CPython's {@code shape_differs} compares {@code
+     * tp_basicsize}, and this runtime keeps every value's slots in a side dictionary rather than in the
+     * value, so no class written here changes the shape it inherits. A class that declares
+     * {@code __slots__} is therefore compared only by the dictionary and weak-reference flags its base
+     * introduced, which is the named deviation this slice leaves to the {@code __slots__} slice.
+     */
+    static void setBases(PyClass type, PyTuple newBases) {
+        if (newBases.size() == 0) {
+            throw Slots.typeError(
+                    "can only assign non-empty tuple to %s.__bases__, not ()", type.filedName());
+        }
+        for (int i = 0; i < newBases.size(); i++) {
+            PyObject item = newBases.at(i);
+            if (!(item instanceof PyType candidate)) {
+                throw Slots.typeError(
+                        "%s.__bases__ must be tuple of classes, not '%s'",
+                        type.filedName(), item.getType().name());
+            }
+            // Two ways to close a loop: the new base's own order already names this class, or a
+            // reentrant assignment has already pointed its parent chain back here.
+            if (contains(candidate.mro(), type) || parentChainContains(candidate, type)) {
+                throw Slots.typeError("a __bases__ item causes an inheritance cycle");
+            }
+        }
+
+        PyType newBase = bestBase(newBases);
+        compatibleForAssignment(type.parent(), newBase, "__bases__");
+
+        PyTuple oldBases = type.baseTuple();
+        PyType oldBase = type.parent();
+        type.adoptBases(newBases);
+        type.setParent(newBase);
+
+        List<ReplacedOrder> saved = new ArrayList<>();
+        try {
+            installHierarchy(type, saved);
+        } catch (RuntimeException failure) {
+            undoOrders(saved);
+            // `bail`: a reentrant assignment may already own the tuple, in which case it is not ours
+            // to put back.
+            if (type.baseTuple() == newBases) {
+                type.adoptBases(oldBases);
+                type.setParent(oldBase);
+            }
+            throw failure;
+        }
+    }
+
+    /**
+     * {@code best_base}: the one base whose storage every value of the new class has to fit.
+     *
+     * <p>The winner is the most derived solid base, and the answer is the <em>declared</em> base that
+     * contributed it rather than the solid one — which is why {@code D.__bases__ = (C, list)} names
+     * {@code list} in its error even though {@code list} is its own solid base.
+     */
+    private static PyType bestBase(PyTuple bases) {
+        PyType winner = null;
+        PyType base = null;
+        for (int i = 0; i < bases.size(); i++) {
+            PyType candidateBase = (PyType) bases.at(i);
+            if (!canDeriveFrom(candidateBase)) {
+                throw Slots.typeError(
+                        "type '%s' is not an acceptable base type", candidateBase.filedName());
+            }
+            PyType candidate = solidBase(candidateBase);
+            if (winner == null) {
+                winner = candidate;
+                base = candidateBase;
+            } else if (contains(winner.mro(), candidate)) {
+                // The winner already derives from this candidate's storage.
+            } else if (contains(candidate.mro(), winner)) {
+                winner = candidate;
+                base = candidateBase;
+            } else {
+                throw Slots.typeError("multiple bases have instance lay-out conflict");
+            }
+        }
+        return base;
+    }
+
+    /**
+     * {@code solid_base}: the nearest ancestor whose instance shape this type keeps.
+     *
+     * <p>CPython compares {@code tp_basicsize}/{@code tp_itemsize} and stops at the first difference;
+     * in this runtime no heap class changes either — a Python value is one {@link PyInstance} whatever
+     * its class declares, and {@code __slots__} currently lives in a side dictionary — so the walk
+     * reaches the built-in root of the chain. That root is what distinguishes {@code L(list)} from a
+     * plain class over {@code object}, which is the whole of what the layout comparison below needs.
+     */
+    private static PyType solidBase(PyType type) {
+        if (!(type instanceof PyClass held)) {
+            return type;
+        }
+        PyType parent = held.parent();
+        return parent == null ? type : solidBase(parent);
+    }
+
+    /**
+     * {@code compatible_with_tp_base}: whether this class keeps its parent's storage and allocator.
+     *
+     * <p>CPython compares sizes, both offsets, the GC flag and {@code tp_dealloc}. Here the only two
+     * storages a Python class can carry are the dictionary and the weak-reference list, so those flags
+     * plus "the parent is itself written in Python" stand in for the rest: a class over a built-in
+     * base inherits that base's allocator and can never be compatible with it.
+     */
+    private static boolean compatibleWithBase(PyType type) {
+        if (!(type instanceof PyClass held)) {
+            return false;
+        }
+        PyType parent = held.parent();
+        return parent instanceof PyClass
+                && held.hasValueDict() == parent.hasValueDict()
+                && held.hasWeakRefList() == parent.hasWeakRefList();
+    }
+
+    /**
+     * {@code compatible_for_assignment}: the two refusals {@code __bases__} can make about layout.
+     *
+     * <p>The deallocator sentence compares the two classes this assignment swaps between, and it comes
+     * first: a heap class and a compiled-in one do not free their values the same way. The layout
+     * sentence compares what is left after walking each side up its compatible chain, and it names the
+     * new base before the old one, as CPython does. An empty {@code __slots__} on both sides would make
+     * {@code same_slots_added} true there; that half is not modelled yet, so only the dictionary and
+     * weak-reference flags are compared — the named deviation in {@link #setBases}.
+     */
+    private static void compatibleForAssignment(
+            PyType oldto, PyType newto, String attribute) {
+        if (newto != null && oldto != null && gcAllocated(oldto) != gcAllocated(newto)) {
+            throw Slots.typeError(
+                    "%s assignment: '%s' deallocator differs from '%s'",
+                    attribute, newto.filedName(), oldto.filedName());
+        }
+        PyType newbase = newto;
+        PyType oldbase = oldto;
+        while (newbase != null && compatibleWithBase(newbase)) {
+            newbase = newbase.parent();
+        }
+        while (oldbase != null && compatibleWithBase(oldbase)) {
+            oldbase = oldbase.parent();
+        }
+        if (newbase != oldbase
+                && (newbase == null
+                        || oldbase == null
+                        || newbase.parent() != oldbase.parent()
+                        || !sameStorage(newbase, oldbase))) {
+            throw Slots.typeError(
+                    "%s assignment: '%s' object layout differs from '%s'",
+                    attribute, newto.filedName(), oldto.filedName());
+        }
+    }
+
+    /**
+     * {@code same_slots_added}: whether two classes add the same storage over the same parent.
+     *
+     * <p>CPython requires both to be heap types, compares their {@code ht_slots} and then their sizes.
+     * Here the slots half is the named deviation: what is compared is the parent, the dictionary flag
+     * and the weak-reference flag.
+     */
+    private static boolean sameStorage(PyType a, PyType b) {
+        return a instanceof PyClass first
+                && b instanceof PyClass second
+                && first.parent() == second.parent()
+                && first.hasValueDict() == second.hasValueDict()
+                && first.hasWeakRefList() == second.hasWeakRefList();
+    }
+
+    /**
+     * Whether this type's values are collected by the tracing collector, which is the half of
+     * {@code tp_free} a compiled-in type can differ on.
+     *
+     * <p>{@code object}, {@code int}, {@code str}, {@code float} and {@code bytes} allocate without GC
+     * headers and free with {@code PyObject_Del}; every other type here — heap classes included — frees
+     * with {@code PyObject_GC_Del}. That pairing is what makes {@code list} and {@code dict} pass the
+     * deallocator check and fail on layout instead.
+     */
+    private static boolean gcAllocated(PyType type) {
+        if (type instanceof PyClass) {
+            return true;
+        }
+        return type != PyType.OBJECT
+                && type != PyType.INT
+                && type != PyType.STR
+                && type != PyType.FLOAT
+                && type != PyType.BYTES;
+    }
+
+    /**
+     * {@code mro_hierarchy_for_complete_type}: install the order here, then below.
+     *
+     * <p>Returns 0 when a custom {@code mro} reentered and replaced the order itself, in which case the
+     * caller must not treat the result as its own. CPython records every replaced order so the undo loop
+     * can restore it, which is what {@code saved} is for.
+     */
+    private static void installHierarchy(PyClass kind, List<ReplacedOrder> saved) {
+        PyType[] oldOrder = kind.order;
+        PyType[] newOrder;
+        if (kind.getType() == PyType.TYPE) {
+            newOrder = linearize(kind, kind.baseTuple());
+            kind.order = newOrder;
+        } else {
+            // `mro_implementation_unlocked` is what `type.mro` answers, and a custom mro usually calls
+            // it through super(). Installing the default order first is what lets that call see the new
+            // bases rather than the stale order. The provisional order is put back if the custom mro
+            // raises: CPython only assigns tp_mro after mro() returns, so a failing mro leaves the old
+            // order in place.
+            PyType[] provisional = linearize(kind, kind.baseTuple());
+            kind.order = provisional;
+            try {
+                PyObject invoked = kind.getAttr("mro");
+                PyObject result = Slots.call(invoked, new PyObject[0], null);
+                if (kind.order != provisional) {
+                    // Reentrance: someone else has already installed an order for this class.
+                    return;
+                }
+                newOrder = mroInvoke(kind, result);
+                kind.order = newOrder;
+            } catch (RuntimeException failure) {
+                if (kind.order == provisional) {
+                    kind.order = oldOrder;
+                }
+                throw failure;
+            }
+        }
+        saved.add(new ReplacedOrder(kind, oldOrder, newOrder));
+
+        for (PyType candidate : PyType.children()) {
+            if (candidate instanceof PyClass child && contains(child.bases(), kind)) {
+                installHierarchy(child, saved);
+            }
+        }
+    }
+
+    /** The undo half of {@code mro_hierarchy_for_complete_type}, newest first. */
+    private static void undoOrders(List<ReplacedOrder> saved) {
+        for (int i = saved.size() - 1; i >= 0; i--) {
+            ReplacedOrder entry = saved.get(i);
+            if (entry.type().order == entry.after()) {
+                entry.type().order = entry.before();
+            }
+        }
+    }
+
+    /** One class whose order a {@code __bases__} write replaced, with the order it had and the one installed. */
+    private record ReplacedOrder(PyClass type, PyType[] before, PyType[] after) {
+    }
+
+    /**
+     * {@code mro_invoke} after a custom {@code mro}: turn what it returned into an order and check it.
+     *
+     * <p>The custom path is CPython's {@code mro_check}: every item has to be a class, and its solid
+     * base has to sit in this class's solid base's order. No check is made that the first item is the
+     * class itself — {@code test_altmro}'s {@code PerverseMetaType} returns the order reversed.
+     */
+    private static PyType[] mroInvoke(PyClass kind, PyObject result) {
+        List<PyObject> items;
+        if (result instanceof PyTuple tuple) {
+            items = new ArrayList<>(tuple.size());
+            for (int i = 0; i < tuple.size(); i++) {
+                items.add(tuple.at(i));
+            }
+        } else if (result instanceof PyList list) {
+            items = list.getItems();
+        } else {
+            throw Slots.typeError("'%s' object is not iterable", result.getType().name());
+        }
+        if (items.isEmpty()) {
+            throw Slots.typeError("type MRO must not be empty");
+        }
+        PyType solid = solidBase(kind);
+        PyType[] order = new PyType[items.size()];
+        for (int i = 0; i < order.length; i++) {
+            PyObject item = items.get(i);
+            if (!(item instanceof PyType base)) {
+                throw Slots.typeError(
+                        "mro() returned a non-class ('%s')", item.getType().name());
+            }
+            if (!contains(solid.mro(), solidBase(base))) {
+                throw Slots.typeError(
+                        "mro() returned base with unsuitable layout ('%s')", base.filedName());
+            }
+            order[i] = base;
+        }
+        return order;
+    }
+
+    /** Whether this type appears in the given order. */
+    private static boolean contains(PyType[] order, PyType needle) {
+        for (PyType candidate : order) {
+            if (candidate == needle) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** {@code type_is_subtype_base_chain}: whether this type's parent chain reaches the needle. */
+    private static boolean parentChainContains(PyType type, PyType needle) {
+        for (PyType walk = type; walk != null; walk = walk.parent()) {
+            if (walk == needle) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // --- calling a class -------------------------------------------------------------------

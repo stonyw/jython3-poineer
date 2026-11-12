@@ -1695,8 +1695,11 @@ public class PyType extends PyObject {
      * from. For a class built by the class system this is {@code __base__} — the first of its bases —
      * and the lookup that matters is {@link #mro()}, which a class computes once when it is built and
      * stores here.
+     *
+     * <p>Not final because {@code C.__bases__ = (...)} gives a class a new first base: CPython moves
+     * {@code tp_base} and recomputes the order, and the pointer below is the same one.
      */
-    private final PyType parent;
+    private PyType parent;
 
     /**
      * This type's lookup order, or null while it is still only the parent chain.
@@ -1954,6 +1957,17 @@ public class PyType extends PyObject {
 
     public final PyType parent() {
         return parent;
+    }
+
+    /**
+     * The other half of {@code tp_base}: what {@code C.__bases__ = (...)} writes before the order is
+     * recomputed.
+     *
+     * <p>Package-private because only {@link Classes#setBases} moves it, and only after the new tuple
+     * has passed every check CPython makes first.
+     */
+    void setParent(PyType value) {
+        parent = value;
     }
 
     /**

@@ -20,8 +20,13 @@ public class PyClass extends PyType {
     /** The class dictionary, which is what {@code __dict__} of a class is. */
     private final PyDict namespace;
 
-    /** The bases as {@code type} received them, already defaulted to {@code (object,)} when empty. */
-    private final PyTuple bases;
+    /**
+     * The bases as {@code type} received them, already defaulted to {@code (object,)} when empty.
+     *
+     * <p>Not final: {@code C.__bases__ = (...)} replaces the tuple, and both {@code __bases__} and the
+     * order recomputation have to read the replacement.
+     */
+    private PyTuple bases;
 
     private PyStr qualName;
 
@@ -73,6 +78,28 @@ public class PyClass extends PyType {
     @Override
     PyDict namespace() {
         return namespace;
+    }
+
+    /** The tuple {@code C.__bases__} answers and {@code type_set_bases} replaces. */
+    PyTuple baseTuple() {
+        return bases;
+    }
+
+    @Override
+    PyType[] bases() {
+        PyType[] declared = new PyType[bases.size()];
+        for (int i = 0; i < declared.length; i++) {
+            declared[i] = (PyType) bases.at(i);
+        }
+        return declared;
+    }
+
+    /**
+     * The write half of {@code type_set_bases}: called once the new tuple has passed every refusal
+     * CPython makes, and before the order is recomputed.
+     */
+    void adoptBases(PyTuple value) {
+        bases = value;
     }
 
     /**

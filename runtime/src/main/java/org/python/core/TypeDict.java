@@ -5410,9 +5410,8 @@ final class TypeDict {
      * <p>Three answers, in CPython's order. The two refusals of {@link #checkSpecial} come first, so {@code
      * del C.__bases__} complains about an immutable type rather than about a name. A value that is not a
      * tuple is then refused by name — {@code can only assign tuple to C.__bases__, not NoneType} — and a
-     * tuple that is one reaches the deviation this filing carries: the reference interpreter recomputes the
-     * linearisation for a class already made, and this runtime has no way to build a second order for one,
-     * so it answers with the refusal a type with no setter at all gives.
+     * tuple that is one is handed to {@link Classes#setBases}, which is {@code type_set_bases}'s body: the
+     * per-item and cycle refusals, the layout compatibility check and the recomputed order all live there.
      */
     private static PyGetSetDescriptor.Setter writesBases() {
         return (target, value) -> {
@@ -5422,8 +5421,7 @@ final class TypeDict {
                         "can only assign tuple to %s.__bases__, not %s",
                         ((PyType) target).filedName(), value.getType().name());
             }
-            throw Slots.attributeError(
-                    "attribute '__bases__' of 'type' objects is not writable");
+            Classes.setBases((PyClass) target, (PyTuple) value);
         };
     }
 
