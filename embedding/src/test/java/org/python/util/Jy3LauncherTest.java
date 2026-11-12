@@ -227,6 +227,38 @@ class Jy3LauncherTest {
                 "pairs.txt");
     }
 
+    /** The module the M4 corpus asks a path finder to find, before anything imports it. */
+    private static final String M4_HELPER = """
+            VALUE = "helper"
+            """;
+
+    /** The package beside it, whose {@code __path__} is the directory the finder searched. */
+    private static final String M4_PACKAGE = """
+            VALUE = "package"
+            """;
+
+    /**
+     * M4's first slice: the import system's foundation, under {@code src/test/resources/m4/corpus}.
+     *
+     * <p>Two fixtures are written beside each script because a path finder needs a path to find: a
+     * plain module and a package, so the corpus can ask a name found on disk for its spec before any
+     * of it is imported, and then compare the module the import statement builds from that spec. Both
+     * interpreters see the same two files and the same directory as {@code sys.path[0]}.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("m4Corpus")
+    void anM4CorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
+        write("helper.py", M4_HELPER);
+        Files.createDirectories(work.resolve("pkg"));
+        write("pkg/__init__.py", M4_PACKAGE);
+
+        answersExactlyAsCpython("m4/corpus", scriptName);
+    }
+
+    private static List<String> m4Corpus() {
+        return List.of("01_the_foundation.py", "02_the_path_finder.py");
+    }
+
     private static List<String> m3Corpus() {
         return List.of(
                 "01_handlers.py",

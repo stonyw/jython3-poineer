@@ -30,12 +30,12 @@ import org.python.front.cpython314.Cpython314Compiler;
  * interpreter executes, {@code sys.argv} is what the script sees. M2 put the JVM on the other side of
  * that same script, so {@code import java.util} is an ordinary import now, and changed nothing about the
  * options below. The option surface is therefore small, and every omission is reported rather than
- * quietly ignored: {@code -m} needs the import finder (M4), {@code -O} needs {@code __debug__} to mean
- * something to the code object (M3), and the interactive prompt needs a terminal, a line editor and a
- * read-eval-print loop (M4). Those exit 3, which the harness records as {@code NOT_IMPLEMENTED}. The
- * handful of options accepted and ignored are ones that change nothing a script can observe yet — {@code
- * -B}, because no {@code .pyc} is ever written, and {@code -u}, because both streams are already the
- * JVM's own.
+ * quietly ignored: {@code -m} needs {@code runpy} on top of the import system, {@code -O} needs
+ * {@code __debug__} to mean something to the code object (M3), and the interactive prompt needs a
+ * terminal, a line editor and a read-eval-print loop (M4). Those exit 3, which the harness records as
+ * {@code NOT_IMPLEMENTED}. The handful of options accepted and ignored are ones that change nothing a
+ * script can observe yet — {@code -B}, because no {@code .pyc} is ever written, and {@code -u},
+ * because both streams are already the JVM's own.
  *
  * <p>Harness protocol, shared with {@code org.jython3.tools.harness.Jython3Backend}:
  *
@@ -87,7 +87,7 @@ public final class jy3 {
                     + "-      : program read from stdin\n"
                     + "\n"
                     + "Accepted and ignored: -B -E -I -S -s -u\n"
-                    + "Not implemented yet: -m mod and -X opt (import system, M4);"
+                    + "Not implemented yet: -m mod (runpy) and -X opt (configuration layer);"
                     + " -O and -OO (M3); the interactive prompt (M4)\n";
 
     public static void main(String[] args) {
@@ -158,7 +158,7 @@ public final class jy3 {
                         return USAGE_ERROR;
                     }
                     return notImplemented(
-                            "-m module", "the import finder that reads sys.path is M4");
+                            "-m module", "running a module needs runpy, which comes after the finder");
                 }
                 case "-X" -> {
                     if (!argumentExpected(option, args, at)) {
@@ -182,11 +182,9 @@ public final class jy3 {
         for (int i = at; i < args.length; i++) {
             operands.add(args[i]);
         }
-        PyRuntime.startup();
-        // After startup, because the finder it registers goes into the module table startup builds.
-        JavaInterop.install();
 
         if (command != null) {
+            start(importPath(""));
             PyRuntime.setArgv("-c", operands);
             PyCode compiled = Cpython314Compiler.compileSource(command, "<string>");
             // The command is the only copy of this source there is: a report of a failure in it has
@@ -196,6 +194,7 @@ public final class jy3 {
             return execute(compiled, null);
         }
         if (stdin) {
+            start(importPath(""));
             PyRuntime.setArgv("-", operands);
             return execute(Cpython314Compiler.compileSource(readStdin(), "<stdin>"), null);
         }
@@ -227,8 +226,53 @@ public final class jy3 {
             return USAGE_ERROR;
         }
         PyRuntime.setArgv(operands.get(0), operands.subList(1, operands.size()));
+        start(importPath(scriptDirectory(script)));
         Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(script);
         return execute(compiled.code(), compiled.fileName());
+    }
+
+    /** Bring the runtime up with this process's import path, and install the compiler it needs. */
+    private static void start(List<String> directories) {
+        PyRuntime.setSysPath(directories);
+        PyRuntime.startup();
+        // After startup, because the finders it installs go into the module table startup builds.
+        JavaInterop.install();
+        PyRuntime.setSourceCompiler(Cpython314Compiler::compileSource);
+    }
+
+    /**
+     * The first {@code sys.path} entry, then {@code PYTHONPATH}.
+     *
+     * <p>The reference puts the script's directory first, resolved through symlinks, and the empty
+     * string — the working directory — first for {@code -c} and stdin. {@code PYTHONPATH} follows in
+     * both cases, split on the platform's path separator. {@code -E} and {@code -I} are accepted and
+     * ignored, so {@code PYTHONPATH} is honoured even under them; that omission is named in the
+     * milestone notes.
+     */
+    private static List<String> importPath(String first) {
+        List<String> directories = new ArrayList<>();
+        directories.add(first);
+        String fromEnvironment = System.getenv("PYTHONPATH");
+        if (fromEnvironment != null) {
+            for (String entry : fromEnvironment.split(
+                    java.util.regex.Pattern.quote(java.io.File.pathSeparator))) {
+                if (!entry.isEmpty()) {
+                    directories.add(entry);
+                }
+            }
+        }
+        return directories;
+    }
+
+    /** The directory the script lives in, as the reference spells it in {@code sys.path[0]}. */
+    private static String scriptDirectory(Path script) {
+        try {
+            Path directory = script.toRealPath().getParent();
+            return directory == null ? "" : directory.toString();
+        } catch (IOException unreadable) {
+            Path directory = script.toAbsolutePath().getParent();
+            return directory == null ? "" : directory.toString();
+        }
     }
 
     /** CPython's own complaint about an option that lost its argument. */

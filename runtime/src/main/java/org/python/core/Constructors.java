@@ -149,6 +149,12 @@ final class Constructors {
         if (type == PyType.ELLIPSIS) {
             return theOneValue(PyEllipsis.INSTANCE, "EllipsisType", args, keywordNames);
         }
+        if (type == PyType.MODULE_SPEC) {
+            return PyModuleSpec.called(args, keywordNames);
+        }
+        if (type == PyType.SOURCE_FILE_LOADER) {
+            return PySourceFileLoader.called(args, keywordNames);
+        }
         if (IoBases.owns(type)) {
             return IoBases.instantiate(type, args, kwNames);
         }

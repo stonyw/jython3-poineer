@@ -7,11 +7,11 @@ import java.util.List;
  * {@code _frozen_importlib.BuiltinImporter}: the loader the reference files as the value of
  * {@code builtins.__loader__} and {@code sys.__loader__}.
  *
- * <p>Only the half of the loader that can be answered without a module spec is here. A name that is
- * not in {@code sys.builtin_module_names} is refused the way the reference refuses it, and the three
- * reads that are nothing but a constant — no code, no source, not a package — answer that constant.
- * Everything that would need a {@code ModuleSpec} or a module actually built from one is left to the
- * import system of M4, and says so rather than pretending.
+ * <p>A name that is not in {@code sys.builtin_module_names} is refused the way the reference refuses
+ * it, and the three reads that are nothing but a constant — no code, no source, not a package —
+ * answer that constant. The three that need a module spec now answer it: {@code find_spec} builds a
+ * spec with origin {@code 'built-in'}, {@code create_module} hands back the module this runtime
+ * already registered, and {@code load_module} asks the import system for that same module.
  *
  * <p>The class dictionary is built the long way, key by key, because {@code vars()} of the reference
  * class is a measured table: same fourteen names, same order, same docstrings.
@@ -89,19 +89,19 @@ final class BuiltinImporter {
                                                 + " instead.\n"
                                                 + "\n")));
         namespace.put(PyStr.interned("__static_attributes__"), PyTuple.of());
-        return (PyType)
-                Classes.newType(
-                        PyType.TYPE,
-                        new PyObject[] {
-                            PyStr.of("BuiltinImporter"), PyTuple.of(PyType.OBJECT), namespace
-                        },
-                        null);
+        return ((PyType)
+                        Classes.newType(
+                                PyType.TYPE,
+                                new PyObject[] {
+                                    PyStr.of("BuiltinImporter"), PyTuple.of(PyType.OBJECT), namespace
+                                },
+                                null))
+                .filedUnder("_frozen_importlib.BuiltinImporter");
     }
 
     /**
      * {@code find_spec(fullname, path=None, target=None)} of the load path: {@code None} for a name
-     * the built-in table does not hold, and the spec for one it does — which is M4's, because a spec
-     * is the type the import system brings with it.
+     * the built-in table does not hold, and the spec with origin {@code 'built-in'} for one it does.
      */
     private static PyObject findSpec(PyObject[] args, String[] kwNames) {
         PyObject[] values =
@@ -119,7 +119,7 @@ final class BuiltinImporter {
                     "is_builtin() argument must be str, not %s", Slots.argumentName(fullname));
         }
         if (PyRuntime.isBuiltinModuleName(((PyStr) fullname).getValue())) {
-            throw importSystem("find_spec");
+            return PyModuleSpec.builtin(((PyStr) fullname).getValue(), type());
         }
         return PyNone.INSTANCE;
     }
@@ -127,7 +127,8 @@ final class BuiltinImporter {
     /**
      * {@code create_module(spec)}: reads {@code spec.name} before anything else, which is why a value
      * with no name refuses as an attribute error and a name outside the built-in table as an import
-     * error. Building the module the name stands for needs the import system (M4).
+     * error. A built-in module is built when the interpreter starts, so the module to hand back is
+     * the one already in {@code sys.modules}.
      */
     private static PyObject createModule(PyObject[] args, String[] kwNames) {
         PyObject[] values =
@@ -141,7 +142,7 @@ final class BuiltinImporter {
         if (!builtin(name)) {
             throw notBuiltin(name);
         }
-        throw importSystem("create_module");
+        return PyRuntime.importModule(((PyStr) name).getValue());
     }
 
     /** {@code exec_module(module)}: nothing to run, because a built-in module has no code. */
@@ -188,9 +189,8 @@ final class BuiltinImporter {
     }
 
     /**
-     * {@code load_module(fullname)}: the deprecated shim, which reaches {@code is_package} through
-     * {@code spec_from_loader} and therefore refuses a name outside the built-in table before it can
-     * load anything.
+     * {@code load_module(fullname)}: the deprecated shim, which refuses a name outside the built-in
+     * table before it can load anything and otherwise answers the registered module.
      */
     private static PyObject loadModule(PyObject[] args, String[] kwNames) {
         PyObject fullname =
@@ -201,7 +201,7 @@ final class BuiltinImporter {
                         new String[] {"self", "fullname"},
                         2)[1];
         requireBuiltin(fullname);
-        throw importSystem("load_module");
+        return PyRuntime.importModule(((PyStr) fullname).getValue());
     }
 
     private static PyObject absent(PyObject fullname, String method) {
@@ -237,15 +237,6 @@ final class BuiltinImporter {
         return PyRaise.of(error);
     }
 
-    /** The one thing this loader cannot answer before M4 has given it a {@code ModuleSpec}. */
-    private static PyRaise importSystem(String method) {
-        return Slots.notImplemented(
-                "BuiltinImporter."
-                        + method
-                        + " for a built-in module (needs ModuleSpec, which the import system adds"
-                        + " at M4)");
-    }
-
     /**
      * Bind a frozen function's arguments the way Python's own binder does: positional first, then
      * keywords by name, then the reports for a name given twice, a name nobody declared, and the
@@ -253,8 +244,11 @@ final class BuiltinImporter {
      *
      * <p>{@code names} includes the receiver a classmethod prepends, because the reference counts it
      * in "takes N positional arguments".
+     *
+     * <p>Package-private because {@link PathFinder} answers the same calling convention, and the
+     * reference's two finders share one binder.
      */
-    private static PyObject[] bind(
+    static PyObject[] bind(
             String qualified,
             PyObject[] args,
             String[] kwNames,

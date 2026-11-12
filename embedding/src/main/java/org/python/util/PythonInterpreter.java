@@ -62,6 +62,9 @@ public class PythonInterpreter {
 
     /** An interpreter over a module this caller already has, which is how M4's REPL will resume one. */
     public PythonInterpreter(PyModule module) {
+        // The runtime reads imported source through this hand-in, because by design it cannot see the
+        // compiler itself; an embedder that imports a module needs the same one the launcher uses.
+        PyRuntime.setSourceCompiler(Cpython314Compiler::compileSource);
         JavaInterop.install();
         this.namespace = module;
     }

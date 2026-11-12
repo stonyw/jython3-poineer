@@ -126,7 +126,10 @@ final class Members {
             Map.entry(PyType.IO_BASE, IoBases.class),
             Map.entry(PyType.TEXT_IO_BASE, IoBases.class),
             Map.entry(PyType.RAW_IO_BASE, IoBases.class),
-            Map.entry(PyType.BUFFERED_IO_BASE, IoBases.class));
+            Map.entry(PyType.BUFFERED_IO_BASE, IoBases.class),
+            // Every spec the finder answers carries a loader of this class, and a program asks it for
+            // its filename before any module has been imported, so the table is filed by its value class.
+            Map.entry(PyType.SOURCE_FILE_LOADER, PySourceFileLoader.class));
 
     private final PyType owner;
 

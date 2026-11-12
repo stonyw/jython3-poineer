@@ -70,6 +70,22 @@ public final class PyRuntime {
     private static PyDict modules;
 
     /**
+     * The directories {@code import} searches, as the launcher set them: the script's directory first,
+     * then {@code PYTHONPATH}. {@code sys.path} is a list over this same value, so a program that
+     * rewrites the list is honoured and a program that reads it sees what this process started with.
+     */
+    private static List<String> sysPath = List.of("");
+
+    /**
+     * The compiler an imported source file goes through, installed by the layer that owns one.
+     *
+     * <p>The design rule that keeps {@code runtime} below {@code front} lives here: a finder can find
+     * a {@code .py} file and a loader can read it, but only the embedding layer can turn its text into
+     * code, so it hands that ability in rather than the runtime reaching up for it.
+     */
+    private static SourceCompiler sourceCompiler;
+
+    /**
      * One item of {@code tstate->exc_info}: the exception a handler is running for, and the item the
      * handler outside it was running for.
      *
@@ -135,13 +151,14 @@ public final class PyRuntime {
         modules.put(PyStr.interned("string.templatelib"), templateLib);
         modules.put(PyStr.interned("annotationlib"), annotationLib);
         // The two modules CPython builds during initialization are imported from built-in code, so
-        // their `__loader__` is the one loader that answers without a finder. `__spec__` stays None
-        // until the import system can build a ModuleSpec, which is the one remaining gap in these two
-        // dictionaries and is named as M4's.
+        // their loader is the one loader that answers without a finder, and their spec says the same:
+        // origin 'built-in', no search locations. The order of the three writes is the order the
+        // reference's dictionaries are measured in.
         for (PyModule builtIn : new PyModule[] {home, sysModule}) {
+            String name = ((PyStr) builtIn.get("__name__")).getValue();
             builtIn.set("__package__", PyStr.of(""));
             builtIn.set("__loader__", BuiltinImporter.type());
-            builtIn.set("__spec__", PyNone.INSTANCE);
+            builtIn.set("__spec__", PyModuleSpec.builtin(name, BuiltinImporter.type()));
         }
         belongTo(home);
         belongTo(sysModule);
@@ -328,16 +345,31 @@ public final class PyRuntime {
     /**
      * {@code import name}.
      *
-     * The two namespaces the runtime builds itself are the first answer, then whatever a milestone has
-     * installed: the interop module registers the finder that turns {@code java.util} into a package,
-     * and the M4 finder will add the one that walks {@code sys.path}. A name no finder owns is
-     * reported as missing rather than answered with an empty module.
+     * <p>The answer, in the order the reference asks it: a module already in {@code sys.modules},
+     * then {@code sys.meta_path} — each finder's {@code find_spec}, and the first spec that comes back
+     * is loaded — and only then whatever a milestone installed through {@link #addModuleFinder}. A name
+     * no finder owns is reported as missing rather than answered with an empty module.
+     *
+     * <p>{@code sys.meta_path} is read on every import rather than captured at startup, because a
+     * program is allowed to put a finder of its own there and expects it to be consulted.
      */
     public static PyObject importModule(String dotted) {
         startup();
         PyObject module = modules.get(PyStr.interned(dotted));
         if (module != null) {
             return module;
+        }
+        PyObject metaPath = sysAttribute("meta_path");
+        long findersInPath = Numbers.size(Slots.length(metaPath));
+        for (long i = 0; i < findersInPath; i++) {
+            PyObject finder = metaPath.getItem(PyInt.of(i));
+            PyObject found = Slots.call(
+                    Slots.getAttr(finder, "find_spec"),
+                    new PyObject[] {PyStr.of(dotted), PyNone.INSTANCE, PyNone.INSTANCE},
+                    null);
+            if (found instanceof PyModuleSpec spec) {
+                return load(spec);
+            }
         }
         for (ModuleFinder finder : finders) {
             PyObject found = finder.find(dotted);
@@ -351,6 +383,55 @@ public final class PyRuntime {
         throw PyRaise.raise(
                 ExceptionTypes.MODULE_NOT_FOUND_ERROR,
                 "No module named '" + dotted + "'");
+    }
+
+    /**
+     * {@code _load_unlocked}: build the module from the spec, file it, fill in the names every module
+     * carries, and run it.
+     *
+     * <p>The module is filed before it runs, which is what makes a module that imports itself answer
+     * rather than recurse. The attribute order is the reference's — {@code __package__},
+     * {@code __loader__}, {@code __spec__}, then the optional {@code __path__}, {@code __file__} and
+     * {@code __cached__} — because {@code dir()} and {@code __dict__} show it.
+     */
+    private static PyObject load(PyModuleSpec spec) {
+        String name = ((PyStr) Slots.getAttr(spec, "name")).getValue();
+        PyObject loader = Slots.getAttr(spec, "loader");
+        PyObject created = Slots.call(
+                Slots.getAttr(loader, "create_module"), new PyObject[] {spec}, null);
+        PyModule module = created instanceof PyModule made ? made : new PyModule(name);
+        modules.put(PyStr.interned(name), module);
+        initialiseAttributes(module, spec);
+        Slots.call(Slots.getAttr(loader, "exec_module"), new PyObject[] {module}, null);
+        return module;
+    }
+
+    /** {@code _init_module_attrs}: the six names a freshly built module takes from its spec. */
+    private static void initialiseAttributes(PyModule module, PyModuleSpec spec) {
+        if (module.get("__package__") == null) {
+            module.set("__package__", Slots.getAttr(spec, "parent"));
+        }
+        if (module.get("__loader__") == null) {
+            module.set("__loader__", Slots.getAttr(spec, "loader"));
+        }
+        if (module.get("__spec__") == null) {
+            module.set("__spec__", spec);
+        }
+        PyObject locations = Slots.getAttr(spec, "submodule_search_locations");
+        if (module.get("__path__") == null && !(locations instanceof PyNone)) {
+            // The list the spec holds, not a copy: `module.__path__ is spec.submodule_search_locations`
+            // is true in the reference, and a package that appends to one must move the other.
+            module.set("__path__", locations);
+        }
+        if (Slots.truth(Slots.getAttr(spec, "has_location"))) {
+            if (module.get("__file__") == null) {
+                module.set("__file__", Slots.getAttr(spec, "origin"));
+            }
+            PyObject cached = Slots.getAttr(spec, "cached");
+            if (module.get("__cached__") == null && !(cached instanceof PyNone)) {
+                module.set("__cached__", cached);
+            }
+        }
     }
 
     /**
@@ -537,6 +618,49 @@ public final class PyRuntime {
         sysModule.set(name, value);
     }
 
+    /**
+     * The directories this process searches for imports, in order.
+     *
+     * <p>The launcher calls this before {@link #startup()}: the first entry is the script's directory
+     * (or the empty string, which means the working directory, for {@code -c} and stdin), and
+     * {@code PYTHONPATH} follows. A later call is honoured too, because an embedder may have its own
+     * idea of where modules live.
+     */
+    public static void setSysPath(List<String> directories) {
+        sysPath = List.copyOf(directories);
+        if (sysModule != null) {
+            sysModule.set("path", pathList());
+        }
+    }
+
+    private static PyList pathList() {
+        PyObject[] entries = new PyObject[sysPath.size()];
+        for (int i = 0; i < entries.length; i++) {
+            entries[i] = PyStr.of(sysPath.get(i));
+        }
+        return PyList.of(entries);
+    }
+
+    /**
+     * Install the compiler that turns an imported file's text into code.
+     *
+     * <p>Package-private in spirit but public in fact because the embedding module is another package;
+     * it is the one upward edge {@code runtime} is allowed, and it is a value handed down, not a type
+     * depended on.
+     */
+    public static void setSourceCompiler(SourceCompiler compiler) {
+        sourceCompiler = compiler;
+    }
+
+    /** Compile the text of an imported file with the installed compiler. */
+    static PyCode compileSource(String source, String fileName) {
+        if (sourceCompiler == null) {
+            throw Slots.notImplemented(
+                    "importing a source file needs a compiler (setSourceCompiler)");
+        }
+        return sourceCompiler.compile(source, fileName);
+    }
+
     /** Drain both streams, which a process about to exit must do because stdout is block-buffered. */
     public static void flushStreams() {
         if (stdout != null) {
@@ -596,7 +720,11 @@ public final class PyRuntime {
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("version_info", PyVersionInfo.current());
         sys.set("argv", PyList.of(PyStr.of("jy3")));
-        sys.set("path", PyList.empty());
+        sys.set("path", pathList());
+        // The reference's meta_path has three entries; this runtime has no frozen importer because it
+        // has no frozen modules, and names that omission in the milestone notes. The other two are the
+        // order the reference searches them in, which is what `import` walks below.
+        sys.set("meta_path", PyList.of(BuiltinImporter.type(), PathFinder.type()));
         sys.set("modules", modules);
         sys.set("builtin_module_names",
                 PyTuple.of(PyStr.of("builtins"), PyStr.of("sys")));

@@ -588,6 +588,22 @@ public class PyType extends PyObject {
     public static final PyType GENERIC_ALIAS =
             builtin("GenericAlias").filedUnder("types.GenericAlias");
 
+    /**
+     * The two classes the import system hands a program as values: the spec a finder answers with and
+     * the loader that reads a file.
+     *
+     * <p>They are filed under the frozen modules that define them, because that is the name the
+     * reference's {@code repr} and {@code __module__} show — {@code <class
+     * '_frozen_importlib.ModuleSpec'>} — and a script that prints the type of a loader is asking
+     * exactly that question.
+     */
+    public static final PyType MODULE_SPEC =
+            builtin("ModuleSpec").filedUnder("_frozen_importlib.ModuleSpec");
+
+    public static final PyType SOURCE_FILE_LOADER =
+            builtin("SourceFileLoader")
+                    .filedUnder("_frozen_importlib_external.SourceFileLoader");
+
     /** The five sentences {@code _io} writes above its five classes, transcribed from the reference. */
 
     private static final String IOBASE_DOC =
