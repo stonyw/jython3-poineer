@@ -1338,6 +1338,32 @@ public class PyType extends PyObject {
                     .documented("sys.version_info\n\nVersion information as a named tuple.");
 
     /**
+     * {@code time.struct_time}: the named sequence {@code gmtime} and {@code localtime} answer with.
+     *
+     * <p>It is the one named sequence CPython lets a program construct, and the constructor takes the
+     * nine-item sequence the fields are read from plus an optional dictionary naming {@code tm_zone} and
+     * {@code tm_gmtoff}. {@link Constructors#instantiate} sends the call to {@link PyStructTime#called}.
+     */
+    public static final PyType STRUCT_TIME =
+            sequence("time.struct_time")
+                    .documented("struct_time(iterable, /)\n--\n\nThe time value as returned by"
+                            + " gmtime(), localtime(), and strptime(), and  accepted by asctime(),"
+                            + " strftime() and mktime().  It is a sequence of 9 integers.");
+
+    /**
+     * {@code codecs.CodecInfo}: the four-item tuple {@code _codecs.lookup} answers with.
+     *
+     * <p>{@code codecs.py} cannot be imported until tuple subclassing lands, so this type is built in
+     * Java and filed under the name that module would have given it. Unlike the reference's own
+     * {@code CodecInfo} it is a named sequence over the four items, and the remaining three names are
+     * fields of {@link PyCodecInfo}.
+     */
+    public static final PyType CODEC_INFO =
+            sequence("codecs.CodecInfo")
+                    .documented("CodecInfo(encode, decode, streamreader=None, streamwriter=None,"
+                            + " incrementalencoder=None, incrementaldecoder=None, name=None)");
+
+    /**
      * {@code types.SimpleNamespace}, the type {@code sys.implementation} reports.
      *
      * <p>It is filed under {@code types} for the name {@code type(ns)} prints, and declared without a
@@ -1486,7 +1512,15 @@ public class PyType extends PyObject {
      * message about the type quotes the name in full — including in {@code <class 'sys.version_info'>}.
      */
     private static PyType namedSequence(String filedName) {
-        PyType type = new PyType(tailOf(filedName), TUPLE).withoutNew();
+        return sequence(filedName).withoutNew();
+    }
+
+    /**
+     * A tuple subclass filed under a dotted name, which {@link #namedSequence} makes unconstructible and
+     * {@code time.struct_time} leaves callable.
+     */
+    private static PyType sequence(String filedName) {
+        PyType type = new PyType(tailOf(filedName), TUPLE);
         type.filedName = filedName;
         type.type = TYPE;
         return type;

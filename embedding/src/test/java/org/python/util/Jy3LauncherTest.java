@@ -463,7 +463,8 @@ class Jy3LauncherTest {
                 "14_stdlib_reprlib.py",
                 "15_stdlib_struct_base64.py",
                 "16_dict_subclasses.py",
-                "17_enum_types.py");
+                "17_enum_types.py",
+                "18_stdlib_codecs_errno_math_time.py");
     }
 
     private static List<String> m3Corpus() {

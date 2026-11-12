@@ -74,6 +74,11 @@ final class Members {
             // The one named sequence is declared by its value class too, so that asking the type for a
             // field works before the interpreter has built the value it files.
             Map.entry(PyType.VERSION_INFO, PyVersionInfo.class),
+            // `time.struct_time` is the other named sequence, and its table is read through the type for the
+            // same reason: `struct_time.n_fields` answers before `gmtime` has ever been called.
+            Map.entry(PyType.STRUCT_TIME, PyStructTime.class),
+            // The seven-item registry entry, which `_codecs` builds without the `codecs` module.
+            Map.entry(PyType.CODEC_INFO, PyCodecInfo.class),
             // A slice is made by the compiler for every extended subscript, but a program can ask the type
             // for its two rows before any value exists, so `PySlice` is loaded to file them.
             Map.entry(PyType.SLICE, PySlice.class),

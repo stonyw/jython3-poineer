@@ -218,6 +218,12 @@ final class Constructors {
         if (type == PyType.WEAK_REFERENCE) {
             return Weakref.newRef(args, keywordNames);
         }
+        if (type == PyType.STRUCT_TIME) {
+            return PyStructTime.called(args, kwNames);
+        }
+        if (type == PyType.CODEC_INFO) {
+            return PyCodecInfo.called(args, kwNames);
+        }
         if (IoBases.owns(type)) {
             return IoBases.instantiate(type, args, kwNames);
         }
