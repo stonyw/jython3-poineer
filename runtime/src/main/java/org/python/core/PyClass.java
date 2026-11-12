@@ -94,6 +94,26 @@ public class PyClass extends PyType {
         slotLayout = slots;
     }
 
+    /**
+     * Whether {@code __abstractmethods__} was set to a non-empty value on this class.
+     *
+     * <p>CPython's {@code Py_TPFLAGS_IS_ABSTRACT} is not a property of the class body: a class whose
+     * namespace already holds {@code __abstractmethods__} is born without the bit, and only
+     * {@code type_set_abstractmethods} — the setter behind the attribute — sets or clears it. {@code
+     * abc.ABCMeta} writes that attribute after the class exists, which is why the flag follows the
+     * setter and not the namespace.
+     */
+    private boolean abstract_;
+
+    /** Told to it by the {@code __abstractmethods__} setter; see {@link #abstract_}. */
+    void markAbstract(boolean isAbstract) {
+        abstract_ = isAbstract;
+    }
+
+    boolean isAbstract() {
+        return abstract_;
+    }
+
     /** This class's part of CPython's {@code tp_basicsize}; see {@link #instanceSize}. */
     int instanceSize() {
         return instanceSize;

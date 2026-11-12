@@ -1016,9 +1016,13 @@ final class Classes {
         return held.instanceSize() == size(base) ? base : type;
     }
 
-    /** CPython's {@code tp_basicsize} as this runtime models it: sixteen for a compiled-in root. */
+    /**
+     * CPython's {@code tp_basicsize} as this runtime models it: the class's own instance shape, or the
+     * compiled-in type's measured size — {@code int} is 24 bytes, {@code type} 936 — which is what makes
+     * {@code class MyInt(int)} report the same {@code __basicsize__} the reference does.
+     */
     private static int size(PyType type) {
-        return type instanceof PyClass held ? held.instanceSize() : 16;
+        return TypeLayout.basicsize(type);
     }
 
     /**

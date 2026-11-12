@@ -1158,9 +1158,9 @@ final class TypeDict {
         table.put("__subclasscheck__", SUBCLASS_CHECK);
         table.method("__dir__", TYPE_DIR_DOC, TypeDict::typeDir);
         table.method("__sizeof__", TYPE_SIZEOF_DOC, TypeDict::typeSize);
-        table.member("__basicsize__");
-        table.member("__itemsize__");
-        table.member("__flags__");
+        table.member("__basicsize__", self -> PyInt.of(TypeLayout.basicsize((PyType) self)));
+        table.member("__itemsize__", self -> PyInt.of(TypeLayout.itemsize((PyType) self)));
+        table.member("__flags__", self -> PyInt.of(TypeLayout.flags((PyType) self)));
         table.member("__weakrefoffset__");
         table.member("__base__", TypeDict::baseOf);
         table.member("__dictoffset__");
@@ -1173,7 +1173,7 @@ final class TypeDict {
                 "__abstractmethods__",
                 null,
                 TypeDict::abstractMethods,
-                filesAnyBook("__abstractmethods__"));
+                filesAbstractMethods());
         table.getset("__dict__", null, TypeDict::dictOf, null);
         table.getset("__doc__", null, TypeDict::docOf, writes("__doc__"));
         table.getset("__text_signature__", null, TypeDict::signatureOfKind, null);
@@ -5456,8 +5456,8 @@ final class TypeDict {
     /**
      * The setter of a name a class keeps in its own dictionary and can take back out again.
      *
-     * <p>{@code __annotations__} is the one left here, and it shares with {@link #filesAnyBook(String)} the
-     * answer that is not any other name's: a delete of a filing that is not there is the bare {@code
+     * <p>{@code __annotations__} is the one left here, and it shares with {@link #filesAbstractMethods()}
+     * the answer that is not any other name's: a delete of a filing that is not there is the bare {@code
      * AttributeError} naming the attribute, because CPython raises it from inside the setter when {@code
      * PyDict_Pop} reports nothing removed. A write takes any value at all.
      *
@@ -5490,8 +5490,17 @@ final class TypeDict {
      * no such name, which is why {@code del C.__abstractmethods__} on a class that never set one names the
      * attribute instead of the type.
      */
-    private static PyGetSetDescriptor.Setter filesAnyBook(String name) {
-        return (target, value) -> fileInto(((PyType) target).namespace(), name, value);
+    private static PyGetSetDescriptor.Setter filesAbstractMethods() {
+        return (target, value) -> {
+            PyDict book = ((PyType) target).namespace();
+            fileInto(book, "__abstractmethods__", value);
+            // type_set_abstractmethods flips Py_TPFLAGS_IS_ABSTRACT with the filing: a class is born
+            // without the bit even when its namespace already names __abstractmethods__, and only a
+            // write through this setter — what abc.ABCMeta does after the class exists — sets it.
+            if (target instanceof PyClass held) {
+                held.markAbstract(value != null && Slots.truth(value));
+            }
+        };
     }
 
     /** The two halves every {@code files} setter ends with: take the name away, or put a value under it. */
@@ -6801,9 +6810,14 @@ final class TypeDict {
      * below it, and the instance dictionary as the state in both cases.
      */
     private static PyObject reduceRecipe(PyObject value, int protocol) {
+        PyType kind = value.getType();
+        if (protocol < 2 && refusesSlotsState(kind)) {
+            throw Slots.typeError(
+                    "a class that defines __slots__ without defining __getstate__ cannot be"
+                            + " pickled");
+        }
         PyObject state = instanceState(value);
         PyObject copyreg = PyRuntime.importModule("copyreg");
-        PyType kind = value.getType();
         if (protocol >= 2) {
             PyObject newobj = copyreg.getAttr("__newobj__");
             return PyTuple.of(
@@ -6821,13 +6835,49 @@ final class TypeDict {
     }
 
     /**
-     * {@code object.__getstate__()}: the instance dictionary, or {@code None} when there is none.
+     * Whether a class with slots refuses the protocols below two, the way {@code copyreg._reduce_ex}
+     * refuses it.
      *
-     * <p>A built-in value and a subclass of one answer {@code None} here, which is what the reference
-     * does: the state of a {@code list} is its items and of a {@code dict} its entries, and neither is
-     * part of this question.
+     * <p>What makes the recipe impossible is the pair of facts the reference asks about: the class
+     * declares a non-empty {@code __slots__}, so the values live outside the dictionary the recipe
+     * would carry, and it inherits {@code object.__getstate__}, so nothing describes them. A class
+     * that writes its own {@code __getstate__} answers, and one whose {@code __slots__} is empty has
+     * no extra state to lose.
+     */
+    private static boolean refusesSlotsState(PyType kind) {
+        PyObject slots = Specials.member(kind, "__slots__");
+        if (slots == null || !Slots.truth(slots)) {
+            return false;
+        }
+        PyObject getstate = Specials.member(kind, "__getstate__");
+        return getstate == null || getstate == objectGetstateRow();
+    }
+
+    /** The {@code __getstate__} row {@code object} files, which every class inherits unchanged. */
+    private static PyObject objectGetstateRow() {
+        return PyType.OBJECT.namespace().get(PyStr.interned("__getstate__"));
+    }
+
+    /**
+     * The state an instance contributes to its reduce recipe: its own {@code __getstate__} when the
+     * class writes one, or {@code object.__getstate__}'s answer otherwise.
+     *
+     * <p>The two are not the same question. A class that writes {@code __getstate__} decides what its
+     * copy carries — the slots test is a class whose state is a dictionary built from its slots — and
+     * the recipe asks it before anything else. The inherited one answers with the instance dictionary
+     * when there is a non-empty one and {@code None} otherwise, which is what a plain instance with no
+     * attributes contributes.
      */
     private static PyObject stateOf(PyObject value) {
+        PyObject getstate = Specials.member(value.getType(), "__getstate__");
+        if (getstate != null && getstate != objectGetstateRow()) {
+            return Slots.call(Slots.getAttr(value, "__getstate__"), new PyObject[0], null);
+        }
+        return instanceDictState(value);
+    }
+
+    /** {@code object.__getstate__} as this runtime models it: the instance dictionary, or {@code None}. */
+    private static PyObject instanceDictState(PyObject value) {
         PyObject found = Slots.findAttr(value, "__dict__");
         return found instanceof PyDict held && held.size() > 0 ? held : PyNone.INSTANCE;
     }
