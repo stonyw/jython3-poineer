@@ -246,6 +246,16 @@ public final class ExceptionTypes {
     public static final PyType UNSUPPORTED_OPERATION =
             child("UnsupportedOperation", OS_ERROR, VALUE_ERROR).filedUnder("io.UnsupportedOperation");
 
+    /** {@code struct.error}, the one exception {@code _struct} declares. */
+    public static final PyType STRUCT_ERROR = child("error", EXCEPTION).filedUnder("struct.error");
+
+    /** {@code binascii.Error}, a {@code ValueError} subclass whose constructor refuses arguments. */
+    public static final PyType BINASCII_ERROR = child("Error", VALUE_ERROR).filedUnder("binascii.Error");
+
+    /** {@code binascii.Incomplete}, raised when a base64 run ends in the middle of a group. */
+    public static final PyType BINASCII_INCOMPLETE =
+            child("Incomplete", EXCEPTION).filedUnder("binascii.Incomplete");
+
     /**
      * {@code Warning} and the eleven categories {@code warnings.warn} sorts a message by.
      *

@@ -173,6 +173,9 @@ final class Constructors {
         if (type == PyType.R_LOCK) {
             return ThreadModule.reentrant(args, keywordNames);
         }
+        if (type == PyType.STRUCT) {
+            return StructModule.compile(args, keywordNames);
+        }
         if (type == PyType.PROPERTY) {
             return property(args, keywordNames);
         }

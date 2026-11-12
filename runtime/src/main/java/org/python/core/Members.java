@@ -81,6 +81,9 @@ final class Members {
             // the three fields beside them are read from the same table, so `PyRange` is loaded to file all
             // seven.
             Map.entry(PyType.RANGE, PyRange.class),
+            // `_struct.Struct` files two fields and five methods; the module that compiled the format
+            // owns the class, so its table is loaded whenever the type is asked about.
+            Map.entry(PyType.STRUCT, StructModule.Struct.class),
             // Both cursors a range hands out declare the same three rows, over two bodies, so one class
             // files both tables — and `range_iterator.__setstate__` is askable before a cursor exists.
             Map.entry(PyType.RANGE_ITERATOR, RangeIterators.class),
@@ -398,6 +401,12 @@ final class Members {
      */
     Members addField(String name, String doc) {
         fields.put(name, new PyMemberDescriptor(owner, name, fields.size(), doc));
+        return this;
+    }
+
+    /** A field read by a body rather than by an index into the value's items. */
+    Members addField(String name, String doc, PyMemberDescriptor.Reader reader) {
+        fields.put(name, new PyMemberDescriptor(owner, name, doc, reader, null));
         return this;
     }
 

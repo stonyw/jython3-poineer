@@ -1309,6 +1309,14 @@ public class PyType extends PyObject {
     static final PyType LOCK = builtin("lock").filedUnder("_thread.lock");
     static final PyType R_LOCK = builtin("RLock").filedUnder("_thread.RLock");
 
+    /** {@code _struct.Struct}: one compiled format, made by the module rather than by a Python class. */
+    static final PyType STRUCT = builtin("Struct").filedUnder("_struct.Struct")
+            .documented("Struct(fmt) --> compiled struct object\n\n");
+
+    /** {@code _struct.unpack_iterator}: what {@code Struct.iter_unpack} answers. */
+    static final PyType UNPACK_ITERATOR =
+            builtin("unpack_iterator").filedUnder("_struct.unpack_iterator");
+
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was

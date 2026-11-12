@@ -1315,8 +1315,26 @@ public final class PyMemoryView extends PyObject {
         }
     }
 
+    /** The number of octets the window spans, which {@code _struct} measures a writable buffer by. */
+    int byteLength() {
+        return nbytes();
+    }
+
+    /** Write octets through the window, element by element so a cast view keeps its layout. */
+    void writeWindow(int at, byte[] source, int from, int count) {
+        check();
+        if (readonly) {
+            throw Slots.typeError("write to read-only memoryview");
+        }
+        for (int i = 0; i < count; i++) {
+            int flat = at + i;
+            int within = flat % itemsize;
+            writeOctet(position(flat / itemsize) + within, source[from + i] & 0xff);
+        }
+    }
+
     /** A copy of the octets a buffer argument exports, in the order the argument presents them. */
-    private static byte[] bufferOctets(PyObject value) {
+    static byte[] bufferOctets(PyObject value) {
         if (value instanceof PyBytes || value instanceof PyByteArray) {
             return PyBytes.octets(value).clone();
         }

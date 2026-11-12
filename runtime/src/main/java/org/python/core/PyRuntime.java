@@ -42,7 +42,8 @@ public final class PyRuntime {
      * extension modules, which are imports this runtime answers in Java instead.
      */
     private static final String[] BUILTIN_MODULE_NAMES =
-            {"builtins", "sys", "_io", "_types", "_weakref", "itertools", "_thread"};
+            {"builtins", "sys", "_io", "_types", "_weakref", "itertools", "_thread", "_struct",
+                "binascii"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -164,6 +165,8 @@ public final class PyRuntime {
         // standard-library module written in Python run on top of this runtime's own machinery.
         PyModule itertoolsModule = Itertools.newModule();
         PyModule threadModule = ThreadModule.newModule();
+        PyModule structModule = StructModule.newModule();
+        PyModule binasciiModule = BinasciiModule.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -175,6 +178,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_weakref"), weakrefModule);
         modules.put(PyStr.interned("itertools"), itertoolsModule);
         modules.put(PyStr.interned("_thread"), threadModule);
+        modules.put(PyStr.interned("_struct"), structModule);
+        modules.put(PyStr.interned("binascii"), binasciiModule);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -198,6 +203,8 @@ public final class PyRuntime {
         belongTo(weakrefModule);
         belongTo(itertoolsModule);
         belongTo(threadModule);
+        belongTo(structModule);
+        belongTo(binasciiModule);
         belongTo(stringPackage);
     }
 
