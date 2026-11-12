@@ -115,8 +115,39 @@ public final class PyBoundMethod extends PyObject {
             case "__doc__" -> function != null
                     ? function.getAttr("__doc__")
                     : PyNativeFunction.docOf(name, doc);
+            // `method_get`: a bound method of a Python function is a descriptor, but since gh-113157
+            // `a.meth.__get__(b, B)` does not rebind — it answers a fresh method still bound to `a`, so
+            // the call is only the argument check and the one refusal, `__get__(None)`. A built-in method
+            // has no `__get__` at all.
+            case "__get__" -> function == null
+                    ? Slots.DECLINED
+                    : new PyNativeFunction("__get__", (args, kwNames) -> rebind(args, kwNames));
             default -> Slots.DECLINED;
         };
+    }
+
+    /**
+     * {@code method_get}: {@code ($self, instance, owner=None, /)}.
+     *
+     * <p>Since gh-113157 a method of a Python function does not rebind: the answer is a bound method
+     * naming the receiver it was already bound to, whatever instance and owner were given. The whole
+     * of the call is therefore the argument check and the one refusal — {@code __get__(None)} with no
+     * owner names nothing to bind to. A built-in method never reaches here: it has no {@code __get__}.
+     */
+    private PyObject rebind(PyObject[] args, String[] kwNames) {
+        if (kwNames != null) {
+            throw Slots.typeError("wrapper __get__() takes no keyword arguments");
+        }
+        if (args.length < 1) {
+            throw Slots.typeError("__get__ expected at least 1 argument, got 0");
+        }
+        if (args.length > 2) {
+            throw Slots.typeError("__get__ expected at most 2 arguments, got %d", args.length);
+        }
+        if (args[0] == PyNone.INSTANCE && (args.length < 2 || args[1] == PyNone.INSTANCE)) {
+            throw Slots.typeError("__get__(None, None) is invalid");
+        }
+        return new PyBoundMethod(target, function);
     }
 
     @Override

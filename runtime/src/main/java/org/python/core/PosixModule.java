@@ -17,8 +17,11 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
+import java.util.EnumSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -430,6 +433,27 @@ final class PosixModule {
                     }
                     return PyNone.INSTANCE;
                 }));
+        // The reference also takes `dir_fd` and `follow_symlinks` as keyword-only arguments; neither
+        // has anything to change here, because there is no directory-fd notion and the Java call
+        // follows a link the way the reference's default does — so both are left out of the signature
+        // rather than accepted and ignored.
+        module.set("chmod", function(
+                "chmod",
+                "chmod($module, path, mode, /)\n--\n\n"
+                        + "Change the access permissions of a file.",
+                (args, kwNames) -> {
+                    PyObject[] values = Arguments.parameters(
+                            "chmod", args, kwNames, PATH_AND_MODE,
+                            new PyObject[] {null, null}, 2);
+                    FsPath path = fsPath(values[0], "chmod");
+                    int mode = Numbers.asIndex(values[1]).intValueExact();
+                    try {
+                        Files.setPosixFilePermissions(resolve(path.text()), permissions(mode));
+                    } catch (IOException e) {
+                        throw failure(e, path);
+                    }
+                    return PyNone.INSTANCE;
+                }));
         module.set("rmdir", function(
                 "rmdir",
                 "rmdir($module, path, *, dir_fd=None)\n--\n\nRemove a directory.",
@@ -686,6 +710,33 @@ final class PosixModule {
             return false;
         }
         return (mode & 1) == 0 || Files.isExecutable(path);
+    }
+
+    /**
+     * The nine permission bits of {@code mode}, in the form {@link Files} writes them.
+     *
+     * <p>The setuid, setgid and sticky bits have no counterpart here and are dropped: a JVM cannot set
+     * them, and {@code chmod} is only ever asked for the rwx triad by the standard library.
+     */
+    private static Set<PosixFilePermission> permissions(int mode) {
+        EnumSet<PosixFilePermission> perms = EnumSet.noneOf(PosixFilePermission.class);
+        PosixFilePermission[] order = {
+            PosixFilePermission.OWNER_READ,
+            PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.OWNER_EXECUTE,
+            PosixFilePermission.GROUP_READ,
+            PosixFilePermission.GROUP_WRITE,
+            PosixFilePermission.GROUP_EXECUTE,
+            PosixFilePermission.OTHERS_READ,
+            PosixFilePermission.OTHERS_WRITE,
+            PosixFilePermission.OTHERS_EXECUTE,
+        };
+        for (int i = 0; i < order.length; i++) {
+            if ((mode & (1 << (8 - i))) != 0) {
+                perms.add(order[i]);
+            }
+        }
+        return perms;
     }
 
     private static Path resolve(String path) {

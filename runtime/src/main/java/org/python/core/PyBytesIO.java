@@ -24,6 +24,7 @@ final class PyBytesIO extends PyIOStream {
             .add("tell", PyBytesIO::tell)
             .add("truncate", PyBytesIO::truncate)
             .add("getvalue", PyBytesIO::getvalue)
+            .add("getbuffer", PyBytesIO::getbuffer)
             .add("isatty", PyBytesIO::isatty)
             .add("readable", PyBytesIO::readable)
             .add("writable", PyBytesIO::writable)
@@ -285,6 +286,20 @@ final class PyBytesIO extends PyIOStream {
         PyBytesIO stream = (PyBytesIO) self;
         stream.checkOpen();
         return PyBytes.wrap(Arrays.copyOf(stream.data, stream.length));
+    }
+
+    /**
+     * {@code getbuffer()}: the octets written so far as a view over the stream.
+     *
+     * <p>The reference hands out a writable view that stays tied to the stream. Nothing here exports a
+     * live window into the growable array, so the view is taken over a copy: it reads and measures what
+     * the stream held at the moment of the call, which is what the pickler's framing needs.
+     */
+    private static PyObject getbuffer(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.none("getbuffer", args, kwNames);
+        PyBytesIO stream = (PyBytesIO) self;
+        stream.checkOpen();
+        return PyMemoryView.of(PyBytes.wrap(Arrays.copyOf(stream.data, stream.length)));
     }
 
     private static PyObject isatty(PyObject self, PyObject[] args, String[] kwNames) {

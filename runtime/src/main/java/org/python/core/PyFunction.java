@@ -462,6 +462,11 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__type_params__" -> typeParams;
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
+            // `func.__call__` is the function itself under another name: CPython hands out a fresh
+            // method-wrapper each read, and calling it vectorcalls the very same function. The pickler and
+            // `test_wrapper_segfault` both read this name rather than calling the function directly.
+            case "__call__" -> new PyNativeFunction(
+                    "__call__", (args, kwNames) -> call(args, PyBoundMethod.keywordTuple(kwNames)));
             default -> {
                 PyObject held =
                         attributes == null ? null : attributes.get(PyStr.interned(attribute));
