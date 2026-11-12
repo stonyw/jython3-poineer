@@ -3,6 +3,7 @@ package org.python.core;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -42,7 +43,8 @@ public final class PyRuntime {
      * extension modules, which are imports this runtime answers in Java instead.
      */
     private static final String[] BUILTIN_MODULE_NAMES =
-            {"builtins", "sys", "_ast", "_io", "_types", "_weakref", "itertools", "_thread",
+            {"builtins", "sys", "_ast", "_io", "_tokenize", "_opcode", "_signal", "_types", "_weakref",
+                "itertools", "_thread",
                 "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
@@ -77,6 +79,14 @@ public final class PyRuntime {
      * rewrites the list is honoured and a program that reads it sees what this process started with.
      */
     private static List<String> sysPath = List.of("");
+
+    /**
+     * What {@code sys.getrecursionlimit} answers, which is a number this runtime stores and does not act
+     * on: frames live on the JVM's stack, so depth is bounded by the thread's own size rather than by
+     * this value. The reference's default is 1000, and it is what a program reads here until it sets
+     * another.
+     */
+    private static int recursionLimit = 1000;
 
     /**
      * The compiler an imported source file goes through, installed by the layer that owns one.
@@ -161,6 +171,10 @@ public final class PyRuntime {
         PyModule ioModule = Io.newModule();
         // The one name `tokenize.py` takes from C, which is what `traceback.py` imports at module scope.
         PyModule tokenizeModule = TokenizeModule.newModule();
+        // The C half of `opcode`, which `dis` imports and `inspect` reaches through it.
+        PyModule opcodeModule = OpcodeModule.newModule();
+        // The C half of `signal`, which `unittest` reaches through `unittest.signals`.
+        PyModule signalModule = SignalModule.newModule();
         // The two module objects whose names are types this runtime already had, and the seven the
         // class system cannot make yet: they are gathered here so that a program can ask a type's name
         // and module without importing the Python wrapper, `types` or `weakref`.
@@ -200,6 +214,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("zipimport"), zipImport);
         modules.put(PyStr.interned("_io"), ioModule);
         modules.put(PyStr.interned("_tokenize"), tokenizeModule);
+        modules.put(PyStr.interned("_opcode"), opcodeModule);
+        modules.put(PyStr.interned("_signal"), signalModule);
         modules.put(PyStr.interned("_types"), typesModule);
         modules.put(PyStr.interned("_weakref"), weakrefModule);
         modules.put(PyStr.interned("itertools"), itertoolsModule);
@@ -239,6 +255,7 @@ public final class PyRuntime {
         belongTo(zipImport);
         belongTo(ioModule);
         belongTo(tokenizeModule);
+        belongTo(signalModule);
         belongTo(typesModule);
         belongTo(weakrefModule);
         belongTo(itertoolsModule);
@@ -1110,16 +1127,19 @@ public final class PyRuntime {
     /**
      * {@code sys.flags}: the interpreter's start-up switches.
      *
-     * <p>Only {@code context_aware_warnings} is answered, because it is the only member this tree
-     * reads: {@code _py_warnings} asks it once at module scope to decide whether {@code
-     * catch_warnings} keeps its filters in a context variable or in the global list. The value is 0,
-     * the reference's without {@code -X context_aware_warnings}, so the global list is the path taken.
-     * The rest of the reference's members — {@code verbose}, {@code utf8_mode} and the others — are
-     * not answered yet, and the milestone notes name the gap.
+     * <p>Only {@code context_aware_warnings} and {@code ignore_environment} are answered, because they
+     * are the only members this tree reads: {@code _py_warnings} asks the first once at module scope to
+     * decide whether {@code catch_warnings} keeps its filters in a context variable or in the global
+     * list, and {@code _colorize.can_colorize} asks the second before it looks at
+     * {@code PYTHON_COLORS}. Both values are 0 — the reference's without {@code -X
+     * context_aware_warnings} and without {@code -E} respectively — so the global filter list and the
+     * environment are the paths taken. The rest of the reference's members — {@code verbose},
+     * {@code utf8_mode} and the others — are not answered yet, and the milestone notes name the gap.
      */
     private static PyNamespace flags() {
         PyNamespace namespace = new PyNamespace();
         namespace.set("context_aware_warnings", PyInt.of(0));
+        namespace.set("ignore_environment", PyInt.of(0));
         return namespace;
     }
 
@@ -1204,6 +1224,8 @@ public final class PyRuntime {
                         PyStr.of("_ast"),
                         PyStr.of("_io"),
                         PyStr.of("_tokenize"),
+                        PyStr.of("_opcode"),
+                        PyStr.of("_signal"),
                         PyStr.of("_types"),
                         PyStr.of("_weakref"),
                         PyStr.of("posix"),
@@ -1250,6 +1272,44 @@ public final class PyRuntime {
                         + "\n"
                         + "This enters the string in the (global) table of interned strings whose\n"
                         + "purpose is to speed up dictionary lookups."));
+        // `inspect.unwrap` reads this while `dataclasses` builds a class, which is the first thing
+        // `unittest` imports that asks. The interpreter's stack is Java's, so the number is bookkeeping:
+        // a program that raises it may still overflow where the reference would not, and the milestone
+        // notes say so.
+        sys.set("getrecursionlimit", noArguments(
+                "getrecursionlimit", () -> PyInt.of(recursionLimit),
+                "getrecursionlimit($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the current value of the recursion limit.\n"
+                        + "\n"
+                        + "The recursion limit is the maximum depth of the Python interpreter\n"
+                        + "stack.  This limit prevents infinite recursion from causing an overflow\n"
+                        + "of the C stack and crashing Python."));
+        sys.set("setrecursionlimit", new PyNativeFunction(
+                        "setrecursionlimit",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("setrecursionlimit", args, kwNames);
+                            BigInteger asked = Numbers.asIndex(args[0]);
+                            if (asked.bitLength() > 31) {
+                                throw Slots.overflowError(
+                                        "Python int too large to convert to C int");
+                            }
+                            if (asked.signum() <= 0) {
+                                throw Slots.valueError(
+                                        "recursion limit must be greater or equal than 1");
+                            }
+                            recursionLimit = asked.intValue();
+                            return PyNone.INSTANCE;
+                        })
+                .documented("setrecursionlimit($module, limit, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set the maximum depth of the Python interpreter stack to n.\n"
+                        + "\n"
+                        + "This limit prevents infinite recursion from causing an overflow of the C\n"
+                        + "stack and crashing Python.  The highest possible limit is platform-\n"
+                        + "dependent."));
         sys.set(
                 "exc_info",
                 noArguments(

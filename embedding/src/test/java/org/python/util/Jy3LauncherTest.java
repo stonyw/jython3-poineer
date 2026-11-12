@@ -517,7 +517,8 @@ class Jy3LauncherTest {
                 "05_contextlib_paths.py",
                 "06_weakref_ref_subclass.py",
                 "07_copy_module.py",
-                "08_eval_partial_and_gc.py");
+                "08_eval_partial_and_gc.py",
+                "09_unittest_minimal.py");
     }
 
     /**

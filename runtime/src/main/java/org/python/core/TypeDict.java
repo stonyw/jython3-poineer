@@ -1002,16 +1002,19 @@ final class TypeDict {
     }
 
     /**
-     * {@code GenericAlias}'s own dictionary: the creator, and nothing else.
+     * {@code GenericAlias}'s own dictionary: the creator and the base-list hook.
      *
      * <p>The reference files {@code ga_new} as {@code tp_new} and {@code __origin__}, {@code __args__} and
      * {@code __parameters__} as getsets; this runtime answers the three names in {@link PyGenericAlias}'s
-     * own {@code getAttr}, so only the creator has to be filed here — it is what a class Python writes
-     * under the alias calls as {@code super().__new__(cls, origin, args)}.
+     * own {@code getAttr}, so only the creator and {@code __mro_entries__} have to be filed here — the
+     * creator is what a class Python writes under the alias calls as {@code super().__new__(cls, origin,
+     * args)}, and the hook is what {@code class C(List[int])} asks a non-class base for.
      */
     private static void genericAliasTable(PyDict into) {
         Table table = new Table(PyType.GENERIC_ALIAS, into);
         table.raw("__new__", NEW_DOC, TypeDict::genericAliasNew);
+        table.method(
+                "__mro_entries__", null, (Receiver) args -> ((PyGenericAlias) args[0]).mroEntries());
     }
 
     /**
@@ -2658,8 +2661,8 @@ final class TypeDict {
         table.wrapper("__ior__", IOR_DOC, TypeDict::mergedInPlace);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
         table.named("__getitem__");
-        table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
-        table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
+        table.wrapper("__setitem__", SETITEM_DOC, TypeDict::dictSetItem);
+        table.wrapper("__delitem__", DELITEM_DOC, TypeDict::dictDelItem);
         table.named("__contains__", "__sizeof__");
         table.named("get", "setdefault", "pop", "popitem", "keys", "items", "values", "update");
         table.named("fromkeys");
@@ -4312,6 +4315,25 @@ final class TypeDict {
     }
 
     /**
+     * {@code dict.__setitem__}: the entries themselves, past any {@code __setitem__} the class wrote.
+     *
+     * <p>{@code collections.OrderedDict.__setitem__} keeps {@code dict.__setitem__} as a default argument
+     * and calls it to put the pair in the base mapping. Taking the ordinary slot would walk back into the
+     * override and never reach the storage, so the entries are written directly — which is what CPython's
+     * {@code dict_setitem} does by not going through {@code tp_setattro}'s override at all.
+     */
+    private static PyObject dictSetItem(PyObject[] args) {
+        PyDict body = PyDict.bodyOf(args[0]);
+        return body == null ? args[0].setItem(args[1], args[2]) : body.setItem(args[1], args[2]);
+    }
+
+    /** {@code dict.__delitem__}: the same bypass {@link #dictSetItem} takes, for a removal. */
+    private static PyObject dictDelItem(PyObject[] args) {
+        PyDict body = PyDict.bodyOf(args[0]);
+        return body == null ? args[0].delItem(args[1]) : body.delItem(args[1]);
+    }
+
+    /**
      * {@code nb_or}, {@code nb_inplace_or} and the {@code RBINSLOT} beside them.
      *
      * <p>PEP 584 gave a mapping three of the four, and the reflected one is the odd pair: {@code
@@ -4342,8 +4364,7 @@ final class TypeDict {
      * leaves an empty list behind. The two refusals come first, so a wrong count changes nothing.
      */
     private static PyObject listInit(PyObject[] args, String[] kwNames, String qualified) {
-        PyList list = (PyList) args[0];
-        list.initialized(Constructors.listed(tail(args, kwNames), kwNames));
+        PyList.bodyOf(args[0]).initialized(Constructors.listed(tail(args, kwNames), kwNames));
         return PyNone.INSTANCE;
     }
 
@@ -4355,8 +4376,8 @@ final class TypeDict {
      * difference being that the constructor also runs {@code __init__} and the slot does not.
      */
     private static PyObject listsNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.LIST, args, kwNames);
-        return PyList.empty();
+        PyType kind = declaredClass(PyType.LIST, args, kwNames);
+        return kind == PyType.LIST ? PyList.empty() : new PyListInstance(kind);
     }
 
     /**
@@ -5811,9 +5832,18 @@ final class TypeDict {
             throw Slots.typeError("mappingproxy() takes exactly one argument (%d given)",
                     Arguments.positional(args, kwNames));
         }
-        return args[0] instanceof PyDict held
-                ? PyMappingProxy.of(held)
-                : PyMappingProxy.of(((PyMappingProxy) args[0]).mapping());
+        // A class written under `dict` keeps its entries in a `PyDict` of its own, so the window has to
+        // be taken over those rather than over the value; a proxy over a proxy is the same window again.
+        PyDict held = PyDict.bodyOf(args[0]);
+        if (held == null) {
+            held = args[0] instanceof PyMappingProxy proxy ? proxy.mapping() : null;
+        }
+        if (held == null) {
+            throw Slots.typeError(
+                    "mappingproxy() argument must be a mapping, not %s",
+                    args[0].getType().filedName());
+        }
+        return PyMappingProxy.of(held);
     }
 
     private static PyObject proxyGet(PyObject[] args, String[] kwNames, String qualified) {

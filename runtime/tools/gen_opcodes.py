@@ -74,6 +74,67 @@ FOOTER = """
     public static boolean jumpsBackward(int opcode) {
         return opcode >= 0 && opcode < BACKWARD.length && BACKWARD[opcode];
     }
+
+    /** {@code 0 <= opcode < COUNT}: the reference's {@code IS_VALID_OPCODE}. */
+    public static boolean valid(int opcode) {
+        return opcode >= 0 && opcode < COUNT;
+    }
+
+    /**
+     * The seven argument-shape questions {@code _opcode} answers, one per accessor.
+     *
+     * <p>They are read off the reference interpreter rather than derived from {@code HAVE_ARGUMENT}:
+     * the 3.14 instruction set has pseudo-instructions above the byte range and adapted numbers below
+     * it, and whether one of them reads an argument is a property of the instruction, not of its
+     * number.
+     */
+    public static boolean hasArg(int opcode) {
+        return valid(opcode) && HAS_ARG[opcode];
+    }
+
+    public static boolean hasConst(int opcode) {
+        return valid(opcode) && HAS_CONST[opcode];
+    }
+
+    public static boolean hasName(int opcode) {
+        return valid(opcode) && HAS_NAME[opcode];
+    }
+
+    public static boolean hasJump(int opcode) {
+        return valid(opcode) && HAS_JUMP[opcode];
+    }
+
+    public static boolean hasFree(int opcode) {
+        return valid(opcode) && HAS_FREE[opcode];
+    }
+
+    public static boolean hasLocal(int opcode) {
+        return valid(opcode) && HAS_LOCAL[opcode];
+    }
+
+    public static boolean hasExc(int opcode) {
+        return valid(opcode) && HAS_EXC[opcode];
+    }
+
+    /** The names {@code CALL_INTRINSIC_1} takes, in the reference's order. */
+    public static String[] intrinsic1Descs() {
+        return INTRINSIC_1.clone();
+    }
+
+    /** The names {@code CALL_INTRINSIC_2} takes, in the reference's order. */
+    public static String[] intrinsic2Descs() {
+        return INTRINSIC_2.clone();
+    }
+
+    /** The special method names a {@code LOAD_SPECIAL} argument indexes. */
+    public static String[] specialMethodNames() {
+        return SPECIAL_METHODS.clone();
+    }
+
+    /** The binary operations, as {@code (name, symbol)} pairs. */
+    public static String[][] nbOps() {
+        return NB_OPS.clone();
+    }
 }
 """
 
@@ -115,8 +176,39 @@ def emit() -> str:
             ],
         )
     )
+    # The `_opcode` half: the per-number predicates and the constant lists an imported `opcode`
+    # module reads on the way to `dis`, `inspect` and `unittest`.
+    import _opcode
+
+    for predicate in ("arg", "const", "name", "jump", "free", "local", "exc"):
+        answer = getattr(_opcode, "has_" + predicate)
+        out.append(bits("HAS_" + predicate.upper(), [bool(answer(i)) for i in range(len(names))]))
+    out.append(strings("INTRINSIC_1", _opcode.get_intrinsic1_descs()))
+    out.append(strings("INTRINSIC_2", _opcode.get_intrinsic2_descs()))
+    out.append(strings("SPECIAL_METHODS", _opcode.get_special_method_names()))
+    out.append(strings("NB_OPS", [pair[0] for pair in _opcode.get_nb_ops()], second=[pair[1] for pair in _opcode.get_nb_ops()]))
     out.append(FOOTER % (dense, len(names)))
     return "".join(out) + "\n"
+
+
+def strings(name: str, values, second=None) -> str:
+    """A {@code String[]} literal, or a ragged {@code String[][]} when {@code second} is given."""
+    element = "%s" if second is None else "{%s, %s}"
+    rows = "\n".join(
+        "        "
+        + ", ".join(
+            element % ((quote(values[i]),) if second is None else (quote(values[i]), quote(second[i])))
+            for i in range(s, min(s + 4, len(values)))
+        )
+        + ("," if s + 4 < len(values) else "")
+        for s in range(0, len(values), 4)
+    )
+    type_ = "String[]" if second is None else "String[][]"
+    return f"\n    private static final {type_} {name} = {{\n{rows}\n    }};\n"
+
+
+def quote(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def bits(name: str, values) -> str:

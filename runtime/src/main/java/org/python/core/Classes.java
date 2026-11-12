@@ -62,7 +62,8 @@ final class Classes {
         if (!(args[1] instanceof PyStr name)) {
             throw Slots.typeError("__build_class__: name is not a string");
         }
-        PyTuple bases = PyTuple.of(Arrays.copyOfRange(args, 2, positional));
+        PyTuple origBases = PyTuple.of(Arrays.copyOfRange(args, 2, positional));
+        PyTuple bases = updateBases(origBases);
         PyObject[] keywords = Arrays.copyOfRange(args, positional, args.length);
         String[] left = kwNames;
 
@@ -106,6 +107,12 @@ final class Classes {
         }
 
         PyObject returned = body.runClassBody(dict, namespace);
+        if (bases != origBases) {
+            // Kept when a base list was rewritten, which is how `class C(List[int])` still tells
+            // `__init_subclass__` and typing what was written. The write goes through the mapping,
+            // because a namespace with a `__setitem__` override has to see it.
+            Slots.setItem(namespace, PyStr.interned("__orig_bases__"), origBases);
+        }
         PyObject built =
                 Slots.call(
                         meta,
@@ -113,6 +120,50 @@ final class Classes {
                         PyBoundMethod.keywordTuple(left));
         checkClassCell(returned, name, built);
         return built;
+    }
+
+    /**
+     * {@code update_bases}: a base list whose non-class entries may be replaced by their
+     * {@code __mro_entries__}.
+     *
+     * <p>{@code List[int]} is an object, not a class, and the class it stands for is what the MRO is
+     * calculated from — so a base that files {@code __mro_entries__} is asked for a tuple of real
+     * bases, and the tuple it answers is spliced in place. A base that files nothing is left alone,
+     * and when nothing was replaced the original tuple is returned, because the caller keeps that
+     * identity as its signal not to file {@code __orig_bases__}.
+     */
+    private static PyTuple updateBases(PyTuple bases) {
+        List<PyObject> replaced = null;
+        for (int i = 0; i < bases.size(); i++) {
+            PyObject base = bases.at(i);
+            if (base instanceof PyType) {
+                if (replaced != null) {
+                    replaced.add(base);
+                }
+                continue;
+            }
+            PyObject method = optional(base, "__mro_entries__");
+            if (method == null) {
+                if (replaced != null) {
+                    replaced.add(base);
+                }
+                continue;
+            }
+            PyObject entries = Slots.call(method, new PyObject[] {bases}, PyTuple.EMPTY);
+            if (!(entries instanceof PyTuple tuple)) {
+                throw Slots.typeError("__mro_entries__ must return a tuple");
+            }
+            if (replaced == null) {
+                replaced = new ArrayList<>(i + tuple.size());
+                for (int j = 0; j < i; j++) {
+                    replaced.add(bases.at(j));
+                }
+            }
+            for (int j = 0; j < tuple.size(); j++) {
+                replaced.add(tuple.at(j));
+            }
+        }
+        return replaced == null ? bases : PyTuple.of(replaced.toArray(new PyObject[0]));
     }
 
     /**
@@ -276,6 +327,9 @@ final class Classes {
                 || base == PyType.OBJECT
                 || base == PyType.TYPE
                 || base == PyType.DICT
+                // `traceback.StackSummary` is `class StackSummary(list)`, so a list subclass has to be a
+                // Python object with a list beside it — the same split `PyDictInstance` makes.
+                || base == PyType.LIST
                 || base == PyType.INT
                 || base == PyType.STR
                 || base == PyType.TUPLE
@@ -310,7 +364,7 @@ final class Classes {
      * class as its only receiver and the class statement's leftover keywords as its own arguments, which
      * is how {@code class Sub(Base, tag=3)} reaches {@code Base}.
      */
-    private static PyClass declare(
+    static PyClass declare(
             String name,
             PyTuple bases,
             PyDict given,
@@ -916,6 +970,11 @@ final class Classes {
         }
         if (kind.matches(PyType.DICT)) {
             return new PyDictInstance(kind);
+        }
+        // `list.__new__` allocates the subtype it was handed, which for a Python class is an instance
+        // dictionary beside an empty list; `list.__init__` then fills that list from the argument.
+        if (kind.matches(PyType.LIST)) {
+            return new PyListInstance(kind);
         }
         return new PyInstance(kind);
     }

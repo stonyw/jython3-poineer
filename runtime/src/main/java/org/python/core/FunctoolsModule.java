@@ -4,13 +4,14 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 
 /**
- * The {@code functools} module, in the one shape {@code re} needs.
+ * The {@code functools} module, in the shape the standard library this runtime runs reaches for.
  *
  * <p>The reference {@code functools} is a Python module over a C accelerator; this runtime files a
  * built-in of the same name because {@code re/__init__.py} imports {@code lru_cache} at module scope
  * and the pure-Python {@code functools} cannot be imported yet. {@code lru_cache}, {@code cache} and the
  * wrapper they build are provided, plus {@code update_wrapper}/{@code wraps} because
  * {@code contextlib} imports {@code wraps} before it will define a single context manager.
+ * {@code cmp_to_key} is here because {@code unittest}'s loader sorts the chosen test names with it.
  */
 final class FunctoolsModule {
 
@@ -42,7 +43,27 @@ final class FunctoolsModule {
         module.set("update_wrapper", new PyNativeFunction("update_wrapper",
                 FunctoolsModule::updateWrapper));
         module.set("wraps", new PyNativeFunction("wraps", FunctoolsModule::wraps));
+        module.set("cmp_to_key", PyNativeFunction.positional("cmp_to_key",
+                callArgs -> cmpToKey(callArgs)));
         return module;
+    }
+
+    /**
+     * {@code cmp_to_key(mycmp)}: a key function out of an old-style comparison function.
+     *
+     * <p>The reference spells the returned callable as a class {@code K} whose {@code obj} holds the
+     * item, and whose six comparison methods all ask {@code mycmp(self.obj, other.obj)}. This runtime
+     * answers with one {@link CmpKey} value instead, which is the same protocol under a Java class:
+     * {@code list.sort} asks only {@code <} (see {@code PyList.versus}), so that is the one the sorting
+     * path reaches, and the other five come free from the same comparison.
+     */
+    private static PyObject cmpToKey(PyObject[] args) {
+        Arguments.exactlyOne("cmp_to_key", args, null);
+        PyObject comparator = args[0];
+        return new PyNativeFunction("K", (callArgs, callNames) -> {
+            Arguments.exactlyOne("K", callArgs, callNames);
+            return new CmpKey(comparator, callArgs[0]);
+        });
     }
 
     /**
@@ -152,6 +173,48 @@ final class FunctoolsModule {
             Arguments.exactlyOne("decorator", callArgs, callNames);
             return new Wrapper(callArgs[0], maxsize);
         });
+    }
+
+    /**
+     * The value {@code cmp_to_key}'s key function builds: an item and the comparison that orders it.
+     *
+     * <p>Only {@code <} reaches a sort, but all six relations are answered from the same integer, which
+     * is what the reference's {@code K} does. The negative hash refusal keeps the value out of
+     * dictionaries the way {@code __hash__ = None} does in the reference.
+     */
+    static final class CmpKey extends PyObject {
+
+        private final PyObject comparator;
+
+        private final PyObject item;
+
+        CmpKey(PyObject comparator, PyObject item) {
+            super(PyType.OBJECT);
+            this.comparator = comparator;
+            this.item = item;
+        }
+
+        @Override
+        public PyObject richCompare(CompareOp cmp, PyObject other) {
+            if (!(other instanceof CmpKey key)) {
+                return PyNotImplemented.INSTANCE;
+            }
+            PyObject answer = Slots.call(comparator, new PyObject[] {item, key.item}, null);
+            int order = Numbers.asIndex(answer).signum();
+            return PyBool.of(switch (cmp) {
+                case LT -> order < 0;
+                case LE -> order <= 0;
+                case EQ -> order == 0;
+                case NE -> order != 0;
+                case GT -> order > 0;
+                case GE -> order >= 0;
+            });
+        }
+
+        @Override
+        public long hash() {
+            throw Slots.typeError("unhashable type: 'K'");
+        }
     }
 
     /**

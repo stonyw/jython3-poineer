@@ -235,6 +235,9 @@ final class Constructors {
         if (type == PyType.ZIP_IMPORTER) {
             return ZipImport.zipImporter(args, keywordNames);
         }
+        if (type == PyType.GENERIC_ALIAS) {
+            return PyGenericAlias.called(args, keywordNames);
+        }
         if (type == PyType.STRING_IO) {
             return PyStringIO.create(args, keywordNames);
         }

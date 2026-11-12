@@ -55,6 +55,27 @@ public final class PyGenericAlias extends PyObject {
     }
 
     /**
+     * {@code GenericAlias(origin, arguments)}: the call {@code __class_getitem__ = classmethod(GenericAlias)}
+     * makes, which is how {@code _collections_abc} subscripts its own classes.
+     *
+     * <p>The two arguments are the same pair the constructor below takes, so the value is the same one
+     * {@link #of} makes; keywords are refused because the type's {@code tp_new} counts positions only.
+     */
+    static PyGenericAlias called(PyObject[] args, String[] keywordNames) {
+        if (keywordNames != null && keywordNames.length != 0) {
+            throw Slots.typeError("GenericAlias() takes no keyword arguments");
+        }
+        if (args.length != 2) {
+            throw Slots.typeError(
+                    "GenericAlias() takes exactly 2 arguments (%d given)", args.length);
+        }
+        if (!(args[0] instanceof PyType origin)) {
+            throw Slots.typeError("GenericAlias expects a type as the first argument");
+        }
+        return of(origin, args[1]);
+    }
+
+    /**
      * {@code list[int][0]}: an alias is a subscription, not a class, so it has nothing to index.
      *
      * <p>The complaint quotes the alias's own {@code repr()}, which is why the message reads
@@ -80,6 +101,16 @@ public final class PyGenericAlias extends PyObject {
     @Override
     public boolean isCallable() {
         return true;
+    }
+
+    /**
+     * {@code ga_mro_entries}: the origin, as the one-element tuple a base list splices in.
+     *
+     * <p>It is what makes {@code class C(List[int])} a subclass of {@code list}: {@code __build_class__}
+     * asks every non-class base for this and replaces the base with the tuple it answers.
+     */
+    PyObject mroEntries() {
+        return PyTuple.of(origin);
     }
 
     @Override

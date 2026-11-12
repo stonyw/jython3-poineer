@@ -224,6 +224,150 @@ public final class Opcodes {
         false, false, false, false, false, false, false
     };
 
+    private static final boolean[] HAS_ARG = {
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+        true, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, true, true, true, true, true, true, true, true, true, true, true, false, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false, true, false, false,
+        true, false, false, false, false, false, false, false, false, true, true, true, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, true,
+        false, true, true, true, true, true, false, true, true, true, true, true, false, true, false, true, false, true, true, true,
+        true, true, false, true, true, true, true
+    };
+
+    private static final boolean[] HAS_CONST = {
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, true, true, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false
+    };
+
+    private static final boolean[] HAS_NAME = {
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, true, false, false, true, true, false, false, false, false, false, false, true, true, false, false, false, false, false, false,
+        true, false, false, false, false, false, false, false, false, false, false, true, true, true, false, false, true, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, true, true, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true,
+        false, false, false, false, false, false, false, false, false, true, false, false, false, false, true, true, false, false, false, false,
+        true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false
+    };
+
+    private static final boolean[] HAS_JUMP = {
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, true, false, true, false, false, false, false, true, true, true, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        true, true, true, true, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, true, true, true, true, true, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, true, false, false,
+        false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, false, true, true, true,
+        true, false, false, false, false, false, false
+    };
+
+    private static final boolean[] HAS_FREE = {
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, true, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false
+    };
+
+    private static final boolean[] HAS_LOCAL = {
+        false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, true, true, true, true, true, true, true, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, true, true, true, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, true, false, false, false, false, true
+    };
+
+    private static final boolean[] HAS_EXC = {
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, true, true, true, false
+    };
+
+    private static final String[] INTRINSIC_1 = {
+        "INTRINSIC_1_INVALID", "INTRINSIC_PRINT", "INTRINSIC_IMPORT_STAR", "INTRINSIC_STOPITERATION_ERROR",
+        "INTRINSIC_ASYNC_GEN_WRAP", "INTRINSIC_UNARY_POSITIVE", "INTRINSIC_LIST_TO_TUPLE", "INTRINSIC_TYPEVAR",
+        "INTRINSIC_PARAMSPEC", "INTRINSIC_TYPEVARTUPLE", "INTRINSIC_SUBSCRIPT_GENERIC", "INTRINSIC_TYPEALIAS"
+    };
+
+    private static final String[] INTRINSIC_2 = {
+        "INTRINSIC_2_INVALID", "INTRINSIC_PREP_RERAISE_STAR", "INTRINSIC_TYPEVAR_WITH_BOUND", "INTRINSIC_TYPEVAR_WITH_CONSTRAINTS",
+        "INTRINSIC_SET_FUNCTION_TYPE_PARAMS", "INTRINSIC_SET_TYPEPARAM_DEFAULT"
+    };
+
+    private static final String[] SPECIAL_METHODS = {
+        "__enter__", "__exit__", "__aenter__", "__aexit__"
+    };
+
+    private static final String[][] NB_OPS = {
+        {"NB_ADD", "+"}, {"NB_AND", "&"}, {"NB_FLOOR_DIVIDE", "//"}, {"NB_LSHIFT", "<<"},
+        {"NB_MATRIX_MULTIPLY", "@"}, {"NB_MULTIPLY", "*"}, {"NB_REMAINDER", "%"}, {"NB_OR", "|"},
+        {"NB_POWER", "**"}, {"NB_RSHIFT", ">>"}, {"NB_SUBTRACT", "-"}, {"NB_TRUE_DIVIDE", "/"},
+        {"NB_XOR", "^"}, {"NB_INPLACE_ADD", "+="}, {"NB_INPLACE_AND", "&="}, {"NB_INPLACE_FLOOR_DIVIDE", "//="},
+        {"NB_INPLACE_LSHIFT", "<<="}, {"NB_INPLACE_MATRIX_MULTIPLY", "@="}, {"NB_INPLACE_MULTIPLY", "*="}, {"NB_INPLACE_REMAINDER", "%="},
+        {"NB_INPLACE_OR", "|="}, {"NB_INPLACE_POWER", "**="}, {"NB_INPLACE_RSHIFT", ">>="}, {"NB_INPLACE_SUBTRACT", "-="},
+        {"NB_INPLACE_TRUE_DIVIDE", "/="}, {"NB_INPLACE_XOR", "^="}, {"NB_SUBSCR", "[]"}
+    };
+
     /** Opcode number to name, dense, so an unsupported opcode can be named in a message. */
     private static final String[] NAMES = {
         "CACHE", "BINARY_SLICE", "BUILD_TEMPLATE", "BINARY_OP_INPLACE_ADD_UNICODE", "CALL_FUNCTION_EX", "CHECK_EG_MATCH", "CHECK_EXC_MATCH", "CLEANUP_THROW",
@@ -294,6 +438,67 @@ public final class Opcodes {
     /** Whether a relative jump's argument counts backwards from the instruction after the jump. */
     public static boolean jumpsBackward(int opcode) {
         return opcode >= 0 && opcode < BACKWARD.length && BACKWARD[opcode];
+    }
+
+    /** {@code 0 <= opcode < COUNT}: the reference's {@code IS_VALID_OPCODE}. */
+    public static boolean valid(int opcode) {
+        return opcode >= 0 && opcode < COUNT;
+    }
+
+    /**
+     * The seven argument-shape questions {@code _opcode} answers, one per accessor.
+     *
+     * <p>They are read off the reference interpreter rather than derived from {@code HAVE_ARGUMENT}:
+     * the 3.14 instruction set has pseudo-instructions above the byte range and adapted numbers below
+     * it, and whether one of them reads an argument is a property of the instruction, not of its
+     * number.
+     */
+    public static boolean hasArg(int opcode) {
+        return valid(opcode) && HAS_ARG[opcode];
+    }
+
+    public static boolean hasConst(int opcode) {
+        return valid(opcode) && HAS_CONST[opcode];
+    }
+
+    public static boolean hasName(int opcode) {
+        return valid(opcode) && HAS_NAME[opcode];
+    }
+
+    public static boolean hasJump(int opcode) {
+        return valid(opcode) && HAS_JUMP[opcode];
+    }
+
+    public static boolean hasFree(int opcode) {
+        return valid(opcode) && HAS_FREE[opcode];
+    }
+
+    public static boolean hasLocal(int opcode) {
+        return valid(opcode) && HAS_LOCAL[opcode];
+    }
+
+    public static boolean hasExc(int opcode) {
+        return valid(opcode) && HAS_EXC[opcode];
+    }
+
+    /** The names {@code CALL_INTRINSIC_1} takes, in the reference's order. */
+    public static String[] intrinsic1Descs() {
+        return INTRINSIC_1.clone();
+    }
+
+    /** The names {@code CALL_INTRINSIC_2} takes, in the reference's order. */
+    public static String[] intrinsic2Descs() {
+        return INTRINSIC_2.clone();
+    }
+
+    /** The special method names a {@code LOAD_SPECIAL} argument indexes. */
+    public static String[] specialMethodNames() {
+        return SPECIAL_METHODS.clone();
+    }
+
+    /** The binary operations, as {@code (name, symbol)} pairs. */
+    public static String[][] nbOps() {
+        return NB_OPS.clone();
     }
 }
 

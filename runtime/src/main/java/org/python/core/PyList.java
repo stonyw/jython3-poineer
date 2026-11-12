@@ -36,6 +36,23 @@ public final class PyList extends PyObject {
         return new PyList(new ArrayList<>(List.of(items)));
     }
 
+    /**
+     * The elements a value keeps where a {@link PyList} is expected: a plain list is its own storage, and
+     * a class Python wrote under {@code list} keeps one beside the attributes it also has.
+     *
+     * <p>The inherited methods of {@code list} are written against a {@code PyList}, so a call of one on
+     * a subclass — bound through {@link Members}, or against another value's {@code +=} — has to reach
+     * the same items without treating the subclass instance as the storage itself.
+     *
+     * @return the list, or null when the value keeps no list at all
+     */
+    static PyList bodyOf(PyObject value) {
+        if (value instanceof PyList list) {
+            return list;
+        }
+        return value instanceof PyListInstance subclass ? subclass.entries() : null;
+    }
+
     /** The element count for Java; {@link #length()} is the Python slot. */
     public int size() {
         return items.size();

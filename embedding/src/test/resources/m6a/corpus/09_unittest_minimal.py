@@ -1,10 +1,13 @@
-"""The acceptance corpus for the slice that lands `_ast`: unittest runs a test class of its own.
+"""The acceptance corpus for the slice that lands `_opcode`: unittest runs a test class of its own.
 
-This file is not registered in `m6aCorpus()` yet. `_ast` now exists, so `import unittest` gets past
-`ast.py`; the next stop is `opcode`, whose C half `_opcode` this runtime does not answer, reached from
-`inspect` through `dis`. Nothing below can run until that import exists. It is kept here so the
-reference's answer -- two tests run, both passing -- is written down next to the corpus that will
-have to produce it.
+`unittest` is the hardest importer in the standard library, because it reaches through `ast`,
+`inspect`, `dis`, `opcode`, `signal`, `traceback`, `difflib`, `pprint`, `dataclasses` and
+`collections` before it can define a single test. Importing it here, then loading a class and
+running it, measures all of those at once: the reference's answer is two tests run, none failed and
+none errored, and a successful result. What this slice had to add is the C half of `opcode`
+(`_opcode`), the C half of `signal` (`_signal`), `functools.cmp_to_key` — the loader sorts the
+chosen test names with it — and `sys.flags.ignore_environment`, which `_colorize.can_colorize`
+reads when the runner builds its result.
 """
 import sys
 
