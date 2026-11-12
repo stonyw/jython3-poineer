@@ -204,8 +204,118 @@ final class PosixModule {
         // support sets from the HAVE_* strings in it. None are built here, so every set comes out empty —
         // the calls that take a file descriptor are named below so the import itself can finish.
         module.set("_have_functions", PyTuple.of());
-        module.set("open", unimplemented("open"));
         module.set("scandir", unimplemented("scandir"));
+
+        // The descriptor calls `subprocess` reaches for. There is no kernel table here, so the numbers
+        // come from Fds and the only path `open` can name is the null device.
+        module.set("open", function(
+                "open",
+                "open($module, path, flags, mode=511, *, dir_fd=None)\n--\n\n"
+                        + "Open a file for low level IO.  Returns a file descriptor (integer).",
+                (args, kwNames) -> {
+                    PyObject[] values = Arguments.parameters(
+                            "open", args, kwNames,
+                            new String[] {"path", "flags", "mode", "dir_fd"},
+                            new PyObject[] {null, null, PyInt.of(511), PyNone.INSTANCE}, 2);
+                    FsPath path = fsPath(values[0], "open");
+                    if (values[3] != null && values[3] != PyNone.INSTANCE) {
+                        throw Slots.notImplemented("open() with dir_fd");
+                    }
+                    if (!"/dev/null".equals(path.text())) {
+                        throw Slots.notImplemented("open() on anything but os.devnull");
+                    }
+                    return PyInt.of(Fds.devnull());
+                }));
+        module.set("pipe", function(
+                "pipe",
+                "pipe($module, /)\n--\n\nCreate a pipe.\n\n"
+                        + "Returns a tuple of two file descriptors:\n(read_fd, write_fd).",
+                (args, kwNames) -> {
+                    Arguments.none("pipe", args, kwNames);
+                    int[] ends = Fds.pipe();
+                    return PyTuple.of(PyInt.of(ends[0]), PyInt.of(ends[1]));
+                }));
+        module.set("close", function(
+                "close",
+                "close($module, fd, /)\n--\n\nClose a file descriptor.",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("close", args, kwNames);
+                    Fds.close(Numbers.asIndex(args[0]).intValue());
+                    return PyNone.INSTANCE;
+                }));
+        module.set("read", function(
+                "read",
+                "read($module, fd, length, /)\n--\n\nRead from a file descriptor.",
+                (args, kwNames) -> {
+                    Arguments.exactly("read", args, kwNames, 2);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    int length = Numbers.asIndex(args[1]).intValue();
+                    return PyBytes.of(Fds.read(fd, Math.max(length, 0)));
+                }));
+        module.set("write", function(
+                "write",
+                "write($module, fd, data, /)\n--\n\nWrite bytes to a file descriptor.",
+                (args, kwNames) -> {
+                    Arguments.exactly("write", args, kwNames, 2);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    return PyInt.of(Fds.write(fd, PyFileIO.octetsToWrite(args[1])));
+                }));
+        module.set("dup", function(
+                "dup",
+                "dup($module, fd, /)\n--\n\nReturn a duplicate of a file descriptor.",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("dup", args, kwNames);
+                    return PyInt.of(Fds.dup(Numbers.asIndex(args[0]).intValue()));
+                }));
+        module.set("waitpid", function(
+                "waitpid",
+                "waitpid($module, pid, options, /)\n--\n\n"
+                        + "Wait for completion of a given child process.",
+                (args, kwNames) -> {
+                    Arguments.exactly("waitpid", args, kwNames, 2);
+                    long pid = Numbers.asIndex(args[0]).longValue();
+                    int options = Numbers.asIndex(args[1]).intValue();
+                    return PosixSubprocessModule.waitpid(pid, options);
+                }));
+        module.set("waitstatus_to_exitcode", function(
+                "waitstatus_to_exitcode",
+                "waitstatus_to_exitcode($module, /, status)\n--\n\n"
+                        + "Convert a wait status to an exit code.",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("waitstatus_to_exitcode", args, kwNames);
+                    return PyInt.of(exitCode(Numbers.asIndex(args[0]).intValue()));
+                }));
+
+        // The wait-status macros. CPython files them as functions built from C macros; the bit layout is
+        // the POSIX/macOS one.
+        module.set("WNOHANG", PyInt.of(0x1));
+        module.set("WUNTRACED", PyInt.of(0x2));
+        module.set("WIFEXITED", statusTest(
+                "WIFEXITED", "WIFEXITED(status)\n--\n\nReturn True if the process has exited.",
+                status -> (status & 0x7f) == 0));
+        module.set("WEXITSTATUS", statusValue(
+                "WEXITSTATUS", "WEXITSTATUS(status)\n--\n\nReturn the exit status of a process.",
+                status -> (status & 0xff00) >> 8));
+        module.set("WIFSIGNALED", statusTest(
+                "WIFSIGNALED", "WIFSIGNALED(status)\n--\n\n"
+                        + "Return True if the process was terminated by a signal.",
+                status -> ((byte) ((status & 0x7f) + 1) >> 1) > 0));
+        module.set("WTERMSIG", statusValue(
+                "WTERMSIG", "WTERMSIG(status)\n--\n\n"
+                        + "Return the signal that terminated the process.",
+                status -> status & 0x7f));
+        module.set("WIFSTOPPED", statusTest(
+                "WIFSTOPPED", "WIFSTOPPED(status)\n--\n\n"
+                        + "Return True if the process has been stopped.",
+                status -> (status & 0xff) == 0x7f));
+        module.set("WSTOPSIG", statusValue(
+                "WSTOPSIG", "WSTOPSIG(status)\n--\n\n"
+                        + "Return the signal that stopped the process.",
+                status -> (status & 0xff00) >> 8));
+        module.set("WCOREDUMP", statusTest(
+                "WCOREDUMP", "WCOREDUMP(status)\n--\n\n"
+                        + "Return True if the process dumped core.",
+                status -> (status & 0x80) != 0));
 
         // The two access masks and the open flags a program reads off the module. The values are macOS's.
         module.set("F_OK", PyInt.of(0));
@@ -442,6 +552,38 @@ final class PosixModule {
                             ExceptionTypes.NOT_IMPLEMENTED_ERROR,
                             name + "() is not implemented by this runtime");
                 });
+    }
+
+    /** {@code waitstatus_to_exitcode}: the exit code, or the two statuses CPython refuses. */
+    private static int exitCode(int status) {
+        if (((byte) ((status & 0x7f) + 1) >> 1) > 0) {
+            return -(status & 0x7f);
+        }
+        if ((status & 0x7f) == 0) {
+            return (status & 0xff00) >> 8;
+        }
+        if ((status & 0xff) == 0x7f) {
+            throw Slots.valueError("process is stopped");
+        }
+        throw Slots.valueError("invalid process status");
+    }
+
+    /** One of the wait-status macros that answers a bool. */
+    private static PyNativeFunction statusTest(
+            String name, String doc, java.util.function.IntPredicate test) {
+        return function(name, doc, (args, kwNames) -> {
+            Arguments.exactlyOne(name, args, kwNames);
+            return PyBool.of(test.test(Numbers.asIndex(args[0]).intValue()));
+        });
+    }
+
+    /** One of the wait-status macros that answers an integer. */
+    private static PyNativeFunction statusValue(
+            String name, String doc, java.util.function.IntUnaryOperator decoder) {
+        return function(name, doc, (args, kwNames) -> {
+            Arguments.exactlyOne(name, args, kwNames);
+            return PyInt.of(decoder.applyAsInt(Numbers.asIndex(args[0]).intValue()));
+        });
     }
 
     /** One positional argument, which is what every single-path call takes. */

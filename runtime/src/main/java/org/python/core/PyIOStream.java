@@ -257,6 +257,15 @@ abstract class PyIOStream extends PyIterator {
         return PyNone.INSTANCE;
     }
 
+    /**
+     * The identity hash CPython gives every stream object, which {@code dict} keys and {@code
+     * _communicate}'s file-object table rely on.
+     */
+    @Override
+    public long hash() {
+        return System.identityHashCode(this);
+    }
+
     /** The two refusals of the two kinds of row, which are the same words whether written or deleted. */
     private void writeRefused(String attribute) {
         if (attribute.equals("__dict__")) {

@@ -222,6 +222,10 @@ public final class PyRuntime {
         // The filesystem and environment calls `os` re-exports, and the one container `collections`
         // cannot import without: `contextlib` imports `deque` from there at module scope.
         PyModule posixModule = PosixModule.newModule();
+        // The two modules `subprocess` imports: the C fork/exec half, which this runtime answers over
+        // ProcessBuilder, and the readiness call `selectors` needs before `communicate` can loop.
+        PyModule posixSubprocessModule = PosixSubprocessModule.newModule();
+        PyModule selectModule = SelectModule.newModule();
         PyModule collectionsModule = CollectionsModule.newModule();
         // The collector's control surface, which `test_generators` and `test_descr` import first.
         PyModule gcModule = GcModule.newModule();
@@ -247,6 +251,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_random"), randomModule);
         modules.put(PyStr.interned("unicodedata"), unicodeDataModule);
         modules.put(PyStr.interned("resource"), resourceModule);
+        modules.put(PyStr.interned("_posixsubprocess"), posixSubprocessModule);
+        modules.put(PyStr.interned("select"), selectModule);
         modules.put(PyStr.interned("_typing"), typingModule);
         modules.put(PyStr.interned("_struct"), structModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
@@ -1391,11 +1397,27 @@ public final class PyRuntime {
                         PyStr.of("_random"),
                         PyStr.of("unicodedata"),
                         PyStr.of("resource"),
+                        PyStr.of("_posixsubprocess"),
+                        PyStr.of("select"),
                         PyStr.of("_typing")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
         // `bdb.py` reads `sys.monitoring.events` at module scope and registers itself as a tool when the
         // attribute exists, so a debugger cannot be imported without it.
         sys.set("monitoring", Monitoring.newModule());
+        // `subprocess` audits every spawn before it forks. This runtime installs no hooks, so the call
+        // is the no-op the reference performs when none are installed — but the name has to exist.
+        sys.set("audit", new PyNativeFunction(
+                        "audit",
+                        (args, kwNames) -> {
+                            Arguments.noKeywords("sys.audit()", kwNames);
+                            if (args.length < 1) {
+                                throw Slots.typeError(
+                                        "audit() takes at least 1 argument (0 given)");
+                            }
+                            return PyNone.INSTANCE;
+                        })
+                .documented("audit(event, /, *args)\n--\n\n"
+                        + "Passes the event and arguments to all audit hooks."));
         sys.set("getdefaultencoding", noArguments(
                 "getdefaultencoding", () -> PyStr.of("utf-8"),
                 "getdefaultencoding($module, /)\n"

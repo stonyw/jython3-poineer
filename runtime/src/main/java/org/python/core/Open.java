@@ -100,7 +100,7 @@ final class Open {
                     "Must have exactly one of create/read/write/append mode and at most one plus");
         }
         if (descriptorNumber) {
-            throw Slots.notImplemented("open() with a file descriptor");
+            return descriptorStream(file, parsed, buffering, closefd);
         }
         if (bytesPath) {
             throw Slots.notImplemented("open() with a bytes path");
@@ -126,6 +126,38 @@ final class Open {
             raw.close();
             throw failure;
         }
+    }
+
+    /**
+     * {@code io.open(fd, mode)}: the descriptor is one this runtime handed out, so the stream is the
+     * in-memory pipe end rather than a file.
+     *
+     * <p>Only a binary mode is built here. A text wrapper would have to name the descriptor and pick a
+     * codec, and nothing in {@code subprocess} asks for one: its two ends are always wrapped as
+     * {@code 'rb'} or {@code 'wb'} and decoded by the caller.
+     */
+    private static PyObject descriptorStream(
+            PyObject file, Mode parsed, int buffering, boolean closefd) {
+        int fd = Numbers.asIndex(file).intValue();
+        if (!Fds.known(fd)) {
+            throw PyRaise.of(PyOSError.create(
+                    ExceptionTypes.OS_ERROR,
+                    new PyObject[] {PyInt.of(9), PyStr.of("Bad file descriptor")}));
+        }
+        if (!parsed.binary) {
+            throw Slots.notImplemented("open() on a file descriptor in text mode");
+        }
+        if (parsed.readable() && parsed.writable()) {
+            throw Slots.notImplemented(
+                    "open() on a file descriptor for reading and writing at once");
+        }
+        PyFileIO raw = parsed.writable()
+                ? new PyFileIO(Integer.toString(fd), Fds.outputStream(fd), fd, closefd)
+                : new PyFileIO(Integer.toString(fd), Fds.inputStream(fd), fd, closefd);
+        return buffering == 0
+                ? raw
+                : new PyBufferedReader(
+                        raw, bufferType(parsed), parsed.readable(), parsed.writable());
     }
 
     private static String modeText(PyObject value) {

@@ -3,6 +3,7 @@ package org.python.core;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.util.Arrays;
 import java.util.Set;
@@ -46,6 +47,9 @@ public final class PyFileIO extends PyIOStream {
 
     private final InputStream in;
 
+    /** The write half of a descriptor this runtime owns, which is null for a file and for a read end. */
+    private final OutputStream out;
+
     /**
      * The descriptor behind a file {@code open()} made, which answers both halves of the traffic.
      *
@@ -73,7 +77,15 @@ public final class PyFileIO extends PyIOStream {
     private final String mode;
 
     PyFileIO(String name, InputStream source, int fd, boolean closefd) {
-        this(name, source, null, fd, closefd, true, false, false, "rb");
+        this(name, source, null, null, fd, closefd, true, false, false, "rb");
+    }
+
+    /**
+     * A descriptor this runtime owns rather than one {@code open()} made: {@code io.open(fd, 'wb')} over a
+     * pipe, where the write half is a Java stream rather than a file.
+     */
+    PyFileIO(String name, OutputStream sink, int fd, boolean closefd) {
+        this(name, null, sink, null, fd, closefd, false, true, false, "wb");
     }
 
     PyFileIO(
@@ -83,12 +95,13 @@ public final class PyFileIO extends PyIOStream {
             boolean writable,
             boolean appending,
             String mode) {
-        this(name, null, file, -1, true, readable, writable, appending, mode);
+        this(name, null, null, file, -1, true, readable, writable, appending, mode);
     }
 
     private PyFileIO(
             String name,
             InputStream source,
+            OutputStream sink,
             RandomAccessFile file,
             int fd,
             boolean closefd,
@@ -98,6 +111,7 @@ public final class PyFileIO extends PyIOStream {
             String mode) {
         super(PyType.FILE_IO);
         this.in = source;
+        this.out = sink;
         this.file = file;
         this.fd = fd;
         this.closefd = closefd;
@@ -239,10 +253,15 @@ public final class PyFileIO extends PyIOStream {
             throw Slots.unsupportedOperation("File not open for writing");
         }
         try {
-            if (appending) {
-                file.seek(file.length());
+            if (file != null) {
+                if (appending) {
+                    file.seek(file.length());
+                }
+                file.write(octets);
+            } else {
+                out.write(octets);
+                out.flush();
             }
-            file.write(octets);
         } catch (IOException refusal) {
             throw Slots.osError("writing error");
         }
@@ -255,6 +274,10 @@ public final class PyFileIO extends PyIOStream {
         }
         if (data instanceof PyByteArray bytes) {
             return bytes.raw();
+        }
+        // `subprocess._communicate` hands a memoryview to `os.write` rather than the bytes itself.
+        if (data instanceof PyMemoryView view) {
+            return view.toBytes("C").getValue();
         }
         throw Slots.typeError(
                 "a bytes-like object is required, not '%s'", Slots.argumentName(data));
@@ -274,10 +297,12 @@ public final class PyFileIO extends PyIOStream {
         closed = true;
         if (closefd) {
             try {
-                if (file == null) {
-                    in.close();
-                } else {
+                if (file != null) {
                     file.close();
+                } else if (out != null) {
+                    out.close();
+                } else {
+                    in.close();
                 }
             } catch (IOException ignored) {
                 // The answer is the Python one; a descriptor the JVM already lost cannot change it.

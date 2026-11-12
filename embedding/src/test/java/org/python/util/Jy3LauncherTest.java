@@ -544,7 +544,8 @@ class Jy3LauncherTest {
                 "03_unicodedata_normal_forms.py",
                 "04_resource_limits.py",
                 "05_monitoring_api.py",
-                "06_typing_surface.py");
+                "06_typing_surface.py",
+                "07_subprocess_run.py");
     }
 
     private static List<String> m3Corpus() {
