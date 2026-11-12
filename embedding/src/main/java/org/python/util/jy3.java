@@ -31,11 +31,11 @@ import org.python.front.cpython314.Cpython314Compiler;
  * that same script, so {@code import java.util} is an ordinary import now, and changed nothing about the
  * options below. The option surface is therefore small, and every omission is reported rather than
  * quietly ignored: {@code -m} needs {@code runpy} on top of the import system, {@code -O} needs
- * {@code __debug__} to mean something to the code object (M3), and the interactive prompt needs a
- * terminal, a line editor and a read-eval-print loop (M4). Those exit 3, which the harness records as
- * {@code NOT_IMPLEMENTED}. The handful of options accepted and ignored are ones that change nothing a
- * script can observe yet — {@code -B}, because no {@code .pyc} is ever written, and {@code -u},
- * because both streams are already the JVM's own.
+ * {@code __debug__} to mean something to the code object, and the interactive prompt needs a
+ * terminal, a line editor and a read-eval-print loop, which the native frontend milestone owns. Those
+ * exit 3, which the harness records as {@code NOT_IMPLEMENTED}. The handful of options accepted and
+ * ignored are ones that change nothing a script can observe yet — {@code -B}, because no {@code .pyc}
+ * is ever written, and {@code -u}, because both streams are already the JVM's own.
  *
  * <p>Harness protocol, shared with {@code org.jython3.tools.harness.Jython3Backend}:
  *
@@ -72,7 +72,7 @@ public final class jy3 {
     private static final int INTERNAL_CRASH = 70;
 
     private static final String PROGRAM = "jy3";
-    private static final String PROGRAM_VERSION = "0.1.0-M2";
+    private static final String PROGRAM_VERSION = "0.1.0-M4";
 
     private static final String USAGE =
             "usage: " + PROGRAM + " [option] ... [-c cmd | -m mod | file | -] [arg] ...\n"
@@ -88,7 +88,7 @@ public final class jy3 {
                     + "\n"
                     + "Accepted and ignored: -B -E -I -S -s -u\n"
                     + "Not implemented yet: -m mod (runpy) and -X opt (configuration layer);"
-                    + " -O and -OO (M3); the interactive prompt (M4)\n";
+                    + " -O and -OO (`__debug__` in the code object); the interactive prompt (M5)\n";
 
     public static void main(String[] args) {
         int status;
@@ -164,11 +164,11 @@ public final class jy3 {
                     if (!argumentExpected(option, args, at)) {
                         return USAGE_ERROR;
                     }
-                    return notImplemented("-X option", "the interpreter-config layer is M4");
+                    return notImplemented("-X option", "the interpreter-config layer is not implemented");
                 }
                 case "-O", "-OO" -> {
                     return notImplemented(
-                            option, "__debug__ and the optimize level have to reach the code object in M3");
+                            option, "__debug__ and the optimize level have to reach the code object");
                 }
                 case "-B", "-E", "-I", "-S", "-s", "-u" -> at++;
                 default -> {
@@ -201,8 +201,8 @@ public final class jy3 {
         if (operands.isEmpty()) {
             return notImplemented(
                     "the interactive prompt",
-                    "a terminal, a line editor and a read-eval-print loop are M4."
-                            + " Pass a file, -c cmd, or - for stdin");
+                    "a terminal, a line editor and a read-eval-print loop belong to the native"
+                            + " frontend milestone. Pass a file, -c cmd, or - for stdin");
         }
 
         Path script;
@@ -216,7 +216,8 @@ public final class jy3 {
         if (Files.isDirectory(script)) {
             return notImplemented(
                     "running the directory '" + script + "'",
-                    "a directory is entered through its __main__.py, which is the M4 import finder");
+                    "a directory is entered through its __main__.py, which needs runpy on top of"
+                            + " the import system");
         }
         if (!Files.isReadable(script)) {
             // CPython resolves the name before complaining, so the path it prints is the working
@@ -306,10 +307,11 @@ public final class jy3 {
      * module that is running. The library root, not the test directory, goes on {@code sys.path}: a suite
      * imports {@code test.support} and that needs the root there, the same empty entry {@code -c} uses.
      *
-     * <p>The suites need the standard library, which is M4's assembly; until then the first one raises
-     * {@code ModuleNotFoundError} and the exit status is 1, which the harness records as a failure. A
-     * target that is not in the library is reported as unimplemented rather than as skipped: exit code 2
-     * means "skipped" to the harness and would hide the fact that nothing was run.
+     * <p>The suites need the standard library M4 assembled and the constructs M5 and M6-a still owe;
+     * today the first one raises {@code ModuleNotFoundError} or {@code NotImplementedError} and the exit
+     * status is 1, which the harness records as a failure. A target that is not in the library is
+     * reported as unimplemented rather than as skipped: exit code 2 means "skipped" to the harness and
+     * would hide the fact that nothing was run.
      */
     private static int harness(String[] args, int at) {
         if (at + 1 >= args.length) {
