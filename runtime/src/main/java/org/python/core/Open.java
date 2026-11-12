@@ -243,14 +243,17 @@ final class Open {
         if (path.indexOf('\0') >= 0) {
             throw Slots.valueError("embedded null byte");
         }
+        // `os.chdir` moves the runtime's own working directory, so a relative name is resolved the same
+        // way the posix module resolves it; the name the stream reports stays the caller's spelling.
+        String resolved = PosixModule.absolute(path);
         try {
             if (parsed.reading && !parsed.updating) {
-                return new PyFileIO(path, new FileInputStream(path), -1, true);
+                return new PyFileIO(path, new FileInputStream(resolved), -1, true);
             }
-            if (parsed.creating && new File(path).exists()) {
+            if (parsed.creating && new File(resolved).exists()) {
                 throw osFailure(ExceptionTypes.FILE_EXISTS_ERROR, 17, "File exists", path);
             }
-            RandomAccessFile file = new RandomAccessFile(path, "rw");
+            RandomAccessFile file = new RandomAccessFile(resolved, "rw");
             if (parsed.writing) {
                 file.setLength(0);
             }

@@ -1403,6 +1403,28 @@ public class PyType extends PyObject {
                             + " strftime() and mktime().  It is a sequence of 9 integers.");
 
     /**
+     * {@code os.stat_result}: the named sequence {@code os.stat} answers with.
+     *
+     * <p>It is filed under {@code os} because that is the module whose name the reference gives it, even
+     * though the value is built by {@code posix}, which is where {@code os.stat} is imported from.
+     */
+    public static final PyType STAT_RESULT =
+            sequence("os.stat_result")
+                    .documented("stat_result\n--\n\nResult of os.stat().");
+
+    /**
+     * {@code collections.deque}: the double-ended queue {@code _collections.deque} builds.
+     *
+     * <p>{@code collections} imports the name from the built-in module and registers it with
+     * {@code MutableSequence}, so the class has to exist before that module can be imported at all.
+     */
+    public static final PyType DEQUE =
+            builtin("deque").filedUnder("collections.deque")
+                    .documented("deque([iterable[, maxlen]]) --> deque object\n"
+                            + "\n"
+                            + "A list-like sequence optimized for data accesses near its endpoints.");
+
+    /**
      * {@code codecs.CodecInfo}: the four-item tuple {@code _codecs.lookup} answers with.
      *
      * <p>{@code codecs.py} cannot be imported until tuple subclassing lands, so this type is built in

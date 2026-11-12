@@ -511,7 +511,10 @@ class Jy3LauncherTest {
     private static List<String> m6aCorpus() {
         return List.of(
                 "01_async_def_and_coroutines.py",
-                "02_await_and_refusals.py");
+                "02_await_and_refusals.py",
+                "03_posix_filesystem.py",
+                "04_os_constants_and_environ.py",
+                "05_contextlib_paths.py");
     }
 
     private static List<String> m3Corpus() {

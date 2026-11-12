@@ -98,6 +98,9 @@ final class Constructors {
         if (type == PyType.DICT) {
             return mapping(args, keywordNames);
         }
+        if (type == PyType.DEQUE) {
+            return PyDeque.called(args, kwNames);
+        }
         if (type == PyType.RANGE) {
             return ranging(args, keywordNames);
         }
@@ -190,6 +193,9 @@ final class Constructors {
         }
         if (type == PyType.SUPER) {
             return superProxy(args, keywordNames);
+        }
+        if (type == PyType.METHOD) {
+            return method(args, keywordNames);
         }
         if (type == PyType.CODE) {
             return CodeMembers.construct(args, keywordNames);
@@ -311,6 +317,40 @@ final class Constructors {
     private static PyObject staticMethod(PyObject[] args, String[] kwNames) {
         oneArgument("staticmethod", args, kwNames);
         return new PyStaticMethod(args[0]);
+    }
+
+    /**
+     * {@code types.MethodType(function, instance)} — a function with its receiver attached.
+     *
+     * <p>{@code instance} may be None, which is how the unbound spelling of a method was written before
+     * the attribute was just the function; CPython keeps that as the function itself. A function Python
+     * wrote becomes a {@link PyBoundMethod} directly. Anything else callable — an already-bound method,
+     * for instance — is wrapped in a body that prepends the receiver to every call, which is what a
+     * {@code method} object does whatever its {@code __func__} is.
+     */
+    private static PyObject method(PyObject[] args, String[] kwNames) {
+        PyObject[] values = Arguments.parameters("method", args, kwNames,
+                new String[] {"function", "instance"},
+                new PyObject[] {null, null}, 2);
+        if (values[1] == PyNone.INSTANCE) {
+            return values[0];
+        }
+        if (values[0] instanceof PyFunction function) {
+            return new PyBoundMethod(values[1], function);
+        }
+        PyObject callable = values[0];
+        return new PyBoundMethod(values[1], functionName(callable), (self, callArgs, callNames) -> {
+            PyObject[] withSelf = new PyObject[callArgs.length + 1];
+            withSelf[0] = self;
+            System.arraycopy(callArgs, 0, withSelf, 1, callArgs.length);
+            return Slots.call(callable, withSelf, PyBoundMethod.keywordTuple(callNames));
+        });
+    }
+
+    /** The name a wrapped {@code method}'s {@code __func__} carries, or {@code "method"} if it has none. */
+    private static String functionName(PyObject callable) {
+        PyObject name = callable.getAttr("__name__");
+        return name instanceof PyStr text ? text.getValue() : "method";
     }
 
     private static void oneArgument(String name, PyObject[] args, String[] kwNames) {

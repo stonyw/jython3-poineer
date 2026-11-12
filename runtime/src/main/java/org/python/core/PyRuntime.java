@@ -43,7 +43,7 @@ public final class PyRuntime {
      */
     private static final String[] BUILTIN_MODULE_NAMES =
             {"builtins", "sys", "_io", "_types", "_weakref", "itertools", "_thread", "_struct",
-                "binascii", "_codecs", "errno", "math", "time"};
+                "binascii", "_codecs", "errno", "math", "time", "posix", "_collections"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -182,6 +182,10 @@ public final class PyRuntime {
         // name: `_py_warnings` asks for `_contextvars` and a program imports `contextvars`.
         PyModule contextvarsModule = ContextvarsModule.newModule();
         PyModule contextvarsWrapper = ContextvarsModule.newWrapper();
+        // The filesystem and environment calls `os` re-exports, and the one container `collections`
+        // cannot import without: `contextlib` imports `deque` from there at module scope.
+        PyModule posixModule = PosixModule.newModule();
+        PyModule collectionsModule = CollectionsModule.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -205,6 +209,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("functools"), functoolsModule);
         modules.put(PyStr.interned("_contextvars"), contextvarsModule);
         modules.put(PyStr.interned("contextvars"), contextvarsWrapper);
+        modules.put(PyStr.interned("posix"), posixModule);
+        modules.put(PyStr.interned("_collections"), collectionsModule);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -240,6 +246,8 @@ public final class PyRuntime {
         belongTo(functoolsModule);
         belongTo(contextvarsModule);
         belongTo(contextvarsWrapper);
+        belongTo(posixModule);
+        belongTo(collectionsModule);
         belongTo(stringPackage);
     }
 
@@ -1126,7 +1134,9 @@ public final class PyRuntime {
                         PyStr.of("sys"),
                         PyStr.of("_io"),
                         PyStr.of("_types"),
-                        PyStr.of("_weakref")));
+                        PyStr.of("_weakref"),
+                        PyStr.of("posix"),
+                        PyStr.of("_collections")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
         sys.set("getdefaultencoding", noArguments(
                 "getdefaultencoding", () -> PyStr.of("utf-8"),
@@ -1134,6 +1144,21 @@ public final class PyRuntime {
                         + "--\n"
                         + "\n"
                         + "Return the current default encoding used by the Unicode implementation."));
+        // `os` builds `fsencode`/`fsdecode` out of these two at import time, so both must answer before
+        // the first `import os` runs: names this runtime hands to Java are UTF-8, and the reference's
+        // escape hatch for bytes that are not is the same handler.
+        sys.set("getfilesystemencoding", noArguments(
+                "getfilesystemencoding", () -> PyStr.of("utf-8"),
+                "getfilesystemencoding($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the encoding used to convert Unicode filenames to OS filenames."));
+        sys.set("getfilesystemencodeerrors", noArguments(
+                "getfilesystemencodeerrors", () -> PyStr.of("surrogateescape"),
+                "getfilesystemencodeerrors($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the error mode used to convert Unicode filenames to OS filenames."));
         sys.set(
                 "exc_info",
                 noArguments(
@@ -1146,6 +1171,18 @@ public final class PyRuntime {
                                 + "\n"
                                 + "Return information about the most recent exception caught by an except\n"
                                 + "clause in the current stack frame or in an older stack frame."));
+        sys.set(
+                "exception",
+                noArguments(
+                        "exception",
+                        PyRuntime::handledValue,
+                        "exception($module, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return the current exception.\n"
+                                + "\n"
+                                + "Return the exception currently being handled, or None if no exception\n"
+                                + "is currently being handled."));
         sys.set(
                 "_getframe",
                 new PyNativeFunction("_getframe", PyRuntime::getframe)
@@ -1338,6 +1375,16 @@ public final class PyRuntime {
             return PyTuple.of(PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE);
         }
         return PyTuple.of(error.getType(), error, error.traceback());
+    }
+
+    /**
+     * {@code sys.exception()}: the value of the handled exception, or None.
+     *
+     * <p>That is the second item of {@link #excInfo()} and nothing else — the sentence CPython 3.11
+     * added for the common case of wanting only the instance.
+     */
+    private static PyObject handledValue() {
+        return handledException() instanceof PyBaseException error ? error : PyNone.INSTANCE;
     }
 
     /**

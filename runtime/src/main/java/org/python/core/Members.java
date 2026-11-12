@@ -82,6 +82,12 @@ final class Members {
             // `time.struct_time` is the other named sequence, and its table is read through the type for the
             // same reason: `struct_time.n_fields` answers before `gmtime` has ever been called.
             Map.entry(PyType.STRUCT_TIME, PyStructTime.class),
+            // `os.stat_result` answers its fifteen names through the type as well; `os.stat` has not had
+            // to be called for `stat_result.n_fields` to be readable.
+            Map.entry(PyType.STAT_RESULT, PyStatResult.class),
+            // `collections.deque` declares eleven methods and one read-only field, all of which are
+            // askable through the type before any deque has been built.
+            Map.entry(PyType.DEQUE, PyDeque.class),
             // The seven-item registry entry, which `_codecs` builds without the `codecs` module.
             Map.entry(PyType.CODEC_INFO, PyCodecInfo.class),
             // A slice is made by the compiler for every extended subscript, but a program can ask the type
