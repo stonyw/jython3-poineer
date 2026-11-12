@@ -1159,6 +1159,156 @@ public class PyType extends PyObject {
     static final PyType MAP = builtin("map").documented(MAP_DOC);
     static final PyType FILTER = builtin("filter").documented(FILTER_DOC);
 
+    /*
+     * The fourteen `itertools` cursors, filed where the reference files them so that `type(x).__name__`
+     * and `type(x).__module__` answer as they do there. Two of them carry a repr of their own in
+     * `itertools`; the rest keep the `<itertools.name object at 0x...>` every cursor prints.
+     */
+    static final PyType COUNT =
+            builtin("count")
+                    .filedUnder("itertools.count")
+                    .documented(
+                            "Return a count object whose .__next__() method returns consecutive values.\n"
+                                    + "\n"
+                                    + "Equivalent to:\n"
+                                    + "    def count(firstval=0, step=1):\n"
+                                    + "        x = firstval\n"
+                                    + "        while 1:\n"
+                                    + "            yield x\n"
+                                    + "            x += step");
+    static final PyType REPEAT =
+            builtin("repeat")
+                    .filedUnder("itertools.repeat")
+                    .documented(
+                            "repeat(object [,times]) -> create an iterator which returns the object\n"
+                                    + "for the specified number of times.  If not specified, returns"
+                                    + " the object\n"
+                                    + "endlessly.");
+    static final PyType CYCLE =
+            builtin("cycle")
+                    .filedUnder("itertools.cycle")
+                    .documented(
+                            "Return elements from the iterable until it is exhausted."
+                                    + " Then repeat the sequence indefinitely.");
+    static final PyType CHAIN =
+            builtin("chain")
+                    .filedUnder("itertools.chain")
+                    .documented(
+                            "Return a chain object whose .__next__() method returns elements from"
+                                    + " the\n"
+                                    + "first iterable until it is exhausted, then elements from the"
+                                    + " next\n"
+                                    + "iterable, until all of the iterables are exhausted.");
+    static final PyType ISLICE =
+            builtin("islice")
+                    .filedUnder("itertools.islice")
+                    .documented(
+                            "islice(iterable, stop) --> islice object\n"
+                                    + "islice(iterable, start, stop[, step]) --> islice object\n"
+                                    + "\n"
+                                    + "Return an iterator whose next() method returns selected"
+                                    + " values from an\n"
+                                    + "iterable.  If start is specified, will skip all preceding"
+                                    + " elements;\n"
+                                    + "otherwise, start defaults to zero.  Step defaults to one.  If\n"
+                                    + "specified as another value, step determines how many values"
+                                    + " are\n"
+                                    + "skipped between successive calls.  Works like a slice() on a"
+                                    + " list\n"
+                                    + "but returns an iterator.");
+    static final PyType ACCUMULATE =
+            builtin("accumulate")
+                    .filedUnder("itertools.accumulate")
+                    .documented(
+                            "Return series of accumulated sums (or other binary function"
+                                    + " results).");
+    static final PyType PAIRWISE =
+            builtin("pairwise")
+                    .filedUnder("itertools.pairwise")
+                    .documented(
+                            "Return an iterator of overlapping pairs taken from the input"
+                                    + " iterator.\n"
+                                    + "\n"
+                                    + "    s -> (s0,s1), (s1,s2), (s2, s3), ...");
+    static final PyType BATCHED =
+            builtin("batched")
+                    .filedUnder("itertools.batched")
+                    .documented(
+                            "Batch data into tuples of length n. The last batch may be shorter than"
+                                    + " n.\n"
+                                    + "\n"
+                                    + "Loops over the input iterable and accumulates data into"
+                                    + " tuples\n"
+                                    + "up to size n.  The input is consumed lazily, just enough to\n"
+                                    + "fill a batch.  The result is yielded as soon as a batch is"
+                                    + " full\n"
+                                    + "or when the input iterable is exhausted.\n"
+                                    + "\n"
+                                    + "If \"strict\" is True, raises a ValueError if the final"
+                                    + " batch is shorter\n"
+                                    + "than n.");
+    static final PyType COMPRESS =
+            builtin("compress")
+                    .filedUnder("itertools.compress")
+                    .documented(
+                            "Return data elements corresponding to true selector elements.\n"
+                                    + "\n"
+                                    + "Forms a shorter iterator from selected data elements using"
+                                    + " the selectors\n"
+                                    + "to choose the data elements.");
+    static final PyType DROPWHILE =
+            builtin("dropwhile")
+                    .filedUnder("itertools.dropwhile")
+                    .documented(
+                            "Drop items from the iterable while predicate(item) is true.\n"
+                                    + "\n"
+                                    + "Afterwards, return every element until the iterable is"
+                                    + " exhausted.");
+    static final PyType FILTERFALSE =
+            builtin("filterfalse")
+                    .filedUnder("itertools.filterfalse")
+                    .documented(
+                            "Return those items of iterable for which function(item) is false.\n"
+                                    + "\n"
+                                    + "If function is None, return the items that are false.");
+    static final PyType TAKE_WHILE =
+            builtin("takewhile")
+                    .filedUnder("itertools.takewhile")
+                    .documented(
+                            "Return successive entries from an iterable as long as the predicate"
+                                    + " evaluates to true for each entry.");
+    static final PyType STAR_MAP =
+            builtin("starmap")
+                    .filedUnder("itertools.starmap")
+                    .documented(
+                            "Return an iterator whose values are returned from the function"
+                                    + " evaluated with an argument tuple taken from the given"
+                                    + " sequence.");
+    static final PyType ZIP_LONGEST =
+            builtin("zip_longest")
+                    .filedUnder("itertools.zip_longest")
+                    .documented(
+                            "Return a zip_longest object whose .__next__() method returns a tuple"
+                                    + " where\n"
+                                    + "the i-th element comes from the i-th iterable argument."
+                                    + "  The .__next__()\n"
+                                    + "method continues until the longest iterable in the argument"
+                                    + " sequence\n"
+                                    + "is exhausted and then it raises StopIteration.  When the"
+                                    + " shorter iterables\n"
+                                    + "are exhausted, the fillvalue is substituted in their place."
+                                    + "  The fillvalue\n"
+                                    + "defaults to None or can be specified by a keyword"
+                                    + " argument.\n");
+
+    /*
+     * `_thread`'s two lock types. One process runs one thread here, so both are modelled by the one
+     * Java class: a counter of how many times the current thread holds it, which makes `RLock`
+     * exactly right and `lock` re-entrant where the reference would deadlock.
+     */
+    static final PyType LOCK = builtin("lock").filedUnder("_thread.lock");
+    static final PyType R_LOCK = builtin("RLock").filedUnder("_thread.RLock");
+
     /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was

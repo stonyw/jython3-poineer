@@ -393,6 +393,8 @@ class Jy3LauncherTest {
      * as {@code sys.path[0]}. The last three are not about imports: they are the two gaps slice 112 took
      * out of the deferred criteria, the three descriptor builtins as bases and {@code sys.implementation},
      * and slice 115's PEP 604 unions, which are what turns {@code type | type} from a refusal into a value.
+     * Slice 116 adds the first standard-library module written in Python this runtime imports whole:
+     * {@code reprlib}, over the two extension modules it opens with, {@code itertools} and {@code _thread}.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("m4Corpus")
@@ -457,7 +459,8 @@ class Jy3LauncherTest {
                 "10_io_module.py",
                 "11_types_module.py",
                 "12_weakref_module.py",
-                "13_union_types.py");
+                "13_union_types.py",
+                "14_stdlib_reprlib.py");
     }
 
     private static List<String> m3Corpus() {

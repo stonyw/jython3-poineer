@@ -125,6 +125,54 @@ final class Constructors {
         if (type == PyType.FILTER) {
             return BuiltinCursors.filtering(args, keywordNames);
         }
+        if (type == PyType.COUNT) {
+            return Itertools.counting(args, keywordNames);
+        }
+        if (type == PyType.REPEAT) {
+            return Itertools.repeating(args, keywordNames);
+        }
+        if (type == PyType.CYCLE) {
+            return Itertools.cycling(args, keywordNames);
+        }
+        if (type == PyType.CHAIN) {
+            return Itertools.chaining(args, keywordNames);
+        }
+        if (type == PyType.ISLICE) {
+            return Itertools.slicing(args, keywordNames);
+        }
+        if (type == PyType.ACCUMULATE) {
+            return Itertools.accumulating(args, keywordNames);
+        }
+        if (type == PyType.PAIRWISE) {
+            return Itertools.pairing(args, keywordNames);
+        }
+        if (type == PyType.BATCHED) {
+            return Itertools.batching(args, keywordNames);
+        }
+        if (type == PyType.COMPRESS) {
+            return Itertools.compressing(args, keywordNames);
+        }
+        if (type == PyType.DROPWHILE) {
+            return Itertools.dropping(args, keywordNames);
+        }
+        if (type == PyType.FILTERFALSE) {
+            return Itertools.filteringFalse(args, keywordNames);
+        }
+        if (type == PyType.TAKE_WHILE) {
+            return Itertools.taking(args, keywordNames);
+        }
+        if (type == PyType.STAR_MAP) {
+            return Itertools.starMapping(args, keywordNames);
+        }
+        if (type == PyType.ZIP_LONGEST) {
+            return Itertools.zipLongest(args, keywordNames);
+        }
+        if (type == PyType.LOCK) {
+            return ThreadModule.lockType(args, keywordNames);
+        }
+        if (type == PyType.R_LOCK) {
+            return ThreadModule.reentrant(args, keywordNames);
+        }
         if (type == PyType.PROPERTY) {
             return property(args, keywordNames);
         }

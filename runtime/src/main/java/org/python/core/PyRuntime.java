@@ -42,7 +42,7 @@ public final class PyRuntime {
      * extension modules, which are imports this runtime answers in Java instead.
      */
     private static final String[] BUILTIN_MODULE_NAMES =
-            {"builtins", "sys", "_io", "_types", "_weakref"};
+            {"builtins", "sys", "_io", "_types", "_weakref", "itertools", "_thread"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -160,6 +160,10 @@ public final class PyRuntime {
         // and module without importing the Python wrapper, `types` or `weakref`.
         PyModule typesModule = TypesModule.newModule();
         PyModule weakrefModule = Weakref.newModule();
+        // The two extension modules `reprlib` imports at its top, and the ones that let the first
+        // standard-library module written in Python run on top of this runtime's own machinery.
+        PyModule itertoolsModule = Itertools.newModule();
+        PyModule threadModule = ThreadModule.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -169,6 +173,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_io"), ioModule);
         modules.put(PyStr.interned("_types"), typesModule);
         modules.put(PyStr.interned("_weakref"), weakrefModule);
+        modules.put(PyStr.interned("itertools"), itertoolsModule);
+        modules.put(PyStr.interned("_thread"), threadModule);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -190,6 +196,8 @@ public final class PyRuntime {
         belongTo(ioModule);
         belongTo(typesModule);
         belongTo(weakrefModule);
+        belongTo(itertoolsModule);
+        belongTo(threadModule);
         belongTo(stringPackage);
     }
 
@@ -1054,6 +1062,26 @@ public final class PyRuntime {
                                 + "\n"
                                 + "Return information about the most recent exception caught by an except\n"
                                 + "clause in the current stack frame or in an older stack frame."));
+        sys.set(
+                "_getframe",
+                new PyNativeFunction("_getframe", PyRuntime::getframe)
+                        .documented(
+                                "_getframe($module, depth=0, /)\n"
+                                        + "--\n"
+                                        + "\n"
+                                        + "Return a frame object from the call stack.\n"
+                                        + "\n"
+                                        + "If optional integer depth is given, return the frame object"
+                                        + " that many\n"
+                                        + "calls below the top of the stack.  If that is deeper than the"
+                                        + " call\n"
+                                        + "stack, ValueError is raised.  The default for depth is zero,"
+                                        + " returning\n"
+                                        + "the frame at the top of the call stack.\n"
+                                        + "\n"
+                                        + "This function should be used for internal and specialized"
+                                        + " purposes\n"
+                                        + "only."));
         // COPY_SYS_ATTR files the original a second time under the doubled name, and files the very same
         // object: `sys.__displayhook__ is sys.displayhook` reads true at startup, and keeps reading true of
         // the second name after a program has replaced the first.
@@ -1131,6 +1159,30 @@ public final class PyRuntime {
         }
         TracebackReport.print(value);
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code sys._getframe}: the frame {@code depth} calls above the one that asked for it.
+     *
+     * <p>The argument is a C {@code int} read through {@code _PyLong_AsInt}, which is why a {@code str} gets
+     * the index refusal and {@code 2 ** 100} overflows; a keyword is refused by the call machinery before
+     * the body, and the count says {@code _getframe expected at most 1 argument, got 2} — bare, without the
+     * module qualifier. A negative depth is not an error in the reference: the walk only runs while depth is
+     * positive, so the top frame comes back. Only running off the end of the chain is a {@code ValueError}.
+     */
+    private static PyObject getframe(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("sys._getframe()", kwNames);
+        Arguments.atMost("_getframe", args, kwNames, 1);
+        int depth = args.length == 0 ? 0 : Numbers.cInteger(args[0]);
+        Frame frame = Interpreter.currentFrame();
+        while (depth > 0 && frame != null) {
+            frame = frame.back();
+            depth--;
+        }
+        if (frame == null) {
+            throw Slots.valueError("call stack is not deep enough");
+        }
+        return frame.frameObject();
     }
 
     /**
