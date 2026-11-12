@@ -45,6 +45,27 @@ public final class PyGenerator extends PyIterator {
         COMPLETED
     }
 
+    /**
+     * Which of the three frame-owning objects this one is.
+     *
+     * <p>The frame machine is the same for all three — that is the whole reason {@code yield},
+     * {@code await} and {@code async for} share one driver — and only the name used in a refusal or in
+     * a representation, and what a step that finds the body already finished means, differ. A coroutine
+     * is the one that is never iterated: it is {@code send}, {@code throw}, {@code close} and
+     * {@code __await__}, and the two objects that own coroutines add those on top of this engine.
+     */
+    enum Kind {
+        GENERATOR("generator"),
+        COROUTINE("coroutine"),
+        ASYNC_GENERATOR("async_generator");
+
+        final String word;
+
+        Kind(String word) {
+            this.word = word;
+        }
+    }
+
     /** The five names CPython's {@code gen_getsetlist} gives no setter, and so never accepts a write to. */
     private static final String[] READ_ONLY = {
         "gi_frame", "gi_code", "gi_running", "gi_suspended", "gi_yieldfrom"
@@ -59,13 +80,15 @@ public final class PyGenerator extends PyIterator {
                         // METH_FASTCALL with no keywords: the calling convention refuses a keyword before
                         // the method sees the arguments, and the count check is the legacy one that names
                         // the method bare and counts only what arrived positionally.
-                        Arguments.noKeywords("generator.throw()", kwNames);
+                        Arguments.noKeywords(
+                                ((PyGenerator) self).kind.word + ".throw()", kwNames);
                         Arguments.between("throw", args, kwNames, 1, 3);
                         return ((PyGenerator) self).throwIn(args);
                     })
             .addNoArgument("close", self -> ((PyGenerator) self).close());
 
-    private final Frame frame;
+    final Kind kind;
+    final Frame frame;
     private State state = State.CREATED;
 
     /**
@@ -86,8 +109,8 @@ public final class PyGenerator extends PyIterator {
      */
     private PyObject returned;
 
-    private PyObject name;
-    private PyObject qualName;
+    PyObject name;
+    PyObject qualName;
 
     /**
      * Take over a frame an ordinary call has just parked, as {@code RETURN_GENERATOR} does.
@@ -97,7 +120,21 @@ public final class PyGenerator extends PyIterator {
      * with its arguments bound, its cells shared, and its own caller dropped along with the call.
      */
     PyGenerator(Frame frame) {
-        super(PyType.GENERATOR);
+        this(frame, Kind.GENERATOR);
+    }
+
+    /**
+     * The same adoption, for a coroutine or an async generator.
+     *
+     * <p>{@code super} still names one of the three types so that a value of any of them is answered by
+     * the table of the type it really is; what the kind changes is the wording of the refusals and of
+     * the representation, and what {@code send} on a finished body means.
+     */
+    PyGenerator(Frame frame, Kind kind) {
+        super(kind == Kind.COROUTINE
+                ? PyType.COROUTINE
+                : kind == Kind.ASYNC_GENERATOR ? PyType.ASYNC_GENERATOR : PyType.GENERATOR);
+        this.kind = kind;
         this.frame = frame;
         frame.generator = this;
         // _Py_MakeCoro has no names to give the generator, so both come off the code object.
@@ -137,14 +174,20 @@ public final class PyGenerator extends PyIterator {
     private PyObject step(PyObject arg, PyRaise thrown) {
         if (state == State.CREATED && arg != null && arg != PyNone.INSTANCE) {
             // Before the frame is entered, so none of the refusal shows in it.
-            throw Slots.typeError("can't send non-None value to a just-started generator");
+            throw Slots.typeError(
+                    "can't send non-None value to a just-started " + kind.word);
         }
         if (state == State.EXECUTING) {
-            throw Slots.valueError("generator already executing");
+            throw Slots.valueError(kind.word + " already executing");
         }
         if (state == State.COMPLETED) {
             // There is no frame to enter, and CPython answers three ways depending on who asked.
             returned = null;
+            if (kind == Kind.COROUTINE) {
+                // A coroutine is not an iterator: there is no "next" whose answer would be a bare
+                // StopIteration, so every reuse — send of anything, or a throw — is a RuntimeError.
+                throw Slots.runtimeError("cannot reuse already awaited coroutine");
+            }
             if (thrown != null) {
                 // PYGEN_ERROR with nothing set: the thrown error travels on exactly as it arrived, with
                 // no context taken from the generator that is not there any more.
@@ -198,7 +241,7 @@ public final class PyGenerator extends PyIterator {
     }
 
     /** {@code gen.send(value)}, which is the one entry point that takes a returned value as an error. */
-    private PyObject send(PyObject argument) {
+    PyObject send(PyObject argument) {
         PyObject yielded = step(argument, null);
         if (yielded != null) {
             return yielded;
@@ -248,7 +291,7 @@ public final class PyGenerator extends PyIterator {
     }
 
     /** {@code gen_close}, which has an answer of its own to give and usually has nothing to say. */
-    private PyObject close() {
+    PyObject close() {
         if (state == State.CREATED) {
             // The body never entered, so there is nothing to run: not even a finally.
             state = State.COMPLETED;
@@ -295,7 +338,7 @@ public final class PyGenerator extends PyIterator {
             throw escaped;
         }
         if (yielded != null) {
-            throw Slots.runtimeError("generator ignored GeneratorExit");
+            throw Slots.runtimeError(kind.word + " ignored GeneratorExit");
         }
         // A body that answered the exit with a return: gen_send_ex raises that as a StopIteration and
         // _PyGen_FetchStopIterationValue takes the value back out of it, so close() answers with a value
@@ -317,7 +360,7 @@ public final class PyGenerator extends PyIterator {
     }
 
     /** {@code gen_throw}: the argument count the legacy signature checks, and the three it hands over. */
-    private PyObject throwIn(PyObject[] arguments) {
+    PyObject throwIn(PyObject[] arguments) {
         PyObject type = arguments[0];
         PyObject value = arguments.length >= 2 ? arguments[1] : null;
         PyObject trace = arguments.length == 3 ? arguments[2] : null;
@@ -485,7 +528,7 @@ public final class PyGenerator extends PyIterator {
      * it. A step of the delegate runs with this generator marked as executing, which is why a delegate that
      * asks {@code gi_yieldfrom} of the generator that delegated to it is told about nothing.
      */
-    private PyObject yieldFrom() {
+    PyObject yieldFrom() {
         return state == State.SUSPENDED_YIELD_FROM ? frame.peek(0) : null;
     }
 
@@ -515,7 +558,7 @@ public final class PyGenerator extends PyIterator {
     }
 
     /** CPython's {@code FRAME_STATE_SUSPENDED}: parked, whether on a yield or on a delegation. */
-    private boolean isSuspended() {
+    boolean isSuspended() {
         return state == State.SUSPENDED || state == State.SUSPENDED_YIELD_FROM;
     }
 
@@ -622,11 +665,19 @@ public final class PyGenerator extends PyIterator {
         return System.identityHashCode(this);
     }
 
+    /**
+     * The name this object's {@code repr} prints: the qualname's text rather than its repr, because the
+     * reference prints {@code <coroutine object one at 0x…>}, without quotes.
+     */
+    String displayName() {
+        return qualName instanceof PyStr text ? text.getValue() : qualName.str();
+    }
+
     @Override
     public String repr() {
         // gen_repr, with this object's identity where CPython prints a memory address.
-        return "<generator object "
-                + qualName
+        return "<" + kind.word + " object "
+                + displayName()
                 + " at 0x"
                 + Integer.toHexString(System.identityHashCode(this))
                 + ">";

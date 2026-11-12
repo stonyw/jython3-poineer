@@ -762,12 +762,18 @@ public final class Interpreter {
                     // {@code close()} or {@code throw()}, and the compiler treats it as exactly that.
                     case Opcodes.RETURN_GENERATOR: {
                         int flags = frame.code().flags();
-                        if ((flags & (PyCode.CO_COROUTINE | PyCode.CO_ASYNC_GENERATOR)) != 0) {
-                            // _Py_MakeCoro answers one of three objects by these bits; only the
-                            // generator one is compiled in.
-                            throw Slots.notImplemented(
-                                    "a coroutine or async generator body: "
-                                            + frame.code().qualName());
+                        if ((flags & PyCode.CO_ASYNC_GENERATOR) != 0) {
+                            // _Py_MakeCoro answers one of three objects by these bits. An async generator
+                            // has a body this runtime cannot drive yet — its four protocol methods are
+                            // awaitables of their own — so only its creation and type are here.
+                            PyAsyncGenerator generator = new PyAsyncGenerator(frame);
+                            frame.park(index + 1);
+                            return generator;
+                        }
+                        if ((flags & PyCode.CO_COROUTINE) != 0) {
+                            PyCoroutine coroutine = new PyCoroutine(frame);
+                            frame.park(index + 1);
+                            return coroutine;
                         }
                         // The frame the call was making is handed over with its arguments bound and its
                         // cells shared, and the POP_TOP that would have discarded this call's None is
@@ -776,6 +782,12 @@ public final class Interpreter {
                         frame.park(index + 1);
                         return generator;
                     }
+                    case Opcodes.GET_AWAITABLE:
+                        // The awaitable is replaced by the iterator a SEND loop drives. A coroutine is
+                        // already one, an exact generator is only one when it was made that way, and
+                        // everything else declares `__await__` — whose absence is the refusal.
+                        frame.push(awaitable(frame.pop()));
+                        break;
                     case Opcodes.YIELD_VALUE: {
                         // The argument is the whole of the difference between a yield and a delegation's:
                         // the same park, with the iterator left on the stack under the value that goes out.
@@ -1135,6 +1147,47 @@ public final class Interpreter {
             case 4 -> Builtins.commonAny;
             default -> throw Slots.notImplemented("common constant " + arg);
         };
+    }
+
+    /**
+     * What {@code await} is handed: a coroutine as it stands, anything else through its {@code __await__}.
+     *
+     * <p>This is CPython's {@code _PyEval_GetAwaitable}. A coroutine is its own awaitable — the wrapper a
+     * program gets from {@code __await__} is only made when one is asked for — but one that is already
+     * standing on a delegation cannot be awaited a second time, and says so rather than being stepped
+     * twice. Everything else has to name an {@code __await__}, and what it answers with has to be an
+     * iterator: a coroutine there is the mistake PEP 492 spells out, and a non-iterator is the other.
+     *
+     * <p>The argument {@code GET_AWAITABLE} carries distinguishes the {@code async with} spellings and is
+     * unused here, because those opcodes are not reached: the rejection this runtime gives is the plain
+     * {@code await} one.
+     */
+    private static PyObject awaitable(PyObject value) {
+        if (value instanceof PyCoroutine coroutine) {
+            if (coroutine.awaitingDelegate()) {
+                throw Slots.runtimeError("coroutine is being awaited already");
+            }
+            return coroutine;
+        }
+        PyObject getter;
+        try {
+            getter = Slots.getAttr(value, "__await__");
+        } catch (PyRaise missing) {
+            if (!missing.value().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                throw missing;
+            }
+            throw Slots.typeError("'%s' object can't be awaited", value.getType().name());
+        }
+        PyObject awaitable = Slots.call(getter, new PyObject[0], null);
+        if (awaitable instanceof PyCoroutine || awaitable instanceof PyAsyncGenerator) {
+            throw Slots.typeError("__await__() returned a coroutine");
+        }
+        if (Slots.asIterator(awaitable) == null) {
+            throw Slots.typeError(
+                    "__await__() returned non-iterator of type '%s'",
+                    awaitable.getType().name());
+        }
+        return awaitable;
     }
 
     private static PyRaise notCovered(int opcode, int arg) {

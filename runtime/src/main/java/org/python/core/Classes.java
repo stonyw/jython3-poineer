@@ -282,7 +282,10 @@ final class Classes {
                 || base.matches(ExceptionTypes.BASE_EXCEPTION)
                 || base == PyType.CLASS_METHOD
                 || base == PyType.STATIC_METHOD
-                || base == PyType.PROPERTY;
+                || base == PyType.PROPERTY
+                // `types.GenericAlias` is a base since 3.11, which `_collections_abc` uses for the
+                // `__class_getitem__` of the callable ABCs.
+                || base == PyType.GENERIC_ALIAS;
     }
 
     /**

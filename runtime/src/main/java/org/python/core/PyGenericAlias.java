@@ -40,6 +40,21 @@ public final class PyGenericAlias extends PyObject {
     }
 
     /**
+     * {@code GenericAlias.__new__(cls, origin, arguments)}: the same value, told it was made as {@code cls}.
+     *
+     * <p>A class Python writes under the alias keeps the reference's layout — a generic alias struct with
+     * a {@code Py_TYPE} of the subclass — so the value is the one {@link #of} would make and only the type
+     * it reports differs. That is what lets {@code _collections_abc._CallableGenericAlias} answer its own
+     * {@code __repr__} and {@code __reduce__} while {@code __origin__} and {@code __args__} still come from
+     * this class.
+     */
+    static PyGenericAlias ofType(PyType type, PyType origin, PyObject[] arguments) {
+        PyGenericAlias alias = new PyGenericAlias(origin, arguments);
+        alias.type = type;
+        return alias;
+    }
+
+    /**
      * {@code list[int][0]}: an alias is a subscription, not a class, so it has nothing to index.
      *
      * <p>The complaint quotes the alias's own {@code repr()}, which is why the message reads

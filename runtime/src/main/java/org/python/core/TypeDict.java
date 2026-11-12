@@ -967,6 +967,10 @@ final class TypeDict {
             textIOWrapperTable(owner, into);
             return;
         }
+        if (owner == PyType.GENERIC_ALIAS) {
+            genericAliasTable(into);
+            return;
+        }
         if (owner.matches(ExceptionTypes.BASE_EXCEPTION)) {
             exceptionTable(owner, into);
             return;
@@ -991,6 +995,39 @@ final class TypeDict {
             }
         }
         return Slots.DECLINED;
+    }
+
+    /**
+     * {@code GenericAlias}'s own dictionary: the creator, and nothing else.
+     *
+     * <p>The reference files {@code ga_new} as {@code tp_new} and {@code __origin__}, {@code __args__} and
+     * {@code __parameters__} as getsets; this runtime answers the three names in {@link PyGenericAlias}'s
+     * own {@code getAttr}, so only the creator has to be filed here — it is what a class Python writes
+     * under the alias calls as {@code super().__new__(cls, origin, args)}.
+     */
+    private static void genericAliasTable(PyDict into) {
+        Table table = new Table(PyType.GENERIC_ALIAS, into);
+        table.raw("__new__", NEW_DOC, TypeDict::genericAliasNew);
+    }
+
+    /**
+     * {@code ga_new}: exactly two positionals, a class as the origin, and the arguments kept as a tuple.
+     *
+     * <p>A non-tuple second argument is one argument of its own, which is what {@code setup_ga} packs and
+     * why {@code GenericAlias(list, int)} prints as {@code list[int]}.
+     */
+    private static PyObject genericAliasNew(PyObject[] args, String[] kwNames, String qualified) {
+        PyType declared = declaredClass(PyType.GENERIC_ALIAS, args, kwNames);
+        int given = Arguments.positional(args, kwNames);
+        if (given != 3) {
+            throw Slots.typeError("GenericAlias() takes exactly 2 arguments (%d given)", given - 1);
+        }
+        if (!(args[1] instanceof PyType origin)) {
+            throw Slots.typeError("GenericAlias expects a type as the first argument");
+        }
+        PyObject[] arguments =
+                args[2] instanceof PyTuple pair ? pair.getArray() : new PyObject[] {args[2]};
+        return PyGenericAlias.ofType(declared, origin, arguments);
     }
 
     /**

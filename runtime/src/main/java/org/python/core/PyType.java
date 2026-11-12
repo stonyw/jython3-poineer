@@ -894,9 +894,8 @@ public class PyType extends PyObject {
 
     /*
      * The seven names `_types` and `_weakref` hand out. Only the three weak-reference types have
-     * Python-side values; the other four are names a program can print and compare, with no
-     * constructor behind them — a capsule, a coroutine and an async generator are all made by
-     * something this runtime does not run yet, and a union comes from `|` rather than from a call.
+     * Python-side values; a coroutine and an async generator are made by `RETURN_GENERATOR`, a capsule
+     * by a module that has none of them yet, and a union comes from `|` rather than from a call.
      */
 
     public static final PyType ASYNC_GENERATOR = builtin("async_generator").withoutNew();
@@ -904,6 +903,17 @@ public class PyType extends PyObject {
     public static final PyType CAPSULE = builtin("PyCapsule").documented(CAPSULE_DOC).withoutNew();
 
     public static final PyType COROUTINE = builtin("coroutine").withoutNew();
+
+    /**
+     * What {@code coroutine.__await__()} answers: a wrapper that forwards the three driving methods to
+     * the coroutine and is itself the iterator {@code SEND} steps.
+     *
+     * <p>CPython's {@code coroutine_wrapper} is not in builtins either; a program reaches it only
+     * through {@code type(coro.__await__())}, which is why the type needs a value class to file its
+     * methods before one has been made.
+     */
+    public static final PyType COROUTINE_WRAPPER =
+            builtin("coroutine_wrapper").withoutNew();
 
     public static final PyType UNION_TYPE =
             builtin("Union").filedUnder("typing.Union").documented(UNION_TYPE_DOC).withoutNew();

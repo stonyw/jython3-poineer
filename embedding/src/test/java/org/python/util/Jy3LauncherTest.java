@@ -493,6 +493,27 @@ class Jy3LauncherTest {
                 "24_namespace_machinery.py");
     }
 
+    /**
+     * M6-a slice 1: the smallest {@code async def} and {@code await}, without an event loop.
+     *
+     * <p>The same rule as the corpora above: the reference interpreter that compiled each script also
+     * answers it. What these two files pin is what a program can observe of a coroutine it drives
+     * itself — the code flags, the object's type and state, suspension through {@code __await__}, the
+     * value a finished coroutine carries out, and the refusals for a misused or non-awaitable value.
+     * Nothing here prints a bare address, which is the one thing the two interpreters never agree on.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("m6aCorpus")
+    void anM6aCorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
+        answersExactlyAsCpython("m6a/corpus", scriptName);
+    }
+
+    private static List<String> m6aCorpus() {
+        return List.of(
+                "01_async_def_and_coroutines.py",
+                "02_await_and_refusals.py");
+    }
+
     private static List<String> m3Corpus() {
         return List.of(
                 "01_handlers.py",

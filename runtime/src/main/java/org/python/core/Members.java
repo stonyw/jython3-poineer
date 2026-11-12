@@ -71,6 +71,11 @@ final class Members {
             // value class: CodeMembers declares it, and is loaded when a code object is.
             Map.entry(PyType.CODE, CodeMembers.class),
             Map.entry(PyType.GENERATOR, PyGenerator.class),
+            // The three async-family types are made by `RETURN_GENERATOR` and by `__await__`, so their
+            // tables are filed from the classes that declare them rather than from a builtins dict.
+            Map.entry(PyType.COROUTINE, PyCoroutine.class),
+            Map.entry(PyType.ASYNC_GENERATOR, PyAsyncGenerator.class),
+            Map.entry(PyType.COROUTINE_WRAPPER, PyCoroutineWrapper.class),
             // The one named sequence is declared by its value class too, so that asking the type for a
             // field works before the interpreter has built the value it files.
             Map.entry(PyType.VERSION_INFO, PyVersionInfo.class),
