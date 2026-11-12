@@ -604,6 +604,48 @@ public class PyType extends PyObject {
             builtin("SourceFileLoader")
                     .filedUnder("_frozen_importlib_external.SourceFileLoader");
 
+    /** The loader {@code importlib.machinery} names but this runtime does not read extensions with. */
+    public static final PyType EXTENSION_FILE_LOADER =
+            builtin("ExtensionFileLoader")
+                    .filedUnder("_frozen_importlib_external.ExtensionFileLoader");
+
+    /** The loader for a {@code .pyc} beside its source: named, not implemented. */
+    public static final PyType SOURCELESS_FILE_LOADER =
+            builtin("SourcelessFileLoader")
+                    .filedUnder("_frozen_importlib_external.SourcelessFileLoader");
+
+    /** The macOS wrapper loader {@code importlib.machinery} exports: named, not implemented. */
+    public static final PyType APPLE_FRAMEWORK_LOADER =
+            builtin("AppleFrameworkLoader")
+                    .filedUnder("_frozen_importlib_external.AppleFrameworkLoader");
+
+    /** The finder {@code FileFinder}, which turns a directory into specs. */
+    public static final PyType FILE_FINDER =
+            builtin("FileFinder").filedUnder("_frozen_importlib_external.FileFinder");
+
+    /** The loader a namespace package gets so that {@code __loader__} is not None. */
+    public static final PyType NAMESPACE_LOADER =
+            builtin("NamespaceLoader").filedUnder("_frozen_importlib_external.NamespaceLoader");
+
+    /** The list a namespace package's {@code __path__} is: shared with its spec. */
+    public static final PyType NAMESPACE_PATH =
+            builtin("_NamespacePath")
+                    .filedUnder("_frozen_importlib_external._NamespacePath")
+                    .withoutNew();
+
+    /** The frozen importer, named in {@code importlib.machinery} though this runtime files nothing frozen. */
+    public static final PyType FROZEN_IMPORTER =
+            builtin("FrozenImporter").filedUnder("_frozen_importlib.FrozenImporter");
+
+    /** The Windows registry finder, which is a class on every platform in 3.14 and never searched here. */
+    public static final PyType WINDOWS_REGISTRY_FINDER =
+            builtin("WindowsRegistryFinder")
+                    .filedUnder("_frozen_importlib_external.WindowsRegistryFinder");
+
+    /** The reader of a zip archive on {@code sys.path}; this runtime refuses at its constructor. */
+    public static final PyType ZIP_IMPORTER =
+            builtin("zipimporter").filedUnder("zipimport.zipimporter");
+
     /** The five sentences {@code _io} writes above its five classes, transcribed from the reference. */
 
     private static final String IOBASE_DOC =

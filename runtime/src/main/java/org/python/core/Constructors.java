@@ -217,6 +217,12 @@ final class Constructors {
         if (type == PyType.SOURCE_FILE_LOADER) {
             return PySourceFileLoader.called(args, keywordNames);
         }
+        if (type == PyType.FILE_FINDER) {
+            return PyFileFinder.called(args, keywordNames);
+        }
+        if (type == PyType.ZIP_IMPORTER) {
+            return ZipImport.zipImporter(args, keywordNames);
+        }
         if (type == PyType.STRING_IO) {
             return PyStringIO.create(args, keywordNames);
         }

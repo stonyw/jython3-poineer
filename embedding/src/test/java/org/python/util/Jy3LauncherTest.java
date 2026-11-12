@@ -381,6 +381,21 @@ class Jy3LauncherTest {
             RUNS = globals().get("RUNS", 0) + 1
             """;
 
+    /** One portion of the namespace package: the same directory name under two path entries. */
+    private static final String M4_NS_ONE = """
+            VALUE = "a-one"
+            """;
+
+    /** The other portion, which only {@code nsb} holds. */
+    private static final String M4_NS_TWO = """
+            VALUE = "b-two"
+            """;
+
+    /** A regular file that is not an archive, so {@code zipimporter} names it in its refusal. */
+    private static final String M4_LOOSE_TEXT = """
+            not an archive
+            """;
+
     /**
      * M4's import slices, under {@code src/test/resources/m4/corpus}.
      *
@@ -441,6 +456,11 @@ class Jy3LauncherTest {
         write("extra/extra.py", M4_EXTRA_MODULE);
         write("loose.py", M4_LOOSE_MODULE);
         write("counter.py", M4_COUNTER_MODULE);
+        Files.createDirectories(work.resolve("nsa/ns_pkg"));
+        write("nsa/ns_pkg/one.py", M4_NS_ONE);
+        Files.createDirectories(work.resolve("nsb/ns_pkg"));
+        write("nsb/ns_pkg/two.py", M4_NS_TWO);
+        write("loose.txt", M4_LOOSE_TEXT);
 
         answersExactlyAsCpython("m4/corpus", scriptName);
     }
@@ -469,7 +489,8 @@ class Jy3LauncherTest {
                 "20_codecs_errors.py",
                 "21_re.py",
                 "22_contextvars.py",
-                "23_translate_object.py");
+                "23_translate_object.py",
+                "24_namespace_machinery.py");
     }
 
     private static List<String> m3Corpus() {

@@ -1,22 +1,18 @@
 package org.python.core;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-
 /**
  * {@code _frozen_importlib_external.PathFinder}: the last finder in {@code sys.meta_path}, and the
  * one that reads {@code sys.path}.
  *
- * <p>Its {@code find_spec} is the whole of the search for this milestone: for every directory on
- * {@code sys.path} it looks for a package directory before a plain module file — the reference's
- * {@code FileFinder} makes the same choice — and answers the spec of the first one that exists. A
- * name nothing holds answers {@code None}, which is what tells the import system to go on with the
- * next finder and, eventually, to refuse.
+ * <p>The reference does not read a directory here. For every {@code sys.path} entry it asks the hooks
+ * on {@code sys.path_hooks} to turn that entry into an importer, remembers the answer in {@code
+ * sys.path_importer_cache} under the entry it was made for, and asks the importer for the spec. A
+ * directory answers a {@link PyFileFinder}; an entry no hook accepts is cached as None and skipped.
  *
- * <p>What is not here yet is the machinery underneath the reference's version: {@code sys.path_hooks}
- * and the importer cache that turns a directory into a {@code FileFinder}, namespace packages, and
- * the loaders for extension modules and bytecode. A directory is read directly, which is the same
- * answer for the files a script can write in this milestone.
+ * <p>A directory that holds a subdirectory of the name, with no {@code __init__.py} in it, is a
+ * <em>namespace portion</em> rather than a package. Every such portion on the path contributes its
+ * directory to one merged {@code _NamespacePath}, and the spec that comes back has no loader and no
+ * origin. That merge is what makes a namespace package span two {@code sys.path} entries.
  *
  * <p>The class dictionary is built key by key, as {@link BuiltinImporter}'s is, so that
  * {@code PathFinder.__name__} and {@code PathFinder.__module__} are the names the reference shows.
@@ -25,6 +21,9 @@ final class PathFinder {
 
     /** The class itself, made the first time the import system needs it. */
     private static PyType type;
+
+    /** The function a namespace package holds as {@code _path_finder}. */
+    private static PyNativeFunction pathFinderFunction;
 
     private PathFinder() {
     }
@@ -84,53 +83,109 @@ final class PathFinder {
                     "'%s' object has no attribute 'rpartition'",
                     fullname.getType().filedName());
         }
-        String dotted = name.getValue();
-        int dot = dotted.lastIndexOf('.');
-        String tail = dot < 0 ? dotted : dotted.substring(dot + 1);
-
         // A caller that has no path of its own passes None, and `sys.meta_path`'s walk does exactly
         // that for a top-level name, so both spellings mean "read sys.path".
         PyObject path = values[2];
         if (path == null || path instanceof PyNone) {
             path = PyRuntime.sysAttribute("path");
         }
+        PyModuleSpec found = findSpecFor(name.getValue(), path);
+        return found == null ? PyNone.INSTANCE : found;
+    }
+
+    /**
+     * The search itself: finders from the hooks, then one merged namespace spec when every portion
+     * had no loader, or null when nothing on the path holds the name.
+     *
+     * <p>A regular package or module answers as soon as its finder does; only an entry that answers a
+     * spec without a loader is a portion, and those are accumulated rather than returned, because the
+     * namespace package is the merge of all of them.
+     */
+    static PyModuleSpec findSpecFor(String dotted, PyObject path) {
+        PyList portions = PyList.empty();
+        boolean sawPortion = false;
         long count = Numbers.size(Slots.length(path));
         for (long i = 0; i < count; i++) {
             PyObject entry = path.getItem(PyInt.of(i));
-            if (!(entry instanceof PyStr directory)) {
+            PyObject finder = importerFor(entry);
+            if (finder == null) {
                 continue;
             }
-            PyModuleSpec found = search(directory.getValue(), dotted, tail);
-            if (found != null) {
-                return found;
+            PyObject found = Slots.call(
+                    Slots.getAttr(finder, "find_spec"),
+                    new PyObject[] {PyStr.of(dotted), PyNone.INSTANCE},
+                    null);
+            if (!(found instanceof PyModuleSpec spec)) {
+                continue;
             }
+            PyObject loader = Slots.getAttr(spec, "loader");
+            if (!(loader instanceof PyNone)) {
+                return spec;
+            }
+            PyObject locations = Slots.getAttr(spec, "submodule_search_locations");
+            if (locations instanceof PyNone) {
+                continue;
+            }
+            long locationCount = Numbers.size(Slots.length(locations));
+            for (long j = 0; j < locationCount; j++) {
+                portions.add(locations.getItem(PyInt.of(j)));
+            }
+            sawPortion = true;
         }
-        return PyNone.INSTANCE;
-    }
-
-    /** One {@code sys.path} entry: the package first, then the module file beside it. */
-    private static PyModuleSpec search(String directory, String fullname, String tail) {
-        // A directory entry always has a name, so the empty tail of `pkg.` names nothing at all —
-        // the reference's FileFinder misses it for the same reason and answers None.
-        if (tail.isEmpty()) {
-            return null;
-        }
-        String base = directory.isEmpty() ? System.getProperty("user.dir") : directory;
-        String packageDirectory = join(base, tail);
-        String init = join(packageDirectory, "__init__.py");
-        if (Files.isRegularFile(Path.of(init))) {
-            PySourceFileLoader loader = new PySourceFileLoader(fullname, init);
-            return PyModuleSpec.source(fullname, loader, init, packageDirectory);
-        }
-        String file = join(base, tail + ".py");
-        if (Files.isRegularFile(Path.of(file))) {
-            PySourceFileLoader loader = new PySourceFileLoader(fullname, file);
-            return PyModuleSpec.source(fullname, loader, file, null);
+        if (sawPortion) {
+            PyNamespacePath merged = new PyNamespacePath(dotted, portions, pathFinder());
+            return PyModuleSpec.namespace(dotted, merged);
         }
         return null;
     }
 
-    private static String join(String directory, String name) {
-        return directory.endsWith("/") ? directory + name : directory + "/" + name;
+    private static synchronized PyNativeFunction pathFinder() {
+        if (pathFinderFunction == null) {
+            pathFinderFunction = new PyNativeFunction(
+                    "_get_spec",
+                    (args, kwNames) -> {
+                        PyObject[] values = ImportArguments.bind(
+                                "_get_spec", args, kwNames,
+                                new String[] {"name", "path"}, 2);
+                        return findSpecFor(Slots.str(values[0]), values[1]);
+                    });
+        }
+        return pathFinderFunction;
+    }
+
+    /**
+     * {@code _path_importer_cache}: the finder cached for one {@code sys.path} entry, or null.
+     *
+     * <p>The key is the entry as it stands, which is what the reference keys on: a relative entry
+     * stays relative in the cache and {@code ''} stays {@code ''}. A hook that raises ImportError
+     * does not own the entry; any other failure is the program's and is raised.
+     */
+    private static PyObject importerFor(PyObject entry) {
+        PyObject cacheValue = PyRuntime.sysAttribute("path_importer_cache");
+        PyDict cache = cacheValue instanceof PyDict dict ? dict : null;
+        if (cache != null) {
+            PyObject cached = cache.get(entry);
+            if (cached != null) {
+                return cached instanceof PyNone ? null : cached;
+            }
+        }
+        PyObject hooks = PyRuntime.sysAttribute("path_hooks");
+        PyObject finder = null;
+        long count = Numbers.size(Slots.length(hooks));
+        for (long i = 0; i < count; i++) {
+            PyObject hook = hooks.getItem(PyInt.of(i));
+            try {
+                finder = Slots.call(hook, new PyObject[] {entry}, null);
+                break;
+            } catch (PyRaise failure) {
+                if (!failure.value().exceptionType().matches(ExceptionTypes.IMPORT_ERROR)) {
+                    throw failure;
+                }
+            }
+        }
+        if (cache != null) {
+            cache.put(entry, finder == null ? PyNone.INSTANCE : finder);
+        }
+        return finder;
     }
 }

@@ -13,9 +13,8 @@ import java.nio.file.Path;
  * {@code reload} runs a module's body again in the namespace it already has.
  *
  * <p>Not here yet, because this milestone has no finder that would answer them: {@code
- * invalidate_caches} is a walk over {@code sys.meta_path} rather than a cache to clear, the
- * bytecode loaders are unbuilt, and {@code importlib.machinery} does not exist. Everything here
- * answers for the {@code .py} files a script can write.
+ * invalidate_caches} is a walk over {@code sys.meta_path} rather than a cache to clear, and the
+ * bytecode loaders are unbuilt. Everything here answers for the {@code .py} files a script can write.
  */
 final class Importlib {
 
@@ -59,6 +58,65 @@ final class Importlib {
         module.set("reload", new PyNativeFunction("reload", Importlib::reload)
                 .documented("Reload the module and return it.\n\n"
                         + "The module must have been successfully imported before."));
+        return module;
+    }
+
+    /**
+     * {@code importlib.machinery}: the names the import machinery is made of.
+     *
+     * <p>What is published here is the registry a program reads: the two finders beside {@code
+     * PathFinder}, the loaders a spec can carry, the three suffix lists and the function that joins
+     * them. The two debug suffix names are attributes here rather than module-level names reached
+     * through {@code __getattr__}, which is the reference's spelling and a difference a program can
+     * see in {@code vars()}; the milestone notes it.
+     */
+    static PyModule newMachinery() {
+        PyModule module = new PyModule("importlib.machinery");
+        module.set("__doc__", PyStr.of("Importers and path hooks"));
+        module.set("__package__", PyStr.of("importlib"));
+        module.set("__loader__", BuiltinImporter.type());
+        module.set("__spec__", PyModuleSpec.builtin("importlib.machinery", BuiltinImporter.type()));
+        module.set("__all__", names(
+                "AppleFrameworkLoader", "BYTECODE_SUFFIXES", "BuiltinImporter",
+                "DEBUG_BYTECODE_SUFFIXES", "EXTENSION_SUFFIXES", "ExtensionFileLoader",
+                "FileFinder", "FrozenImporter", "ModuleSpec", "NamespaceLoader",
+                "OPTIMIZED_BYTECODE_SUFFIXES", "PathFinder", "SOURCE_SUFFIXES",
+                "SourceFileLoader", "SourcelessFileLoader", "WindowsRegistryFinder",
+                "all_suffixes"));
+        PyList sources = PyList.of(PyStr.of(".py"));
+        PyList bytecode = PyList.of(PyStr.of(".pyc"));
+        PyList extensions = PyList.of(
+                PyStr.of(".cpython-314-darwin.so"), PyStr.of(".abi3.so"), PyStr.of(".so"));
+        module.set("SOURCE_SUFFIXES", sources);
+        module.set("BYTECODE_SUFFIXES", bytecode);
+        module.set("DEBUG_BYTECODE_SUFFIXES", bytecode);
+        module.set("OPTIMIZED_BYTECODE_SUFFIXES", bytecode);
+        module.set("EXTENSION_SUFFIXES", extensions);
+        module.set("all_suffixes", new PyNativeFunction("all_suffixes", (args, kwNames) -> {
+            Arguments.unpackKeywords("all_suffixes", args, kwNames, new String[0], 0, 0);
+            PyList joined = PyList.empty();
+            for (PyObject suffix : sources.getItems()) {
+                joined.add(suffix);
+            }
+            for (PyObject suffix : bytecode.getItems()) {
+                joined.add(suffix);
+            }
+            for (PyObject suffix : extensions.getItems()) {
+                joined.add(suffix);
+            }
+            return joined;
+        }).documented("Return a list of all the suffixes used by the import machinery."));
+        module.set("ModuleSpec", PyType.MODULE_SPEC);
+        module.set("BuiltinImporter", BuiltinImporter.type());
+        module.set("FrozenImporter", PyType.FROZEN_IMPORTER);
+        module.set("PathFinder", PathFinder.type());
+        module.set("FileFinder", PyType.FILE_FINDER);
+        module.set("SourceFileLoader", PyType.SOURCE_FILE_LOADER);
+        module.set("SourcelessFileLoader", PyType.SOURCELESS_FILE_LOADER);
+        module.set("ExtensionFileLoader", PyType.EXTENSION_FILE_LOADER);
+        module.set("AppleFrameworkLoader", PyType.APPLE_FRAMEWORK_LOADER);
+        module.set("NamespaceLoader", PyType.NAMESPACE_LOADER);
+        module.set("WindowsRegistryFinder", PyType.WINDOWS_REGISTRY_FINDER);
         return module;
     }
 
@@ -415,6 +473,15 @@ final class Importlib {
     }
 
     // --- shared --------------------------------------------------------------------------
+
+    /** A list of the given strings, in the order given. */
+    private static PyList names(String... names) {
+        PyObject[] values = new PyObject[names.length];
+        for (int i = 0; i < names.length; i++) {
+            values[i] = PyStr.of(names[i]);
+        }
+        return PyList.of(values);
+    }
 
     /** A name the reference reads with {@code startswith}; a non-string fails in that read. */
     private static String stringStartingWithDot(PyObject value, String method) {

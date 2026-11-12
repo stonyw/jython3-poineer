@@ -147,6 +147,12 @@ final class Members {
             // Every spec the finder answers carries a loader of this class, and a program asks it for
             // its filename before any module has been imported, so the table is filed by its value class.
             Map.entry(PyType.SOURCE_FILE_LOADER, PySourceFileLoader.class),
+            // The directory importer and the namespace package's path and loader are asked for their
+            // methods through their types before any of them has been built, so each files its table
+            // from its own class.
+            Map.entry(PyType.FILE_FINDER, PyFileFinder.class),
+            Map.entry(PyType.NAMESPACE_PATH, PyNamespacePath.class),
+            Map.entry(PyType.NAMESPACE_LOADER, PyNamespaceLoader.class),
             // `re` takes both types from values it compiles at import, and a program can ask the type
             // for `Pattern.groupindex` or `Match.regs` before either value exists.
             Map.entry(PyType.SRE_PATTERN, PySrePattern.class),

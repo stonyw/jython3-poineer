@@ -229,6 +229,16 @@ public final class PyModule extends PyObject {
             return "<module '?'>";
         }
         if (shown instanceof PyStr text) {
+            PyObject spec = dictionary.get(PyStr.interned("__spec__"));
+            if (spec instanceof PyModuleSpec moduleSpec
+                    && Slots.getAttr(moduleSpec, "loader") instanceof PyNamespaceLoader) {
+                // A namespace package names the portions it merged rather than a file it came from.
+                PyObject locations = Slots.getAttr(moduleSpec, "submodule_search_locations");
+                PyObject portions =
+                        locations instanceof PyNamespacePath path ? path.portions() : locations;
+                return "<module '" + text.getValue() + "' (namespace) from "
+                        + Slots.repr(portions) + ">";
+            }
             return "<module '" + text.getValue() + "'>";
         }
         return "<module " + Slots.repr(shown) + ">";

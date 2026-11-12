@@ -125,6 +125,12 @@ public final class ExceptionTypes {
     public static final PyType MODULE_NOT_FOUND_ERROR =
             child("ModuleNotFoundError", IMPORT_ERROR).documented("Module not found.");
 
+    /** {@code zipimport.ZipImportError}: an {@code ImportError} whose name says which reader refused. */
+    public static final PyType ZIP_IMPORT_ERROR =
+            child("ZipImportError", IMPORT_ERROR)
+                    .filedUnder("zipimport.ZipImportError")
+                    .documented("ZipImportError is raised whenever the zipimport module fails.");
+
     // The nine offsets {@code SyntaxError_members} files, and the display that reads two of them. The class
     // is the only one of the family whose {@code tp_new} is left to {@code BaseException} — it declares a
     // {@code tp_init} and so files no {@code __new__} row of its own.

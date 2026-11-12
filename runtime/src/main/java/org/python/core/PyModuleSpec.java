@@ -51,6 +51,19 @@ public final class PyModuleSpec extends PyObject {
     }
 
     /**
+     * The spec a namespace package has: no loader, no origin, and the shared {@code _NamespacePath}.
+     *
+     * <p>{@code PathFinder} makes this after every {@code sys.path} entry has been searched and none
+     * held a regular package or module: {@code origin} is None, {@code has_location} is false, and the
+     * locations are the merged portions, which stays the same object as {@code module.__path__}.
+     */
+    static PyModuleSpec namespace(String name, PyObject locations) {
+        return new PyModuleSpec(fields(
+                PyStr.of(name), PyNone.INSTANCE, PyNone.INSTANCE, PyNone.INSTANCE,
+                locations, false));
+    }
+
+    /**
      * A spec for something on disk whose search locations the caller already decided.
      *
      * <p>{@code importlib.util.spec_from_file_location} builds this directly: it may be handed a

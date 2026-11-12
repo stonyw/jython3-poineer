@@ -152,7 +152,10 @@ public final class PyRuntime {
         // before either is filed: `import importlib.util` then reads the one this runtime built.
         PyModule importLib = Importlib.newModule();
         PyModule importLibUtil = Importlib.newUtil();
+        PyModule machinery = Importlib.newMachinery();
+        PyModule zipImport = ZipImport.newModule();
         importLib.set("util", importLibUtil);
+        importLib.set("machinery", machinery);
         // The module whose classes and functions predate it: `_io` gathers the streams under the
         // names the reference files them with.
         PyModule ioModule = Io.newModule();
@@ -185,6 +188,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("annotationlib"), annotationLib);
         modules.put(PyStr.interned("importlib"), importLib);
         modules.put(PyStr.interned("importlib.util"), importLibUtil);
+        modules.put(PyStr.interned("importlib.machinery"), machinery);
+        modules.put(PyStr.interned("zipimport"), zipImport);
         modules.put(PyStr.interned("_io"), ioModule);
         modules.put(PyStr.interned("_types"), typesModule);
         modules.put(PyStr.interned("_weakref"), weakrefModule);
@@ -218,6 +223,8 @@ public final class PyRuntime {
         belongTo(annotationLib);
         belongTo(importLib);
         belongTo(importLibUtil);
+        belongTo(machinery);
+        belongTo(zipImport);
         belongTo(ioModule);
         belongTo(typesModule);
         belongTo(weakrefModule);
@@ -637,6 +644,10 @@ public final class PyRuntime {
                 return Importlib.newModule();
             case "importlib.util":
                 return Importlib.newUtil();
+            case "importlib.machinery":
+                return Importlib.newMachinery();
+            case "zipimport":
+                return ZipImport.newModule();
             default:
                 return null;
         }
@@ -663,6 +674,15 @@ public final class PyRuntime {
     private static PyObject load(PyModuleSpec spec) {
         String name = ((PyStr) Slots.getAttr(spec, "name")).getValue();
         PyObject loader = Slots.getAttr(spec, "loader");
+        if (loader instanceof PyNone) {
+            // A spec with no loader but with search locations is a namespace package, and the
+            // reference gives it a NamespaceLoader of its own before `create_module` is asked.
+            PyObject locations = Slots.getAttr(spec, "submodule_search_locations");
+            if (!(locations instanceof PyNone)) {
+                loader = new PyNamespaceLoader(locations);
+                spec.setAttr("loader", loader);
+            }
+        }
         PyObject created = Slots.call(
                 Slots.getAttr(loader, "create_module"), new PyObject[] {spec}, null);
         PyModule module = created instanceof PyModule made ? made : new PyModule(name);
@@ -705,6 +725,11 @@ public final class PyRuntime {
             if (module.get("__cached__") == null && !(cached instanceof PyNone)) {
                 module.set("__cached__", cached);
             }
+        }
+        if (Slots.getAttr(spec, "loader") instanceof PyNamespaceLoader
+                && module.get("__file__") == null) {
+            // A namespace package has no file, but the reference still binds the name, to None.
+            module.set("__file__", PyNone.INSTANCE);
         }
     }
 
@@ -1090,6 +1115,10 @@ public final class PyRuntime {
         // has no frozen modules, and names that omission in the milestone notes. The other two are the
         // order the reference searches them in, which is what `import` walks below.
         sys.set("meta_path", PyList.of(BuiltinImporter.type(), PathFinder.type()));
+        // The reference's two hooks, in its order: zip archives first, then directories. A zip file
+        // is only refused for now, so every real entry falls through to the directory hook.
+        sys.set("path_hooks", PyList.of(PyType.ZIP_IMPORTER, PyFileFinder.defaultHook()));
+        sys.set("path_importer_cache", PyDict.empty());
         sys.set("modules", modules);
         sys.set("builtin_module_names",
                 PyTuple.of(
