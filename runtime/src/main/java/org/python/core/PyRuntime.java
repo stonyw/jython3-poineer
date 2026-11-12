@@ -357,15 +357,65 @@ public final class PyRuntime {
         startup();
         PyObject module = modules.get(PyStr.interned(dotted));
         if (module != null) {
-            return module;
+            return cached(module, dotted);
         }
+        int dot = dotted.lastIndexOf('.');
+        if (dot <= 0) {
+            return find(dotted, PyNone.INSTANCE);
+        }
+        // A dotted name is found from the outside in: the parent is imported first, and only then is the
+        // child looked for in the parent's `__path__`. That order is what makes `pkg` answer for itself
+        // when `pkg.sub` is what was asked for, and what makes the parent's own code see a child it
+        // imported itself rather than a second copy.
+        String parentName = dotted.substring(0, dot);
+        String tail = dotted.substring(dot + 1);
+        PyObject parent = importModule(parentName);
+        // Crazy side-effects: the parent may have run the child's import while it was being loaded, so
+        // the mapping is asked again before anything is found.
+        PyObject loaded = modules.get(PyStr.interned(dotted));
+        if (loaded != null) {
+            return cached(loaded, dotted);
+        }
+        PyObject path = Slots.findAttr(parent, "__path__");
+        if (path == null) {
+            throw missingModule(
+                    "No module named '" + dotted + "'; '" + parentName + "' is not a package",
+                    dotted);
+        }
+        PyObject child = find(dotted, path);
+        // The name is bound on the package as an attribute, which is what `import a.b` then reads and
+        // what makes `a.b` reachable without a second import.
+        Slots.setAttr(parent, tail, child);
+        return child;
+    }
+
+    /**
+     * What {@code sys.modules} answered, or the complaint for a module a program filed as {@code None}.
+     *
+     * <p>A {@code None} entry is how the reference blocks an import without removing the name, so the
+     * answer is a failure rather than the value.
+     */
+    private static PyObject cached(PyObject module, String dotted) {
+        if (module instanceof PyNone) {
+            throw missingModule("import of " + dotted + " halted; None in sys.modules", dotted);
+        }
+        return module;
+    }
+
+    /**
+     * The search itself: every finder on {@code sys.meta_path} in turn, then the ones a milestone
+     * installed, and a sentence naming the module when none of them answers.
+     *
+     * @param path the parent package's {@code __path__} for a dotted name, {@code None} for a top-level one
+     */
+    private static PyObject find(String dotted, PyObject path) {
         PyObject metaPath = sysAttribute("meta_path");
         long findersInPath = Numbers.size(Slots.length(metaPath));
         for (long i = 0; i < findersInPath; i++) {
             PyObject finder = metaPath.getItem(PyInt.of(i));
             PyObject found = Slots.call(
                     Slots.getAttr(finder, "find_spec"),
-                    new PyObject[] {PyStr.of(dotted), PyNone.INSTANCE, PyNone.INSTANCE},
+                    new PyObject[] {PyStr.of(dotted), path, PyNone.INSTANCE},
                     null);
             if (found instanceof PyModuleSpec spec) {
                 return load(spec);
@@ -380,9 +430,16 @@ public final class PyRuntime {
                 return found;
             }
         }
-        throw PyRaise.raise(
+        throw missingModule("No module named '" + dotted + "'", dotted);
+    }
+
+    /** A {@code ModuleNotFoundError} that names the module a program can read back from {@code e.name}. */
+    private static PyRaise missingModule(String message, String name) {
+        PyBaseException error = (PyBaseException) Slots.call(
                 ExceptionTypes.MODULE_NOT_FOUND_ERROR,
-                "No module named '" + dotted + "'");
+                new PyObject[] {PyStr.of(message), PyStr.of(name)},
+                PyBoundMethod.keywordTuple(new String[] {"name"}));
+        return PyRaise.of(error);
     }
 
     /**

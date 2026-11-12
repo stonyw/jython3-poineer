@@ -235,15 +235,53 @@ class Jy3LauncherTest {
     /** The package beside it, whose {@code __path__} is the directory the finder searched. */
     private static final String M4_PACKAGE = """
             VALUE = "package"
+            NAME = "pkg-name"
+            """;
+
+    /** A plain submodule, reached both by a dotted import and by a from-import that has no attribute. */
+    private static final String M4_SIBLING = """
+            VALUE = "sibling"
+            """;
+
+    /** A module inside the package, written the way the compiler writes a relative import. */
+    private static final String M4_RELATIVE = """
+            from . import sibling
+            from .sibling import VALUE as SIBLING_VALUE
+            VALUE = "relative"
+            """;
+
+    /** A subpackage, whose own code records that both it and its parent are already in sys.modules. */
+    private static final String M4_SUBPACKAGE = """
+            import sys
+            PARENT_IN_MODULES = "pkg" in sys.modules
+            SELF_IN_MODULES = __name__ in sys.modules
+            VALUE = "sub"
+            """;
+
+    /** A package whose {@code __all__} names submodules, so a star-import has to load them. */
+    private static final String M4_ALL_PACKAGE = """
+            __all__ = ["one", "two"]
+            """;
+
+    private static final String M4_ONE = """
+            VALUE = 1
+            """;
+
+    private static final String M4_TWO = """
+            VALUE = 2
+            """;
+
+    /** A package whose {@code __all__} holds something that is not a string. */
+    private static final String M4_BAD_ALL = """
+            __all__ = ["ok", 1]
             """;
 
     /**
-     * M4's first slice: the import system's foundation, under {@code src/test/resources/m4/corpus}.
+     * M4's import slices, under {@code src/test/resources/m4/corpus}.
      *
-     * <p>Two fixtures are written beside each script because a path finder needs a path to find: a
-     * plain module and a package, so the corpus can ask a name found on disk for its spec before any
-     * of it is imported, and then compare the module the import statement builds from that spec. Both
-     * interpreters see the same two files and the same directory as {@code sys.path[0]}.
+     * <p>The fixtures are written beside each script because a path finder needs a path to find: a plain
+     * module, a package with a module and a subpackage, and two packages that publish names through
+     * {@code __all__}. Both interpreters see the same files and the same directory as {@code sys.path[0]}.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("m4Corpus")
@@ -251,12 +289,26 @@ class Jy3LauncherTest {
         write("helper.py", M4_HELPER);
         Files.createDirectories(work.resolve("pkg"));
         write("pkg/__init__.py", M4_PACKAGE);
+        write("pkg/sibling.py", M4_SIBLING);
+        write("pkg/rel.py", M4_RELATIVE);
+        Files.createDirectories(work.resolve("pkg/sub"));
+        write("pkg/sub/__init__.py", M4_SUBPACKAGE);
+        Files.createDirectories(work.resolve("pkall"));
+        write("pkall/__init__.py", M4_ALL_PACKAGE);
+        write("pkall/one.py", M4_ONE);
+        write("pkall/two.py", M4_TWO);
+        Files.createDirectories(work.resolve("pkbad"));
+        write("pkbad/__init__.py", M4_BAD_ALL);
 
         answersExactlyAsCpython("m4/corpus", scriptName);
     }
 
     private static List<String> m4Corpus() {
-        return List.of("01_the_foundation.py", "02_the_path_finder.py");
+        return List.of(
+                "01_the_foundation.py",
+                "02_the_path_finder.py",
+                "03_the_import_builtin.py",
+                "04_from_imports.py");
     }
 
     private static List<String> m3Corpus() {

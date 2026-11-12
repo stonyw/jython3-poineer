@@ -289,7 +289,9 @@ class JavaFromPythonTest {
                 """);
         assertThat(unimportableClass.exit()).isEqualTo(1);
         assertThat(lastLine(unimportableClass.err()))
-                .isEqualTo("ImportError: cannot import name 'NoSuch' from 'java.util'");
+                .isEqualTo(
+                        "ImportError: cannot import name 'NoSuch' from 'java.util'"
+                                + " (unknown location)");
 
         Result unimportablePackage = run1("""
                 import nosuchpackage

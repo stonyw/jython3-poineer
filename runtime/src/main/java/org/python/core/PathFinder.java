@@ -110,6 +110,11 @@ final class PathFinder {
 
     /** One {@code sys.path} entry: the package first, then the module file beside it. */
     private static PyModuleSpec search(String directory, String fullname, String tail) {
+        // A directory entry always has a name, so the empty tail of `pkg.` names nothing at all —
+        // the reference's FileFinder misses it for the same reason and answers None.
+        if (tail.isEmpty()) {
+            return null;
+        }
         String base = directory.isEmpty() ? System.getProperty("user.dir") : directory;
         String packageDirectory = join(base, tail);
         String init = join(packageDirectory, "__init__.py");

@@ -1626,45 +1626,54 @@ public final class Interpreter {
 
     private static PyObject importModule(Frame frame, int nameIndex) {
         PyObject fromlist = frame.pop();
-        frame.pop(); // the level: only absolute imports exist until the M4 finder reads sys.path
-        String dotted = frame.name(nameIndex);
-        // Loading the full name is what makes `import a.b` work at all, because the loader installs
-        // `b` into `a` on the way. What the statement then binds is the head, and only a from-import
-        // — or `import a.b as c`, which is a from-import in disguise — asks for the leaf.
-        PyObject leaf = PyRuntime.importModule(dotted);
-        int at = dotted.indexOf('.');
-        if (at >= 0 && (fromlist instanceof PyNone || isBlank(fromlist))) {
-            return PyRuntime.importModule(dotted.substring(0, at));
-        }
-        return leaf;
-    }
-
-    private static boolean isBlank(PyObject fromlist) {
-        // CPython's own spelling for "no names asked for" when __import__ is called by hand.
-        return fromlist instanceof PyStr text && text.getValue().isEmpty();
+        PyObject level = frame.pop();
+        return Import.importName(PyStr.of(frame.name(nameIndex)), frame.globals(), fromlist, level);
     }
 
     private static PyObject importFrom(Frame frame, String attribute) {
         PyObject module = frame.peek(0);
-        try {
-            return Slots.getAttr(module, attribute);
-        } catch (PyRaise missing) {
-            // CPython converts this one: an attribute that is not there during an import is an
-            // ImportError that names both the attribute and the module it was wanted from.
-            if (!missing.value().exceptionType().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
-                throw missing;
-            }
-            throw Slots.importError(
-                    "cannot import name '%s' from '%s'", attribute, moduleName(module));
+        PyObject found = Slots.findAttr(module, attribute);
+        if (found != null) {
+            return found;
         }
+        // A package answers a name it has no attribute for with a submodule of that name, which is what
+        // makes `from pkg import sub` work when `pkg/__init__.py` never mentions `sub`. A module that is
+        // not a package has no such fallback.
+        if (Slots.findAttr(module, "__path__") != null) {
+            PyObject submodule = importSubmodule(module, attribute);
+            if (submodule != null) {
+                return submodule;
+            }
+        }
+        // CPython converts the miss into an ImportError that names both the attribute and the module it
+        // was wanted from.
+        throw Import.cannotImport(module, attribute);
     }
 
-    /** {@code module.__name__} when it has one, since that is what CPython puts in the message. */
-    private static String moduleName(PyObject module) {
-        PyObject name = module.getAttr("__name__");
-        return name instanceof PyStr text
-                ? text.getValue()
-                : module.getType().name();
+    /**
+     * The submodule an absent from-import name may still stand for, or null when there is no such module.
+     *
+     * <p>Only a complaint about the module that was asked for is swallowed; a failure while that module
+     * runs is the import's own and travels on unchanged.
+     */
+    private static PyObject importSubmodule(PyObject module, String attribute) {
+        String moduleName = Import.moduleName(module);
+        if (moduleName.isEmpty()) {
+            return null;
+        }
+        String dotted = moduleName + "." + attribute;
+        try {
+            return PyRuntime.importModule(dotted);
+        } catch (PyRaise missing) {
+            if (!missing.value().exceptionType().matches(ExceptionTypes.MODULE_NOT_FOUND_ERROR)) {
+                throw missing;
+            }
+            PyObject name = Slots.findAttr(missing.value(), "name");
+            if (name instanceof PyStr text && text.getValue().equals(dotted)) {
+                return null;
+            }
+            throw missing;
+        }
     }
 
     /**

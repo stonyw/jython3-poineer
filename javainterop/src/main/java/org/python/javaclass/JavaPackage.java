@@ -39,6 +39,10 @@ public final class JavaPackage extends PyObject {
         this.name = name;
         dictionary.put(PyStr.interned("__name__"), PyStr.of(name));
         dictionary.put(PyStr.interned("__doc__"), PyStr.of("Java package " + name));
+        // A package is what a submodule is looked for in, and the import system asks for `__path__` to
+        // know that. Java's packages are found by name instead of by a directory, so the list is empty:
+        // it exists to answer the question, not to be searched.
+        dictionary.put(PyStr.interned("__path__"), PyList.of());
     }
 
     @Override

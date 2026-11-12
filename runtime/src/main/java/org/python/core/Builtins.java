@@ -541,6 +541,31 @@ final class Builtins {
                         "__build_class__(func, name, /, *bases, [metaclass], **kwds) -> class\n"
                                 + "\n"
                                 + "Internal helper function used by the class statement."));
+        // `__import__` sits after `__build_class__` here, though the reference files it earlier: the
+        // order of this table is the order it was built in, and the two import statements reach it
+        // through the dispatch loop rather than by reading this dictionary.
+        put(out, "__import__", new PyNativeFunction("__import__", Import::builtin)
+                .documented(
+                        "__import__($module, /, name, globals=None, locals=None, fromlist=(),\n"
+                                + "           level=0)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Import a module.\n"
+                                + "\n"
+                                + "Because this function is meant for use by the Python\n"
+                                + "interpreter and not for general use, it is better to use\n"
+                                + "importlib.import_module() to programmatically import a module.\n"
+                                + "\n"
+                                + "The globals argument is only used to determine the context;\n"
+                                + "they are not modified.  The locals argument is unused.  The fromlist\n"
+                                + "should be a list of names to emulate ``from name import ...``, or an\n"
+                                + "empty list to emulate ``import name``.\n"
+                                + "When importing a module from a package, note that __import__('A.B', ...)\n"
+                                + "returns package A when fromlist is empty, but its submodule B when\n"
+                                + "fromlist is not empty.  The level argument is used to determine whether\n"
+                                + "to perform absolute or relative imports: 0 is absolute, while a positive\n"
+                                + "number is the number of parent directories to search relative to the\n"
+                                + "current module."));
     }
 
     // --- one argument ----------------------------------------------------------------------
