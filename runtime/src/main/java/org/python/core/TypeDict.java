@@ -1134,10 +1134,10 @@ final class TypeDict {
      * <p>Five of the names already existed as {@link #NEW}, {@link #INIT}, {@link #CALL}, {@link #MRO},
      * {@link #PREPARE}, {@link #INSTANCE_CHECK} and {@link #SUBCLASS_CHECK}, and are filed here as the
      * same objects so that {@code type.__dict__['mro'] is type.mro} stays true. The rest are new: six
-     * {@code member_descriptor}s over the C struct's own fields — which this runtime has no layout for, so
-     * the four sizes and offsets answer nought — and twelve {@code getset_descriptor}s over the names a
-     * class reports about itself, which are now the half of {@link PyType#getAttr} a program can reach
-     * through the dictionary.
+     * {@code member_descriptor}s over the C struct's own fields — the three sizes and two offsets are
+     * composed by {@link TypeLayout}, and {@code __base__} is read from the class — and twelve
+     * {@code getset_descriptor}s over the names a class reports about itself, which are now the half of
+     * {@link PyType#getAttr} a program can reach through the dictionary.
      */
     private static void typeTable(PyDict into) {
         PyType owner = PyType.TYPE;
@@ -1161,9 +1161,9 @@ final class TypeDict {
         table.member("__basicsize__", self -> PyInt.of(TypeLayout.basicsize((PyType) self)));
         table.member("__itemsize__", self -> PyInt.of(TypeLayout.itemsize((PyType) self)));
         table.member("__flags__", self -> PyInt.of(TypeLayout.flags((PyType) self)));
-        table.member("__weakrefoffset__");
+        table.member("__weakrefoffset__", self -> PyInt.of(TypeLayout.weakrefoffset((PyType) self)));
         table.member("__base__", TypeDict::baseOf);
-        table.member("__dictoffset__");
+        table.member("__dictoffset__", self -> PyInt.of(TypeLayout.dictoffset((PyType) self)));
         table.getset("__name__", null, TypeDict::nameOf, writesIdentity("__name__"));
         table.getset("__qualname__", null, TypeDict::nameOf, writesIdentity("__qualname__"));
         table.getset("__bases__", null, TypeDict::basesOf, writesBases());
@@ -7176,9 +7176,10 @@ final class TypeDict {
         /**
          * {@code PyMemberDef} over a field of the type's own struct.
          *
-         * <p>The four sizes and offsets answer nought, because a type here is a Java object rather than a
-         * {@code PyTypeObject} with a layout to measure; {@code __base__} is the one offset this runtime
-         * does keep, and is named by the read that answers it.
+         * <p>These are the offsets whose number the caller composes: the three sizes and two offsets are
+         * asked of {@link TypeLayout}, and {@code __base__} is read from the class itself. A type here is
+         * a Java object rather than a {@code PyTypeObject}, so the layout the numbers describe is the
+         * reference's, kept in one place.
          */
         void member(String name) {
             member(name, self -> PyInt.of(0));

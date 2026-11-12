@@ -3,8 +3,9 @@ package org.python.core;
 import java.util.Map;
 
 /**
- * The three numbers {@code type} reports about a class's own layout: {@code __flags__},
- * {@code __basicsize__} and {@code __itemsize__}.
+ * The five numbers {@code type} reports about a class's own layout: {@code __flags__},
+ * {@code __basicsize__}, {@code __itemsize__}, {@code __dictoffset__} and
+ * {@code __weakrefoffset__}.
  *
  * <p>CPython reads them straight out of the {@code PyTypeObject} a class was built from, so they say
  * what a class is as much as what it has: {@code Py_TPFLAGS_HEAPTYPE} separates a class written in
@@ -18,10 +19,12 @@ import java.util.Map;
  * from the same rules, which is exact for the bits this runtime models and names the rest of the
  * deviation where the table stops.
  *
- * <p>The sizes are the reference interpreter's 64-bit ABI, measured with
- * {@code __basicsize__}/{@code __itemsize__} on CPython 3.14.10. Nothing here allocates storage —
- * {@code __basicsize__} is what {@code __bases__} assignment compares, and {@link PyClass} already
- * tracks that number for the classes it makes.
+ * <p>The sizes and offsets are the reference interpreter's 64-bit ABI, measured with the attributes
+ * themselves on CPython 3.14.10. Nothing here allocates storage — {@code __basicsize__} is what
+ * {@code __bases__} assignment compares, and {@link PyClass} already tracks that number for the classes
+ * it makes. The two offsets name where a value's dictionary and weak references live: a managed slot
+ * CPython reports as a negative sentinel, a real field it reports as the byte offset, and no storage at
+ * all as nought.
  */
 final class TypeLayout {
 
@@ -185,6 +188,24 @@ final class TypeLayout {
                     Map.entry("bytes", 1),
                     Map.entry("tuple", 8));
 
+    /** The managed dictionary's {@code __dictoffset__} sentinel. */
+    private static final int MANAGED_DICT_OFFSET = -1;
+
+    /** The managed weak references' {@code __weakrefoffset__} sentinel. */
+    private static final int MANAGED_WEAKREF_OFFSET = -32;
+
+    /** The real dictionary field {@code BaseException} was compiled with. */
+    private static final int EXCEPTION_DICT_OFFSET = 16;
+
+    /** The real dictionary field {@code type} was compiled with. */
+    private static final int TYPE_DICT_OFFSET = 264;
+
+    /** The real weak-reference field {@code type} was compiled with. */
+    private static final int TYPE_WEAKREF_OFFSET = 368;
+
+    /** The real weak-reference field {@code set} and {@code frozenset} were compiled with. */
+    private static final int SET_WEAKREF_OFFSET = 192;
+
     /** {@code type.__flags__}. */
     static long flags(PyType type) {
         if (type instanceof PyClass held) {
@@ -327,6 +348,70 @@ final class TypeLayout {
         }
         Integer known = BUILTIN_SIZES.get(type.name());
         return known == null ? 16 : known;
+    }
+
+    /**
+     * {@code type.__dictoffset__}: where a value's instance dictionary lives.
+     *
+     * <p>A class Python wrote keeps its dictionary in a managed slot, which CPython reports as
+     * {@code -1}; the two families that brought a real field — an exception at 16 and {@code type} at
+     * 264 — keep that field when subclassed, and a class that introduced no dictionary at all answers
+     * nought. The same field tests decide it as the managed-dictionary bit in {@link #flags}.
+     */
+    static int dictoffset(PyType type) {
+        if (type instanceof PyClass held) {
+            PyType root = root(held);
+            if (root.matches(PyType.TYPE)) {
+                return TYPE_DICT_OFFSET;
+            }
+            if (root.matches(ExceptionTypes.BASE_EXCEPTION)) {
+                return EXCEPTION_DICT_OFFSET;
+            }
+            return held.hasValueDict() ? MANAGED_DICT_OFFSET : 0;
+        }
+        if (type.matches(PyType.TYPE)) {
+            return TYPE_DICT_OFFSET;
+        }
+        if (type.matches(ExceptionTypes.BASE_EXCEPTION)) {
+            return EXCEPTION_DICT_OFFSET;
+        }
+        return 0;
+    }
+
+    /**
+     * {@code type.__weakrefoffset__}: where a value's weak reference list lives.
+     *
+     * <p>The managed slot is reported as {@code -32}, which is likewise a sentinel rather than a byte
+     * offset. Three compiled-in layouts are inherited as real fields instead: {@code type} at 368,
+     * {@code set} and {@code frozenset} at 192, and {@code ExceptionGroup} reports the managed sentinel
+     * because CPython gives it managed weak references. A value that cannot be weakly referenced —
+     * {@code int}, {@code bytes} and {@code tuple} below, or a class that declared its own
+     * {@code __slots__} without {@code __weakref__} — answers nought.
+     */
+    static int weakrefoffset(PyType type) {
+        if (type instanceof PyClass held) {
+            PyType root = root(held);
+            if (root.matches(PyType.TYPE)) {
+                return TYPE_WEAKREF_OFFSET;
+            }
+            if (root == PyType.SET || root == PyType.FROZENSET) {
+                return SET_WEAKREF_OFFSET;
+            }
+            if (!held.hasWeakRefList() || weakless(root)) {
+                return 0;
+            }
+            return MANAGED_WEAKREF_OFFSET;
+        }
+        if (type.matches(PyType.TYPE)) {
+            return TYPE_WEAKREF_OFFSET;
+        }
+        if (type == PyType.SET || type == PyType.FROZENSET) {
+            return SET_WEAKREF_OFFSET;
+        }
+        if (type == ExceptionTypes.EXCEPTION_GROUP) {
+            return MANAGED_WEAKREF_OFFSET;
+        }
+        return 0;
     }
 
     /**

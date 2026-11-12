@@ -38,12 +38,12 @@ import java.util.Set;
 final class Encoder {
 
     /**
-     * The twelve codec modules this runtime has, under the names {@code encodings} imports.
+     * The thirteen codec modules this runtime has, under the names {@code encodings} imports.
      *
      * <p>A name reaches one of them exactly as CPython's {@code encodings.search_function} decides it: the
      * {@code _Py_normalize_encoding} of Objects/unicodeobject.c:3605 first, then one step through the alias
      * table of {@code Lib/encodings/aliases.py} as {@code Lib/encodings/__init__.py:87} reads it. Only the
-     * aliases of these twelve are copied, and they are copied verbatim, because an invented alias would answer
+     * aliases of these thirteen are copied, and they are copied verbatim, because an invented alias would answer
      * for a name the reference refuses — the way {@code u-t-f8} normalizes to {@code u_t_f8} and is no codec
      * at all, while {@code utf 8} and {@code UTF-8} and {@code utf-8} all normalize to {@code utf_8} and are.
      * {@code unicode_escape} has no alias at all, which is why {@code unicodeescape} is refused while
@@ -51,9 +51,9 @@ final class Encoder {
      */
     private static final Set<String> CODECS = Set.of(
             "ascii", "latin_1", "utf_8", "utf_8_sig", "utf_16", "utf_16_le", "utf_16_be",
-            "utf_32", "utf_32_le", "utf_32_be", "cp1252", "unicode_escape");
+            "utf_32", "utf_32_le", "utf_32_be", "cp1252", "unicode_escape", "raw_unicode_escape");
 
-    /** The lines of {@code aliases.py} whose target is one of the twelve. */
+    /** The lines of {@code aliases.py} whose target is one of the thirteen. */
     private static final Map<String, String> ALIASES = Map.ofEntries(
             Map.entry("646", "ascii"),
             Map.entry("ansi_x3.4_1968", "ascii"),
@@ -164,7 +164,9 @@ final class Encoder {
         /** A table of 256 octets, five of which stand for no character. */
         CHARMAP,
         /** A backslash escape for every character, so nothing is ever refused. */
-        ESCAPED
+        ESCAPED,
+        /** A backslash escape only where the character does not fit one octet, so nothing is refused. */
+        RAW_ESCAPED
     }
 
     /**
@@ -202,6 +204,8 @@ final class Encoder {
                 new Codec("charmap", "character maps to <undefined>", 0, true, null, Kind.CHARMAP);
         private static final Codec UNICODE_ESCAPE =
                 new Codec("unicode-escape", "", 0, false, null, Kind.ESCAPED);
+        private static final Codec RAW_UNICODE_ESCAPE =
+                new Codec("rawunicodeescape", "", 0, false, null, Kind.RAW_ESCAPED);
 
         /** Whether this is a character the codec refuses to write at all. */
         boolean refuses(int codePoint) {
@@ -209,7 +213,7 @@ final class Encoder {
                 case ONE_BYTE -> codePoint >= limit;
                 case UTF8, UTF16, UTF32 -> isSurrogate(codePoint);
                 case CHARMAP -> octetOf(codePoint) < 0;
-                case ESCAPED -> false;
+                case ESCAPED, RAW_ESCAPED -> false;
             };
         }
 
@@ -227,6 +231,23 @@ final class Encoder {
                 case UTF32 -> quads(out, codePoint);
                 case CHARMAP -> out.write(octetOf(codePoint));
                 case ESCAPED -> escaped(out, codePoint);
+                case RAW_ESCAPED -> rawEscaped(out, codePoint);
+            }
+        }
+
+        /**
+         * The escape {@code raw-unicode-escape} writes for one character: the octet itself below
+         * {@code 0x100}, and otherwise the hex escape, so {@code '\u00e9'} is one octet while
+         * {@code '\u0100'} is six.
+         */
+        private static void rawEscaped(ByteArrayOutputStream out, int codePoint) {
+            if (codePoint < 0x100) {
+                out.write(codePoint);
+                return;
+            }
+            String escape = escapeOf(codePoint);
+            for (int at = 0; at < escape.length(); at++) {
+                out.write(escape.charAt(at));
             }
         }
 
@@ -681,6 +702,7 @@ final class Encoder {
             case "utf_32_be" -> Codec.UTF32_BE;
             case "cp1252" -> Codec.CP1252;
             case "unicode_escape" -> Codec.UNICODE_ESCAPE;
+            case "raw_unicode_escape" -> Codec.RAW_UNICODE_ESCAPE;
             default -> throw new AssertionError(encoding);
         };
     }

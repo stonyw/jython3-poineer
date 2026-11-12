@@ -553,7 +553,8 @@ class Jy3LauncherTest {
                 "12_mutable_bases.py",
                 "13_slots.py",
                 "14_attribute_hooks.py",
-                "15_type_layout_fields.py");
+                "15_type_layout_fields.py",
+                "16_raw_unicode_escape_offsets.py");
     }
 
     private static List<String> m3Corpus() {

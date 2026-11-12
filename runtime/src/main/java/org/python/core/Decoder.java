@@ -87,6 +87,7 @@ final class Decoder {
             case "utf_32_be" -> utf32(out, data, errors, new Utf32(true, "utf-32-be", 0));
             case "cp1252" -> charmap(out, data, errors);
             case "unicode_escape" -> unicodeEscape(out, data, errors);
+            case "raw_unicode_escape" -> rawUnicodeEscape(out, data, errors);
             default -> throw new AssertionError(encoding);
         }
         return out.toString();
@@ -463,6 +464,66 @@ final class Decoder {
             out.append((char) octet).append((char) escape);
             at += 2;
         }
+    }
+
+    /**
+     * {@code PyUnicode_DecodeRawUnicodeEscape}: the same walk with a grammar of two escapes, and the one
+     * that copies what it does not recognise straight through.
+     *
+     * <p>A backslash introduces a {@code u} escape of four hex digits or a capital {@code U} escape of
+     * eight; every other backslash — before a letter, a newline, or the end of the input — is copied
+     * through as the backslash and the octet behind it. An octet that is not a backslash is already a
+     * character, the high half coming through as latin-1. A run of digits that stops short is refused by
+     * the octets that did arrive, and a {@code \U} value above {@code 0x10ffff} is refused by the whole
+     * escape as {@code \Uxxxxxxxx out of range}. Unlike {@code unicode-escape}, a surrogate is a
+     * character of its own here: {@code \ud83d\ude00} is two of them rather than one.
+     */
+    private static void rawUnicodeEscape(StringBuilder out, byte[] data, String errors) {
+        String reported = "rawunicodeescape";
+        for (int at = 0; at < data.length; ) {
+            int octet = data[at] & 0xff;
+            if (octet != '\\') {
+                out.append((char) octet);
+                at++;
+                continue;
+            }
+            if (at + 1 >= data.length) {
+                out.append('\\');
+                at++;
+                continue;
+            }
+            int escape = data[at + 1] & 0xff;
+            if (escape == 'u' || escape == 'U') {
+                at = rawHexEscape(out, errors, reported, data, at, escape);
+                continue;
+            }
+            out.append('\\').append((char) escape);
+            at += 2;
+        }
+    }
+
+    /** The four or eight hex digits of a raw escape, refused the way {@code unicode-escape} refuses them. */
+    private static int rawHexEscape(
+            StringBuilder out, String errors, String reported, byte[] data, int at, int kind) {
+        int width = kind == 'u' ? 4 : 8;
+        int value = 0;
+        int end = at + 2;
+        while (end < at + 2 + width) {
+            if (end >= data.length) {
+                return handled(errors, reported, data, out, at, data.length, truncated(kind));
+            }
+            int digit = hex(data[end]);
+            if (digit < 0) {
+                return handled(errors, reported, data, out, at, end, truncated(kind));
+            }
+            value = (value << 4) | digit;
+            end++;
+        }
+        if (value > 0x10FFFF) {
+            return handled(errors, reported, data, out, at, end, "\\Uxxxxxxxx out of range");
+        }
+        out.appendCodePoint(value);
+        return end;
     }
 
     /** The character a one-letter escape stands for, or {@code -1} where the letter stands for none. */
