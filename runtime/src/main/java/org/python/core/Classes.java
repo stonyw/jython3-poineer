@@ -975,6 +975,19 @@ final class Classes {
             }
             return false;
         }
+        if (classes instanceof PyUnionType union) {
+            // A union is scanned in the order it was written, so `isinstance(1, int | list[int])` is true
+            // without ever reaching the parameterized half, while the other order complains about it.
+            for (PyObject member : union.members()) {
+                if (instanceOf(value, member)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (classes instanceof PyGenericAlias) {
+            throw Slots.typeError("isinstance() argument 2 cannot be a parameterized generic");
+        }
         PyObject checker = hook(classes, "__instancecheck__");
         if (checker != null) {
             return Slots.truth(Slots.call(checker, new PyObject[] {value}, null));
@@ -1006,6 +1019,17 @@ final class Classes {
                 }
             }
             return false;
+        }
+        if (classes instanceof PyUnionType union) {
+            for (PyObject member : union.members()) {
+                if (subclassOf(derived, member)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (classes instanceof PyGenericAlias) {
+            throw Slots.typeError("issubclass() argument 2 cannot be a parameterized generic");
         }
         PyObject checker = hook(classes, "__subclasscheck__");
         if (checker != null) {

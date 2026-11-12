@@ -1034,6 +1034,26 @@ final class TypeDict {
     }
 
     /**
+     * {@code type.__or__}, which PEP 604 makes the union constructor: {@code int | str}.
+     *
+     * <p>The wrapper is reachable as an attribute as well as through the operator, and the reference's own
+     * answer to an operand it cannot absorb is {@code NotImplemented} — the operator then writes the
+     * unsupported-operand sentence, while a direct call simply shows the sentinel.
+     */
+    private static PyObject typeOr(PyObject[] args, String[] kwNames, String qualified) {
+        return PyUnionType.operand(args[1])
+                ? PyUnionType.of(args[0], args[1])
+                : PyNotImplemented.INSTANCE;
+    }
+
+    /** {@code type.__ror__}: the union with the left operand first, and the same refusal. */
+    private static PyObject typeRor(PyObject[] args, String[] kwNames, String qualified) {
+        return PyUnionType.operand(args[1])
+                ? PyUnionType.of(args[1], args[0])
+                : PyNotImplemented.INSTANCE;
+    }
+
+    /**
      * {@code type}'s own dictionary: the thirty-four names every class inherits through its metatype.
      *
      * <p>Five of the names already existed as {@link #NEW}, {@link #INIT}, {@link #CALL}, {@link #MRO},
@@ -1054,8 +1074,8 @@ final class TypeDict {
         table.wrapper("__setattr__", SETATTR_DOC, TypeDict::typeSetAttribute);
         table.wrapper("__delattr__", DELATTR_DOC, TypeDict::typeDelAttribute);
         table.put("__init__", INIT);
-        table.wrapper("__or__", OR_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
-        table.wrapper("__ror__", ROR_DOC, (args, kw, q) -> PyNotImplemented.INSTANCE);
+        table.wrapper("__or__", OR_DOC, TypeDict::typeOr);
+        table.wrapper("__ror__", ROR_DOC, TypeDict::typeRor);
         table.put("mro", MRO);
         table.method("__subclasses__", SUBCLASSES_DOC, TypeDict::subclasses);
         table.put("__prepare__", PREPARE);

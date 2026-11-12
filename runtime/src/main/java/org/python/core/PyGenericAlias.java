@@ -79,6 +79,30 @@ public final class PyGenericAlias extends PyObject {
         };
     }
 
+    /**
+     * {@code list[int] | int}: the alias joins the union of PEP 604 the way a class does.
+     *
+     * <p>The accepted operands are the class side's — a class, another alias, a union, {@code None} — so
+     * {@code list[int] | 3} is refused in the operator's own words rather than becoming a union of a
+     * subscript and an integer. A union on the right is spread, which is why {@code list[int] | (int | str)}
+     * prints with the alias first.
+     */
+    @Override
+    public PyObject binaryOp(BinaryOp op, PyObject other) {
+        if (op == BinaryOp.OR && PyUnionType.operand(other)) {
+            return PyUnionType.of(this, other);
+        }
+        return super.binaryOp(op, other);
+    }
+
+    @Override
+    public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        if (op == BinaryOp.OR && PyUnionType.operand(other)) {
+            return PyUnionType.of(other, this);
+        }
+        return super.reflectedOp(op, other);
+    }
+
     @Override
     public boolean eq(PyObject other) {
         if (!(other instanceof PyGenericAlias alias) || alias.origin != origin) {
@@ -145,7 +169,7 @@ public final class PyGenericAlias extends PyObject {
      * two names given first are the two a person writes instead of a class: {@code list[None]} says the word
      * {@code None} for the type of that value, and {@code list[Ellipsis]} writes the three dots.
      */
-    private static String displayed(PyObject value) {
+    static String displayed(PyObject value) {
         if (value == PyEllipsis.INSTANCE) {
             return "...";
         }

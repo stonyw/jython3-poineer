@@ -1891,6 +1891,31 @@ public class PyType extends PyObject {
     }
 
     /**
+     * {@code C | D}: PEP 604's operator, which a class answers only for another class, a union, or
+     * {@code None}.
+     *
+     * <p>Anything else declines here and suffers the ordinary unsupported-operand sentence, which is why
+     * {@code int | 3} names {@code type} and {@code int} rather than quietly setting a union member: the
+     * looser membership rule belongs to a union already built, not to the operator on a class.
+     */
+    @Override
+    public PyObject binaryOp(BinaryOp op, PyObject other) {
+        if (op == BinaryOp.OR && PyUnionType.operand(other)) {
+            return PyUnionType.of(this, other);
+        }
+        return super.binaryOp(op, other);
+    }
+
+    /** {@code None | C} and {@code D | C}: the same union, with the left value kept first. */
+    @Override
+    public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        if (op == BinaryOp.OR && PyUnionType.operand(other)) {
+            return PyUnionType.of(other, this);
+        }
+        return super.reflectedOp(op, other);
+    }
+
+    /**
      * Types hash by name rather than by address. CPython uses the address, which is not reproducible
      * across runs; name is stable and collisions are legal.
      */

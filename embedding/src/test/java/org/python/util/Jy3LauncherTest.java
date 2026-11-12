@@ -390,8 +390,9 @@ class Jy3LauncherTest {
      * from — one that counts its executions, one whose body prints the names it was handed before it
      * ran, one that imports its own submodule, one whose child raises, and one reached only through a
      * directory appended to {@code __path__}. Both interpreters see the same files and the same directory
-     * as {@code sys.path[0]}. The last two are not about imports: they are the two gaps slice 112 took
-     * out of the deferred criteria, the three descriptor builtins as bases and {@code sys.implementation}.
+     * as {@code sys.path[0]}. The last three are not about imports: they are the two gaps slice 112 took
+     * out of the deferred criteria, the three descriptor builtins as bases and {@code sys.implementation},
+     * and slice 115's PEP 604 unions, which are what turns {@code type | type} from a refusal into a value.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("m4Corpus")
@@ -455,7 +456,8 @@ class Jy3LauncherTest {
                 "09_sys_implementation.py",
                 "10_io_module.py",
                 "11_types_module.py",
-                "12_weakref_module.py");
+                "12_weakref_module.py",
+                "13_union_types.py");
     }
 
     private static List<String> m3Corpus() {
