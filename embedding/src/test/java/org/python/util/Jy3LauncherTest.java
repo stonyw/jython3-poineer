@@ -390,7 +390,8 @@ class Jy3LauncherTest {
      * from — one that counts its executions, one whose body prints the names it was handed before it
      * ran, one that imports its own submodule, one whose child raises, and one reached only through a
      * directory appended to {@code __path__}. Both interpreters see the same files and the same directory
-     * as {@code sys.path[0]}.
+     * as {@code sys.path[0]}. The last two are not about imports: they are the two gaps slice 112 took
+     * out of the deferred criteria, the three descriptor builtins as bases and {@code sys.implementation}.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("m4Corpus")
@@ -449,7 +450,9 @@ class Jy3LauncherTest {
                 "04_from_imports.py",
                 "05_the_package_object.py",
                 "06_importlib.py",
-                "07_module_metadata.py");
+                "07_module_metadata.py",
+                "08_descriptor_subclasses.py",
+                "09_sys_implementation.py");
     }
 
     private static List<String> m3Corpus() {

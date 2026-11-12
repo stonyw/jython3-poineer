@@ -242,12 +242,21 @@ final class Classes {
      * this runtime already builds — an exception class carries its args and traceback whatever Python
      * class derives from it — and every other built-in has Java slots no dictionary can stand in for,
      * which is the refusal a {@code class C(str)} still gets.
+     *
+     * <p>The three descriptor wrappers are the exception on that last point: they have Java slots, but
+     * {@link #allocateWrapper} can make the struct with the subclass as its type, so a class written over
+     * one of them keeps the behaviour its members read. They are here because the standard library writes
+     * exactly that — {@code abc}'s deprecated {@code abstractclassmethod}, {@code abstractstaticmethod} and
+     * {@code abstractproperty} — and their absence kept {@code import abc} from getting past line 28.
      */
     private static boolean canDeriveFrom(PyType base) {
         return base instanceof PyClass
                 || base == PyType.OBJECT
                 || base == PyType.TYPE
-                || base.matches(ExceptionTypes.BASE_EXCEPTION);
+                || base.matches(ExceptionTypes.BASE_EXCEPTION)
+                || base == PyType.CLASS_METHOD
+                || base == PyType.STATIC_METHOD
+                || base == PyType.PROPERTY;
     }
 
     /**
@@ -829,10 +838,61 @@ final class Classes {
                     ? PyOSError.create(kind, Arguments.positionals(args, names))
                     : new PyBaseException(kind, Arguments.positionals(args, names));
         }
-        if (excess(args, kwNames) && !Specials.defines(kind, "__init__")) {
+        PyObject wrapper = allocateWrapper(kind);
+        if (wrapper != null) {
+            return wrapper;
+        }
+        if (excess(args, kwNames) && inheritsOnlyObjectInit(kind)) {
             throw Slots.typeError("%s() takes no arguments", kind.name());
         }
         return new PyInstance(kind);
+    }
+
+    /**
+     * {@code tp_alloc} for the three descriptor wrappers a Python class may derive from.
+     *
+     * <p>CPython's {@code classmethod_new}, {@code staticmethod_new} and {@code property_new} are
+     * {@code object_new}, so the value they hand back is a {@code classmethod} struct whose type is the
+     * subclass — {@code cm_callable}, {@code cm_dict} and the two property fields are all there, and the
+     * initialiser the order answers with is the wrapper's own. There is no {@code tp_alloc} table here,
+     * so the same thing is done the way this runtime can: the Java object the wrapper's members read is
+     * made, its type is rewritten to the class being called ({@link PyObject}'s {@code type} field, which
+     * is what a subtype's allocation sets), and the members therefore behave as the wrapper's do while
+     * {@code type(x)} and {@code repr} name the subclass.
+     *
+     * @return the value, or null for a class that is not one of the three
+     */
+    private static PyObject allocateWrapper(PyClass kind) {
+        PyObject value;
+        if (kind.matches(PyType.CLASS_METHOD)) {
+            value = new PyClassMethod();
+        } else if (kind.matches(PyType.STATIC_METHOD)) {
+            value = new PyStaticMethod();
+        } else if (kind.matches(PyType.PROPERTY)) {
+            value = new PyProperty();
+        } else {
+            return null;
+        }
+        value.type = kind;
+        return value;
+    }
+
+    /**
+     * Whether the nearest {@code __init__} a class inherits is {@code object}'s own.
+     *
+     * <p>{@code object_new} refuses arguments only while the init slot is still {@code object_init}, so
+     * the question is which owner in the order declares the name first, not whether the class's own body
+     * does. A class that inherits {@code classmethod.__init__} must let that initialiser see the
+     * arguments and complain in its own words, while a class that only reaches {@code object} refuses
+     * before any call in the words {@code C() takes no arguments}.
+     */
+    private static boolean inheritsOnlyObjectInit(PyClass kind) {
+        for (PyType owner : kind.mro()) {
+            if (Specials.declared(owner, "__init__") != null) {
+                return owner == PyType.OBJECT;
+            }
+        }
+        return true;
     }
 
     /** {@code type_init}: the two things a class built by a metatype call is checked for afterwards. */

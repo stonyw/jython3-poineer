@@ -1065,6 +1065,18 @@ public class PyType extends PyObject {
             namedSequence("sys.version_info")
                     .documented("sys.version_info\n\nVersion information as a named tuple.");
 
+    /**
+     * {@code types.SimpleNamespace}, the type {@code sys.implementation} reports.
+     *
+     * <p>It is filed under {@code types} for the name {@code type(ns)} prints, and declared without a
+     * member table because every read and write of a value goes to the dictionary {@link PyNamespace}
+     * keeps. {@code types} itself is assembled with the standard library in M4, so no program can import
+     * the type by name yet; naming it here is what makes {@code type(sys.implementation)} print the way
+     * the reference does.
+     */
+    public static final PyType NAMESPACE =
+            builtin("SimpleNamespace").filedUnder("types.SimpleNamespace");
+
     private String name;
 
     /**

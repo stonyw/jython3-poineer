@@ -936,6 +936,41 @@ public final class PyRuntime {
         };
     }
 
+    /**
+     * {@code sys.implementation}: the namespace a program reads this implementation's identity from.
+     *
+     * <p>The six names are CPython 3.14's and in its order, because the order is what {@code repr} prints.
+     * {@code name} and {@code cache_tag} claim CPython 3.14 on purpose: that is the behaviour this
+     * runtime reproduces and what the standard library branches on. {@code version} is the same object
+     * {@code sys.version_info} is, so the identity a program can rely on holds here as it does there —
+     * the numbers themselves are this runtime's, which is why the two differ from the reference's build.
+     *
+     * <p>{@code supports_isolated_interpreters} is false: there are no sub-interpreters here to isolate,
+     * and saying true would invite a program into a feature this runtime does not have. That is the one
+     * value that differs from the reference on purpose; the milestone notes name it.
+     */
+    private static PyNamespace implementation() {
+        PyNamespace namespace = new PyNamespace();
+        namespace.set("name", PyStr.of("cpython"));
+        namespace.set("cache_tag", PyStr.of("cpython-" + VERSION_MAJOR + VERSION_MINOR));
+        namespace.set("version", PyVersionInfo.current());
+        namespace.set("hexversion", PyInt.of(hexVersion()));
+        namespace.set("_multiarch", PyStr.of(multiarch()));
+        namespace.set("supports_isolated_interpreters", PyBool.FALSE);
+        return namespace;
+    }
+
+    /**
+     * {@code sys.implementation._multiarch}: the platform spelling CPython's build records.
+     *
+     * <p>Only the macOS value is reproduced, because that is the platform this runtime is measured on;
+     * elsewhere the name is empty rather than a guess, and the milestone notes name the gap.
+     */
+    private static String multiarch() {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        return os.startsWith("mac") ? "darwin" : "";
+    }
+
     private static PyModule buildSys() {
         PyModule sys = new PyModule("sys");
         // COPY_SYS_ATTR gives the three standard files a second name each, and the second name is the
@@ -959,6 +994,7 @@ public final class PyRuntime {
         sys.set("prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("version_info", PyVersionInfo.current());
+        sys.set("implementation", implementation());
         sys.set("argv", PyList.of(PyStr.of("jy3")));
         sys.set("path", pathList());
         // The reference's meta_path has three entries; this runtime has no frozen importer because it

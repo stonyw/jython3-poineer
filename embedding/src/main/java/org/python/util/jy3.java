@@ -297,11 +297,36 @@ public final class jy3 {
         return PASSED;
     }
 
+    /**
+     * Run one regrtest target: {@code test/<target>.py} as the main program.
+     *
+     * <p>The harness starts this launcher with the reference library as the working directory, so the
+     * relative {@code test/} name is the module the target means. The file is run rather than imported,
+     * because a suite written for regrtest ends in {@code unittest.main()} and that finds its tests on the
+     * module that is running. The library root, not the test directory, goes on {@code sys.path}: a suite
+     * imports {@code test.support} and that needs the root there, the same empty entry {@code -c} uses.
+     *
+     * <p>The suites need the standard library, which is M4's assembly; until then the first one raises
+     * {@code ModuleNotFoundError} and the exit status is 1, which the harness records as a failure. A
+     * target that is not in the library is reported as unimplemented rather than as skipped: exit code 2
+     * means "skipped" to the harness and would hide the fact that nothing was run.
+     */
     private static int harness(String[] args, int at) {
-        String target = at + 1 < args.length ? args[at + 1] : "no target";
-        return notImplemented(
-                "the regrtest target " + target,
-                "a test module is an import, and its support code is the standard library: M4");
+        if (at + 1 >= args.length) {
+            write("Argument expected for the " + HARNESS_FLAG + " option\n" + USAGE);
+            return NOT_IMPLEMENTED;
+        }
+        String target = args[at + 1];
+        Path test = Path.of("test", target + ".py");
+        if (!Files.isReadable(test)) {
+            return notImplemented(
+                    "the regrtest target " + target,
+                    "no test/" + target + ".py under the working directory");
+        }
+        start(importPath(""));
+        PyRuntime.setArgv(test.toString(), List.of());
+        Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(test);
+        return execute(compiled.code(), compiled.fileName());
     }
 
     private static int notImplemented(String what, String why) {
