@@ -43,9 +43,10 @@ public final class PyRuntime {
      * extension modules, which are imports this runtime answers in Java instead.
      */
     private static final String[] BUILTIN_MODULE_NAMES =
-            {"builtins", "sys", "_ast", "_io", "_tokenize", "_opcode", "_signal", "_types", "_weakref",
-                "itertools", "_thread",
-                "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections"};
+            {"builtins", "sys", "_ast", "_io", "_tokenize", "_opcode", "_signal", "_string", "_types",
+                "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
+                "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections",
+                "unicodedata"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -175,6 +176,9 @@ public final class PyRuntime {
         PyModule opcodeModule = OpcodeModule.newModule();
         // The C half of `signal`, which `unittest` reaches through `unittest.signals`.
         PyModule signalModule = SignalModule.newModule();
+        // The two helpers `string.Formatter` is built on, which the `string` package imports at module
+        // scope — the first import of `logging`, and so of `test.support`.
+        PyModule stringModule = StringModule.newModule();
         // The two module objects whose names are types this runtime already had, and the seven the
         // class system cannot make yet: they are gathered here so that a program can ask a type's name
         // and module without importing the Python wrapper, `types` or `weakref`.
@@ -184,6 +188,18 @@ public final class PyRuntime {
         // standard-library module written in Python run on top of this runtime's own machinery.
         PyModule itertoolsModule = Itertools.newModule();
         PyModule threadModule = ThreadModule.newModule();
+        // `logging` registers a shutdown function with it at module scope, which is the first import of
+        // it on the road to `test.support`.
+        PyModule atexitModule = AtexitModule.newModule();
+        // `test.support.import_helper` imports it at module scope; what it asks for is answered
+        // against this runtime's own module tables.
+        PyModule impModule = ImpModule.newModule();
+        // `random.py` is written as `class Random(_random.Random)`, so the whole module is the base
+        // type and the six rows it files.
+        PyModule randomModule = RandomModule.newModule();
+        // `test.support.os_helper` normalizes a file name with this module on `darwin`, and every
+        // test target imports that helper at module scope.
+        PyModule unicodeDataModule = UnicodeDataModule.newModule();
         PyModule structModule = StructModule.newModule();
         PyModule binasciiModule = BinasciiModule.newModule();
         PyModule errnoModule = ErrnoModule.newModule();
@@ -193,7 +209,6 @@ public final class PyRuntime {
         // The two modules `re` needs before any of its own Python code can run: the engine boundary
         // and the one decorator `re/__init__.py` imports at module scope.
         PyModule sreModule = SreModule.newModule();
-        PyModule functoolsModule = FunctoolsModule.newModule();
         // The one module `warnings` needs at module scope, under both the private and the public
         // name: `_py_warnings` asks for `_contextvars` and a program imports `contextvars`.
         PyModule contextvarsModule = ContextvarsModule.newModule();
@@ -216,10 +231,15 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_tokenize"), tokenizeModule);
         modules.put(PyStr.interned("_opcode"), opcodeModule);
         modules.put(PyStr.interned("_signal"), signalModule);
+        modules.put(PyStr.interned("_string"), stringModule);
         modules.put(PyStr.interned("_types"), typesModule);
         modules.put(PyStr.interned("_weakref"), weakrefModule);
         modules.put(PyStr.interned("itertools"), itertoolsModule);
         modules.put(PyStr.interned("_thread"), threadModule);
+        modules.put(PyStr.interned("atexit"), atexitModule);
+        modules.put(PyStr.interned("_imp"), impModule);
+        modules.put(PyStr.interned("_random"), randomModule);
+        modules.put(PyStr.interned("unicodedata"), unicodeDataModule);
         modules.put(PyStr.interned("_struct"), structModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
         modules.put(PyStr.interned("errno"), errnoModule);
@@ -227,16 +247,17 @@ public final class PyRuntime {
         modules.put(PyStr.interned("math"), mathModule);
         modules.put(PyStr.interned("time"), timeModule);
         modules.put(PyStr.interned("_sre"), sreModule);
-        modules.put(PyStr.interned("functools"), functoolsModule);
+        // `functools` is deliberately not filed here either: the reference's `functools.py` is the
+        // module programs mean, and every `_functools` import in it is optional, so it needs nothing
+        // from this runtime. Only a run with no standard library reaches `#buildFunctoolsModule`.
         modules.put(PyStr.interned("_contextvars"), contextvarsModule);
         modules.put(PyStr.interned("contextvars"), contextvarsWrapper);
         modules.put(PyStr.interned("posix"), posixModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
         modules.put(PyStr.interned("gc"), gcModule);
-        // The package is built after its child is filed, so the `string.templatelib` a program reaches
-        // through the package is the same object it reaches through `sys.modules`.
-        PyModule stringPackage = buildStringPackage();
-        modules.put(PyStr.interned("string"), stringPackage);
+        // `string` itself is deliberately not filed here: when a standard library is reachable its
+        // `string/__init__.py` is the package every caller means, and only a run with no `string`
+        // module anywhere gets the stub {@link #buildStringPackage()} builds, through `rebuild`.
         // The two modules CPython builds during initialization are imported from built-in code, so
         // their loader is the one loader that answers without a finder, and their spec says the same:
         // origin 'built-in', no search locations. The order of the three writes is the order the
@@ -256,10 +277,15 @@ public final class PyRuntime {
         belongTo(ioModule);
         belongTo(tokenizeModule);
         belongTo(signalModule);
+        belongTo(stringModule);
         belongTo(typesModule);
         belongTo(weakrefModule);
         belongTo(itertoolsModule);
         belongTo(threadModule);
+        belongTo(atexitModule);
+        belongTo(impModule);
+        belongTo(randomModule);
+        belongTo(unicodeDataModule);
         belongTo(structModule);
         belongTo(binasciiModule);
         belongTo(errnoModule);
@@ -267,13 +293,11 @@ public final class PyRuntime {
         belongTo(mathModule);
         belongTo(timeModule);
         belongTo(sreModule);
-        belongTo(functoolsModule);
         belongTo(contextvarsModule);
         belongTo(contextvarsWrapper);
         belongTo(posixModule);
         belongTo(collectionsModule);
         belongTo(gcModule);
-        belongTo(stringPackage);
     }
 
     /**
@@ -675,6 +699,8 @@ public final class PyRuntime {
         switch (dotted) {
             case "string":
                 return buildStringPackage();
+            case "functools":
+                return FunctoolsModule.newModule();
             case "string.templatelib":
                 return buildTemplateLib();
             case "annotationlib":
@@ -1089,6 +1115,17 @@ public final class PyRuntime {
         return Interpreter.run(new Frame(code, globals, locals, new PyObject[code.localCount()]));
     }
 
+    /**
+     * Run the callbacks {@code atexit.register} collected, newest first.
+     *
+     * <p>This runtime has no separate finalization step, so the launcher calls this at the one moment
+     * there is for it, just before the process exits — which is also the moment {@code logging} expects
+     * its handlers to be flushed.
+     */
+    public static void runExitFunctions() {
+        AtexitModule.runExitFunctions();
+    }
+
     /** Drain both streams, which a process about to exit must do because stdout is block-buffered. */
     public static void flushStreams() {
         if (stdout != null) {
@@ -1144,6 +1181,78 @@ public final class PyRuntime {
     }
 
     /**
+     * {@code sys.hash_info}: what the hash functions are built on.
+     *
+     * <p>The numeric members are this runtime's actual constants — {@link PyHash#MODULUS},
+     * {@link PyHash#INF}, {@link PyHash#IMAG}, and 0 for NaN — so they answer the same questions the
+     * reference's do. {@code algorithm} names what {@link PyHash} really does rather than the
+     * reference's {@code siphash13}: text hashing here is a deterministic FNV-1a with no per-process
+     * seed, which is why {@code seed_bits} is 0 and {@code cutoff} is 0 as well.
+     */
+    private static PyNamespace hashInfo() {
+        PyNamespace namespace = new PyNamespace();
+        namespace.set("width", PyInt.of(64));
+        namespace.set("modulus", PyInt.of(PyHash.MODULUS.longValue()));
+        namespace.set("inf", PyInt.of(PyHash.INF));
+        namespace.set("nan", PyInt.of(0));
+        namespace.set("imag", PyInt.of(PyHash.IMAG));
+        namespace.set("algorithm", PyStr.of("fnv-1a"));
+        namespace.set("hash_bits", PyInt.of(64));
+        namespace.set("seed_bits", PyInt.of(0));
+        namespace.set("cutoff", PyInt.of(0));
+        return namespace;
+    }
+
+    /**
+     * {@code sys._jit}: the observation point for a just-in-time compiler.
+     *
+     * <p>This runtime has no JIT, so all three answers are False — which is what the reference answers
+     * for a build without one, and what {@code test.support} reads once at module scope to decide
+     * whether the JIT-only tests run.
+     */
+    private static PyModule jitModule() {
+        PyModule module = new PyModule("sys._jit");
+        module.set("__doc__", PyStr.of("Utilities for observing just-in-time compilation."));
+        module.set("__package__", PyNone.INSTANCE);
+        module.set("__loader__", PyNone.INSTANCE);
+        module.set("__spec__", PyNone.INSTANCE);
+        module.set(
+                "is_active",
+                PyNativeFunction.positional("is_active", args -> {
+                    Arguments.none("is_active()", args, null);
+                    return PyBool.FALSE;
+                }).documented(
+                        "is_active($module, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return True if the topmost Python frame is currently executing JIT code "
+                                + "(implies sys._jit.is_enabled()), and False otherwise."));
+        module.set(
+                "is_available",
+                PyNativeFunction.positional("is_available", args -> {
+                    Arguments.none("is_available()", args, null);
+                    return PyBool.FALSE;
+                }).documented(
+                        "is_available($module, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return True if the current Python executable supports JIT compilation, "
+                                + "and False otherwise."));
+        module.set(
+                "is_enabled",
+                PyNativeFunction.positional("is_enabled", args -> {
+                    Arguments.none("is_enabled()", args, null);
+                    return PyBool.FALSE;
+                }).documented(
+                        "is_enabled($module, /)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Return True if JIT compilation is enabled for the current Python process "
+                                + "(implies sys._jit.is_available()), and False otherwise."));
+        return module;
+    }
+
+    /**
      * {@code sys.implementation}: the namespace a program reads this implementation's identity from.
      *
      * <p>The six names are CPython 3.14's and in its order, because the order is what {@code repr} prints.
@@ -1178,6 +1287,27 @@ public final class PyRuntime {
         return os.startsWith("mac") ? "darwin" : "";
     }
 
+    /**
+     * {@code sys.platform}: the short spelling CPython records for the host, which is not the JVM's
+     * {@code os.name} — macOS is {@code mac os x} there and {@code darwin} here.
+     *
+     * <p>Only the three platforms this runtime is measured on are spelled out; elsewhere the JVM's own
+     * name is the honest answer rather than a guess.
+     */
+    private static String platform() {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        if (os.startsWith("mac")) {
+            return "darwin";
+        }
+        if (os.startsWith("windows")) {
+            return "win32";
+        }
+        if (os.startsWith("linux")) {
+            return "linux";
+        }
+        return os;
+    }
+
     private static PyModule buildSys() {
         PyModule sys = new PyModule("sys");
         // COPY_SYS_ATTR gives the three standard files a second name each, and the second name is the
@@ -1189,18 +1319,32 @@ public final class PyRuntime {
         sys.set("__stdout__", stdout);
         sys.set("stderr", stderr);
         sys.set("__stderr__", stderr);
-        sys.set("platform", PyStr.of(System.getProperty("os.name", "unknown")
-                .toLowerCase(java.util.Locale.ROOT)));
+        sys.set("platform", PyStr.of(platform()));
+        if (platform().equals("darwin")) {
+            // A macOS framework build records its framework's name here. This runtime is not one, and
+            // `sysconfig` only reads the name to decide whether it is truthy before choosing where the
+            // per-user packages live, so the empty string is the honest answer and the `.local` road.
+            sys.set("_framework", PyStr.of(""));
+        }
         sys.set("maxsize", PyInt.of(Long.MAX_VALUE));
         sys.set("maxunicode", PyInt.of(0x10FFFF));
         sys.set("hexversion", PyInt.of(hexVersion()));
         sys.set("api_version", PyInt.of(1013));
         sys.set("byteorder", PyStr.of("little"));
+        // This runtime builds no ABI flags of its own; `sysconfig` splices the name into the
+        // `_sysconfigdata_*` module it looks for, and the reference's macOS build spells it empty.
+        sys.set("abiflags", PyStr.of(""));
         sys.set("version", PyStr.of(pythonVersion() + " (Jython3 on the JVM)"));
         sys.set("executable", PyStr.of(System.getProperty("jy3.executable", "jy3")));
         sys.set("prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
+        // A normal installation keeps both pairs equal, and `sysconfig` reads all four at module scope.
+        sys.set("exec_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
+        sys.set("base_exec_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
+        sys.set("platlibdir", PyStr.of("lib"));
         sys.set("version_info", PyVersionInfo.current());
+        sys.set("hash_info", hashInfo());
+        sys.set("_jit", jitModule());
         sys.set("implementation", implementation());
         // `_py_warnings` reads both at module scope: the flags to choose between the context-variable
         // and the global filter list, and the option list to replay `-W` switches.
@@ -1226,11 +1370,16 @@ public final class PyRuntime {
                         PyStr.of("_tokenize"),
                         PyStr.of("_opcode"),
                         PyStr.of("_signal"),
+                        PyStr.of("_string"),
                         PyStr.of("_types"),
                         PyStr.of("_weakref"),
                         PyStr.of("posix"),
                         PyStr.of("_collections"),
-                        PyStr.of("gc")));
+                        PyStr.of("gc"),
+                        PyStr.of("atexit"),
+                        PyStr.of("_imp"),
+                        PyStr.of("_random"),
+                        PyStr.of("unicodedata")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
         sys.set("getdefaultencoding", noArguments(
                 "getdefaultencoding", () -> PyStr.of("utf-8"),

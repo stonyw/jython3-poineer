@@ -178,7 +178,10 @@ final class Members {
             // program reads `Token.MISSING` off the token it was handed rather than off the class.
             Map.entry(PyType.CONTEXT, PyContext.class),
             Map.entry(PyType.CONTEXT_VAR, PyContextVar.class),
-            Map.entry(PyType.CONTEXT_TOKEN, PyContextToken.class));
+            Map.entry(PyType.CONTEXT_TOKEN, PyContextToken.class),
+            // `random.py` is `class Random(_random.Random)` and asks `super().seed(a)` before any
+            // generator exists, so the table has to be reachable through the type alone.
+            Map.entry(PyType.RANDOM, RandomModule.Random.class));
 
     private final PyType owner;
 

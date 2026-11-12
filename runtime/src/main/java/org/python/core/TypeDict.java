@@ -979,7 +979,38 @@ final class TypeDict {
             exceptionTable(owner, into);
             return;
         }
+        if (isItertoolsCursor(owner)) {
+            // `itertoolsmodule.c` gives every one of its sixteen types a `tp_iter` and a `tp_iternext`,
+            // and `PyType_Ready` copies those two slots into the book as `__iter__` and `__next__` —
+            // which is why `count(1).__next__` is a name a program may read. The four cursors the
+            // builtins hand out file the same pair from their own tables; these sixteen had none.
+            fromTable(owner, into);
+            Table table = new Table(owner, into);
+            table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+            table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+            return;
+        }
         fromTable(owner, into);
+    }
+
+    /** Whether {@code owner} is one of the sixteen cursors {@code itertools} declares. */
+    private static boolean isItertoolsCursor(PyType owner) {
+        return owner == PyType.COUNT
+                || owner == PyType.REPEAT
+                || owner == PyType.CYCLE
+                || owner == PyType.CHAIN
+                || owner == PyType.ISLICE
+                || owner == PyType.ACCUMULATE
+                || owner == PyType.PAIRWISE
+                || owner == PyType.BATCHED
+                || owner == PyType.COMPRESS
+                || owner == PyType.DROPWHILE
+                || owner == PyType.FILTERFALSE
+                || owner == PyType.TAKE_WHILE
+                || owner == PyType.STAR_MAP
+                || owner == PyType.ZIP_LONGEST
+                || owner == PyType.PERMUTATIONS
+                || owner == PyType.PRODUCT;
     }
 
     /**

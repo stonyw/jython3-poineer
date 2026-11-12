@@ -110,6 +110,9 @@ public final class jy3 {
             bug.printStackTrace();
             status = INTERNAL_CRASH;
         }
+        // The reference runs `atexit` callbacks on the way out of a normal shutdown, before the
+        // streams are drained; `logging`'s handler flush is the one this runtime already relies on.
+        PyRuntime.runExitFunctions();
         // Before exiting, not after: stdout is block-buffered whenever it is a pipe, and
         // System.exit makes no promise to drain a stream the JVM itself opened.
         PyRuntime.flushStreams();

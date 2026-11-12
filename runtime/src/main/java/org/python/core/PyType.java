@@ -1409,6 +1409,18 @@ public class PyType extends PyObject {
     static final PyType LOCK = builtin("lock").filedUnder("_thread.lock");
     static final PyType R_LOCK = builtin("RLock").filedUnder("_thread.RLock");
 
+    /** {@code _thread._ThreadHandle}: what {@code threading.Thread} keeps beside its lock. */
+    static final PyType THREAD_HANDLE =
+            builtin("_ThreadHandle").filedUnder("_thread._ThreadHandle");
+
+    /**
+     * {@code _thread._local}: one attribute dictionary per thread.
+     *
+     * <p>{@code threading} reaches for this before its pure-Python fallback, so a run without it fails
+     * to import the module at all.
+     */
+    static final PyType LOCAL = builtin("_local").filedUnder("_thread._local");
+
     /** {@code _struct.Struct}: one compiled format, made by the module rather than by a Python class. */
     static final PyType STRUCT = builtin("Struct").filedUnder("_struct.Struct")
             .documented("Struct(fmt) --> compiled struct object\n\n");
@@ -1539,6 +1551,17 @@ public class PyType extends PyObject {
      */
     public static final PyType CONTEXT_TOKEN_MISSING =
             builtin("MISSING").filedUnder("Token.MISSING");
+
+    /**
+     * {@code _random.Random}: the Mersenne Twister a program seeds and draws from.
+     *
+     * <p>It is a base type as well as a value type, because {@code random.Random} is written
+     * {@code class Random(_random.Random)}; the state stays in Java beside the subclass's dictionary.
+     */
+    public static final PyType RANDOM =
+            builtin("Random")
+                    .filedUnder("_random.Random")
+                    .documented("Random() -> create a random number generator with its own internal state.");
 
     private String name;
 

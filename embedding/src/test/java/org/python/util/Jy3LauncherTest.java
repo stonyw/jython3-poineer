@@ -538,7 +538,10 @@ class Jy3LauncherTest {
     }
 
     private static List<String> m5Corpus() {
-        return List.of("01_ast_nodes_and_parse.py");
+        return List.of(
+                "01_ast_nodes_and_parse.py",
+                "02_random_mt19937.py",
+                "03_unicodedata_normal_forms.py");
     }
 
     private static List<String> m3Corpus() {

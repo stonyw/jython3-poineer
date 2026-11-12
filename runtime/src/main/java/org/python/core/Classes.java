@@ -350,7 +350,11 @@ final class Classes {
                 || base == PyType.IO_BASE
                 || base == PyType.TEXT_IO_BASE
                 || base == PyType.RAW_IO_BASE
-                || base == PyType.BUFFERED_IO_BASE;
+                || base == PyType.BUFFERED_IO_BASE
+                // `random.py` is `class Random(_random.Random)` and asks `super().seed(a)` before any
+                // generator exists, so a program-written class has to be able to sit over this one and
+                // keep the generator beside its own dictionary.
+                || base == PyType.RANDOM;
     }
 
     /**
@@ -964,6 +968,12 @@ final class Classes {
         // what lets `class X(ref)` keep a dictionary beside the reference.
         if (kind.matches(PyType.WEAK_REFERENCE)) {
             return Weakref.newRef(kind, args, names);
+        }
+        // A class written over `_random.Random` inherits its creator: the seed is read off the same one
+        // positional and the state stays beside the subclass's dictionary, which is what lets
+        // `class Random(_random.Random)` draw the same stream as the base.
+        if (kind.matches(PyType.RANDOM)) {
+            return RandomModule.constructing(kind, args, names);
         }
         if (excess(args, kwNames) && inheritsOnlyObjectInit(kind)) {
             throw Slots.typeError("%s() takes no arguments", kind.name());

@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
+import java.nio.file.NotLinkException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -251,6 +252,13 @@ final class PosixModule {
                     Arguments.none("getcwdb", args, kwNames);
                     return PyBytes.of(cwd.toString().getBytes(StandardCharsets.UTF_8));
                 }));
+        module.set("getpid", function(
+                "getpid",
+                "getpid($module, /)\n--\n\nReturn the current process id.",
+                (args, kwNames) -> {
+                    Arguments.none("getpid", args, kwNames);
+                    return PyInt.of(ProcessHandle.current().pid());
+                }));
         module.set("urandom", function(
                 "urandom",
                 "urandom($module, size, /)\n--\n\n"
@@ -338,6 +346,23 @@ final class PosixModule {
                 "unlink",
                 "unlink($module, path, *, dir_fd=None)\n--\n\nRemove a file (same as remove()).",
                 (args, kwNames) -> remove("unlink", args, kwNames)));
+        module.set("readlink", function(
+                "readlink",
+                "readlink($module, path, *, dir_fd=None)\n--\n\n"
+                        + "Return a string representing the path to which the symbolic link points.",
+                (args, kwNames) -> {
+                    FsPath path = single("readlink", args, kwNames);
+                    Path target;
+                    try {
+                        target = Files.readSymbolicLink(resolve(path.text()));
+                    } catch (IOException e) {
+                        throw failure(e, path);
+                    }
+                    String text = target.toString();
+                    return path.bytes()
+                            ? PyBytes.of(text.getBytes(StandardCharsets.UTF_8))
+                            : PyStr.of(text);
+                }));
         module.set("rename", function(
                 "rename",
                 "rename($module, src, dst, *, src_dir_fd=None, dst_dir_fd=None)\n--\n\n"
@@ -614,6 +639,10 @@ final class PosixModule {
         }
         if (error instanceof NotDirectoryException) {
             return 20;
+        }
+        if (error instanceof NotLinkException) {
+            // `readlink` on something that is not a link: the reference reports EINVAL.
+            return 22;
         }
         if (error instanceof AccessDeniedException) {
             return 13;

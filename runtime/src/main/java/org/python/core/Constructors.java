@@ -182,6 +182,16 @@ final class Constructors {
         if (type == PyType.R_LOCK) {
             return ThreadModule.reentrant(args, keywordNames);
         }
+        if (type == PyType.THREAD_HANDLE) {
+            // `_ThreadHandle()` ignores whatever it is given: the thread it will name has not started.
+            return new ThreadModule.ThreadHandle();
+        }
+        if (type == PyType.LOCAL) {
+            return new ThreadModule.Local();
+        }
+        if (type == PyType.RANDOM) {
+            return RandomModule.constructing(args, keywordNames);
+        }
         if (type == PyType.STRUCT) {
             return StructModule.compile(args, keywordNames);
         }
