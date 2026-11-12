@@ -216,6 +216,9 @@ final class Constructors {
         if (type == PyType.CODE) {
             return CodeMembers.construct(args, keywordNames);
         }
+        if (type == PyType.TERMINAL_SIZE) {
+            return PyTerminalSize.called(args, keywordNames);
+        }
         if (type == PyType.OBJECT) {
             // `object()` is the one value with nothing at all to say, and it says the same thing for a
             // keyword as for a position: `object_new` counts neither differently.

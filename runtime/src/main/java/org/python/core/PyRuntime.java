@@ -1105,7 +1105,12 @@ public final class PyRuntime {
         if (sourceCompiler == null) {
             throw Slots.notImplemented("ast needs a compiler (setSourceCompiler)");
         }
-        String text = sourceCompiler.parseAst(source, fileName, mode);
+        String text;
+        try {
+            text = sourceCompiler.parseAst(source, fileName, mode);
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
         PyModule ast = (PyModule) importModule("_ast");
         PyDict globals = ast.dictionary();
         return runIn(compileExpression(text, "<ast>"), globals, globals);
@@ -1117,7 +1122,11 @@ public final class PyRuntime {
             throw Slots.notImplemented(
                     "importing a source file needs a compiler (setSourceCompiler)");
         }
-        return sourceCompiler.compile(source, fileName);
+        try {
+            return sourceCompiler.compile(source, fileName);
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
     }
 
     /** Compile one expression with the installed compiler, which is what {@code eval()} runs. */
@@ -1125,7 +1134,11 @@ public final class PyRuntime {
         if (sourceCompiler == null) {
             throw Slots.notImplemented("eval() needs a compiler (setSourceCompiler)");
         }
-        return sourceCompiler.compileExpression(source, fileName);
+        try {
+            return sourceCompiler.compileExpression(source, fileName);
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
     }
 
     /**

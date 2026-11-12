@@ -641,7 +641,13 @@ final class Classes {
         PyObject[] names = dict.keys();
         PyObject[] members = dict.values();
         for (int i = 0; i < names.length; i++) {
-            Descriptors.setName(members[i], kind, ((PyStr) names[i]).str());
+            // A namespace built by hand can hold a key that is not a name -- `type("C", (), {1: 2})`
+            // is the test that does. CPython keeps the pair in the dictionary and warns; nothing in
+            // this runtime can warn yet, so the pair is kept and only passed over here: a key that
+            // is not a string cannot be the name of a member.
+            if (names[i] instanceof PyStr name) {
+                Descriptors.setName(members[i], kind, name.str());
+            }
         }
     }
 

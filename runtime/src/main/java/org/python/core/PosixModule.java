@@ -369,6 +369,7 @@ final class PosixModule {
                     Arguments.none("getpid", args, kwNames);
                     return PyInt.of(ProcessHandle.current().pid());
                 }));
+        module.set("terminal_size", PyType.TERMINAL_SIZE);
         module.set("urandom", function(
                 "urandom",
                 "urandom($module, size, /)\n--\n\n"

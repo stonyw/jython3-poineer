@@ -1473,6 +1473,17 @@ public class PyType extends PyObject {
                     .documented("stat_result\n--\n\nResult of os.stat().");
 
     /**
+     * {@code os.terminal_size}: the {@code (columns, lines)} pair a terminal reports, and the value
+     * {@code shutil.get_terminal_size} answers with.
+     *
+     * <p>It is a struct sequence like {@link #STAT_RESULT} — a two-item tuple that also names its items
+     * — and {@link Constructors#instantiate} sends the call to {@link PyTerminalSize#called}.
+     */
+    public static final PyType TERMINAL_SIZE =
+            sequence("os.terminal_size")
+                    .documented("A tuple of (columns, lines) for holding terminal window size");
+
+    /**
      * {@code collections.deque}: the double-ended queue {@code _collections.deque} builds.
      *
      * <p>{@code collections} imports the name from the built-in module and registers it with

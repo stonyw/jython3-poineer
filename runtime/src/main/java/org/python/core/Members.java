@@ -98,6 +98,9 @@ final class Members {
             // `os.stat_result` answers its fifteen names through the type as well; `os.stat` has not had
             // to be called for `stat_result.n_fields` to be readable.
             Map.entry(PyType.STAT_RESULT, PyStatResult.class),
+            // `os.terminal_size` is a two-field named sequence whose table is readable from the type
+            // before `shutil.get_terminal_size` has answered anything.
+            Map.entry(PyType.TERMINAL_SIZE, PyTerminalSize.class),
             // `collections.deque` declares eleven methods and one read-only field, all of which are
             // askable through the type before any deque has been built.
             Map.entry(PyType.DEQUE, PyDeque.class),

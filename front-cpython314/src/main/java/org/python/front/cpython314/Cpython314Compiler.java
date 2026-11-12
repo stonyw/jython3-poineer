@@ -7,8 +7,12 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 import org.python.core.PyCode;
 import org.python.core.SourceCompiler;
+import org.python.core.SourceRefused;
 
 /**
  * Stage A of decision D1: CPython 3.14 is the compiler, and this class is the whole seam.
@@ -56,6 +60,7 @@ public final class Cpython314Compiler {
      */
     private static final String DRIVER =
             """
+            import base64
             import marshal
             import os
             import sys
@@ -113,6 +118,36 @@ public final class Cpython314Compiler {
                 # The report the interpreter would have printed for the script, and nothing of the
                 # driver: a traceback through this string would be ours to explain, not the user's.
                 # ValueError is what an expression compile mode gives for a statement source.
+                #
+                # The `JY3-COMPILE-ERROR` block ahead of the report is for the runtime, which rebuilds
+                # this exception and raises it in Python; the text after `JY3-REPORT` is for the
+                # launcher, which quotes it verbatim at top level.  A field is `!` for None, a plain
+                # integer, or base64 of the UTF-8 text -- the encoding is line-oriented because the
+                # only thing that crosses is one error, never a stream.
+                def encode(value):
+                    if value is None:
+                        return "!"
+                    if isinstance(value, int):
+                        return str(value)
+                    return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
+
+                fields = [("type", type(error).__name__)]
+                if isinstance(error, SyntaxError):
+                    fields += [
+                        ("msg", error.msg),
+                        ("filename", error.filename),
+                        ("lineno", error.lineno),
+                        ("offset", error.offset),
+                        ("text", error.text),
+                        ("end_lineno", error.end_lineno),
+                        ("end_offset", error.end_offset),
+                    ]
+                else:
+                    fields.append(("msg", str(error)))
+                sys.stderr.write("JY3-COMPILE-ERROR\\n")
+                for name, value in fields:
+                    sys.stderr.write("%s:%s\\n" % (name, encode(value)))
+                sys.stderr.write("JY3-REPORT\\n")
                 sys.stderr.write("".join(traceback.format_exception_only(error)))
                 raise SystemExit(1)
             """;
@@ -241,7 +276,7 @@ public final class Cpython314Compiler {
                         "the reference compiler exited " + status + " after writing output: "
                                 + report.strip());
             }
-            throw new CompilationRefused(report);
+            throw refused(report);
         } catch (IOException e) {
             throw new CompilerUnavailable(
                     "cannot run '" + executable() + "' as the Stage A compiler: " + e.getMessage());
@@ -287,23 +322,77 @@ public final class Cpython314Compiler {
         }
     }
 
+    /** The markers the driver writes ahead of the report when the source does not compile. */
+    private static final String ERROR_MARKER = "JY3-COMPILE-ERROR\n";
+    private static final String REPORT_MARKER = "JY3-REPORT\n";
+
+    /**
+     * Read the driver's refusal: the structured fields it wrote, and the report a person reads.
+     *
+     * <p>Anything that is not the structured block is an older or unexpected explanation, which is
+     * still a refusal — the report alone is enough for the launcher, and no field is invented for it.
+     */
+    private static CompilationRefused refused(String diagnostics) {
+        int start = diagnostics.indexOf(ERROR_MARKER);
+        int end = diagnostics.indexOf(REPORT_MARKER, start);
+        if (start < 0 || end < 0) {
+            return new CompilationRefused(diagnostics);
+        }
+        Map<String, String> fields = new HashMap<>();
+        for (String line : diagnostics.substring(start + ERROR_MARKER.length(), end).split("\n")) {
+            int colon = line.indexOf(':');
+            if (colon > 0) {
+                fields.put(line.substring(0, colon), line.substring(colon + 1));
+            }
+        }
+        return new CompilationRefused(
+                diagnostics.substring(end + REPORT_MARKER.length()),
+                text(fields.get("type")),
+                text(fields.get("msg")),
+                text(fields.get("filename")),
+                number(fields.get("lineno")),
+                number(fields.get("offset")),
+                text(fields.get("text")),
+                number(fields.get("end_lineno")),
+                number(fields.get("end_offset")));
+    }
+
+    private static String text(String field) {
+        return field == null || field.equals("!")
+                ? null
+                : new String(Base64.getDecoder().decode(field), StandardCharsets.UTF_8);
+    }
+
+    private static long number(String field) {
+        return field == null || field.equals("!")
+                ? SourceRefused.ABSENT
+                : Long.parseLong(field);
+    }
+
     /**
      * The source did not compile.
      *
      * <p>{@link #report()} is CPython's own message, already in the form a Python user expects; the
-     * launcher prints it and exits 1, which is what {@code python3.14} does.
+     * launcher prints it and exits 1, which is what {@code python3.14} does. The fields behind it are
+     * what {@link SourceRefused#python()} rebuilds the caught {@code SyntaxError} from.
      */
-    public static final class CompilationRefused extends RuntimeException {
-
-        private final String report;
+    public static final class CompilationRefused extends SourceRefused {
 
         CompilationRefused(String report) {
-            super(report.strip(), null, false, false);
-            this.report = report;
+            this(report, null, null, null, ABSENT, ABSENT, null, ABSENT, ABSENT);
         }
 
-        public String report() {
-            return report;
+        CompilationRefused(
+                String report,
+                String errorType,
+                String message,
+                String fileName,
+                long lineno,
+                long offset,
+                String text,
+                long endLineno,
+                long endOffset) {
+            super(report, errorType, message, fileName, lineno, offset, text, endLineno, endOffset);
         }
     }
 
