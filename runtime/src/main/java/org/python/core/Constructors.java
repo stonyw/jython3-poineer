@@ -221,6 +221,17 @@ final class Constructors {
         if (type == PyType.STRUCT_TIME) {
             return PyStructTime.called(args, kwNames);
         }
+        if (type == PyType.CONTEXT_VAR) {
+            return PyContextVar.construct(args, keywordNames);
+        }
+        if (type == PyType.CONTEXT) {
+            return PyContext.construct(args, keywordNames);
+        }
+        if (type == PyType.CONTEXT_TOKEN) {
+            // A token records what one `set` replaced, so there is nothing a program can hand it.
+            throw PyRaise.raise(
+                    ExceptionTypes.RUNTIME_ERROR, "Tokens can only be created by ContextVars");
+        }
         if (type == PyType.CODEC_INFO) {
             return PyCodecInfo.called(args, kwNames);
         }

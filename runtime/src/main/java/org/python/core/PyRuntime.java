@@ -175,6 +175,10 @@ public final class PyRuntime {
         // and the one decorator `re/__init__.py` imports at module scope.
         PyModule sreModule = SreModule.newModule();
         PyModule functoolsModule = FunctoolsModule.newModule();
+        // The one module `warnings` needs at module scope, under both the private and the public
+        // name: `_py_warnings` asks for `_contextvars` and a program imports `contextvars`.
+        PyModule contextvarsModule = ContextvarsModule.newModule();
+        PyModule contextvarsWrapper = ContextvarsModule.newWrapper();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -194,6 +198,8 @@ public final class PyRuntime {
         modules.put(PyStr.interned("time"), timeModule);
         modules.put(PyStr.interned("_sre"), sreModule);
         modules.put(PyStr.interned("functools"), functoolsModule);
+        modules.put(PyStr.interned("_contextvars"), contextvarsModule);
+        modules.put(PyStr.interned("contextvars"), contextvarsWrapper);
         // The package is built after its child is filed, so the `string.templatelib` a program reaches
         // through the package is the same object it reaches through `sys.modules`.
         PyModule stringPackage = buildStringPackage();
@@ -225,6 +231,8 @@ public final class PyRuntime {
         belongTo(timeModule);
         belongTo(sreModule);
         belongTo(functoolsModule);
+        belongTo(contextvarsModule);
+        belongTo(contextvarsWrapper);
         belongTo(stringPackage);
     }
 
@@ -998,6 +1006,22 @@ public final class PyRuntime {
     }
 
     /**
+     * {@code sys.flags}: the interpreter's start-up switches.
+     *
+     * <p>Only {@code context_aware_warnings} is answered, because it is the only member this tree
+     * reads: {@code _py_warnings} asks it once at module scope to decide whether {@code
+     * catch_warnings} keeps its filters in a context variable or in the global list. The value is 0,
+     * the reference's without {@code -X context_aware_warnings}, so the global list is the path taken.
+     * The rest of the reference's members — {@code verbose}, {@code utf8_mode} and the others — are
+     * not answered yet, and the milestone notes name the gap.
+     */
+    private static PyNamespace flags() {
+        PyNamespace namespace = new PyNamespace();
+        namespace.set("context_aware_warnings", PyInt.of(0));
+        return namespace;
+    }
+
+    /**
      * {@code sys.implementation}: the namespace a program reads this implementation's identity from.
      *
      * <p>The six names are CPython 3.14's and in its order, because the order is what {@code repr} prints.
@@ -1056,6 +1080,10 @@ public final class PyRuntime {
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("version_info", PyVersionInfo.current());
         sys.set("implementation", implementation());
+        // `_py_warnings` reads both at module scope: the flags to choose between the context-variable
+        // and the global filter list, and the option list to replay `-W` switches.
+        sys.set("flags", flags());
+        sys.set("warnoptions", PyList.of());
         sys.set("argv", PyList.of(PyStr.of("jy3")));
         sys.set("path", pathList());
         // The reference's meta_path has three entries; this runtime has no frozen importer because it

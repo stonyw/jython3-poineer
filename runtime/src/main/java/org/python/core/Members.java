@@ -153,7 +153,12 @@ final class Members {
             Map.entry(PyType.SRE_MATCH, PySreMatch.class),
             // The wrapper `functools.lru_cache` returns files three rows, and `cache_clear` is asked
             // through the type by `re.purge` even before a template has been cached.
-            Map.entry(PyType.LRU_CACHE_WRAPPER, FunctoolsModule.Wrapper.class));
+            Map.entry(PyType.LRU_CACHE_WRAPPER, FunctoolsModule.Wrapper.class),
+            // `warnings` asks `_contextvars` for these three names before any variable exists, and a
+            // program reads `Token.MISSING` off the token it was handed rather than off the class.
+            Map.entry(PyType.CONTEXT, PyContext.class),
+            Map.entry(PyType.CONTEXT_VAR, PyContextVar.class),
+            Map.entry(PyType.CONTEXT_TOKEN, PyContextToken.class));
 
     private final PyType owner;
 

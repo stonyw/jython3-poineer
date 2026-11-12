@@ -1392,6 +1392,28 @@ public class PyType extends PyObject {
     public static final PyType LRU_CACHE_WRAPPER =
             builtin("_lru_cache_wrapper").filedUnder("functools._lru_cache_wrapper");
 
+    /** {@code _contextvars.Context}: the mapping a callable runs in. */
+    public static final PyType CONTEXT =
+            builtin("Context").filedUnder("_contextvars.Context");
+
+    /** {@code _contextvars.ContextVar}: the name a value is looked up by in the current context. */
+    public static final PyType CONTEXT_VAR =
+            builtin("ContextVar").filedUnder("_contextvars.ContextVar");
+
+    /** {@code _contextvars.Token}: the undo of one {@code ContextVar.set}. */
+    public static final PyType CONTEXT_TOKEN =
+            builtin("Token").filedUnder("_contextvars.Token");
+
+    /**
+     * {@code Token.MISSING}: the sentinel a token answers before the variable ever held a value.
+     *
+     * <p>The written-down name keeps the {@code Token.} in front, which is CPython's {@code tp_name}
+     * for it: {@code type(token.MISSING)} prints {@code <class 'Token.MISSING'>} while its
+     * {@code __module__} is {@code Token} and its {@code __name__} is {@code MISSING}.
+     */
+    public static final PyType CONTEXT_TOKEN_MISSING =
+            builtin("MISSING").filedUnder("Token.MISSING");
+
     private String name;
 
     /**
