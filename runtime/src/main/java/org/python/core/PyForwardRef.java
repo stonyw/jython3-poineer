@@ -90,8 +90,32 @@ final class PyForwardRef extends PyObject {
             case "__forward_code__" -> forwardCode();
             case "__slots__" -> SLOTS;
             case "evaluate" -> new PyNativeFunction("evaluate", PyForwardRef::evaluate).withReceiver(this);
+            case "__or__" -> new PyNativeFunction("__or__", this::orRow);
+            case "__ror__" -> new PyNativeFunction("__ror__", this::rorRow);
             default -> Slots.DECLINED;
         };
+    }
+
+    /** {@code ForwardRef.__or__}: {@code types.UnionType[self, other]}, which is the checked builder. */
+    private PyObject orRow(PyObject[] args, String[] kwNames) {
+        Arguments.exactlyOne("__or__", args, kwNames);
+        return PyUnionType.fromTuple(new PyObject[] {this, args[0]});
+    }
+
+    /** {@code ForwardRef.__ror__}: the same union with the reference written second. */
+    private PyObject rorRow(PyObject[] args, String[] kwNames) {
+        Arguments.exactlyOne("__ror__", args, kwNames);
+        return PyUnionType.fromTuple(new PyObject[] {args[0], this});
+    }
+
+    @Override
+    public PyObject binaryOp(BinaryOp op, PyObject other) {
+        return op == BinaryOp.OR ? PyUnionType.fromTuple(new PyObject[] {this, other}) : super.binaryOp(op, other);
+    }
+
+    @Override
+    public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        return op == BinaryOp.OR ? PyUnionType.fromTuple(new PyObject[] {other, this}) : super.reflectedOp(op, other);
     }
 
     /**

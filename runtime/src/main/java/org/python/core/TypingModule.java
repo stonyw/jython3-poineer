@@ -56,6 +56,7 @@ final class TypingModule {
             .addField("__default__", null,
                     self -> force(((TypeVarValue) self).defaultValue))
             .addNoArgument("has_default", self -> PyBool.of(((TypeVarValue) self).hasDefault()))
+            .addNoArgument("__reduce__", self -> ((TypeVarValue) self).name)
             .addOne("__typing_subst__", (self, argument) -> argument)
             .add("__typing_prepare_subst__",
                     (self, args, kwNames) -> ((TypeVarValue) self).prepareSubst(args, kwNames));
@@ -506,12 +507,12 @@ final class TypingModule {
 
         @Override
         public PyObject binaryOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(this, other) : super.binaryOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(this, other) : super.binaryOp(op, other);
         }
 
         @Override
         public PyObject reflectedOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(other, this) : super.reflectedOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(other, this) : super.reflectedOp(op, other);
         }
 
         @Override
@@ -570,12 +571,12 @@ final class TypingModule {
 
         @Override
         public PyObject binaryOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(this, other) : super.binaryOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(this, other) : super.binaryOp(op, other);
         }
 
         @Override
         public PyObject reflectedOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(other, this) : super.reflectedOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(other, this) : super.reflectedOp(op, other);
         }
 
         @Override
@@ -620,12 +621,12 @@ final class TypingModule {
 
         @Override
         public PyObject binaryOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(this, other) : super.binaryOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(this, other) : super.binaryOp(op, other);
         }
 
         @Override
         public PyObject reflectedOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(other, this) : super.reflectedOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(other, this) : super.reflectedOp(op, other);
         }
 
         @Override
@@ -704,12 +705,12 @@ final class TypingModule {
 
         @Override
         public PyObject binaryOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(this, other) : super.binaryOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(this, other) : super.binaryOp(op, other);
         }
 
         @Override
         public PyObject reflectedOp(BinaryOp op, PyObject other) {
-            return op == BinaryOp.OR ? PyUnionType.of(other, this) : super.reflectedOp(op, other);
+            return op == BinaryOp.OR ? PyUnionType.checked(other, this) : super.reflectedOp(op, other);
         }
 
         @Override
@@ -730,21 +731,11 @@ final class TypingModule {
 
     // --- helpers ------------------------------------------------------------------------------
 
-    /** {@code Union[...]}, with the empty list the one refusal and a single member answering itself. */
+    /** {@code Union[...]}: the checked builder, which is also what {@code types.UnionType[...]} uses. */
     private static PyObject union(PyObject key) {
         PyObject[] items = key instanceof PyTuple tuple ? tuple.elements()
                 : new PyObject[] {key};
-        if (items.length == 0) {
-            throw Slots.typeError("Cannot take a Union of no types.");
-        }
-        PyObject result = null;
-        for (PyObject item : items) {
-            if (item == PyNone.INSTANCE) {
-                item = PyType.NONE;
-            }
-            result = result == null ? item : PyUnionType.of(result, item);
-        }
-        return result;
+        return PyUnionType.fromTuple(items);
     }
 
     private static PyObject typingCall(String name, PyObject[] args, String[] kwNames) {

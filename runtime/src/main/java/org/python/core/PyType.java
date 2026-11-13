@@ -2402,13 +2402,41 @@ public class PyType extends PyObject {
         return super.reflectedOp(op, other);
     }
 
-    /**
-     * Types hash by name rather than by address. CPython uses the address, which is not reproducible
-     * across runs; name is stable and collisions are legal.
-     */
+    /** {@code hash(type)}: the metatype's {@code __hash__}, or the identity hash a class starts with. */
     @Override
     public long hash() {
-        return PyHash.textHash(name);
+        PyObject declared = Specials.lookUp(getType(), "__hash__");
+        if (declared == null) {
+            return PyHash.textHash(name);
+        }
+        if (declared == PyNone.INSTANCE) {
+            throw Slots.typeError("unhashable type: '%s'", getType().name());
+        }
+        PyObject answer = Slots.call(declared, new PyObject[] {this}, null);
+        if (answer instanceof PyInt number) {
+            return number.getValue().longValue();
+        }
+        if (answer instanceof PyBool flag) {
+            return flag.getValue() ? 1 : 0;
+        }
+        throw Slots.typeError("__hash__ method should return an integer");
+    }
+
+    /**
+     * {@code ==} on two classes: the metatype's {@code __eq__}, or identity when it declares none.
+     *
+     * <p>A class is a value of its metatype, so a written {@code __eq__} on the metatype is what the bar
+     * reaches — which is how two classes of a metaclass that refuses comparison raise out of the operator
+     * rather than answering {@code False}. With no declaration, or with {@code __eq__ = None}, the class
+     * compares by identity, as {@code type.__eq__} does.
+     */
+    @Override
+    public boolean eq(PyObject other) {
+        PyObject declared = Specials.lookUp(getType(), "__eq__");
+        if (declared == null || declared == PyNone.INSTANCE) {
+            return this == other;
+        }
+        return Slots.truth(Slots.call(declared, new PyObject[] {this, other}, null));
     }
 
     @Override

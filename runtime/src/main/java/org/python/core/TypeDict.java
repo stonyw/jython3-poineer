@@ -1076,6 +1076,9 @@ final class TypeDict {
         table.raw("__new__", NEW_DOC, TypeDict::genericAliasNew);
         table.method(
                 "__mro_entries__", null, (Receiver) args -> ((PyGenericAlias) args[0]).mroEntries());
+        // `object.__reduce_ex__` dispatches to a `__reduce__` declared in the type's dictionary, so the
+        // reduction has to be filed here as well as answered by `PyGenericAlias.getAttr`.
+        table.method("__reduce__", null, (Receiver) args -> ((PyGenericAlias) args[0]).reduction());
     }
 
     /**
@@ -1095,6 +1098,29 @@ final class TypeDict {
         }
         PyObject[] arguments =
                 args[2] instanceof PyTuple pair ? pair.getArray() : new PyObject[] {args[2]};
+        return PyGenericAlias.ofType(declared, origin, arguments);
+    }
+
+    /**
+     * {@code SubClass(list, float)}: an alias of a class written over {@code types.GenericAlias}.
+     *
+     * <p>The creator is inherited rather than declared, so the class being instantiated is already known
+     * and the two arguments are the pair the constructor takes — origin and arguments, with the same
+     * spreading rule for a tuple second argument.
+     */
+    static PyObject genericAliasOfType(PyType declared, PyObject[] args, String[] kwNames) {
+        if (kwNames != null && kwNames.length != 0) {
+            throw Slots.typeError("%s() takes no keyword arguments", declared.name());
+        }
+        if (args.length != 2) {
+            throw Slots.typeError(
+                    "%s() takes exactly 2 arguments (%d given)", declared.name(), args.length);
+        }
+        if (!(args[0] instanceof PyType origin)) {
+            throw Slots.typeError("GenericAlias expects a type as the first argument");
+        }
+        PyObject[] arguments =
+                args[1] instanceof PyTuple pair ? pair.getArray() : new PyObject[] {args[1]};
         return PyGenericAlias.ofType(declared, origin, arguments);
     }
 
@@ -5870,7 +5896,9 @@ final class TypeDict {
                     || owner == PyType.NAMESPACE
                     // A subclass of `weakref.ref` inherits a creator written in C that has already taken
                     // the object it refers to and its callback, so `object.__init__` has nothing to refuse.
-                    || owner == PyType.WEAK_REFERENCE) {
+                    || owner == PyType.WEAK_REFERENCE
+                    // A subclass of `GenericAlias` inherits `ga_new`, which took both arguments too.
+                    || owner == PyType.GENERIC_ALIAS) {
                 return true;
             }
         }

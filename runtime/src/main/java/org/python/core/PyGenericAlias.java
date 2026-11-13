@@ -1,5 +1,8 @@
 package org.python.core;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * {@code list[int]}: a built-in type read through the subscript that files its arguments.
  *
@@ -26,6 +29,8 @@ public final class PyGenericAlias extends PyObject {
 
     private final PyType origin;
     private final PyObject[] arguments;
+    /** {@code __parameters__}, computed once from the arguments the first time it is asked for. */
+    private PyTuple parameters;
 
     private PyGenericAlias(PyType origin, PyObject[] arguments) {
         super(PyType.GENERIC_ALIAS);
@@ -76,14 +81,227 @@ public final class PyGenericAlias extends PyObject {
     }
 
     /**
-     * {@code list[int][0]}: an alias is a subscription, not a class, so it has nothing to index.
+     * {@code list[T][int]}: the subscription that replaces each type variable the alias still holds.
      *
-     * <p>The complaint quotes the alias's own {@code repr()}, which is why the message reads
-     * {@code list[int] is not a generic class} rather than naming the type of the value.
+     * <p>The arguments of an alias are not all classes — {@code list[T]} keeps the parameter itself — so a
+     * second subscript is where the parameter is filled in: {@code list[T][int]} is {@code list[int]} and
+     * {@code (int | T)[int]} is {@code int}. An alias with no parameters left is refused in the same words
+     * the reference uses for something that is not generic at all.
      */
     @Override
     public PyObject getItem(PyObject key) {
-        throw Slots.typeError("%s is not a generic class", repr());
+        PyObject[] newArguments = substitute(this, arguments, parameters(), key);
+        return new PyGenericAlias(origin, newArguments);
+    }
+
+    /**
+     * {@code ga_reduce}: the pair {@code (type(self), (origin, args))}, which is how pickle rebuilds an alias.
+     *
+     * <p>Rebuilding calls the type back with the two arguments the constructor takes, so an alias whose
+     * members can be pickled can itself be pickled; {@code copy.copy} reaches the same pair through the
+     * generic reduction when no dispatch entry claims the type.
+     */
+    private PyObject reduce(PyObject[] args, String[] kwNames) {
+        Arguments.none("__reduce__", args, kwNames);
+        return reduction();
+    }
+
+    /** The reduction itself, shared with the dictionary row {@code object.__reduce_ex__} dispatches to. */
+    PyObject reduction() {
+        return PyTuple.of(getType(), PyTuple.of(origin, PyTuple.of(arguments)));
+    }
+
+    /** {@code __parameters__}: the arguments' type variables, built once and kept. */
+    private PyObject[] parameters() {
+        if (parameters == null) {
+            parameters = PyTuple.of(makeParameters(arguments));
+        }
+        return parameters.getArray();
+    }
+
+    /**
+     * {@code _Py_make_parameters}: the type variables an argument tuple still holds, in order.
+     *
+     * <p>A class is a parameter of nothing and is skipped. Anything with {@code __typing_subst__} is a
+     * parameter itself and is kept as it stands — not deduplicated, since the alias's {@code __parameters__}
+     * keeps the count the substitution hook expects. Anything else contributes what its own
+     * {@code __parameters__} says, and a bare tuple or list is walked as one, which is how the parameters
+     * of {@code Callable[[T], S]} are found: the list is not a parameter, the T inside it is.
+     */
+    static PyObject[] makeParameters(PyObject[] arguments) {
+        List<PyObject> parameters = new ArrayList<>();
+        for (PyObject argument : arguments) {
+            if (argument instanceof PyType) {
+                continue;
+            }
+            if (Slots.findAttr(argument, "__typing_subst__") != null) {
+                addIdentity(parameters, argument);
+                continue;
+            }
+            PyObject nested = Slots.findAttr(argument, "__parameters__");
+            if (nested == null && (argument instanceof PyTuple || argument instanceof PyList)) {
+                nested = PyTuple.of(makeParameters(itemsOf(argument)));
+            }
+            if (nested instanceof PyTuple tuple) {
+                for (int i = 0; i < tuple.size(); i++) {
+                    addIdentity(parameters, tuple.at(i));
+                }
+            }
+        }
+        return parameters.toArray(new PyObject[0]);
+    }
+
+    /**
+     * {@code _Py_subs_parameters}: this alias's arguments with every parameter replaced by the key's item.
+     *
+     * <p>The key is unpacked first — a tuple spreads and anything else is one item — and each parameter is
+     * given the chance to rewrite the item through {@code __typing_prepare_subst__}. The count is checked
+     * only after that, because the hook may add or remove defaults. Each argument is then left alone if it
+     * is a class, recursed into if it is a tuple or list, fed to its own {@code __typing_subst__} if it has
+     * one, and otherwise handed to {@link #subsTypeVariables} so a nested alias can fill itself in.
+     */
+    static PyObject[] substitute(
+            PyObject source, PyObject[] args, PyObject[] parameters, PyObject item) {
+        if (parameters.length == 0) {
+            throw Slots.typeError("%s is not a generic class", source.repr());
+        }
+        PyObject[] items = unpackArgs(item);
+        for (PyObject parameter : parameters) {
+            if (parameter == PyNone.INSTANCE) {
+                continue;
+            }
+            PyObject prepare = Slots.findAttr(parameter, "__typing_prepare_subst__");
+            if (prepare == null || prepare == PyNone.INSTANCE) {
+                continue;
+            }
+            item = Slots.call(prepare, new PyObject[] {source, PyTuple.of(items)}, null);
+            items = unpackArgs(item);
+        }
+        if (items.length != parameters.length) {
+            throw Slots.typeError(
+                    "Too %s arguments for %s; actual %d, expected %d",
+                    items.length > parameters.length ? "many" : "few",
+                    source.repr(),
+                    items.length,
+                    parameters.length);
+        }
+        List<PyObject> substituted = new ArrayList<>(args.length);
+        for (PyObject arg : args) {
+            if (arg instanceof PyType) {
+                substituted.add(arg);
+                continue;
+            }
+            if (arg instanceof PyTuple || arg instanceof PyList) {
+                PyObject[] nested = substitute(source, itemsOf(arg), parameters, PyTuple.of(items));
+                substituted.add(arg instanceof PyTuple ? PyTuple.of(nested) : PyList.of(nested));
+                continue;
+            }
+            boolean unpacked = isUnpackedTypeVarTuple(arg);
+            PyObject replacement;
+            PyObject subst = Slots.findAttr(arg, "__typing_subst__");
+            if (subst != null) {
+                int index = indexOfIdentity(parameters, arg);
+                if (index < 0) {
+                    throw Slots.typeError(
+                            "argument %s with __typing_subst__ was not found in __parameters__",
+                            arg.repr());
+                }
+                replacement = Slots.call(subst, new PyObject[] {items[index]}, null);
+            } else {
+                replacement = subsTypeVariables(arg, parameters, items);
+            }
+            if (!unpacked) {
+                substituted.add(replacement);
+            } else if (replacement instanceof PyTuple spread) {
+                for (int i = 0; i < spread.size(); i++) {
+                    substituted.add(spread.at(i));
+                }
+            } else {
+                throw Slots.typeError(
+                        "expected __typing_subst__ of %s objects to return a tuple, not %s",
+                        arg.getType().name(), replacement.getType().name());
+            }
+        }
+        return substituted.toArray(new PyObject[0]);
+    }
+
+    /**
+     * {@code subs_tvars}: the arguments of a nested value with its own parameters filled in.
+     *
+     * <p>A value with no parameters is left as it is. Otherwise each of its parameters is looked up in the
+     * outer parameter list and replaced by the matching item — a {@code TypeVarTuple} spreads a tuple item
+     * — and the value is subscripted with the result, which is why {@code (list[T] | list[S])[int, str]}
+     * reaches {@code list[int] | list[str]}.
+     */
+    private static PyObject subsTypeVariables(
+            PyObject value, PyObject[] parameters, PyObject[] items) {
+        PyObject nested = Slots.findAttr(value, "__parameters__");
+        if (!(nested instanceof PyTuple tuple) || tuple.size() == 0) {
+            return value;
+        }
+        List<PyObject> arguments = new ArrayList<>(tuple.size());
+        for (int i = 0; i < tuple.size(); i++) {
+            PyObject arg = tuple.at(i);
+            int index = indexOfIdentity(parameters, arg);
+            if (index < 0) {
+                arguments.add(arg);
+                continue;
+            }
+            PyObject item = items[index];
+            if (parameters[index].getType() == PyType.TYPE_VAR_TUPLE
+                    && item instanceof PyTuple spread) {
+                for (int j = 0; j < spread.size(); j++) {
+                    arguments.add(spread.at(j));
+                }
+                continue;
+            }
+            arguments.add(item);
+        }
+        return value.getItem(PyTuple.of(arguments.toArray(new PyObject[0])));
+    }
+
+    /** {@code _unpack_args}: a tuple key spreads into its items and any other key is one item. */
+    private static PyObject[] unpackArgs(PyObject item) {
+        if (item instanceof PyTuple tuple) {
+            return tuple.getArray();
+        }
+        return new PyObject[] {item};
+    }
+
+    /** {@code _is_unpacked_typevartuple}: whether the argument was written {@code *Ts}. */
+    private static boolean isUnpackedTypeVarTuple(PyObject arg) {
+        PyObject flag = Slots.findAttr(arg, "__typing_is_unpacked_typevartuple__");
+        return flag != null && Slots.truth(flag);
+    }
+
+    private static PyObject[] itemsOf(PyObject sequence) {
+        if (sequence instanceof PyTuple tuple) {
+            return tuple.getArray();
+        }
+        PyList list = (PyList) sequence;
+        PyObject[] items = new PyObject[list.size()];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = list.at(i);
+        }
+        return items;
+    }
+
+    private static void addIdentity(List<PyObject> parameters, PyObject item) {
+        for (PyObject existing : parameters) {
+            if (existing == item) {
+                return;
+            }
+        }
+        parameters.add(item);
+    }
+
+    private static int indexOfIdentity(PyObject[] parameters, PyObject value) {
+        for (int i = 0; i < parameters.length; i++) {
+            if (parameters[i] == value) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**
@@ -118,9 +336,10 @@ public final class PyGenericAlias extends PyObject {
         return switch (attribute) {
             case "__origin__" -> origin;
             case "__args__" -> PyTuple.of(arguments);
-            // The parameters are the type variables the arguments were left as; every argument here is a
-            // class already, so there are none — which is also why `list[int]` cannot be reused as one.
-            case "__parameters__" -> PyTuple.EMPTY;
+            // The parameters are the type variables the arguments were left as, so `list[T]` holds T
+            // while `list[int]` holds none — which is also why only the second refuses a second subscript.
+            case "__parameters__" -> PyTuple.of(parameters());
+            case "__reduce__" -> new PyNativeFunction("__reduce__", this::reduce);
             default -> Slots.DECLINED;
         };
     }

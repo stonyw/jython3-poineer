@@ -1374,6 +1374,13 @@ final class Classes {
             typeInit(args, names);
             return built;
         }
+        // A class written over `types.GenericAlias` inherits its creator: the same two arguments the
+        // alias takes, and a value that is the alias with this class as its type. `_collections_abc`
+        // does this to answer its own `__reduce__`, and the test suite's `SubClass` does it to check that
+        // such a value still behaves as an alias without becoming one.
+        if (kind.matches(PyType.GENERIC_ALIAS)) {
+            return TypeDict.genericAliasOfType(kind, args, names);
+        }
         if (kind.matches(ExceptionTypes.BASE_EXCEPTION_GROUP)) {
             // A class a person wrote under a group inherits the group's creator, which takes exactly the
             // two arguments — and is never promoted: `Named("m", [ValueError()])` stays a `Named`, since
