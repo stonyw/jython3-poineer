@@ -78,7 +78,8 @@ final class TypeLayout {
                     Map.entry("staticmethod", 21762L),
                     Map.entry("classmethod", 21762L),
                     Map.entry("super", 21762L),
-                    Map.entry("ExceptionGroup", 1073763848L));
+                    Map.entry("ExceptionGroup", 1073763848L),
+                    Map.entry("_local", 22272L));
 
     /**
      * {@code tp_basicsize} for the compiled-in types a class may be built over.
@@ -102,6 +103,7 @@ final class TypeLayout {
                     Map.entry("tuple", 32),
                     Map.entry("dict", 48),
                     Map.entry("module", 56),
+                    Map.entry("_local", 56),
                     Map.entry("set", 200),
                     Map.entry("frozenset", 200),
                     Map.entry("range", 48),
@@ -207,6 +209,13 @@ final class TypeLayout {
     /** The real weak-reference field {@code set} and {@code frozenset} were compiled with. */
     private static final int SET_WEAKREF_OFFSET = 192;
 
+    /**
+     * The real weak-reference field {@code _thread._local} was compiled with, which a subclass inherits
+     * whether or not it declares {@code __slots__}: {@code localobject} carries the list itself rather
+     * than reaching for a managed slot.
+     */
+    private static final int LOCAL_WEAKREF_OFFSET = 32;
+
     /** Whether a class statement wrote {@code type}, which is CPython's {@code Py_TPFLAGS_HEAPTYPE}. */
     static boolean heap(PyType type) {
         return (flags(type) & HEAPTYPE) != 0;
@@ -276,6 +285,11 @@ final class TypeLayout {
         }
         if (root.matches(ExceptionTypes.BASE_EXCEPTION)) {
             return hasWeak ? MANAGED_WEAKREF : 0;
+        }
+        if (root == PyType.LOCAL) {
+            // `localobject` keeps its weak reference list in a real field, so the managed bit never
+            // appears; the dictionary, when the class stores one, is managed as usual.
+            return hasDict ? MANAGED_DICT | INLINE_VALUES : 0;
         }
         long bits = 0;
         if (hasDict) {
@@ -403,6 +417,9 @@ final class TypeLayout {
             if (root == PyType.SET || root == PyType.FROZENSET) {
                 return SET_WEAKREF_OFFSET;
             }
+            if (root == PyType.LOCAL) {
+                return LOCAL_WEAKREF_OFFSET;
+            }
             if (!held.hasWeakRefList() || weakless(root)) {
                 return 0;
             }
@@ -413,6 +430,9 @@ final class TypeLayout {
         }
         if (type == PyType.SET || type == PyType.FROZENSET) {
             return SET_WEAKREF_OFFSET;
+        }
+        if (type == PyType.LOCAL) {
+            return LOCAL_WEAKREF_OFFSET;
         }
         if (type == ExceptionTypes.EXCEPTION_GROUP) {
             return MANAGED_WEAKREF_OFFSET;

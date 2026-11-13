@@ -557,7 +557,8 @@ class Jy3LauncherTest {
                 "16_raw_unicode_escape_offsets.py",
                 "17_pickle_recipes_and_slot_dispatch.py",
                 "18_datetime.py",
-                "19_socket.py");
+                "19_socket.py",
+                "20_thread_local.py");
     }
 
     private static List<String> m3Corpus() {

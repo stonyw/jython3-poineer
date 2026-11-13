@@ -1417,9 +1417,12 @@ public class PyType extends PyObject {
      * {@code _thread._local}: one attribute dictionary per thread.
      *
      * <p>{@code threading} reaches for this before its pure-Python fallback, so a run without it fails
-     * to import the module at all.
+     * to import the module at all. It is subclassable — {@code asyncio/events.py} writes
+     * {@code class _Local(threading.local)} — and the subclass keeps this type's storage: a dictionary
+     * chosen by the running thread rather than one field of the value.
      */
-    static final PyType LOCAL = builtin("_local").filedUnder("_thread._local");
+    static final PyType LOCAL = builtin("_local").filedUnder("_thread._local")
+            .documented("Thread-local data");
 
     /** {@code _struct.Struct}: one compiled format, made by the module rather than by a Python class. */
     static final PyType STRUCT = builtin("Struct").filedUnder("_struct.Struct")
@@ -2025,7 +2028,7 @@ public class PyType extends PyObject {
      * answer of whichever class in its order first introduced it, which {@link PyClass} stores.
      */
     boolean hasWeakRefList() {
-        return this == TYPE || this == ExceptionTypes.EXCEPTION_GROUP;
+        return this == TYPE || this == ExceptionTypes.EXCEPTION_GROUP || this == LOCAL;
     }
 
     /**

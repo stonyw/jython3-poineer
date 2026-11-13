@@ -27,7 +27,19 @@ final class GenericAttributes {
 
     /** {@code obj.name = value}. */
     static void write(PyObject obj, String name, PyObject value) {
-        apply(obj, name, value);
+        apply(obj, name, value, null);
+    }
+
+    /**
+     * {@code obj.name = value} into a dictionary the caller has already resolved.
+     *
+     * <p>{@code _PyObject_GenericSetAttrWithDict} takes the dictionary rather than finding it, which is
+     * what lets {@code local_setattro} write into the current thread's dictionary although no
+     * {@code tp_dictoffset} names it. A caller that passes one is saying "this value keeps a
+     * dictionary here", so the class's own answer to {@link PyType#hasValueDict()} is not asked again.
+     */
+    static void write(PyObject obj, String name, PyObject value, PyDict store) {
+        apply(obj, name, value, store);
     }
 
     /**
@@ -35,10 +47,15 @@ final class GenericAttributes {
      * rather than through a slot of its own.
      */
     static void delete(PyObject obj, String name) {
-        apply(obj, name, null);
+        apply(obj, name, null, null);
     }
 
-    private static void apply(PyObject obj, String name, PyObject value) {
+    /** The delete into a dictionary the caller has already resolved. */
+    static void delete(PyObject obj, String name, PyDict store) {
+        apply(obj, name, null, store);
+    }
+
+    private static void apply(PyObject obj, String name, PyObject value, PyDict explicit) {
         PyType kind = obj.getType();
         boolean deleting = value == null;
         PyObject member = Specials.member(kind, name);
@@ -50,21 +67,19 @@ final class GenericAttributes {
             }
             return;
         }
-        if (kind.hasValueDict()) {
-            PyDict store = obj.attributeStore();
-            if (store != null) {
-                PyStr key = PyStr.interned(name);
-                if (deleting) {
-                    if (store.get(key) == null) {
-                        throw Slots.attributeError(
-                                "'%s' object has no attribute '%s'", kind.filedName(), name);
-                    }
-                    store.remove(key);
-                } else {
-                    store.put(key, value);
+        PyDict store = explicit != null ? explicit : (kind.hasValueDict() ? obj.attributeStore() : null);
+        if (store != null) {
+            PyStr key = PyStr.interned(name);
+            if (deleting) {
+                if (store.get(key) == null) {
+                    throw Slots.attributeError(
+                            "'%s' object has no attribute '%s'", kind.filedName(), name);
                 }
-                return;
+                store.remove(key);
+            } else {
+                store.put(key, value);
             }
+            return;
         }
         // Two refusals, and which one the name gets depends on the class rather than on the value: a
         // member the lookup reached but that cannot write is called read-only, and a name nothing on the

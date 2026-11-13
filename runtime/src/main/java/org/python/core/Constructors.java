@@ -187,7 +187,12 @@ final class Constructors {
             return new ThreadModule.ThreadHandle();
         }
         if (type == PyType.LOCAL) {
-            return new ThreadModule.Local();
+            // `local_new` refuses arguments only while the init slot is `object_init`, which is what the
+            // bare `_local` is: a subclass's own `__init__` reaches them through `Classes`.
+            if (args.length > 0 || (keywordNames != null && keywordNames.length > 0)) {
+                throw Slots.typeError("Initialization arguments are not supported");
+            }
+            return new ThreadModule.Local(type, new PyObject[0], null);
         }
         if (type == PyType.RANDOM) {
             return RandomModule.constructing(args, keywordNames);

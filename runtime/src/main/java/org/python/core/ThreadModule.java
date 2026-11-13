@@ -306,49 +306,135 @@ final class ThreadModule {
     }
 
     /**
-     * {@code _thread._local}: the attribute dictionary behind {@code threading.local}.
+     * {@code _thread._local}, and every class Python derives from it: one attribute dictionary per
+     * thread, made the first time that thread touches the value.
      *
-     * <p>CPython keeps one dictionary per thread and hands each thread the one it made. This runtime
-     * has one thread, so one dictionary is the whole of it; the shape a program sees — plain
-     * attributes, {@code __dict__} naming that same dictionary, {@code del} working on it — is the
-     * same either way.
+     * <p>CPython's {@code localobject} keeps its dictionaries in a map keyed by thread, and
+     * {@code local_getattro} asks for the current thread's one before every read. This runtime refuses
+     * to start a Python thread, so the map holds one entry in practice; a {@link ThreadLocal} is still
+     * the faithful shape, and it means a host that gives this interpreter a second Java thread gets the
+     * reference's answer rather than a shared dictionary.
+     *
+     * <p>The constructing thread is the one exception to the replay rule. {@code local_new} makes that
+     * thread's dictionary without calling anything, because {@code type_call} runs {@code __init__} once
+     * right after {@code tp_new} like it does for every other class; a later thread that finds no
+     * dictionary makes one and then runs {@code __init__} with the arguments the constructor was given,
+     * which is {@code _ldict}. A failing replay removes the half-made dictionary and raises the original
+     * error.
+     *
+     * <p>{@code __dict__} is answered here rather than by a descriptor, because the reference special-cases
+     * the name before it looks anywhere else and refuses both a write and a delete with its read-only
+     * sentence. Everything else is the ordinary class machinery: a {@code __slots__} field stays out of
+     * this dictionary, and a plain subclass writes its attributes into it.
      */
-    static final class Local extends PyObject {
+    static final class Local extends PyInstance {
 
-        private final PyDict contents = PyDict.empty();
+        /** This value's dictionary in each thread that has touched it. */
+        private final ThreadLocal<PyDict> dicts = new ThreadLocal<>();
 
-        Local() {
-            super(PyType.LOCAL);
+        /** The arguments {@code __init__} is replayed with in a thread that has not run it yet. */
+        private final PyObject[] initArgs;
+
+        private final PyTuple initNames;
+
+        Local(PyType kind, PyObject[] args, PyTuple kwNames) {
+            super(kind, false);
+            this.initArgs = args.clone();
+            this.initNames = kwNames;
+            dicts.set(PyDict.empty());
+        }
+
+        @Override
+        PyDict instanceDict() {
+            return threadDict();
+        }
+
+        /**
+         * The dictionary {@code object.__setattr__} reaches, which is the value's own and not the one
+         * the running thread reads: {@code _local}'s write slot passes the thread dictionary to {@code
+         * _PyObject_GenericSetAttrWithDict} explicitly, so the generic route is left with the managed
+         * dictionary a heap type over this base lays out — and a name written there is invisible to
+         * {@code getattr}, exactly as it is in CPython.
+         */
+        @Override
+        PyDict attributeStore() {
+            return ensureInstanceDict();
+        }
+
+        @Override
+        void writeAttribute(String name, PyObject value) {
+            GenericAttributes.write(this, name, value, threadDict());
+        }
+
+        @Override
+        void deleteAttribute(String name) {
+            GenericAttributes.delete(this, name, threadDict());
         }
 
         @Override
         public PyObject getAttr(String name) {
             if (name.equals("__dict__")) {
-                return contents;
+                return threadDict();
             }
-            PyObject value = contents.get(PyStr.interned(name));
-            return value == null ? super.getAttr(name) : value;
+            return super.getAttr(name);
         }
 
         @Override
         public PyObject setAttr(String name, PyObject value) {
             if (name.equals("__dict__")) {
-                throw Slots.attributeError("readonly attribute");
+                throw readOnlyDict();
             }
-            contents.put(PyStr.interned(name), value);
-            return PyNone.INSTANCE;
+            return super.setAttr(name, value);
         }
 
         @Override
         public PyObject delAttr(String name) {
             if (name.equals("__dict__")) {
-                throw Slots.attributeError("readonly attribute");
+                throw readOnlyDict();
             }
-            if (contents.remove(PyStr.interned(name)) == null) {
-                throw Slots.attributeError(
-                        "'%s' object has no attribute '%s'", getType().filedName(), name);
+            return super.delAttr(name);
+        }
+
+        /** {@code local_setattro}'s one refusal: the name is managed, the dictionary is not replaced. */
+        private PyRaise readOnlyDict() {
+            return Slots.attributeError(
+                    "'%s' object attribute '__dict__' is read-only", getType().filedName());
+        }
+
+        /** {@code _ldict}: the current thread's dictionary, made and initialized on the first touch. */
+        private PyDict threadDict() {
+            PyDict held = dicts.get();
+            if (held != null) {
+                return held;
             }
-            return PyNone.INSTANCE;
+            held = PyDict.empty();
+            dicts.set(held);
+            try {
+                replayInitializer();
+            } catch (PyRaise failure) {
+                dicts.remove();
+                throw failure;
+            }
+            return held;
+        }
+
+        /**
+         * The replay {@code _ldict} makes: only a {@code __init__} a class Python wrote, never
+         * {@code object}'s, which has nothing to say about a thread.
+         */
+        private void replayInitializer() {
+            PyObject declared = Specials.lookUp(getType(), "__init__");
+            if (declared == null) {
+                return;
+            }
+            PyObject[] withReceiver = new PyObject[initArgs.length + 1];
+            withReceiver[0] = this;
+            System.arraycopy(initArgs, 0, withReceiver, 1, initArgs.length);
+            if (declared instanceof PyFunction init) {
+                init.call(withReceiver, initNames);
+            } else {
+                Slots.call(declared, withReceiver, initNames);
+            }
         }
     }
 

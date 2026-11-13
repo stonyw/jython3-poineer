@@ -362,7 +362,11 @@ final class Classes {
                 // `typing.py` builds `Generic` subclasses itself: `Protocol` is `class Protocol(Generic,
                 // metaclass=_ProtocolMeta)`, and every user class written in the type-parameter syntax
                 // lands here too.
-                || base == PyType.TYPING_GENERIC;
+                || base == PyType.TYPING_GENERIC
+                // `asyncio/events.py` is `class _Local(threading.local)`, and `threading.local` is
+                // `_thread._local` itself: a value whose storage is a dictionary per thread, which
+                // `ThreadModule.Local` keeps.
+                || base == PyType.LOCAL;
     }
 
     /**
@@ -1431,6 +1435,16 @@ final class Classes {
         // `class Random(_random.Random)` draw the same stream as the base.
         if (kind.matches(PyType.RANDOM)) {
             return RandomModule.constructing(kind, args, names);
+        }
+        // A class over `_thread._local` inherits its creator: the arguments are kept because `__init__`
+        // has to be replayed in every thread that finds no dictionary, and `local_new` refuses them only
+        // while the init slot is still `object_init` — a subclass that declares `__init__` gets to read
+        // them, which is why `D(7)` is the value `{'x': 7}`.
+        if (kind.parent().matches(PyType.LOCAL)) {
+            if (inheritsOnlyObjectInit(kind) && excess(args, kwNames)) {
+                throw Slots.typeError("Initialization arguments are not supported");
+            }
+            return new ThreadModule.Local(kind, args, kwNames);
         }
         if (excess(args, kwNames) && inheritsOnlyObjectInit(kind)) {
             throw Slots.typeError("%s() takes no arguments", kind.name());

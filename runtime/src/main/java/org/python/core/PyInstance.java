@@ -36,17 +36,35 @@ public class PyInstance extends PyObject {
     private PyDict dictionary;
 
     PyInstance(PyType kind) {
+        this(kind, kind.hasValueDict());
+    }
+
+    /**
+     * A value whose dictionary is kept elsewhere, as {@code _thread._local}'s is: the field stays null
+     * and {@link #instanceDict} is overridden to name the storage the subclass owns.
+     */
+    PyInstance(PyType kind, boolean storesDict) {
         super(kind);
-        this.dictionary = kind.hasValueDict() ? PyDict.empty() : null;
+        this.dictionary = storesDict ? PyDict.empty() : null;
+    }
+
+    /** {@code _PyObject_GetDictPtr}: where this value keeps its attributes, or null when nowhere. */
+    PyDict instanceDict() {
+        return dictionary;
+    }
+
+    /** The dictionary a read or write may create, which is the lazy half of {@link #instanceDict}. */
+    PyDict ensureInstanceDict() {
+        if (dictionary == null) {
+            dictionary = PyDict.empty();
+        }
+        return dictionary;
     }
 
     /** {@code subtype_dict}: the read of the descriptor a class files for the storage it introduces. */
     static PyObject valueDict(PyObject self) {
         if (self instanceof PyInstance held) {
-            if (held.dictionary == null) {
-                held.dictionary = PyDict.empty();
-            }
-            return held.dictionary;
+            return held.ensureInstanceDict();
         }
         return self.attributeStore();
     }
@@ -233,7 +251,8 @@ public class PyInstance extends PyObject {
         if (member != null && Descriptors.writes(member)) {
             return Descriptors.get(member, this, type);
         }
-        PyObject held = dictionary == null ? null : dictionary.get(PyStr.interned(name));
+        PyDict store = instanceDict();
+        PyObject held = store == null ? null : store.get(PyStr.interned(name));
         if (held != null) {
             return held;
         }
@@ -320,7 +339,7 @@ public class PyInstance extends PyObject {
         if (!Slots.declined(hook)) {
             return hook;
         }
-        GenericAttributes.write(this, name, value);
+        writeAttribute(name, value);
         return PyNone.INSTANCE;
     }
 
@@ -334,14 +353,27 @@ public class PyInstance extends PyObject {
         if (!Slots.declined(hook)) {
             return hook;
         }
-        GenericAttributes.delete(this, name);
+        deleteAttribute(name);
         return PyNone.INSTANCE;
+    }
+
+    /**
+     * The generic write, in the one place a subclass whose dictionary moves can redirect it: {@code
+     * _thread._local} writes into the current thread's dictionary, which no descriptor names.
+     */
+    void writeAttribute(String name, PyObject value) {
+        GenericAttributes.write(this, name, value);
+    }
+
+    /** The generic delete, the other half of {@link #writeAttribute}. */
+    void deleteAttribute(String name) {
+        GenericAttributes.delete(this, name);
     }
 
     /** {@code _PyObject_GetManagedDict}: the dictionary {@link GenericAttributes} writes through. */
     @Override
     PyDict attributeStore() {
-        return dictionary;
+        return instanceDict();
     }
 
     // --- calls ---------------------------------------------------------------------------
@@ -624,6 +656,6 @@ public class PyInstance extends PyObject {
 
     /** CPython's {@code object.__repr__} says where the value is; an address this runtime has no use for. */
     String defaultDisplay() {
-        return "<" + type.name() + " object at " + System.identityHashCode(this) + ">";
+        return "<" + type.filedName() + " object at " + System.identityHashCode(this) + ">";
     }
 }
