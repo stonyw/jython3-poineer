@@ -216,11 +216,17 @@ public class PyInstance extends PyObject {
     }
 
     /**
-     * The walk without the hooks: a descriptor that writes, the instance dictionary, the class order, and
-     * {@code __class__}.
+     * The walk without the hooks: a descriptor that writes, the instance dictionary, the class order, the
+     * dictionary a built-in base publishes, and {@code __class__}.
      *
      * <p>Shared by the ordinary read and by {@code object.__getattribute__}, which differ only in what
      * they do with a name nothing holds — one asks {@code __getattr__}, the other raises.
+     *
+     * <p>The built-in bases come from {@link TypeDict#read} rather than from {@link Specials#lookUp}
+     * because the latter sees only the namespaces Python classes wrote. {@code object} files
+     * {@code __reduce_ex__} and {@code __getstate__} in a table of its own, and CPython's type walk
+     * reaches them before {@code __getattr__} — so a class with a {@code __getattr__} that refuses every
+     * name still inherits the pickle helpers, which is what {@code test_issue24097} asks for.
      */
     private PyObject genericLookup(String name) {
         PyObject member = Specials.lookUp(type, name);
@@ -237,6 +243,10 @@ public class PyInstance extends PyObject {
         PyObject inherited = inherited(name);
         if (!Slots.declined(inherited)) {
             return inherited;
+        }
+        PyObject published = TypeDict.read(this, name);
+        if (!Slots.declined(published)) {
+            return published;
         }
         return name.equals(ClassAttribute.NAME) ? type : Slots.DECLINED;
     }

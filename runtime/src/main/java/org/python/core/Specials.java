@@ -115,15 +115,26 @@ final class Specials {
      * <p>{@code __call__} is the one that matters: {@code doubling(21)} has to reach
      * {@code __call__(self, value)} with whatever spelling the call used, and a keyword argument that
      * vanished here would be a silently wrong call rather than a refused one.
+     *
+     * <p>A class may file something other than a function of its own under a dunder. A wrapper
+     * descriptor taken from a built-in — {@code __neg__ = dict.copy}, {@code __eq__ = str.__eq__} — and a
+     * classmethod are both members CPython reaches through {@code tp_descr_get} and then calls, so the
+     * member is bound to this value first; a descriptor of the wrong kind of value refuses here with the
+     * sentence its built-in wrote. A member that only binds is declined, which keeps
+     * {@code __hash__ = None} saying "not callable" rather than "absent".
      */
     static PyObject invoke(PyObject self, String name, PyObject[] arguments, PyTuple kwNames) {
         PyObject declared = lookUp(self.getType(), name);
-        if (!(declared instanceof PyFunction method)) {
-            return Slots.DECLINED;
+        if (declared instanceof PyFunction method) {
+            PyObject[] all = new PyObject[arguments.length + 1];
+            all[0] = self;
+            System.arraycopy(arguments, 0, all, 1, arguments.length);
+            return method.call(all, kwNames);
         }
-        PyObject[] all = new PyObject[arguments.length + 1];
-        all[0] = self;
-        System.arraycopy(arguments, 0, all, 1, arguments.length);
-        return method.call(all, kwNames);
+        if (declared != null && Descriptors.binds(declared)) {
+            return Slots.call(
+                    Descriptors.get(declared, self, self.getType()), arguments, kwNames);
+        }
+        return Slots.DECLINED;
     }
 }

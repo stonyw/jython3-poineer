@@ -101,6 +101,7 @@ final class TypeLayout {
                     Map.entry("list", 40),
                     Map.entry("tuple", 32),
                     Map.entry("dict", 48),
+                    Map.entry("module", 56),
                     Map.entry("set", 200),
                     Map.entry("frozenset", 200),
                     Map.entry("range", 48),
@@ -205,6 +206,11 @@ final class TypeLayout {
 
     /** The real weak-reference field {@code set} and {@code frozenset} were compiled with. */
     private static final int SET_WEAKREF_OFFSET = 192;
+
+    /** Whether a class statement wrote {@code type}, which is CPython's {@code Py_TPFLAGS_HEAPTYPE}. */
+    static boolean heap(PyType type) {
+        return (flags(type) & HEAPTYPE) != 0;
+    }
 
     /** {@code type.__flags__}. */
     static long flags(PyType type) {

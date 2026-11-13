@@ -1540,6 +1540,10 @@ final class Builtins {
             }
             return Slots.binary(BinaryOp.POW, base, exponent);
         }
+        PyObject answered = Slots.power(base, exponent, modulus);
+        if (!Slots.declined(answered)) {
+            return answered;
+        }
         BigInteger b = Numbers.asInteger(base);
         BigInteger e = Numbers.asInteger(exponent);
         BigInteger m = Numbers.asInteger(modulus);

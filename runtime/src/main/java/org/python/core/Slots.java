@@ -61,8 +61,32 @@ public final class Slots {
     private Slots() {
     }
 
-    /** {@code left op right}. */
+    /**
+     * {@code left op right}: CPython's three attempts, in its order.
+     *
+     * <p>Usually the left operand answers and the right one is never asked. The exception is a right
+     * operand whose type is a proper subclass of the left operand's and which writes the reflected half
+     * of the pair — {@code 1 // B(1)} for a {@code B(int)} with an {@code __rfloordiv__}. CPython calls
+     * that reflected method first, so the subclass gets to describe the operation even though the base
+     * class has a slot of its own; otherwise {@code 1 // B(1)} would answer {@code 1} and the method
+     * would never run.
+     *
+     * <p>The pre-emptive call is narrow on purpose. It asks only for the reflected name, and only when
+     * the right type's answer differs from the left type's — a subclass that inherits the same method
+     * does not get a second chance to answer, which is what keeps {@code D() // C()} on
+     * {@code D.__floordiv__} rather than falling back to {@code C.__rfloordiv__}.
+     */
     public static PyObject binary(BinaryOp op, PyObject left, PyObject right) {
+        PyType leftType = left.getType();
+        PyType rightType = right.getType();
+        if (rightType != leftType
+                && rightType.matches(leftType)
+                && overloadsReflected(leftType, rightType, op)) {
+            PyObject answer = right.reflectedOp(op, left);
+            if (!declined(answer)) {
+                return answer;
+            }
+        }
         PyObject result = left.binaryOp(op, right);
         if (!declined(result)) {
             return result;
@@ -74,6 +98,51 @@ public final class Slots {
         throw typeError(
                 "unsupported operand type(s) for %s: '%s' and '%s'",
                 op.symbol(), left.getType().filedName(), right.getType().filedName());
+    }
+
+    /**
+     * Whether {@code rightType}'s reflected method is one {@code leftType} does not already share.
+     *
+     * <p>This is CPython's {@code method_is_overloaded}: a right type that writes nothing under
+     * {@code __rfloordiv__} inherits its base's slot and is not asked ahead of it, while one that writes
+     * its own is. A subclass that merely inherits the base's function reaches the same object and is
+     * likewise not overloaded.
+     */
+    private static boolean overloadsReflected(PyType leftType, PyType rightType, BinaryOp op) {
+        PyObject theirs = Specials.member(rightType, op.reflectedDunder());
+        if (theirs == null) {
+            return false;
+        }
+        return Specials.member(leftType, op.reflectedDunder()) != theirs;
+    }
+
+    /**
+     * {@code pow(base, exponent, modulus)}: the three-argument form, which is the ternary slot
+     * {@code nb_power} rather than {@link #binary}'s pair.
+     *
+     * <p>A class that writes {@code __pow__} is handed the modulus as a third argument, and a subclass on
+     * the right that writes {@code __rpow__} is asked before the base's slot for the same reason
+     * {@link #binary} asks it — {@code pow(2, I(3), 5)} is {@code I(3)}, not the number's own answer. The
+     * plain integers reach neither method and fall through to the builtin's arithmetic.
+     *
+     * @return the answer, or {@link #DECLINED} when neither operand's type writes a power method
+     */
+    static PyObject power(PyObject base, PyObject exponent, PyObject modulus) {
+        PyType baseType = base.getType();
+        PyType exponentType = exponent.getType();
+        if (exponentType != baseType
+                && exponentType.matches(baseType)
+                && overloadsReflected(baseType, exponentType, BinaryOp.POW)) {
+            PyObject answer = Specials.invoke(exponent, "__rpow__", base, modulus);
+            if (!declined(answer)) {
+                return answer;
+            }
+        }
+        PyObject answer = Specials.invoke(base, "__pow__", exponent, modulus);
+        if (!declined(answer)) {
+            return answer;
+        }
+        return Specials.invoke(exponent, "__rpow__", base, modulus);
     }
 
     /**

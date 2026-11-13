@@ -5794,14 +5794,19 @@ final class TypeDict {
     /**
      * {@code object.__getstate__}: the instance dictionary, or {@code None} where there is nothing.
      *
+     * <p>A class whose values keep names outside the dictionary — one written with {@code __slots__}, or
+     * one that filed a {@code __slotnames__} list — answers a pair instead: the dictionary (or
+     * {@code None}) and the slots that were filled. The names come from {@code copyreg._slotnames}, so a
+     * class that declares them in the only way this runtime understands is read here the same way pickle
+     * reads it.
+     *
      * <p>The name in its refusals is the one {@code object.c} writes, so {@code (3).__getstate__(x=1)}
      * says {@code object.__getstate__() takes no keyword arguments} where a read of the same method reports
      * itself as {@code int.__getstate__}.
      */
     private static PyObject objectState(PyObject[] args, String[] kwNames, String qualified) {
         Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
-        PyObject found = Slots.findAttr(args[0], "__dict__");
-        return found instanceof PyDict held && held.size() > 0 ? held : PyNone.INSTANCE;
+        return defaultState(args[0]);
     }
 
     /**
@@ -6763,14 +6768,15 @@ final class TypeDict {
     /**
      * {@code object.__reduce_ex__(protocol)}: pickle's other helper.
      *
-     * <p>The reference interpreter answers a real recipe here — {@code copyreg.__newobj__} plus the value
-     * and its state for a protocol of two or more, {@code copyreg._reconstructor} below that — and a class
-     * that wrote its own {@code __reduce__} is asked that instead. Both recipes are built here rather than
-     * by handing the question back to {@code copyreg._reduce_ex}, because the value is always a plain
-     * instance: one whose class reaches {@code object} directly, has a dictionary of its own, and was made
-     * by {@code object.__new__}. A value the runtime has no faithful recipe for — a {@code dict} subclass,
-     * a {@code weakref.ref} subclass, or any built-in — is refused the way the reference refuses one whose
-     * {@code tp_new} the type system did not hand down.
+     * <p>Below protocol two the question goes back to {@code copyreg._reduce_ex}, which is the reference's
+     * own answer: it picks the {@code _reconstructor} recipe's base as the first class in the value's order
+     * a class statement did not write — {@code list} for a {@code list} subclass, {@code dict} for a
+     * {@code dict} one, {@code object} for a plain instance — carries that base's contents as the
+     * arguments, merges the instance dictionary and the filled slots into the state, and refuses a slots
+     * class that inherits {@code object.__getstate__}. Two and above answers {@code copyreg.__newobj__}
+     * built here, which is where a class's own {@code __getnewargs__}/{@code __getnewargs_ex__}, its state,
+     * and the items a list or dict subclass carries enter. A class that wrote its own {@code __reduce__} is
+     * asked that first.
      *
      * <p>Both halves name themselves {@code object.__reduce_ex__} however they were reached:
      * {@code A().__reduce_ex__(1, 2)} says {@code object.__reduce_ex__() takes exactly one argument (2
@@ -6806,51 +6812,233 @@ final class TypeDict {
     }
 
     /**
-     * The recipe for a plain instance: {@code __newobj__} above protocol two, {@code _reconstructor}
-     * below it, and the instance dictionary as the state in both cases.
+     * The recipe for a value, by protocol: the reference reads both halves as {@code _common_reduce},
+     * which hands anything below two to {@code copyreg} and everything else to {@code reduce_newobj}.
      */
     private static PyObject reduceRecipe(PyObject value, int protocol) {
-        PyType kind = value.getType();
-        if (protocol < 2 && refusesSlotsState(kind)) {
-            throw Slots.typeError(
-                    "a class that defines __slots__ without defining __getstate__ cannot be"
-                            + " pickled");
+        if (protocol < 2) {
+            PyObject copyreg = Copyreg.module();
+            return Slots.call(
+                    copyreg.getAttr("_reduce_ex"),
+                    new PyObject[] {value, PyInt.of(protocol)},
+                    null);
         }
-        PyObject state = instanceState(value);
-        PyObject copyreg = PyRuntime.importModule("copyreg");
-        if (protocol >= 2) {
-            PyObject newobj = copyreg.getAttr("__newobj__");
-            return PyTuple.of(
-                    newobj,
-                    PyTuple.of(kind),
-                    state,
-                    PyNone.INSTANCE,
-                    PyNone.INSTANCE);
-        }
-        PyObject reconstructor = copyreg.getAttr("_reconstructor");
-        PyTuple recipe = PyTuple.of(kind, PyType.OBJECT, PyNone.INSTANCE);
-        return state == PyNone.INSTANCE
-                ? PyTuple.of(reconstructor, recipe)
-                : PyTuple.of(reconstructor, recipe, state);
+        return newObjectRecipe(value);
     }
 
     /**
-     * Whether a class with slots refuses the protocols below two, the way {@code copyreg._reduce_ex}
-     * refuses it.
+     * {@code copyreg._reduce_ex}: the three-part recipe protocols below two are answered with.
      *
-     * <p>What makes the recipe impossible is the pair of facts the reference asks about: the class
-     * declares a non-empty {@code __slots__}, so the values live outside the dictionary the recipe
-     * would carry, and it inherits {@code object.__getstate__}, so nothing describes them. A class
-     * that writes its own {@code __getstate__} answers, and one whose {@code __slots__} is empty has
-     * no extra state to lose.
+     * <p>The walk finds the first base in the order that is not a heap type, and that base supplies the
+     * second argument and, called with the value, the third: {@code int(3)} for an {@code int} subclass, and
+     * {@code None} when the base is {@code object}. A base that is the value's own class is a type CPython
+     * compiled but this runtime can still name, and reducing one is refused in CPython's sentence. The state
+     * then replaces that third argument only when it is true: the class's own {@code __getstate__} answer, or
+     * the instance dictionary. A slots class whose {@code __getstate__} is still {@code object}'s is refused,
+     * because below protocol two there is nowhere to put the slots half of the two-part state; the refusal
+     * text differs by whether the missing name raised {@code AttributeError} or was inherited.
+     *
+     * <p>CPython's second break — a heap type whose {@code __new__} is a builtin bound to it — is not modelled:
+     * every order this runtime builds ends in {@code object}, whose flags end the walk first.
      */
-    private static boolean refusesSlotsState(PyType kind) {
-        PyObject slots = Specials.member(kind, "__slots__");
-        if (slots == null || !Slots.truth(slots)) {
-            return false;
+    static PyObject legacyRecipe(PyObject value, int protocol, PyObject reconstructor) {
+        PyType kind = value.getType();
+        PyType base = PyType.OBJECT;
+        for (PyType candidate : kind.mro()) {
+            if (!TypeLayout.heap(candidate)) {
+                base = candidate;
+                break;
+            }
         }
-        PyObject getstate = Specials.member(kind, "__getstate__");
-        return getstate == null || getstate == objectGetstateRow();
+        PyObject state;
+        if (base == PyType.OBJECT) {
+            state = PyNone.INSTANCE;
+        } else {
+            if (base == kind) {
+                throw Slots.typeError("cannot pickle '%s' object", kind.name());
+            }
+            state = Slots.call(base, new PyObject[] {value}, null);
+        }
+        PyTuple args = PyTuple.of(kind, base, state);
+        PyObject getstate = optionalAttr(value, PyStr.of("__getstate__"));
+        boolean slots = declaredSlots(value);
+        PyObject carried;
+        if (getstate == Slots.DECLINED) {
+            if (slots) {
+                throw Slots.typeError(
+                        "cannot pickle '%s' object: a class that defines __slots__ without"
+                                + " defining __getstate__ cannot be pickled with protocol %d",
+                        kind.name(),
+                        protocol);
+            }
+            carried = optionalAttr(value, PyStr.of("__dict__"));
+        } else {
+            if (slots && Specials.member(kind, "__getstate__") == objectGetstateRow()) {
+                throw Slots.typeError(
+                        "a class that defines __slots__ without defining __getstate__ cannot be"
+                                + " pickled");
+            }
+            carried = Slots.call(getstate, new PyObject[0], null);
+        }
+        if (carried != null && carried != Slots.DECLINED && Slots.truth(carried)) {
+            return PyTuple.of(reconstructor, args, carried);
+        }
+        return PyTuple.of(reconstructor, args);
+    }
+
+    /** {@code getattr(self, "__slots__", None)} read for its truth, with a missing name read as None. */
+    private static boolean declaredSlots(PyObject value) {
+        PyObject found = optionalAttr(value, PyStr.of("__slots__"));
+        return found != null && found != Slots.DECLINED && Slots.truth(found);
+    }
+
+
+    /**
+     * The arguments a {@code __newobj__} call is made with.
+     *
+     * <p>A null {@code positional} is CPython's {@code args == NULL}: neither hook exists, which is a
+     * different fact from a hook that answered an empty tuple — the first decides whether the state has
+     * to fit {@code object}'s own layout, the second does not.
+     */
+    private record NewArguments(PyObject positional, PyObject keywords) {}
+
+    /**
+     * {@code reduce_newobj}: the five-part recipe above protocol two.
+     *
+     * <p>The new call is {@code copyreg.__newobj__(cls, *args)}, or {@code __newobj_ex__(cls, args,
+     * kwargs)} when the class asked for keyword arguments; the class is always the value's own, which is
+     * what lets a subclass build itself without a constructor of its own. The state is
+     * {@code __getstate__}'s answer, and the last two parts carry the items of a list subclass and of a
+     * dict subclass — read through {@code iter(obj)} and {@code iter(obj.items())} — so that those values
+     * survive a round trip their own state could not describe.
+     *
+     * <p>Before any of that, a value that asked for no arguments of its own and is neither a list nor a
+     * dict must carry nothing beyond {@code object}'s layout plus the fields its type declares, which is
+     * the gate {@link #refuseUnpicklableLayout} applies: a {@code module}, whose struct holds two more
+     * pointers, is refused here rather than turned into a recipe whose new call would fail.
+     */
+    private static PyObject newObjectRecipe(PyObject value) {
+        PyType kind = value.getType();
+        NewArguments found = newArguments(value);
+        boolean listed = value instanceof PyList || value instanceof PyListInstance;
+        boolean mapping = value instanceof PyDict || value instanceof PyDictInstance;
+        if (found.positional() == null && !listed && !mapping) {
+            refuseUnpicklableLayout(kind);
+        }
+        PyTuple positional = found.positional() == null ? PyTuple.EMPTY : (PyTuple) found.positional();
+        PyObject state = stateOf(value);
+        PyObject listitems = listed ? Slots.iterator(value) : PyNone.INSTANCE;
+        PyObject dictitems =
+                mapping
+                        ? Slots.iterator(
+                                Slots.call(
+                                        Slots.getAttr(value, "items"), new PyObject[0], null))
+                        : PyNone.INSTANCE;
+        PyObject copyreg = Copyreg.module();
+        PyObject newobj;
+        PyObject newargs;
+        if (found.keywords() instanceof PyDict keywords && keywords.size() > 0) {
+            newobj = copyreg.getAttr("__newobj_ex__");
+            newargs = PyTuple.of(kind, positional, keywords);
+        } else {
+            newobj = copyreg.getAttr("__newobj__");
+            PyObject[] withKind = new PyObject[positional.size() + 1];
+            withKind[0] = kind;
+            for (int i = 0; i < positional.size(); i++) {
+                withKind[i + 1] = positional.at(i);
+            }
+            newargs = PyTuple.of(withKind);
+        }
+        return PyTuple.of(newobj, newargs, state, listitems, dictitems);
+    }
+
+    /**
+     * The refusal {@code object_getstate}'s {@code required} branch makes: a value with no new arguments
+     * of its own, and neither a list's nor a dict's items, may only carry what {@code object}'s own layout
+     * plus its type's declared fields occupy.
+     *
+     * <p>The reference measures that as {@code tp_basicsize} against sixteen bytes of {@code object}, one
+     * pointer for a real dictionary field, one for a real weak-reference field, and one per declared slot.
+     * A type whose struct holds anything more — {@code module} keeps its dictionary and weak references at
+     * sixteen and forty, which is eight bytes past the allowance — has state the recipe cannot describe, so
+     * {@code object.__reduce_ex__} raises before building it. The managed offsets ({@code -1} and
+     * {@code -32}) are not fields of the struct and add nothing, which is why an ordinary instance of a
+     * class written in Python always fits.
+     */
+    private static void refuseUnpicklableLayout(PyType kind) {
+        int allowance = TypeLayout.basicsize(PyType.OBJECT);
+        if (TypeLayout.dictoffset(kind) > 0) {
+            allowance += 8;
+        }
+        if (TypeLayout.weakrefoffset(kind) > 0) {
+            allowance += 8;
+        }
+        if (slotNamesDirect(kind) instanceof PyList names) {
+            allowance += 8 * names.size();
+        }
+        if (TypeLayout.basicsize(kind) > allowance) {
+            throw Slots.typeError("cannot pickle '%s' object", kind.filedName());
+        }
+    }
+
+    /**
+     * {@code _PyObject_GetNewArguments}: what the class wants its new call made with.
+     *
+     * <p>{@code __getnewargs_ex__} answers a pair — a tuple of positional arguments and a dictionary of
+     * keywords — and takes precedence over {@code __getnewargs__}, which answers the positional tuple
+     * alone. Neither is found through the instance dictionary or {@code __getattr__}: the reference reads
+     * both with {@code _PyObject_LookupSpecial}, so a class whose {@code __getattr__} would answer any
+     * name cannot pretend to have one. A hook that answers the wrong shape is refused with the
+     * reference's own sentence rather than passed on to the new call.
+     */
+    private static NewArguments newArguments(PyObject value) {
+        PyObject pairHook = specialAttr(value, "__getnewargs_ex__");
+        if (pairHook != null) {
+            PyObject answer = Slots.call(pairHook, new PyObject[0], null);
+            if (!(answer instanceof PyTuple pair)) {
+                throw Slots.typeError(
+                        "__getnewargs_ex__ should return a tuple, not '%s'",
+                        answer.getType().filedName());
+            }
+            if (pair.size() != 2) {
+                throw Slots.valueError(
+                        "__getnewargs_ex__ should return a tuple of length 2, not %d", pair.size());
+            }
+            PyObject positional = pair.at(0);
+            PyObject keywords = pair.at(1);
+            if (!(positional instanceof PyTuple)) {
+                throw Slots.typeError(
+                        "__getnewargs_ex__ should return a tuple of (args, kwargs), but args is not"
+                                + " a tuple");
+            }
+            if (!(keywords instanceof PyDict)) {
+                throw Slots.typeError(
+                        "__getnewargs_ex__ should return a tuple of (args, kwargs), but kwargs is not"
+                                + " a dict");
+            }
+            return new NewArguments(positional, keywords);
+        }
+        PyObject argsHook = specialAttr(value, "__getnewargs__");
+        if (argsHook == null) {
+            return new NewArguments(null, null);
+        }
+        PyObject answer = Slots.call(argsHook, new PyObject[0], null);
+        if (!(answer instanceof PyTuple positional)) {
+            throw Slots.typeError(
+                    "__getnewargs__ should return a tuple, not '%s'",
+                    answer.getType().filedName());
+        }
+        return new NewArguments(positional, null);
+    }
+
+    /**
+     * {@code _PyObject_LookupSpecial}: the member under {@code name} read off the type, bypassing the
+     * instance dictionary and any {@code __getattr__} — the lookup the reference gives the two new
+     * argument hooks, so that a class which answers every name cannot claim one.
+     */
+    private static PyObject specialAttr(PyObject value, String name) {
+        PyObject member = Specials.member(value.getType(), name);
+        return member == null ? null : Descriptors.get(member, value, value.getType());
     }
 
     /** The {@code __getstate__} row {@code object} files, which every class inherits unchanged. */
@@ -6865,43 +7053,137 @@ final class TypeDict {
      * <p>The two are not the same question. A class that writes {@code __getstate__} decides what its
      * copy carries — the slots test is a class whose state is a dictionary built from its slots — and
      * the recipe asks it before anything else. The inherited one answers with the instance dictionary
-     * when there is a non-empty one and {@code None} otherwise, which is what a plain instance with no
-     * attributes contributes.
+     * and the slots that were filled, which is what a plain instance with no attributes contributes as
+     * {@code None}.
      */
     private static PyObject stateOf(PyObject value) {
         PyObject getstate = Specials.member(value.getType(), "__getstate__");
         if (getstate != null && getstate != objectGetstateRow()) {
             return Slots.call(Slots.getAttr(value, "__getstate__"), new PyObject[0], null);
         }
-        return instanceDictState(value);
-    }
-
-    /** {@code object.__getstate__} as this runtime models it: the instance dictionary, or {@code None}. */
-    private static PyObject instanceDictState(PyObject value) {
-        PyObject found = Slots.findAttr(value, "__dict__");
-        return found instanceof PyDict held && held.size() > 0 ? held : PyNone.INSTANCE;
+        return defaultState(value);
     }
 
     /**
-     * The state a plain instance contributes to its reduce recipe, refusing the values this runtime has no
-     * faithful recipe for.
+     * {@code object_getstate_default}: the instance dictionary and the slots that were filled.
      *
-     * <p>A {@code dict} subclass and a {@code weakref.ref} subclass are both refused although both answer
-     * {@code __getstate__}: the first stores its items outside its dictionary and the second is built by a
-     * creator this recipe would not reach, so a copy of either would silently be missing data.
+     * <p>The names the state has to carry are the ones {@code copyreg._slotnames} finds; they are read
+     * one by one with {@code PyObject_GetOptionalAttr}, so a name the value does not hold is left out
+     * rather than written as {@code None}. The pair is only made when at least one slot was filled — an
+     * empty slots dictionary carries nothing, and the reference then answers the instance dictionary (or
+     * {@code None}) alone, which is why a plain instance and one whose slots are all unset have the same
+     * state.
      */
-    private static PyObject instanceState(PyObject value) {
-        if (value instanceof PyInstance instance
-                && !(value instanceof PyDictInstance)
-                && !(value instanceof PyWeakRefSubclass)) {
-            return stateOf(value);
+    private static PyObject defaultState(PyObject value) {
+        PyObject dict = instanceDict(value);
+        PyObject names = slotNames(value.getType());
+        if (!(names instanceof PyList held) || held.size() == 0) {
+            return dict;
         }
-        return unpicklable(value);
+        PyDict slots = PyDict.empty();
+        for (int i = 0; i < held.size(); i++) {
+            PyObject name = held.at(i);
+            PyObject found = optionalAttr(value, name);
+            if (found != null) {
+                slots.put(name, found);
+            }
+        }
+        return slots.size() == 0 ? dict : PyTuple.of(dict, slots);
     }
 
-    /** The one sentence both halves of pickle's protocol answer with, naming the value's class. */
-    private static PyObject unpicklable(PyObject value) {
-        throw Slots.typeError("cannot pickle '%s' object", value.getType().filedName());
+    /** {@code object.__getstate__}'s dictionary: the non-empty instance dictionary, or {@code None}. */
+    private static PyObject instanceDict(PyObject value) {
+        PyObject found = optionalAttr(value, PyStr.of("__dict__"));
+        return found instanceof PyDict held && held.size() > 0 ? held : PyNone.INSTANCE;
+    }
+
+    /** {@code copyreg._slotnames}: the names a class's slots carry, which the reference caches on it. */
+    private static PyObject slotNames(PyType kind) {
+        PyObject copyreg = Copyreg.module();
+        return Slots.call(copyreg.getAttr("_slotnames"), new PyObject[] {kind}, null);
+    }
+
+    /**
+     * {@code copyreg._slotnames}'s body, for the stand-in module a launcher run without a stdlib reduces
+     * against.
+     *
+     * <p>The names come out of each class dictionary in the order rather than off the class, because a slots
+     * declaration is only that class's: reading {@code C.__slots__} through attribute lookup would find a
+     * base's declaration once for every class above it. A string is one name, any other value is taken as
+     * the iterable CPython takes it for, and a name that starts with two underscores and does not end with
+     * two is mangled with the name of the class that declared it. {@code __dict__} and {@code __weakref__}
+     * are where the two storages live rather than what they are called. The answer is cached on the class as
+     * {@code __slotnames__} whenever the class lets it be, which is also how a class that writes that name
+     * itself answers first.
+     */
+    static PyObject slotNamesDirect(PyType kind) {
+        PyObject cached = kind.namespace().get(PyStr.interned("__slotnames__"));
+        if (cached != null && cached != PyNone.INSTANCE) {
+            return cached;
+        }
+        PyList names = PyList.empty();
+        if (Slots.findAttr(kind, "__slots__") != Slots.DECLINED) {
+            for (PyType held : kind.mro()) {
+                PyObject declared = held.namespace().get(PyStr.interned("__slots__"));
+                if (declared == null) {
+                    continue;
+                }
+                if (declared instanceof PyStr single) {
+                    slotName(names, held, single);
+                    continue;
+                }
+                PyObject expanded =
+                        Slots.call(
+                                PyRuntime.builtin("list"), new PyObject[] {declared}, null);
+                if (!(expanded instanceof PyList entries)) {
+                    continue;
+                }
+                for (int i = 0; i < entries.size(); i++) {
+                    slotName(names, held, entries.at(i));
+                }
+            }
+        }
+        try {
+            Slots.setAttr(kind, "__slotnames__", names);
+        } catch (PyRaise refused) {
+            // The reference swallows every failure here: a type that takes no attributes keeps no cache.
+        }
+        return names;
+    }
+
+    /** One entry of a {@code __slots__} declaration, after the two special names and the mangling. */
+    private static void slotName(PyList names, PyType held, PyObject name) {
+        if (name instanceof PyStr written) {
+            String text = written.getValue();
+            if (text.equals("__dict__") || text.equals("__weakref__")) {
+                return;
+            }
+            if (text.startsWith("__") && !text.endsWith("__")) {
+                String stripped = held.name().replaceAll("^_+", "");
+                if (!stripped.isEmpty()) {
+                    names.add(PyStr.interned("_" + stripped + text));
+                    return;
+                }
+            }
+            names.add(written);
+            return;
+        }
+        names.add(name);
+    }
+
+    /** {@code PyObject_GetOptionalAttr}: the member under {@code name}, or null when it is missing. */
+    private static PyObject optionalAttr(PyObject value, PyObject name) {
+        if (!(name instanceof PyStr written)) {
+            return null;
+        }
+        try {
+            return Slots.findAttr(value, written.getValue());
+        } catch (PyRaise refused) {
+            if (refused.value().exceptionType().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                return null;
+            }
+            throw refused;
+        }
     }
 
     /**
