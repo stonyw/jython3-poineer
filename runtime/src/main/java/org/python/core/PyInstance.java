@@ -236,8 +236,14 @@ public class PyInstance extends PyObject {
     }
 
     /**
-     * The walk without the hooks: a descriptor that writes, the instance dictionary, the class order, the
-     * dictionary a built-in base publishes, and {@code __class__}.
+     * The walk without the hooks: a descriptor that both writes and binds, the instance dictionary, the
+     * class order, the dictionary a built-in base publishes, and {@code __class__}.
+     *
+     * <p>A member that declares {@code __set__} but no {@code __get__} is data but has no getter, and
+     * CPython only lets the data half jump the queue when there is a getter to run — {@code f != NULL &&
+     * PyDescr_IsData(descr)}. So the instance dictionary is consulted first and the member is handed back
+     * only when the dictionary has nothing, which is what makes {@code test_set_and_no_get}'s 42 win over
+     * the descriptor that just wrote it.
      *
      * <p>Shared by the ordinary read and by {@code object.__getattribute__}, which differ only in what
      * they do with a name nothing holds — one asks {@code __getattr__}, the other raises.
@@ -250,7 +256,7 @@ public class PyInstance extends PyObject {
      */
     private PyObject genericLookup(String name) {
         PyObject member = Specials.lookUp(type, name);
-        if (member != null && Descriptors.writes(member)) {
+        if (member != null && Descriptors.writes(member) && Descriptors.binds(member)) {
             return Descriptors.get(member, this, type);
         }
         PyDict store = instanceDict();
@@ -507,6 +513,12 @@ public class PyInstance extends PyObject {
      * CPython's sequence iterator: it indexes from zero and stops at the first {@code IndexError}. A
      * class with only {@code __next__} is not iterable at all — it is an iterator-like thing that only
      * {@code next()} can drive. See {@link #declaredIterator}.
+     *
+     * <p>What counts is that the name is filed, not that its value is a function: CPython fills
+     * {@code sq_item} from the name's presence, so {@code __getitem__ = property(...)} still makes the
+     * class a sequence, and each index runs the property's getter — {@code test_properties} leans on
+     * exactly that. {@link Indexed} invokes through {@link Specials#invoke}, so the descriptor protocol
+     * runs there as it would for a plain function.
      */
     @Override
     public PyObject iterator() {
@@ -514,7 +526,7 @@ public class PyInstance extends PyObject {
         if (walking != Slots.DECLINED) {
             return walking;
         }
-        return Specials.function(type, "__getitem__") == null
+        return Specials.lookUp(type, "__getitem__") == null
                 ? Slots.DECLINED
                 : new Indexed();
     }

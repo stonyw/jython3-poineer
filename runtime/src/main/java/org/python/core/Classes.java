@@ -1364,9 +1364,16 @@ final class Classes {
         PyObject declared = Specials.lookUp(kind, "__new__");
         if (declared != null) {
             PyObject[] withClass = withSelf(args, kind);
-            return declared instanceof PyFunction creator
-                    ? creator.call(withClass, kwNames)
-                    : Slots.call(declared, withClass, kwNames);
+            // slot_tp_new reads the name with attribute access, so a classmethod is bound to the class
+            // before the class is prepended: the function then sees cls twice, exactly as CPython's
+            // `@classmethod __new__(cls, *args)` does. A plain function and a staticmethod both arrive
+            // unbound and take the class as their first positional argument.
+            PyObject creator = declared instanceof PyClassMethod
+                    ? Descriptors.get(declared, null, kind)
+                    : declared;
+            return creator instanceof PyFunction plain
+                    ? plain.call(withClass, kwNames)
+                    : Slots.call(creator, withClass, kwNames);
         }
         String[] names = PyBoundMethod.keywordNames(kwNames);
         if (kind.matches(PyType.TYPE)) {

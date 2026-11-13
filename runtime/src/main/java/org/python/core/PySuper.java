@@ -29,7 +29,7 @@ package org.python.core;
  * where one without reads {@code super}'s own four hundred and seventy-one characters. The walk gets those
  * first whenever there is an order to walk at all, and it reaches {@code object} from any class below it.
  */
-public final class PySuper extends PyObject {
+public final class PySuper extends PyObject implements Descriptors.Protocol {
 
     /** {@code super(C)}: the class is known, the value is not, and so no order can be walked. */
     static PySuper withoutValue(PyObject type) {
@@ -167,6 +167,24 @@ public final class PySuper extends PyObject {
         this.thisClass = built.thisClass;
         this.obj = built.obj;
         this.startType = built.startType;
+    }
+
+    /**
+     * {@code super_get}: the proxy is a descriptor too, which is how a valueless one stored on a class
+     * acquires the value it walks for.
+     *
+     * <p>{@code C.__super = super(C)} is the shape both {@code test_metaclass} and {@code test_supers}
+     * build: the name lives in the class dictionary, so an instance read has to hand the proxy the
+     * instance before it can answer. A proxy that already holds a value, or one read from the class
+     * itself, is handed back unchanged — CPython's {@code super_get} keeps the object in both cases,
+     * which is why {@code B.s is B().s} for a pre-bound proxy and {@code B.s is B.s} always.
+     */
+    @Override
+    public PyObject asAttribute(PyObject target, PyObject owner) {
+        if (target == null || obj != null || thisClass == null) {
+            return this;
+        }
+        return of(thisClass, target);
     }
 
     /** {@code __thisclass__}: the class to start at, or {@code None} while the proxy has no class either. */

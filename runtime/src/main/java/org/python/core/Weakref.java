@@ -56,8 +56,13 @@ final class Weakref {
 
     /** Whether CPython gives this kind of object a weak list. */
     static boolean isWeakrefable(PyObject value) {
-        return value instanceof PyInstance
-                || value instanceof PyType
+        if (value instanceof PyInstance instance) {
+            // A class that wrote its own __slots__ without '__weakref__' has no weak list to hand out,
+            // so test_weakrefs' NoWeak is refused rather than quietly referenced. A class with no
+            // __slots__ (or one that asked for the slot) answers a non-zero offset.
+            return TypeLayout.weakrefoffset(instance.getType()) != 0;
+        }
+        return value instanceof PyType
                 || value instanceof PyFunction
                 || value instanceof PyBoundMethod
                 || value instanceof PyBoundBuiltin

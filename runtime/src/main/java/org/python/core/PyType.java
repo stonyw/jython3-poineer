@@ -2155,6 +2155,11 @@ public class PyType extends PyObject {
      * {@code X.name} in CPython's {@code _Py_type_getattro_impl} order: a data descriptor of the
      * metatype owns the name, then this type and its bases, then the metatype's other members.
      *
+     * <p>A metatype member that writes without binding — {@code __set__} with no {@code __get__} — does
+     * not own the read: CPython asks only when it has a getter ({@code f != NULL && PyDescr_IsData}), so
+     * {@code test_set_and_no_get}'s {@code X.a = 42} outranks a metatype descriptor that could only
+     * write it.
+     *
      * <p>The middle step reads with no receiver and the last two with the class as the receiver, and that
      * difference is what a program sees. A class whose own order holds {@code type} — anything built by
      * {@code type}, and any metaclass — finds the member there and gets it back unbound, so
@@ -2168,7 +2173,7 @@ public class PyType extends PyObject {
      */
     final PyObject classMember(String attribute) {
         PyObject fromMeta = Specials.member(type, attribute);
-        if (fromMeta != null && Descriptors.writes(fromMeta)) {
+        if (fromMeta != null && Descriptors.writes(fromMeta) && Descriptors.binds(fromMeta)) {
             return Descriptors.get(fromMeta, this, type);
         }
         PyObject declared = Specials.member(this, attribute);

@@ -569,7 +569,8 @@ class Jy3LauncherTest {
                 "28_breakpoint.py",
                 "29_eval_exec_builtins.py",
                 "30_fstring_format.py",
-                "31_exception_cleanup.py");
+                "31_exception_cleanup.py",
+                "32_descriptor_protocol.py");
     }
 
     private static List<String> m3Corpus() {

@@ -8123,7 +8123,11 @@ final class TypeDict {
 
         @Override
         public long hash() {
-            return name.hashCode() * 31 + receiver.hash();
+            // Consonant with eq above, which compares the receiver by identity: the hash must not ask
+            // the receiver for its own, or `hash([].__add__)` would fail the way `hash([])` does.
+            // CPython's method-wrapper hashes the object rather than what it points at, which is what
+            // test_method_wrapper pins down when it hashes a list's __add__.
+            return name.hashCode() * 31L + System.identityHashCode(receiver);
         }
 
         @Override
