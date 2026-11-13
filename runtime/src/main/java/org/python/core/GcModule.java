@@ -154,7 +154,15 @@ final class GcModule {
         return module;
     }
 
-    /** {@code collect(generation=2)}: the JVM does the work, so the count of objects freed is zero. */
+    /**
+     * {@code collect(generation=2)}: the JVM does the work, so the count of objects freed is zero.
+     *
+     * <p>The request is passed on rather than swallowed, because the standard library's {@code
+     * test.support.gc_collect} asks three times and then reads a weak reference: without a collection
+     * the reference still answers, and a test that checks reclamation sees an object the interpreter has
+     * already dropped. A {@code System.gc()} is a hint to the JVM rather than a promise, but it is the
+     * only handle this runtime has on the heap.
+     */
     private static PyObject collect(PyObject[] args, String[] kwNames) {
         PyObject[] given = Arguments.fill("collect", args, kwNames,
                 new String[] {"generation"}, new PyObject[] {PyInt.of(2)});
@@ -163,6 +171,7 @@ final class GcModule {
             throw Slots.valueError(
                     "invalid collection generation: %d (must be in the range 0..2)", generation);
         }
+        System.gc();
         return PyInt.of(0);
     }
 
