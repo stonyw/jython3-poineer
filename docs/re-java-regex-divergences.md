@@ -1,4 +1,4 @@
-# `re` 以 `java.util.regex` 为后备的差异清单（M6-a 切片 11）
+# `re` 以 `java.util.regex` 为后备的差异清单（M6-a 切片 12）
 
 本运行时的 `re` 是参考 3.14 的纯 Python 解析器与编译器（`re/_parser.py`、`re/_compiler.py`），
 运行时只回答一件事：`_sre.compile`。[SreRegex.java](../runtime/src/main/java/org/python/core/SreRegex.java)
@@ -9,8 +9,10 @@
 
 - `embedding/src/test/resources/m6a/corpus/17_re_unicode_classes.py` —— 与参考 3.14.10 逐字节对拍，覆盖
   下面第 1–5 节里**已经对齐**的行为。
+- `embedding/src/test/resources/m6a/corpus/18_re_conditionals.py` —— 条件组与数字反向引用的逐字节
+  对照（见 6.2），同样由参考与本运行时同解。
 - `runtime/src/test/java/org/python/core/SreRegexDivergenceTest.java` —— 直接对翻译层钉住已对齐项，
-  并把第 7–8 节里**仍存**的差异当作现状固定下来，改翻译时先改这两个文件。
+  并把第 6 节里**仍存**的差异当作现状固定下来，改翻译时先改这两个文件。
 
 ---
 
@@ -73,6 +75,8 @@ Java 的 `Character.isWhitespace` 还会吞掉 U+001C..U+001F，那四个在 Pyt
 
 - `(?P<name>...)` → Java 的 `(?<gN>...)`；`(?P=name)` → `\k<gN>`；数字分组编号保持一一对应。
   `group("name")`、`groupdict()`、`expand(r"\g<name>")` 因此都与参考同解。
+- 为了让条件组的参与标记（6.2）不扰动编号，**所有** Python 捕获组都发成命名组 `(?<gN>`，
+  数字反向引用 `\1` 写成 `\k<g1>`，`Match`/`Pattern` 的组访问一律按名字取值。
 - `(?<name>...)` 是 Java 的合法写法、Python 的非法写法：`re._parser` 先报
   `PatternError: unknown extension ?<n at position 1`，不会进入翻译层。这是**方向相反**的一处：
   Java 接受而 Python 拒绝，本运行时跟随 Python。
@@ -87,7 +91,9 @@ Java 的 `Character.isWhitespace` 还会吞掉 U+001C..U+001F，那四个在 Pyt
   `groupdict`/`start`/`end`/`span`/`expand` 与 `Pattern.findall`/`finditer`/`sub`/`subn`/`split`
   的接口形状不变。
 
-## 6. 仍然存在的差异（具名，不假装一致）
+## 6. 差异清单（具名，不假装一致）
+
+6.2 已在本切片闭合，条目保留下来记录机制与回归入口。
 
 ### 6.1 空匹配与非空匹配相邻时的推进（Python 3.7+ 规则）
 
@@ -104,11 +110,24 @@ re.findall(r'\b|:+', 'a::bc')    # 参考 ['', '', '::', '', '']；本运行时 
 都与参考一致。要修这一处，需要改写 `PySrePattern` 的迭代器，让它在空匹配后于原地重试非空匹配；
 Java 的 `Matcher` 没有这个开关。
 
-### 6.2 条件组 `(?(id)yes|no)`
+### 6.2 条件组 `(?(id)yes|no)`：已对齐（切片 12 闭合）
 
-Python 支持条件组，Java 没有对应构造。`re._parser` 能接受，但翻译层没有实现，统一报
-`PatternError: unknown extension ?(`。`test_re` 的 `test_re_groupref_exists_validation_bug`
-（256 个 subTest）与 `test_re_groupref_exists` 因此整片未过。
+Python 支持条件组，Java 没有对应构造，翻译层把它改写成对「组 N 是否参与」的问询：
+
+- 若组 N 在条件之前就闭合，翻译层在组 N 的末尾插入一个空命名组 `(?<mkN>)`。Java 对**未参与**组的
+  反向引用恒失败，对**参与且捕获空串**的引用在任意位置成功，所以 `(?=\k<mkN>)` 恰好等价于
+  「组 N 参与过」。条件本身写成 `(?:(?=\k<mkN>)yes|(?!\k<mkN>)no)`。
+- 若条件嵌在它引用的组内部（组尚未闭合），CPython 只在组闭合时记录结束位置，该引用读作
+  「未参与」，故翻译为 `(?:(?!)yes|no)`（`(?!)` 恒失败）；yes 分支仍翻译，以保持组编号。
+- marker 会改变 Java 的组编号，因此所有 Python 捕获组改发为 `(?<gN>`，`\1` 写成 `\k<g1>`，
+  组访问一律按名字取值（见第 4 节）。
+- 数字反向引用最多两位：`\119` 是组 11 加字面 `9`，与 `re._parser` 的读法一致。
+
+回归：语料 `18_re_conditionals.py`（与参考 3.14.10 逐字节一致）与 `SreRegexDivergenceTest` 的
+`conditionalGroupsTestParticipation` / `conditionalMarkerKeepsThePythonGroupNumbers` /
+`numericBackReferencesTakeAtMostTwoDigits`。`test_re` 的
+`test_re_groupref_exists_validation_bug`（256 个 subTest）、`test_re_groupref_exists`、
+`test_symbolic_groups`、`test_bug_3629`、`test_debug_flag`、`test_lookahead` 随之离开错误簇。
 
 ### 6.3 回溯规模与栈深度
 

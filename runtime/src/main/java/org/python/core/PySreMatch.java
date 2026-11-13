@@ -102,8 +102,8 @@ final class PySreMatch extends PyObject {
                 regs[2 * i + 1] = -1;
                 continue;
             }
-            int start = matcher.start(i);
-            int end = matcher.end(i);
+            int start = i == 0 ? matcher.start() : matcher.start(SreRegex.groupName(i));
+            int end = i == 0 ? matcher.end() : matcher.end(SreRegex.groupName(i));
             regs[2 * i] = start < 0 ? -1 : string.codePointCount(0, start);
             regs[2 * i + 1] = end < 0 ? -1 : string.codePointCount(0, end);
         }

@@ -240,19 +240,19 @@ final class PySrePattern extends PyObject {
      * take part — the one place a group reads as {@code ''} rather than {@code None}.
      */
     private PyObject findallText(String text, Matcher matcher, int group) {
-        int start = matcher.start(group);
+        int start = matcher.start(SreRegex.groupName(group));
         if (start < 0) {
             return text("");
         }
-        return text(text.substring(start, matcher.end(group)));
+        return text(text.substring(start, matcher.end(SreRegex.groupName(group))));
     }
 
     private PyObject groupText(String text, Matcher matcher, int group) {
-        int start = matcher.start(group);
+        int start = matcher.start(SreRegex.groupName(group));
         if (start < 0) {
             return PyNone.INSTANCE;
         }
-        return text(text.substring(start, matcher.end(group)));
+        return text(text.substring(start, matcher.end(SreRegex.groupName(group))));
     }
 
     private PyObject finditer(PyObject[] args, String[] kwNames) {

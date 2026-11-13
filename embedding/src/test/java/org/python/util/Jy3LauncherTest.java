@@ -535,7 +535,8 @@ class Jy3LauncherTest {
                 "14_zlib_streams.py",
                 "15_hashlib_digests.py",
                 "16_array.py",
-                "17_re_unicode_classes.py");
+                "17_re_unicode_classes.py",
+                "18_re_conditionals.py");
     }
 
     /**

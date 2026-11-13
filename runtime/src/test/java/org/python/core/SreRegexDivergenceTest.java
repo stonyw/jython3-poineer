@@ -1,7 +1,6 @@
 package org.python.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.Map;
@@ -10,12 +9,13 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * The translation layer's measured answers, and the two differences that are still differences.
+ * The translation layer's measured answers, and the differences that are still differences.
  *
- * <p>The corpus script {@code m6a/corpus/17_re_unicode_classes.py} pins the same answers through the Python
- * surface; this file pins them at the seam, where a change to the spelling of a character class is visible
+ * <p>The corpus scripts {@code m6a/corpus/17_re_unicode_classes.py} and
+ * {@code m6a/corpus/18_re_conditionals.py} pin the same answers through the Python surface; this file pins
+ * them at the seam, where a change to the spelling of a character class or a group reference is visible
  * without an interpreter in the way. The divergences are in {@code docs/re-java-regex-divergences.md}; the
- * two pinned here are the ones a fix would have to come back and rewrite.
+ * one pinned here is the one a fix would have to come back and rewrite.
  */
 class SreRegexDivergenceTest {
 
@@ -105,11 +105,43 @@ class SreRegexDivergenceTest {
                 .matcher("ab").matches()).isTrue();
     }
 
+    /**
+     * {@code (?(id)yes|no)} is rewritten into a lookahead on an empty marker group written at the end of
+     * the group it tests: Java's backreference to a group that did not participate always fails, so
+     * {@code (?=\k<mkN>)} asks exactly "did group N take part".
+     */
     @Test
-    void conditionalGroupsAreStillRefused() {
-        assertThatThrownBy(() -> compile("(a)?(?(1)b|c)"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("unknown extension ?(");
+    void conditionalGroupsTestParticipation() {
+        assertThat(matches("(a)(?(1)b|c)", "ab")).isTrue();
+        assertThat(matches("(a)(?(1)b|c)", "c")).isFalse();
+        assertThat(matches("(a)?(?(1)b|c)", "c")).isTrue();
+        assertThat(matches("(a)?(?(1)b|c)", "b")).isFalse();
+        // The name map is what re._parser hands over, so a named condition resolves the same way.
+        assertThat(SreRegex.compile("(?P<x>a)(?(x)b|c)", 0, false, Map.of("x", 1))
+                .matcher("ab").find()).isTrue();
+        assertThat(SreRegex.compile("(?P<x>a)(?(x)b|c)", 0, false, Map.of("x", 1))
+                .matcher("c").find()).isFalse();
+        // A group that is still open has no end mark yet, so the reference reads it as absent.
+        assertThat(matches("((?(1)a|b))", "b")).isTrue();
+        assertThat(matches("((?(1)a|b))", "a")).isFalse();
+    }
+
+    @Test
+    void conditionalMarkerKeepsThePythonGroupNumbers() {
+        Matcher matcher = compile("(a)(?(1)b|c)(d)").matcher("abd");
+        assertThat(matcher.matches()).isTrue();
+        // Java sees g1, mk1, g2; the marker is invisible to Python's numbering.
+        assertThat(matcher.groupCount()).isEqualTo(3);
+        assertThat(matcher.group("g1")).isEqualTo("a");
+        assertThat(matcher.group("mk1")).isEmpty();
+        assertThat(matcher.group("g2")).isEqualTo("d");
+    }
+
+    @Test
+    void numericBackReferencesTakeAtMostTwoDigits() {
+        assertThat(matches("(a)(b)\\2\\1", "abba")).isTrue();
+        // `\119` is group 11 followed by a literal `9`, not group 119.
+        assertThat(matches("(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)\\119", "abcdefghijkk9")).isTrue();
     }
 
     /**

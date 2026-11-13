@@ -2,7 +2,10 @@ package org.python.core;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -96,6 +99,19 @@ final class SreRegex {
             "(?:(?<=[" + WORD_CHARS + "])(?=[" + WORD_CHARS + "])"
                     + "|(?<![" + WORD_CHARS + "])(?![" + WORD_CHARS + "]))";
 
+    /**
+     * The Java name this class gives Python's group {@code number}.
+     *
+     * <p>Every Python capturing group is emitted under a name rather than left to Java's own
+     * numbering, because a conditional group ({@code (?(id)yes|no)}) needs a second, empty group
+     * inside group {@code id} to ask whether it took part — and that marker would shift Java's
+     * numbers. The match object therefore reads its groups by name, and {@code \1} is re-spelled
+     * as {@code \k<g1>}.
+     */
+    static String groupName(int number) {
+        return "g" + number;
+    }
+
     /** The re-spelling itself: one pass, with the two scoped flags kept on a stack. */
     private static final class Translator {
 
@@ -103,6 +119,11 @@ final class SreRegex {
         private final Map<String, Integer> names;
         private final StringBuilder out = new StringBuilder();
         private final Deque<boolean[]> enclosing = new ArrayDeque<>();
+        /** The Python number of each open group, {@code 0} for a non-capturing one. */
+        private final Deque<Integer> openGroups = new ArrayDeque<>();
+        /** Groups a conditional asks about after they closed: each needs a participation marker. */
+        private final Set<Integer> conditionalGroups = new HashSet<>();
+        private int groupCount;
         private int at;
         private boolean dotAll;
         private boolean verbose;
@@ -118,48 +139,120 @@ final class SreRegex {
             this.dotAll = dotAll;
             this.multiline = multiline;
             this.verbose = verbose;
+            scanConditionals();
+        }
+
+        /**
+         * Note which groups a conditional asks about before the single pass starts.
+         *
+         * <p>A conditional usually names a group that has already closed, so the request for a
+         * participation marker arrives after the point where that marker has to be written. This
+         * scan only collects the numbers; whether the condition is live is decided during the
+         * translation, where the stack of open groups is at hand.
+         */
+        private void scanConditionals() {
+            int cursor = 0;
+            while (cursor < source.length()) {
+                char c = source.charAt(cursor);
+                if (c == '\\') {
+                    cursor += 2;
+                } else if (c == '[') {
+                    cursor = skipClass(cursor + 1);
+                } else if (source.startsWith("(?#", cursor)) {
+                    int close = source.indexOf(')', cursor);
+                    cursor = close < 0 ? source.length() : close + 1;
+                } else if (source.startsWith("(?(", cursor)) {
+                    int close = source.indexOf(')', cursor);
+                    if (close < 0) {
+                        return;
+                    }
+                    conditionalGroups.add(conditionNumber(source.substring(cursor + 3, close)));
+                    cursor = close + 1;
+                } else {
+                    cursor++;
+                }
+            }
+        }
+
+        private int skipClass(int cursor) {
+            if (cursor < source.length() && source.charAt(cursor) == '^') {
+                cursor++;
+            }
+            if (cursor < source.length() && source.charAt(cursor) == ']') {
+                cursor++;
+            }
+            while (cursor < source.length()) {
+                char c = source.charAt(cursor);
+                if (c == '\\') {
+                    cursor += 2;
+                } else if (c == ']') {
+                    return cursor + 1;
+                } else {
+                    cursor++;
+                }
+            }
+            return cursor;
         }
 
         String translate() {
+            body(-1);
+            return out.toString();
+        }
+
+        /**
+         * Translate until the end of the pattern, or — when {@code depth} is not negative — until a
+         * {@code |} or {@code )} that belongs to the group open at that depth. A conditional's two
+         * branches are the one caller that needs the early stop.
+         */
+        private void body(int depth) {
             while (at < source.length()) {
-                char c = source.charAt(at);
-                if (c == '\\') {
-                    backslash(false);
-                } else if (c == '[') {
-                    characterClass();
-                } else if (c == '(') {
-                    group();
-                } else if (c == ')') {
-                    closeGroup();
-                } else if (c == '.' && !dotAll) {
-                    out.append("[^\\n]");
-                    at++;
-                } else if (c == '.') {
-                    out.append("[\\s\\S]");
-                    at++;
-                } else if (c == '^') {
-                    out.append(multiline ? "(?:\\A|(?<=\\n))" : "\\A");
-                    at++;
-                } else if (c == '$') {
-                    out.append(multiline ? "(?:\\z|(?=\\n))" : "(?:\\z|(?=\\n\\z))");
-                    at++;
-                } else if (c == '{') {
-                    repetition();
-                } else if (c == '}') {
-                    out.append("\\}");
-                    at++;
-                } else if (verbose && isVerboseWhitespace(c)) {
-                    at++;
-                } else if (verbose && c == '#') {
-                    while (at < source.length() && source.charAt(at) != '\n') {
-                        at++;
+                if (depth >= 0 && openGroups.size() == depth) {
+                    char stop = source.charAt(at);
+                    if (stop == '|' || stop == ')') {
+                        return;
                     }
-                } else {
-                    out.append(c);
+                }
+                step();
+            }
+        }
+
+        private void step() {
+            char c = source.charAt(at);
+            if (c == '\\') {
+                backslash(false);
+            } else if (c == '[') {
+                characterClass();
+            } else if (c == '(') {
+                group();
+            } else if (c == ')') {
+                closeGroup();
+            } else if (c == '.' && !dotAll) {
+                out.append("[^\\n]");
+                at++;
+            } else if (c == '.') {
+                out.append("[\\s\\S]");
+                at++;
+            } else if (c == '^') {
+                out.append(multiline ? "(?:\\A|(?<=\\n))" : "\\A");
+                at++;
+            } else if (c == '$') {
+                out.append(multiline ? "(?:\\z|(?=\\n))" : "(?:\\z|(?=\\n\\z))");
+                at++;
+            } else if (c == '{') {
+                repetition();
+            } else if (c == '}') {
+                out.append("\\}");
+                at++;
+            } else if (verbose && isVerboseWhitespace(c)) {
+                at++;
+            } else if (verbose && c == '#') {
+                while (at < source.length() && source.charAt(at) != '\n') {
                     at++;
                 }
+            } else {
+                out.append(c);
+                at++;
             }
-            return out.toString();
         }
 
         /** One escape or backreference, copied or re-spelled as Java needs it. */
@@ -287,11 +380,16 @@ final class SreRegex {
                 return;
             }
             if (c >= '1' && c <= '9') {
-                out.append('\\');
-                while (at < source.length() && isDigit(source.charAt(at))) {
-                    out.append(source.charAt(at));
+                // A group reference goes by name, not by Java's number: a participation marker is an
+                // extra Java group and would shift every number after it. It is at most two digits —
+                // `_parser.py` reads only one more digit here, so `\119` is group 11 and a literal 9.
+                int value = c - '0';
+                at++;
+                if (at < source.length() && isDigit(source.charAt(at))) {
+                    value = value * 10 + (source.charAt(at) - '0');
                     at++;
                 }
+                out.append("\\k<").append(groupName(value)).append('>');
                 return;
             }
             if (c == '0') {
@@ -361,32 +459,36 @@ final class SreRegex {
         private void group() {
             int start = at;
             if (at + 1 >= source.length() || source.charAt(at + 1) != '?') {
-                enter();
-                out.append('(');
+                int number = ++groupCount;
+                enter(number);
+                out.append("(?<").append(groupName(number)).append('>');
                 at++;
                 return;
             }
             char kind = source.charAt(at + 2);
             switch (kind) {
                 case ':':
-                    enter();
+                    enter(0);
                     out.append("(?:");
                     at += 3;
                     return;
                 case '=':
-                    enter();
+                    enter(0);
                     out.append("(?=");
                     at += 3;
                     return;
                 case '!':
-                    enter();
+                    enter(0);
                     out.append("(?!");
                     at += 3;
                     return;
                 case '>':
-                    enter();
+                    enter(0);
                     out.append("(?>");
                     at += 3;
+                    return;
+                case '(':
+                    conditional(start);
                     return;
                 case '#':
                     // A comment group: nothing to emit, and its text is not scanned.
@@ -401,13 +503,13 @@ final class SreRegex {
                     return;
                 case '<':
                     if (at + 3 < source.length() && source.charAt(at + 3) == '=') {
-                        enter();
+                        enter(0);
                         out.append("(?<=");
                         at += 4;
                         return;
                     }
                     if (at + 3 < source.length() && source.charAt(at + 3) == '!') {
-                        enter();
+                        enter(0);
                         out.append("(?<!");
                         at += 4;
                         return;
@@ -441,8 +543,9 @@ final class SreRegex {
                 if (number == null) {
                     throw new IllegalArgumentException("unknown group name '" + name + "'");
                 }
-                enter();
-                out.append("(?<g").append(number).append('>');
+                groupCount = number;
+                enter(number);
+                out.append("(?<").append(groupName(number)).append('>');
                 at = close + 1;
                 return;
             }
@@ -472,12 +575,88 @@ final class SreRegex {
                 ascii = outer[2];
                 multiline = outer[3];
             }
+            int number = openGroups.isEmpty() ? 0 : openGroups.pop();
+            if (number > 0 && conditionalGroups.contains(number)) {
+                // An empty group at the very end of group `number`: it takes part exactly when that
+                // group did, and being zero-width it leaves the group's text alone.
+                participationMarker(number);
+            }
             out.append(')');
             at++;
         }
 
-        private void enter() {
+        private void participationMarker(int number) {
+            out.append("(?<mk").append(number).append(">)");
+        }
+
+        /**
+         * {@code (?(id)yes|no)}, which Java has no construct for.
+         *
+         * <p>The condition is spelled as a lookahead over an empty group placed inside the group
+         * being asked about (see {@link #participationMarker}): Java fails a backreference to a
+         * group that never took part, and succeeds on one that matched the empty string, so
+         * {@code (?=\k<mkN>)} is exactly "group N took part". A group that is still open reads as
+         * "did not take part" — CPython records a group's end mark only when it closes — so that
+         * case takes the {@code no} branch outright rather than needing a marker it cannot have.
+         */
+        private void conditional(int start) {
+            at += 3;
+            int from = at;
+            while (at < source.length() && source.charAt(at) != ')') {
+                at++;
+            }
+            if (at >= source.length()) {
+                throw new IllegalArgumentException(
+                        "missing ), unterminated subpattern at position " + start);
+            }
+            String id = source.substring(from, at);
+            at++;
+            int number = conditionNumber(id);
+            String test = "\\k<mk" + number + ">";
+            boolean taken = !openGroups.contains(number);
+            if (taken) {
+                conditionalGroups.add(number);
+            }
+            int depth = openGroups.size();
+            out.append("(?:");
+            if (taken) {
+                out.append("(?=").append(test).append(')');
+            } else {
+                // `(?!)` never matches, so the `yes` branch is skipped while its groups still get
+                // their Python numbers.
+                out.append("(?!)");
+            }
+            body(depth);
+            out.append('|');
+            if (taken) {
+                out.append("(?!").append(test).append(')');
+            }
+            if (at < source.length() && source.charAt(at) == '|') {
+                at++;
+                body(depth);
+            }
+            at++;
+            out.append(')');
+        }
+
+        private int conditionNumber(String id) {
+            boolean digits = !id.isEmpty();
+            for (int i = 0; i < id.length() && digits; i++) {
+                digits = isDigit(id.charAt(i));
+            }
+            if (digits) {
+                return Integer.parseInt(id);
+            }
+            Integer number = names.get(id);
+            if (number == null) {
+                throw new IllegalArgumentException("unknown group name '" + id + "'");
+            }
+            return number;
+        }
+
+        private void enter(int number) {
             enclosing.push(new boolean[] {dotAll, verbose, ascii, multiline});
+            openGroups.push(number);
         }
 
         /**
@@ -566,7 +745,7 @@ final class SreRegex {
                 at = cursor;
                 return;
             }
-            enter();
+            enter(0);
             dotAll = newDotAll;
             verbose = newVerbose;
             multiline = newMultiline;
