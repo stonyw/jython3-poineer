@@ -555,7 +555,8 @@ class Jy3LauncherTest {
                 "14_attribute_hooks.py",
                 "15_type_layout_fields.py",
                 "16_raw_unicode_escape_offsets.py",
-                "17_pickle_recipes_and_slot_dispatch.py");
+                "17_pickle_recipes_and_slot_dispatch.py",
+                "18_datetime.py");
     }
 
     private static List<String> m3Corpus() {

@@ -43,8 +43,8 @@ public final class PyRuntime {
      * extension modules, which are imports this runtime answers in Java instead.
      */
     private static final String[] BUILTIN_MODULE_NAMES =
-            {"builtins", "sys", "_ast", "_io", "_tokenize", "_opcode", "_signal", "_string", "_types",
-                "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
+            {"builtins", "sys", "_ast", "_datetime", "_io", "_tokenize", "_opcode", "_signal",
+                "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections",
                 "unicodedata", "resource", "_typing"};
 
@@ -582,6 +582,11 @@ public final class PyRuntime {
         // builds it, and every later one reads the mapping like any other module.
         if (dotted.equals("_ast")) {
             return cached(AstModule.install(), dotted);
+        }
+        // `_datetime` is in the same position and for the same reason: its six types are written in
+        // Python and compiled on first import, and `datetime.py` imports it from module scope.
+        if (dotted.equals("_datetime")) {
+            return cached(DatetimeModule.install(), dotted);
         }
         int dot = dotted.lastIndexOf('.');
         if (dot <= 0) {
@@ -1418,6 +1423,7 @@ public final class PyRuntime {
                         PyStr.of("builtins"),
                         PyStr.of("sys"),
                         PyStr.of("_ast"),
+                        PyStr.of("_datetime"),
                         PyStr.of("_io"),
                         PyStr.of("_tokenize"),
                         PyStr.of("_opcode"),
