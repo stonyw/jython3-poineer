@@ -784,10 +784,34 @@ public final class Interpreter {
                     }
                     case Opcodes.GET_AWAITABLE:
                         // The awaitable is replaced by the iterator a SEND loop drives. A coroutine is
-                        // already one, an exact generator is only one when it was made that way, and
-                        // everything else declares `__await__` — whose absence is the refusal.
-                        frame.push(awaitable(frame.pop()));
+                        // already one, a generator is one without saying so, and everything else
+                        // declares `__await__` — whose absence is the refusal.
+                        frame.push(awaitable(frame.pop(), arg));
                         break;
+                    case Opcodes.GET_AITER:
+                        // `async for` asks for the iterator once, and the answer is kept as it stands:
+                        // the two tests are the reference's, and the second one is why a bad
+                        // `__aiter__` is reported at this instruction rather than at the first step.
+                        frame.push(asyncIterator(frame.pop()));
+                        break;
+                    case Opcodes.GET_ANEXT:
+                        // The iterator stays where it is and the awaitable goes on top of it, so the
+                        // `SEND` loop that follows can replace the awaitable with what it answers
+                        // without losing the iterator the next turn asks again.
+                        frame.push(asyncNext(frame.peek(0)));
+                        break;
+                    case Opcodes.END_ASYNC_FOR: {
+                        // The landing place of the exception the `SEND` loop's awaitable raises when
+                        // the iteration is over: the exit under the exception is the value the waiting
+                        // frame reads, and anything else is not an end at all.
+                        PyObject thrown = frame.pop();
+                        frame.pop();
+                        if (!(thrown instanceof PyBaseException error)
+                                || !error.matches(ExceptionTypes.STOP_ASYNC_ITERATION)) {
+                            throw PyRaise.reraise((PyBaseException) thrown);
+                        }
+                        break;
+                    }
                     case Opcodes.YIELD_VALUE: {
                         // The argument is the whole of the difference between a yield and a delegation's:
                         // the same park, with the iterator left on the stack under the value that goes out.
@@ -1156,19 +1180,27 @@ public final class Interpreter {
      * <p>This is CPython's {@code _PyEval_GetAwaitable}. A coroutine is its own awaitable — the wrapper a
      * program gets from {@code __await__} is only made when one is asked for — but one that is already
      * standing on a delegation cannot be awaited a second time, and says so rather than being stepped
-     * twice. Everything else has to name an {@code __await__}, and what it answers with has to be an
-     * iterator: a coroutine there is the mistake PEP 492 spells out, and a non-iterator is the other.
+     * twice. A generator is its own awaitable too, which generators became without a visible
+     * {@code __await__} — {@code await async_yield(None)} is the shape the standard library uses to make
+     * a generator into a suspension. The two objects an async generator hands out are the same: their
+     * {@code __await__} is themselves, and stepping them is what {@code send} does.
      *
-     * <p>The argument {@code GET_AWAITABLE} carries distinguishes the {@code async with} spellings and is
-     * unused here, because those opcodes are not reached: the rejection this runtime gives is the plain
-     * {@code await} one.
+     * <p>Everything else has to name an {@code __await__}, and what it answers with has to be an
+     * iterator: a coroutine there is the mistake PEP 492 spells out, and a non-iterator is the other.
+     * The argument {@code GET_AWAITABLE} carries says which half of an {@code async with} made the
+     * question, which is the whole of the difference in what a type without {@code __await__} is told.
      */
-    private static PyObject awaitable(PyObject value) {
+    private static PyObject awaitable(PyObject value, int arg) {
         if (value instanceof PyCoroutine coroutine) {
             if (coroutine.awaitingDelegate()) {
                 throw Slots.runtimeError("coroutine is being awaited already");
             }
             return coroutine;
+        }
+        if (value instanceof PyGenerator
+                || value instanceof PyAsyncGenASend
+                || value instanceof PyAsyncGenAThrow) {
+            return value;
         }
         PyObject getter;
         try {
@@ -1176,6 +1208,18 @@ public final class Interpreter {
         } catch (PyRaise missing) {
             if (!missing.value().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
                 throw missing;
+            }
+            if (arg == 1) {
+                throw Slots.typeError(
+                        "'async with' received an object from __aenter__ that does not implement"
+                                + " __await__: %s",
+                        value.getType().name());
+            }
+            if (arg == 2) {
+                throw Slots.typeError(
+                        "'async with' received an object from __aexit__ that does not implement"
+                                + " __await__: %s",
+                        value.getType().name());
             }
             throw Slots.typeError("'%s' object can't be awaited", value.getType().name());
         }
@@ -1189,6 +1233,71 @@ public final class Interpreter {
                     awaitable.getType().name());
         }
         return awaitable;
+    }
+
+    /**
+     * {@code GET_AITER}: the {@code __aiter__} call, with the two refusals the reference words itself.
+     *
+     * <p>The result is kept as it stands — not wrapped — because {@code GET_ANEXT} asks <em>that</em>
+     * object for every item. The second check is what makes a bad {@code __aiter__} fail at the loop
+     * rather than at its first turn.
+     */
+    private static PyObject asyncIterator(PyObject value) {
+        PyObject getter;
+        try {
+            getter = Slots.getAttr(value, "__aiter__");
+        } catch (PyRaise missing) {
+            if (!missing.value().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                throw missing;
+            }
+            throw Slots.typeError(
+                    "'async for' requires an object with __aiter__ method, got %s",
+                    value.getType().filedName());
+        }
+        PyObject iterator = Slots.call(getter, new PyObject[0], null);
+        try {
+            Slots.getAttr(iterator, "__anext__");
+        } catch (PyRaise missing) {
+            if (!missing.value().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                throw missing;
+            }
+            throw Slots.typeError(
+                    "'async for' received an object from __aiter__ that does not implement"
+                            + " __anext__: %s",
+                    iterator.getType().filedName());
+        }
+        return iterator;
+    }
+
+    /**
+     * {@code GET_ANEXT}: {@code __anext__()} and then the awaitable that call's answer is.
+     *
+     * <p>The awaitable is what goes on the stack, because the {@code SEND} loop that follows drives it
+     * — an {@code async_generator_asend} for an async generator, a coroutine for an {@code async def}.
+     */
+    private static PyObject asyncNext(PyObject iterator) {
+        PyObject getter;
+        try {
+            getter = Slots.getAttr(iterator, "__anext__");
+        } catch (PyRaise missing) {
+            if (!missing.value().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                throw missing;
+            }
+            throw Slots.typeError(
+                    "'async for' requires an iterator with __anext__ method, got %s",
+                    iterator.getType().filedName());
+        }
+        PyObject next = Slots.call(getter, new PyObject[0], null);
+        try {
+            return awaitable(next, 0);
+        } catch (PyRaise invalid) {
+            if (!invalid.value().matches(ExceptionTypes.TYPE_ERROR)) {
+                throw invalid;
+            }
+            throw Slots.typeError(
+                    "'async for' received an invalid object from __anext__: %s",
+                    next.getType().filedName());
+        }
     }
 
     private static PyRaise notCovered(int opcode, int arg) {
@@ -1614,6 +1723,10 @@ public final class Interpreter {
                 }
                 return PyNone.INSTANCE;
             }
+            case 4:
+                // `async_gen_wrap`: a yield in an `async def` body is wrapped before it leaves the
+                // frame, so the awaitable that receives it can tell a yielded value from a return.
+                return new PyAsyncGenWrapped(frame.pop());
             case 5:
                 return Slots.unary(UnaryOp.POSITIVE, frame.pop());
             case 6: {
@@ -1634,15 +1747,33 @@ public final class Interpreter {
                 // that puts the error in flight — which is what gives the report the generator's own frame
                 // exactly once, and the offset the body failed at.
                 PyObject value = frame.pop();
-                if (!(value instanceof PyBaseException error)
-                        || !error.matches(ExceptionTypes.STOP_ITERATION)) {
+                if (!(value instanceof PyBaseException error)) {
+                    return value;
+                }
+                int flags = frame.code().flags();
+                String message = null;
+                if (error.matches(ExceptionTypes.STOP_ITERATION)) {
+                    // The same wrap for all three bodies, and the name in it comes from the code object
+                    // rather than from the object that owns the frame: an async generator is not spelled
+                    // "generator" even though the engine behind it is one.
+                    message = "generator raised StopIteration";
+                    if ((flags & PyCode.CO_ASYNC_GENERATOR) != 0) {
+                        message = "async generator raised StopIteration";
+                    } else if ((flags & PyCode.CO_COROUTINE) != 0) {
+                        message = "coroutine raised StopIteration";
+                    }
+                } else if ((flags & PyCode.CO_ASYNC_GENERATOR) != 0
+                        && error.matches(ExceptionTypes.STOP_ASYNC_ITERATION)) {
+                    message = "async generator raised StopAsyncIteration";
+                }
+                if (message == null) {
                     // Any other exception travels out of the body as it came, unchanged and unchained.
                     return value;
                 }
                 PyObject rebuilt =
                         Slots.call(
                                 ExceptionTypes.RUNTIME_ERROR,
-                                new PyObject[] {PyStr.of("generator raised StopIteration")},
+                                new PyObject[] {PyStr.of(message)},
                                 null);
                 PyBaseException error2 = (PyBaseException) rebuilt;
                 // The same exception in both chain fields: the `raise from` that a person writes is not

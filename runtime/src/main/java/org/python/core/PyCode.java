@@ -42,6 +42,14 @@ public interface PyCode {
     /** {@code CO_ASYNC_GENERATOR}: an {@code async def} body with a yield in it. */
     int CO_ASYNC_GENERATOR = 0x200;
 
+    /**
+     * {@code CO_HAS_DOCSTRING}: the first entry of {@code co_consts} is this body's docstring.
+     *
+     * <p>Without it a leading string is an ordinary constant — a module's {@code __doc__} is assigned
+     * by a {@code STORE_NAME}, not read out of the consts by whoever makes a function from its body.
+     */
+    int CO_HAS_DOCSTRING = 0x4000000;
+
     String fileName();
 
     String name();

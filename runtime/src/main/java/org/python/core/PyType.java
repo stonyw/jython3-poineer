@@ -929,6 +929,18 @@ public class PyType extends PyObject {
 
     public static final PyType ASYNC_GENERATOR = builtin("async_generator").withoutNew();
 
+    /**
+     * The two awaitables an async generator hands out: {@code asend}/{@code __anext__} answer with the
+     * first, and {@code athrow}/{@code aclose} with the second. Neither is in builtins, and neither can
+     * be made by a call — {@code type(agen.__anext__())} is the only way a program names one.
+     */
+    public static final PyType ASYNC_GENERATOR_ASEND =
+            builtin("async_generator_asend").withoutNew();
+
+    public static final PyType ASYNC_GENERATOR_ATHROW =
+            builtin("async_generator_athrow").withoutNew();
+
+
     public static final PyType CAPSULE = builtin("PyCapsule").documented(CAPSULE_DOC).withoutNew();
 
     public static final PyType COROUTINE = builtin("coroutine").withoutNew();

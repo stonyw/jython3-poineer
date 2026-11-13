@@ -55,14 +55,19 @@ public final class PyGenerator extends PyIterator {
      * {@code __await__}, and the two objects that own coroutines add those on top of this engine.
      */
     enum Kind {
-        GENERATOR("generator"),
-        COROUTINE("coroutine"),
-        ASYNC_GENERATOR("async_generator");
+        GENERATOR("generator", "generator"),
+        COROUTINE("coroutine", "coroutine"),
+        ASYNC_GENERATOR("async_generator", "async generator");
 
+        /** The name in a representation, which for an async generator keeps the underscore. */
         final String word;
 
-        Kind(String word) {
+        /** The same name in a sentence, where CPython writes the two words apart. */
+        final String speech;
+
+        Kind(String word, String speech) {
             this.word = word;
+            this.speech = speech;
         }
     }
 
@@ -183,10 +188,10 @@ public final class PyGenerator extends PyIterator {
         if (state == State.CREATED && arg != null && arg != PyNone.INSTANCE) {
             // Before the frame is entered, so none of the refusal shows in it.
             throw Slots.typeError(
-                    "can't send non-None value to a just-started " + kind.word);
+                    "can't send non-None value to a just-started " + kind.speech);
         }
         if (state == State.EXECUTING) {
-            throw Slots.valueError(kind.word + " already executing");
+            throw Slots.valueError(kind.speech + " already executing");
         }
         if (state == State.COMPLETED) {
             // There is no frame to enter, and CPython answers three ways depending on who asked.
@@ -246,6 +251,27 @@ public final class PyGenerator extends PyIterator {
     @Override
     public PyObject nextOrNull() {
         return step(null, null);
+    }
+
+    /**
+     * One step as {@code async_gen_asend_send} asks it: the yielded value, or null when the body
+     * returned.
+     *
+     * <p>An async generator's step is driven through an awaitable rather than asked directly, so the
+     * exception the end of a generator is worth is not made here — {@code asend} makes the
+     * {@code StopAsyncIteration} instead, and a yield becomes the {@code StopIteration} that says the
+     * await is over.
+     */
+    PyObject stepForAwait(PyObject argument) {
+        return step(argument, null);
+    }
+
+    /**
+     * {@code _gen_throw} as {@code async_gen_athrow_send} asks it: the raw yielded value, or null when
+     * the body returned, with the {@code StopIteration} the caller would make left to the caller.
+     */
+    PyObject throwForAwait(PyObject type, PyObject value, PyObject trace) {
+        return thrown(type, value, trace);
     }
 
     /** {@code gen.send(value)}, which is the one entry point that takes a returned value as an error. */
@@ -346,7 +372,7 @@ public final class PyGenerator extends PyIterator {
             throw escaped;
         }
         if (yielded != null) {
-            throw Slots.runtimeError(kind.word + " ignored GeneratorExit");
+            throw Slots.runtimeError(kind.speech + " ignored GeneratorExit");
         }
         // A body that answered the exit with a return: gen_send_ex raises that as a StopIteration and
         // _PyGen_FetchStopIterationValue takes the value back out of it, so close() answers with a value

@@ -84,11 +84,107 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
         this.name = PyStr.of(code.name());
         this.qualName = code.qualName() == null ? name : PyStr.of(code.qualName());
         this.module = globals.get(PyStr.interned("__name__"));
-        this.doc = docstringOf(code.constants());
+        this.doc = docstringOf(code);
     }
 
-    /** A leading string in {@code co_consts} is the docstring; anything else means there is none. */
-    private static PyObject docstringOf(PyTuple constants) {
+    /**
+     * The six parameter names {@code func_new_impl} is declared with, in the order the clinic lists
+     * them. {@code name} is still a parameter in 3.14 even though the compiler stopped passing one.
+     */
+    private static final String[] CONSTRUCTOR_PARAMETERS = {
+        "code", "globals", "name", "argdefs", "closure", "kwdefaults"
+    };
+
+    /**
+     * {@code function(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None)}: the
+     * constructor behind {@code types.FunctionType}, which is how a code object cut loose from the
+     * function that compiled it is put back together.
+     *
+     * <p>Every check is an ordinary argument check plus the one structural one: a closure tuple has to
+     * match the code object's free variables one for one, because the frame this function will run
+     * addresses those cells by their positions in {@code co_freevars}. The refusals are CPython's
+     * own — including the {@code ValueError} that names the code object by its qualname rather than
+     * counting the cells in the sentence.
+     */
+    static PyObject called(PyObject[] args, String[] keywordNames) {
+        PyObject[] values =
+                Arguments.unpackKeywords(
+                        "function", args, keywordNames, CONSTRUCTOR_PARAMETERS, 2, 6);
+        if (!(values[0] instanceof PyCode made)) {
+            throw Slots.typeError(
+                    "function() argument 'code' must be code, not %s",
+                    values[0].getType().name());
+        }
+        if (!(values[1] instanceof PyDict namespace)) {
+            throw Slots.typeError(
+                    "function() argument 'globals' must be dict, not %s",
+                    values[1].getType().name());
+        }
+        PyObject given = values[2];
+        if (given != null && given != PyNone.INSTANCE && !(given instanceof PyStr)) {
+            throw Slots.typeError("arg 3 (name) must be None or string");
+        }
+        PyObject defaults = values[3];
+        if (defaults != null && defaults != PyNone.INSTANCE && !(defaults instanceof PyTuple)) {
+            throw Slots.typeError("arg 4 (defaults) must be None or tuple");
+        }
+        PyCell[] cells = new PyCell[0];
+        PyObject closure = values[4];
+        if (closure != null && closure != PyNone.INSTANCE) {
+            if (!(closure instanceof PyTuple items)) {
+                throw Slots.typeError("arg 5 (closure) must be None or tuple");
+            }
+            int free = made.freeVars().size();
+            if (items.size() != free) {
+                throw Slots.valueError(
+                        "%s requires closure of length %d, not %d",
+                        made.qualName() == null ? made.name() : made.qualName(),
+                        free,
+                        items.size());
+            }
+            cells = new PyCell[items.size()];
+            for (int i = 0; i < cells.length; i++) {
+                if (!(items.at(i) instanceof PyCell cell)) {
+                    throw Slots.typeError(
+                            "arg 5 (closure) expected cell, found %s",
+                            items.at(i).getType().name());
+                }
+                cells[i] = cell;
+            }
+        }
+        PyObject keywordDefaults = values[5];
+        if (keywordDefaults != null
+                && keywordDefaults != PyNone.INSTANCE
+                && !(keywordDefaults instanceof PyDict)) {
+            throw Slots.typeError("arg 6 (kwdefaults) must be None or dict");
+        }
+        PyFunction function = new PyFunction(made, namespace);
+        if (given != null && given != PyNone.INSTANCE) {
+            function.name = given;
+        }
+        if (defaults instanceof PyTuple items) {
+            function.defaults = items.getArray();
+        }
+        function.closure = cells;
+        if (keywordDefaults instanceof PyDict map) {
+            function.kwDefaults = map;
+        }
+        return function;
+    }
+
+    /**
+     * The docstring, which 3.14 stores in the code object and marks with a flag.
+     *
+     * <p>{@code CO_HAS_DOCSTRING} is what makes the first entry of {@code co_consts} a docstring
+     * rather than a string the body happens to use: a module compiled with a leading string carries
+     * that string for {@code __doc__} to be bound to, and a function built from such a code object
+     * must still read {@code None}.
+     */
+    private static PyObject docstringOf(PyCode code) {
+        if ((code.flags() & PyCode.CO_HAS_DOCSTRING) == 0) {
+            return PyNone.INSTANCE;
+        }
+        PyTuple constants = code.constants();
         if (constants.size() == 0) {
             return PyNone.INSTANCE;
         }
