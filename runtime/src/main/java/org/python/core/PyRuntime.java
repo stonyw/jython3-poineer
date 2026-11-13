@@ -45,7 +45,8 @@ public final class PyRuntime {
     private static final String[] BUILTIN_MODULE_NAMES =
             {"builtins", "sys", "_ast", "_datetime", "_socket", "_io", "_tokenize", "_opcode", "_signal",
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
-                "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections",
+                "_struct", "binascii", "zlib", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
+                "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
@@ -252,6 +253,11 @@ public final class PyRuntime {
         PyModule typingModule = TypingModule.newModule();
         PyModule structModule = StructModule.newModule();
         PyModule binasciiModule = BinasciiModule.newModule();
+        // The two compression/hash extension modules the standard library writes against: `zipfile`
+        // and `shutil` reach `zlib` directly, and `hashlib.py` is a wrapper that needs `_hashlib`
+        // plus the four constructor families it can fall back to.
+        PyModule zlibModule = ZlibModule.newModule();
+        PyModule[] hashlibModules = HashlibModule.newModules();
         PyModule errnoModule = ErrnoModule.newModule();
         PyModule codecsModule = CodecsModule.newModule();
         PyModule mathModule = MathModule.newModule();
@@ -305,6 +311,10 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_typing"), typingModule);
         modules.put(PyStr.interned("_struct"), structModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
+        modules.put(PyStr.interned("zlib"), zlibModule);
+        for (PyModule hashlibModule : hashlibModules) {
+            modules.put(PyStr.interned(((PyStr) hashlibModule.get("__name__")).getValue()), hashlibModule);
+        }
         modules.put(PyStr.interned("errno"), errnoModule);
         modules.put(PyStr.interned("_codecs"), codecsModule);
         modules.put(PyStr.interned("math"), mathModule);
@@ -366,6 +376,10 @@ public final class PyRuntime {
         belongTo(typingModule);
         belongTo(structModule);
         belongTo(binasciiModule);
+        belongTo(zlibModule);
+        for (PyModule hashlibModule : hashlibModules) {
+            belongTo(hashlibModule);
+        }
         belongTo(errnoModule);
         belongTo(codecsModule);
         belongTo(mathModule);

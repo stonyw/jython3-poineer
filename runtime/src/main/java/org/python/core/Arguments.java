@@ -454,8 +454,8 @@ final class Arguments {
     static void atMostQualified(String qualified, PyObject[] args, String[] kwNames, int limit) {
         if (count(args, kwNames) > limit) {
             throw Slots.typeError(
-                    "%s() takes at most %d arguments (%d given)",
-                    qualified, limit, count(args, kwNames));
+                    "%s() takes at most %d argument%s (%d given)",
+                    qualified, limit, limit == 1 ? "" : "s", count(args, kwNames));
         }
     }
 

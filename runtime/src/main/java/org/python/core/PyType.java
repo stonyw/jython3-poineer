@@ -1668,6 +1668,32 @@ public class PyType extends PyObject {
      */
     public static final PyType NO_DEFAULT_TYPE = builtin("NoDefaultType");
 
+    /** {@code zlib.Compress}: the state a program feeds through {@code compressobj}. */
+    public static final PyType ZLIB_COMPRESS =
+            builtin("Compress").filedUnder("zlib.Compress").withoutNew();
+
+    /** {@code zlib.Decompress}: the state a program feeds through {@code decompressobj}. */
+    public static final PyType ZLIB_DECOMPRESS =
+            builtin("Decompress").filedUnder("zlib.Decompress").withoutNew();
+
+    /** {@code _hashlib.HASH}: a fixed-length digest object. */
+    public static final PyType HASH = builtin("HASH").filedUnder("_hashlib.HASH").withoutNew();
+
+    /** {@code _hashlib.HASHXOF}: a digest object whose length the caller chooses. */
+    public static final PyType HASHXOF =
+            builtin("HASHXOF").filedUnder("_hashlib.HASHXOF").withoutNew();
+
+    /** {@code _hashlib.HMAC}: the keyed digest {@code hmac.new} wraps. */
+    public static final PyType HMAC = builtin("HMAC").filedUnder("_hashlib.HMAC").withoutNew();
+
+    /** {@code _blake2.blake2b}: the 64-bit BLAKE2 value type. */
+    public static final PyType BLAKE2B =
+            builtin("blake2b").filedUnder("_blake2.blake2b").withoutNew();
+
+    /** {@code _blake2.blake2s}: the 32-bit BLAKE2 value type. */
+    public static final PyType BLAKE2S =
+            builtin("blake2s").filedUnder("_blake2.blake2s").withoutNew();
+
     /**
      * The name this type is written down with, which is CPython's {@code tp_name}.
      *

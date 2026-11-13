@@ -522,7 +522,9 @@ class Jy3LauncherTest {
                 "10_compile_modes_and_optimize.py",
                 "11_testinternalcapi_probes.py",
                 "12_compile_ast_inputs.py",
-                "13_async_top_level_await.py");
+                "13_async_top_level_await.py",
+                "14_zlib_streams.py",
+                "15_hashlib_digests.py");
     }
 
     /**

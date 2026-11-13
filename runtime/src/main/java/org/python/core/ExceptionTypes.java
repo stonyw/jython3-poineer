@@ -262,6 +262,13 @@ public final class ExceptionTypes {
     public static final PyType BINASCII_INCOMPLETE =
             child("Incomplete", EXCEPTION).filedUnder("binascii.Incomplete");
 
+    /** {@code zlib.error}: the one failure the compression module raises. */
+    public static final PyType ZLIB_ERROR = child("error", EXCEPTION).filedUnder("zlib.error");
+
+    /** {@code _hashlib.UnsupportedDigestmodError}: {@code hmac} names an unknown digest. */
+    public static final PyType UNSUPPORTED_DIGESTMOD_ERROR =
+            child("UnsupportedDigestmodError", VALUE_ERROR).filedUnder("_hashlib.UnsupportedDigestmodError");
+
     /** {@code socket.gaierror}: the address lookup family, filed under {@code socket} beside the module. */
     public static final PyType GAI_ERROR = child("gaierror", OS_ERROR).filedUnder("socket.gaierror");
 
