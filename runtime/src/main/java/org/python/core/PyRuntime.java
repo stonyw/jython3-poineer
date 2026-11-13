@@ -1220,16 +1220,91 @@ public final class PyRuntime {
      * @param mode the {@code ast.parse} mode: {@code exec}, {@code eval}, {@code single} or
      *     {@code func_type}
      */
-    static PyObject parseAst(String source, String fileName, String mode) {
-        if (sourceCompiler == null) {
-            throw Slots.notImplemented("ast needs a compiler (setSourceCompiler)");
-        }
-        String text;
+    static PyObject parseAst(
+            String source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        requireCompiler("ast needs a compiler (setSourceCompiler)");
         try {
-            text = sourceCompiler.parseAst(source, fileName, mode);
+            return evaluateAst(sourceCompiler.parseAst(
+                    source, fileName, mode, flags,
+                    optimize == -1 ? optimizeLevel() : optimize, featureVersion));
         } catch (SourceRefused refused) {
             throw refused.python();
         }
+    }
+
+    /** Parse bytes into an {@code _ast} tree, the encoding declaration deciding how they read. */
+    static PyObject parseAstBytes(
+            byte[] source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        requireCompiler("ast needs a compiler (setSourceCompiler)");
+        try {
+            return evaluateAst(sourceCompiler.parseAstBytes(
+                    source, fileName, mode, flags,
+                    optimize == -1 ? optimizeLevel() : optimize, featureVersion));
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
+    }
+
+    /**
+     * Compile a tree of {@code _ast} nodes into a code object.
+     *
+     * <p>The tree is written back as constructor text and handed to the reference, which rebuilds its
+     * own nodes and applies its own checks: a missing field, a wrong root kind for the mode, a bad
+     * position or a non-node where a node belongs is refused there, with the sentence CPython uses.
+     */
+    static PyCode compileAst(
+            PyObject tree,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        requireCompiler("ast needs a compiler (setSourceCompiler)");
+        try {
+            return sourceCompiler.compileAst(
+                    AstSource.write(tree), fileName, mode, flags,
+                    optimize == -1 ? optimizeLevel() : optimize, featureVersion);
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
+    }
+
+    /** Validate a tree and hand back the normalized one, for an AST answer from {@code compile()}. */
+    static PyObject rebuildAst(
+            PyObject tree,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        requireCompiler("ast needs a compiler (setSourceCompiler)");
+        try {
+            return evaluateAst(sourceCompiler.rebuildAst(
+                    AstSource.write(tree), fileName, mode, flags,
+                    optimize == -1 ? optimizeLevel() : optimize, featureVersion));
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
+    }
+
+    private static void requireCompiler(String what) {
+        if (sourceCompiler == null) {
+            throw Slots.notImplemented(what);
+        }
+    }
+
+    /** Run a constructor expression against the {@code _ast} node classes it names. */
+    private static PyObject evaluateAst(String text) {
         PyModule ast = (PyModule) importModule("_ast");
         PyDict globals = ast.dictionary();
         return runIn(compileExpression(text, "<ast>"), globals, globals);

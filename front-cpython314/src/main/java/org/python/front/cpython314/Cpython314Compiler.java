@@ -72,59 +72,110 @@ public final class Cpython314Compiler {
                     % (sys.executable, *sys.version_info[:2]))
                 raise SystemExit(64)
 
+            import ast
+
+            # A constructor expression for the tree, carrying every field the parser set --
+            # including the optional ones it left as None.  `ast.dump` drops those None fields,
+            # and a rebuilt _ast node never puts a dropped field back, so the round trip needs
+            # its own writer rather than dump's readable form.  Positions come last, in the
+            # order `_attributes` names them.
+            #
+            # `inf` and `nan` have no Python literal, so those two doubles get an arithmetic
+            # stand-in; every other float is `repr`-safe.
+            def write_float(value):
+                if value != value:
+                    return "(1e999-1e999)"
+                if value == float("inf"):
+                    return "1e999"
+                if value == float("-inf"):
+                    return "-1e999"
+                return repr(value)
+
+            def write(node):
+                if isinstance(node, ast.AST):
+                    parts = []
+                    for name in node._fields:
+                        try:
+                            value = getattr(node, name)
+                        except AttributeError:
+                            continue
+                        parts.append("%s=%s" % (name, write(value)))
+                    for name in node._attributes:
+                        try:
+                            value = getattr(node, name)
+                        except AttributeError:
+                            continue
+                        parts.append("%s=%s" % (name, write(value)))
+                    return "%s(%s)" % (type(node).__name__, ", ".join(parts))
+                if isinstance(node, list):
+                    return "[%s]" % ", ".join(write(item) for item in node)
+                if isinstance(node, float):
+                    return write_float(node)
+                return repr(node)
+
+            # The runtime writes a tree it holds with these five helpers.  An unknown node class
+            # keeps its name and the nearest base the reference knows, so a report about it names
+            # the class the user wrote; a value that is not an AST node at all becomes an object
+            # whose class carries the same name, and compile() then refuses it in its own words.
+            def _jy3_node(name, base, fields):
+                node = type(name, (base,), {})()
+                for key, value in fields.items():
+                    setattr(node, key, value)
+                return node
+
+            def _jy3_opaque(name):
+                return type(name, (), {})()
+
+            def _jy3_bytes(text):
+                return base64.b64decode(text)
+
+            def _jy3_bytearray(text):
+                return bytearray(base64.b64decode(text))
+
+            def _jy3_complex(real, imag):
+                return complex(float.fromhex(real), float.fromhex(imag))
+
             payload_kind, payload, file_name, code_kind = (
                 sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
             flags, optimize, feature_version = map(int, sys.argv[5:8])
-            if payload_kind == "f":
-                with open(payload, "rb") as stream:
-                    source = stream.read()
-                file_name = os.path.abspath(file_name)
-            elif payload_kind == "b":
-                source = base64.b64decode(payload)
-            else:
-                source = payload.encode("utf-8")
             try:
-                if code_kind.startswith("ast-"):
-                    import ast
-
-                    # A constructor expression for the tree, carrying every field the parser set --
-                    # including the optional ones it left as None.  `ast.dump` drops those None fields,
-                    # and a rebuilt _ast node never puts a dropped field back, so the round trip needs
-                    # its own writer rather than dump's readable form.  Positions come last, in the
-                    # order `_attributes` names them.
-                    def write(node):
-                        if isinstance(node, ast.AST):
-                            parts = []
-                            for name in node._fields:
-                                try:
-                                    value = getattr(node, name)
-                                except AttributeError:
-                                    continue
-                                parts.append("%s=%s" % (name, write(value)))
-                            for name in node._attributes:
-                                try:
-                                    value = getattr(node, name)
-                                except AttributeError:
-                                    continue
-                                parts.append("%s=%s" % (name, write(value)))
-                            return "%s(%s)" % (type(node).__name__, ", ".join(parts))
-                        if isinstance(node, list):
-                            return "[%s]" % ", ".join(write(item) for item in node)
-                        return repr(node)
-
-                    tree = ast.parse(source, file_name, code_kind[4:])
-                    sys.stdout.buffer.write(write(tree).encode("utf-8"))
+                if payload_kind == "f":
+                    with open(payload, "rb") as stream:
+                        source = stream.read()
+                    file_name = os.path.abspath(file_name)
+                elif payload_kind == "a":
+                    with open(payload, "rb") as stream:
+                        text = stream.read().decode("utf-8", "surrogatepass")
+                    namespace = dict(vars(ast))
+                    namespace.update({
+                        "_jy3_node": _jy3_node,
+                        "_jy3_opaque": _jy3_opaque,
+                        "_jy3_bytes": _jy3_bytes,
+                        "_jy3_bytearray": _jy3_bytearray,
+                        "_jy3_complex": _jy3_complex,
+                    })
+                    source = eval(text, namespace)
+                elif payload_kind == "b":
+                    source = base64.b64decode(payload)
                 else:
-                    options = {"dont_inherit": True}
+                    source = payload.encode("utf-8")
+                options = {"dont_inherit": True}
+                if optimize != -1:
+                    options["optimize"] = optimize
+                if feature_version != -1:
+                    options["_feature_version"] = feature_version
+                if code_kind.startswith("ast-"):
+                    options["flags"] = flags | ast.PyCF_ONLY_AST
+                    result = compile(source, file_name, code_kind[4:], **options)
+                else:
                     if flags:
                         options["flags"] = flags
-                    if optimize != -1:
-                        options["optimize"] = optimize
-                    if feature_version != -1:
-                        options["_feature_version"] = feature_version
-                    code = compile(source, file_name, code_kind, **options)
-                    sys.stdout.buffer.write(marshal.dumps(code))
-            except (SyntaxError, ValueError) as error:
+                    result = compile(source, file_name, code_kind, **options)
+                if isinstance(result, ast.AST):
+                    sys.stdout.buffer.write(write(result).encode("utf-8", "surrogatepass"))
+                else:
+                    sys.stdout.buffer.write(marshal.dumps(result))
+            except (SyntaxError, ValueError, TypeError) as error:
                 # The report the interpreter would have printed for the script, and nothing of the
                 # driver: a traceback through this string would be ours to explain, not the user's.
                 # ValueError is what an expression compile mode gives for a statement source.
@@ -206,8 +257,51 @@ public final class Cpython314Compiler {
                 }
 
                 @Override
-                public String parseAst(String source, String fileName, String mode) {
-                    return Cpython314Compiler.parseAst(source, fileName, mode);
+                public String parseAst(
+                        String source,
+                        String fileName,
+                        String mode,
+                        int flags,
+                        int optimize,
+                        int featureVersion) {
+                    return Cpython314Compiler.parseAst(
+                            source, fileName, mode, flags, optimize, featureVersion);
+                }
+
+                @Override
+                public String parseAstBytes(
+                        byte[] source,
+                        String fileName,
+                        String mode,
+                        int flags,
+                        int optimize,
+                        int featureVersion) {
+                    return Cpython314Compiler.parseAstBytes(
+                            source, fileName, mode, flags, optimize, featureVersion);
+                }
+
+                @Override
+                public PyCode compileAst(
+                        String tree,
+                        String fileName,
+                        String mode,
+                        int flags,
+                        int optimize,
+                        int featureVersion) {
+                    return Cpython314Compiler.compileAst(
+                            tree, fileName, mode, flags, optimize, featureVersion);
+                }
+
+                @Override
+                public String rebuildAst(
+                        String tree,
+                        String fileName,
+                        String mode,
+                        int flags,
+                        int optimize,
+                        int featureVersion) {
+                    return Cpython314Compiler.rebuildAst(
+                            tree, fileName, mode, flags, optimize, featureVersion);
                 }
             };
 
@@ -289,9 +383,88 @@ public final class Cpython314Compiler {
      *
      * @param mode the {@code ast.parse} mode: {@code exec}, {@code eval}, {@code single} or
      *     {@code func_type}
+     * @param flags {@code PyCF_TYPE_COMMENTS} and {@code PyCF_ALLOW_INCOMPLETE_INPUT}, which change
+     *     what the parser keeps
+     * @param optimize {@code 0}..{@code 2} asks for the tree {@code __debug__} is already folded out
+     *     of, as {@code ast.parse(optimize=...)} does
      */
-    public static String parseAst(String source, String fileName, String mode) {
-        return new String(run("s", source, fileName, "ast-" + mode, 0, -1, -1), StandardCharsets.UTF_8);
+    public static String parseAst(
+            String source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        return new String(
+                run("s", source, fileName, "ast-" + mode, flags, optimize, featureVersion),
+                StandardCharsets.UTF_8);
+    }
+
+    /** Parse bytes the way {@link #parseAst} parses text, leaving the encoding declaration to the decoder. */
+    public static String parseAstBytes(
+            byte[] source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        String payload = Base64.getEncoder().encodeToString(source);
+        return new String(
+                run("b", payload, fileName, "ast-" + mode, flags, optimize, featureVersion),
+                StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Compile a tree the caller already holds, written as the constructor text
+     * {@link #parseAst} answers.
+     *
+     * <p>The tree is written to a temporary file rather than to argv: a module of a few thousand
+     * statements is well past the size an argument list may carry, and the parser path passes files
+     * for the same reason.
+     */
+    public static PyCode compileAst(
+            String tree,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        return MarshalReader.readCode(
+                runTree(tree, fileName, mode, flags, optimize, featureVersion), 0);
+    }
+
+    /** Hand a tree back as the constructor text of the normalized tree, for an AST answer. */
+    public static String rebuildAst(
+            String tree,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        return new String(
+                runTree(tree, fileName, mode, flags, optimize, featureVersion),
+                StandardCharsets.UTF_8);
+    }
+
+    private static byte[] runTree(
+            String tree,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        Path file = null;
+        try {
+            file = Files.createTempFile("jy3-stage-a-tree-", ".txt");
+            Files.writeString(file, tree, StandardCharsets.UTF_8);
+            return run("a", file.toString(), fileName, mode, flags, optimize, featureVersion);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot hand the tree to the reference compiler", e);
+        } finally {
+            if (file != null) {
+                file.toFile().delete();
+            }
+        }
     }
 
     /** The reference interpreter this build will invoke, for reporting and for tests. */

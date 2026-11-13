@@ -71,10 +71,13 @@ public class SourceRefused extends RuntimeException {
                     case "IndentationError" -> ExceptionTypes.INDENTATION_ERROR;
                     case "TabError" -> ExceptionTypes.TAB_ERROR;
                     case "ValueError" -> ExceptionTypes.VALUE_ERROR;
+                    case "TypeError" -> ExceptionTypes.TYPE_ERROR;
                     default -> ExceptionTypes.SYNTAX_ERROR;
                 };
         String sentence = message == null ? "" : message;
-        if (type == ExceptionTypes.VALUE_ERROR || lineno == ABSENT) {
+        if (type == ExceptionTypes.VALUE_ERROR
+                || type == ExceptionTypes.TYPE_ERROR
+                || lineno == ABSENT) {
             return PyRaise.of(
                     new PyBaseException(type, new PyObject[] {PyStr.of(sentence)}));
         }

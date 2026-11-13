@@ -1496,26 +1496,36 @@ final class Builtins {
             failure.value().asSyntaxMessage(sentence);
             throw failure;
         }
-        if (onlyAst) {
-            if ((flags & (TYPE_COMMENTS | OPTIMIZED_AST | ALLOW_INCOMPLETE_INPUT)) != 0) {
-                throw Slots.notImplemented(
-                        "compile() with PyCF_TYPE_COMMENTS, PyCF_OPTIMIZED_AST or "
-                                + "PyCF_ALLOW_INCOMPLETE_INPUT (M6-a)");
-            }
-            return PyRuntime.parseAst(sourceText("compile", source), fileName, mode);
+        // An answer that is a tree rather than a code object: PyCF_ONLY_AST asks for the parse, and
+        // PyCF_OPTIMIZED_AST carries that bit too, so it lands here with the optimizer's folding.
+        boolean answersTree = (flags & (ONLY_AST | OPTIMIZED_AST)) != 0;
+        // `_fields` is what an AST node and a stranger imitating one have in common; only the former
+        // is a subclass of `_ast.AST`, and only that one takes the tree path. The `_ast` module is
+        // installed here rather than checked by hand, so the test remains the reference's.
+        if (Specials.member(source.getType(), "_fields") != null && AstSource.isAst(source)) {
+            return answersTree
+                    ? PyRuntime.rebuildAst(
+                            source, fileName, mode, flags, optimize, featureVersion)
+                    : (PyObject) PyRuntime.compileAst(
+                            source, fileName, mode, flags, optimize, featureVersion);
         }
         if (source instanceof PyStr text) {
+            if (answersTree) {
+                return PyRuntime.parseAst(
+                        text.getValue(), fileName, mode, flags, optimize, featureVersion);
+            }
             return (PyObject) PyRuntime.compileUnit(
                     text.getValue(), fileName, mode, flags, optimize, featureVersion);
         }
         if (source instanceof PyBytes || source instanceof PyByteArray
                 || source instanceof PyMemoryView) {
+            byte[] octets = PyMemoryView.bufferOctets(source);
+            if (answersTree) {
+                return PyRuntime.parseAstBytes(
+                        octets, fileName, mode, flags, optimize, featureVersion);
+            }
             return (PyObject) PyRuntime.compileBytesUnit(
-                    PyMemoryView.bufferOctets(source), fileName, mode, flags, optimize,
-                    featureVersion);
-        }
-        if (Specials.member(source.getType(), "_fields") != null) {
-            throw Slots.notImplemented("compile() from an AST object (M6-a)");
+                    octets, fileName, mode, flags, optimize, featureVersion);
         }
         throw Slots.typeError("compile() arg 1 must be a string, bytes or AST object");
     }

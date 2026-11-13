@@ -62,8 +62,58 @@ public interface SourceCompiler {
      * and a rebuilt node would then lack them. Nothing in {@code runtime} needs to know how a tree was
      * parsed, only that the text names the node classes it owns.
      *
+     * <p>{@code flags} holds the parser's switches — {@code PyCF_TYPE_COMMENTS} and
+     * {@code PyCF_ALLOW_INCOMPLETE_INPUT} — and {@code optimize} decides whether the tree is handed
+     * back with {@code __debug__} already folded, which is what {@code ast.parse(optimize=...)} asks
+     * for.
+     *
      * @param mode {@code exec}, {@code eval}, {@code single} or {@code func_type}, as {@code ast.parse}
      *     passes it
      */
-    String parseAst(String source, String fileName, String mode);
+    String parseAst(
+            String source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion);
+
+    /** Parse bytes the way {@link #parseAst} parses text, encoding declaration and all. */
+    String parseAstBytes(
+            byte[] source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion);
+
+    /**
+     * Compile a tree the caller holds, written as the same constructor text {@link #parseAst} answers.
+     *
+     * <p>The tree goes back to the reference, which rebuilds its own nodes and runs the checks it
+     * applies to any tree — mode against root kind, required fields, field types, positions,
+     * {@code type_ignores}. This side never validates a tree it did not define.
+     */
+    PyCode compileAst(
+            String tree,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion);
+
+    /**
+     * Hand a tree back as a tree, for {@code PyCF_ONLY_AST} and {@code PyCF_OPTIMIZED_AST}.
+     *
+     * <p>The reference validates the tree and writes the normalized one — defaults filled in as
+     * {@code None}, the optimized form when asked — and the answer is again the constructor text that
+     * rebuilds it in this runtime.
+     */
+    String rebuildAst(
+            String tree,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion);
 }

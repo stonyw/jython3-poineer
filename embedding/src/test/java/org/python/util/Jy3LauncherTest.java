@@ -520,7 +520,8 @@ class Jy3LauncherTest {
                 "08_eval_partial_and_gc.py",
                 "09_unittest_minimal.py",
                 "10_compile_modes_and_optimize.py",
-                "11_testinternalcapi_probes.py");
+                "11_testinternalcapi_probes.py",
+                "12_compile_ast_inputs.py");
     }
 
     /**
