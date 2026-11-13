@@ -1731,7 +1731,78 @@ public final class PyRuntime {
                                         + " sys.stderr.");
         sys.set("excepthook", excepthook);
         sys.set("__excepthook__", excepthook);
+        // The same two-name filing, for the hook builtins.breakpoint reaches. Replacement and deletion
+        // are the point: a program may install its own hook or remove the name, so this is a plain
+        // module attribute and not a field the runtime consults.
+        PyObject breakpointhook =
+                new PyNativeFunction("breakpointhook", PyRuntime::breakpointHook)
+                        .documented(
+                                "breakpointhook($module, /, *args, **kwargs)\n"
+                                        + "--\n"
+                                        + "\n"
+                                        + "This hook function is called by built-in breakpoint().\n");
+        sys.set("breakpointhook", breakpointhook);
+        sys.set("__breakpointhook__", breakpointhook);
         return sys;
+    }
+
+    /**
+     * {@code sys.breakpointhook}: the default behind {@code breakpoint()}, PEP 553's one switch.
+     *
+     * <p>{@code PYTHONBREAKPOINT} is read the way a program has set it — through {@code os.environ}, which
+     * is where {@code EnvironmentVarGuard} and every script's {@code os.environ[...] = ...} land. An unset
+     * or empty value means the reference default: import {@code pdb} and call its {@code set_trace} with
+     * the arguments. {@code "0"} means do nothing at all. Anything else names one callable in the
+     * reference's {@code module.attr} spelling — a bare name looks in {@code builtins} — and an
+     * unimportable name is a {@code RuntimeWarning} rather than an exception, after which the hook answers
+     * {@code None}.
+     */
+    private static PyObject breakpointHook(PyObject[] args, String[] kwNames) {
+        String setting = breakpointSetting();
+        if (setting == null || setting.isEmpty()) {
+            PyObject pdb = PyRuntime.importModule("pdb");
+            return Slots.getAttr(pdb, "set_trace").call(args, PyBoundMethod.keywordTuple(kwNames));
+        }
+        if (setting.equals("0")) {
+            return PyNone.INSTANCE;
+        }
+        int dot = setting.lastIndexOf('.');
+        String moduleName = dot < 0 ? "builtins" : setting.substring(0, dot);
+        String attribute = dot < 0 ? setting : setting.substring(dot + 1);
+        PyObject hook = null;
+        if (!moduleName.isEmpty() && !attribute.isEmpty()) {
+            try {
+                hook = Slots.getAttr(PyRuntime.importModule(moduleName), attribute);
+            } catch (PyRaise missing) {
+                hook = null;
+            }
+        }
+        if (hook == null) {
+            ignoreBreakpointSetting(setting);
+            return PyNone.INSTANCE;
+        }
+        return hook.call(args, PyBoundMethod.keywordTuple(kwNames));
+    }
+
+    /** {@code PYTHONBREAKPOINT} as the program sees it: {@code os.environ}, not the JVM's own map. */
+    private static String breakpointSetting() {
+        PyObject environ = Slots.getAttr(PyRuntime.importModule("os"), "environ");
+        PyObject value = Slots.call(
+                Slots.getAttr(environ, "get"), new PyObject[] {PyStr.of("PYTHONBREAKPOINT")}, null);
+        return value == PyNone.INSTANCE ? null : value.str();
+    }
+
+    /** CPython's one warning for a name it cannot import; a warning promoted to an error propagates. */
+    private static void ignoreBreakpointSetting(String setting) {
+        PyObject warnings = PyRuntime.importModule("warnings");
+        PyObject category = Slots.getAttr(PyRuntime.importModule("builtins"), "RuntimeWarning");
+        Slots.call(
+                Slots.getAttr(warnings, "warn"),
+                new PyObject[] {
+                    PyStr.of("Ignoring unimportable $PYTHONBREAKPOINT: \"" + setting + "\""),
+                    category
+                },
+                null);
     }
 
     /**

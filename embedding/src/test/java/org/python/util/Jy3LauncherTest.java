@@ -565,7 +565,8 @@ class Jy3LauncherTest {
                 "24_import_chain_seams.py",
                 "25_simple_namespace.py",
                 "26_union_type.py",
-                "27_mappingproxy.py");
+                "27_mappingproxy.py",
+                "28_breakpoint.py");
     }
 
     private static List<String> m3Corpus() {

@@ -563,6 +563,15 @@ final class Builtins {
                                 + "The globals must be a dictionary and locals can be any mapping,\n"
                                 + "defaulting to the current globals and locals.\n"
                                 + "If only globals is given, locals defaults to it."));
+        put(out, "breakpoint", new PyNativeFunction("breakpoint", Builtins::breakpoint)
+                .documented(
+                        "breakpoint($module, /, *args, **kws)\n"
+                                + "--\n"
+                                + "\n"
+                                + "Call sys.breakpointhook(*args, **kws).  sys.breakpointhook() must accept\n"
+                                + "whatever arguments are passed.\n"
+                                + "\n"
+                                + "By default, this drops you into the pdb debugger."));
         put(out, "compile", new PyNativeFunction("compile", Builtins::compileCode)
                 .documented(
                         "compile($module, /, source, filename, mode, flags=0,\n"
@@ -1350,6 +1359,22 @@ final class Builtins {
 
     /** {@code PyCF_ONLY_AST} from CPython's {@code compile.h}: answer a tree, not a code object. */
     private static final int ONLY_AST = 1024;
+
+    /**
+     * {@code breakpoint(*args, **kws)}: whatever {@code sys.breakpointhook} says.
+     *
+     * <p>The builtin owns no behaviour of its own. {@code builtin_breakpoint} reads the hook as a plain
+     * module attribute — so a program may replace it or delete it — and calls it with the arguments
+     * untouched, which is why a hook that takes no arguments refuses extra ones. When the name is gone,
+     * the reference says so in its own words rather than letting {@code AttributeError} out.
+     */
+    private static PyObject breakpoint(PyObject[] args, String[] kwNames) {
+        PyObject hook = PyRuntime.sysAttribute("breakpointhook");
+        if (hook == null) {
+            throw Slots.runtimeError("lost sys.breakpointhook");
+        }
+        return hook.call(args, PyBoundMethod.keywordTuple(kwNames));
+    }
 
     /** {@code eval(source, globals=None, locals=None)}: one expression's value. */
     private static PyObject evaluate(PyObject[] args, String[] kwNames) {

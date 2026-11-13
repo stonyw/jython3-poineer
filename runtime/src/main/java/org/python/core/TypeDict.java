@@ -1148,7 +1148,7 @@ final class TypeDict {
         table.wrapper("__lt__", LT_DOC, (args, kw, q) -> identity(args, CompareOp.LT));
         table.wrapper("__le__", LE_DOC, (args, kw, q) -> identity(args, CompareOp.LE));
         table.wrapper("__eq__", EQ_DOC, (args, kw, q) -> identity(args, CompareOp.EQ));
-        table.wrapper("__ne__", NE_DOC, (args, kw, q) -> identity(args, CompareOp.NE));
+        table.wrapper("__ne__", NE_DOC, TypeDict::objectNe);
         table.wrapper("__gt__", GT_DOC, (args, kw, q) -> identity(args, CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, (args, kw, q) -> identity(args, CompareOp.GE));
         table.wrapper("__init__", INIT_DOC, TypeDict::objectInit);
@@ -3886,7 +3886,7 @@ final class TypeDict {
         table.wrapper("__lt__", LT_DOC, (args, kw, q) -> identity(args, CompareOp.LT));
         table.wrapper("__le__", LE_DOC, (args, kw, q) -> identity(args, CompareOp.LE));
         table.wrapper("__eq__", EQ_DOC, (args, kw, q) -> identity(args, CompareOp.EQ));
-        table.wrapper("__ne__", NE_DOC, (args, kw, q) -> identity(args, CompareOp.NE));
+        table.wrapper("__ne__", NE_DOC, TypeDict::objectNe);
         table.wrapper("__gt__", GT_DOC, (args, kw, q) -> identity(args, CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, (args, kw, q) -> identity(args, CompareOp.GE));
         table.wrapper("__bool__", TRUTH_DOC, args -> PyBool.FALSE);
@@ -5914,23 +5914,44 @@ final class TypeDict {
     }
 
     /**
-     * {@code object.__eq__} and its five siblings: identity, and nothing else.
+     * {@code object.__eq__} and its four ordering siblings: identity, and nothing else.
      *
      * <p>{@code base_object_richcompare} answers equality out of the pointer when the two are one object and
      * <em>declines</em> it otherwise, so {@code object.__eq__(3, 4)} hands back {@code NotImplemented} beside
      * {@code 3 == 4}, which is what makes the row of {@code type(None)} and a hand-written class agree that
      * the answer to a comparison with something else is not no but not-theirs. The four orderings are declined
-     * outright, and only {@code __ne__} answers a bool: it is the one of the six that CPython does not route
-     * through the fallback, so a program that calls {@code object.__lt__(3, 4)} by hand gets {@code
-     * NotImplemented} and the complaint about two ints from the operator that called it.
+     * outright, and the negation is not here at all: {@code __ne__} is the one of the six that CPython routes
+     * through the value's own {@code __eq__} — see {@link #objectNe}.
      */
     private static PyObject identity(PyObject[] args, CompareOp cmp) {
         boolean same = args[0] == (args.length > 1 ? args[1] : null);
-        return switch (cmp) {
-            case EQ -> same ? PyBool.TRUE : PyNotImplemented.INSTANCE;
-            case NE -> PyBool.of(!same);
-            default -> PyNotImplemented.INSTANCE;
-        };
+        return cmp == CompareOp.EQ && same ? PyBool.TRUE : PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * {@code object.__ne__}: the negation of the value's own {@code __eq__}, which is what CPython's
+     * {@code object_richcompare} does for {@code Py_NE} rather than testing identity.
+     *
+     * <p>That delegation is what a class declaring only {@code __eq__} rides on, and what
+     * {@code unittest.mock._Call} asks for outright when it writes {@code __ne__ = object.__ne__}: the answer
+     * is the {@code __eq__} it wrote, inverted. Only when that {@code __eq__} declines does the negation
+     * decline too, leaving the operator's identity fallback to {@link Slots#compare} — so
+     * {@code object.__ne__(a, b)} answers {@code NotImplemented} for two distinct objects, while
+     * {@code a != b} is still {@code True}.
+     */
+    private static PyObject objectNe(PyObject[] args, String[] kwNames, String qualified) {
+        PyObject self = args[0];
+        PyObject other = args.length > 1 ? args[1] : null;
+        PyObject equal = other == null ? Slots.DECLINED : Specials.invoke(self, "__eq__", other);
+        if (equal == Slots.DECLINED) {
+            // No `__eq__` of its own: the identity row answers, which is a True for one object and a
+            // decline for two — the negation follows it, so only the pair of them is False.
+            return self == other ? PyBool.FALSE : PyNotImplemented.INSTANCE;
+        }
+        if (Slots.declined(equal)) {
+            return PyNotImplemented.INSTANCE;
+        }
+        return PyBool.of(!Slots.truth(equal));
     }
 
     /**
