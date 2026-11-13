@@ -534,7 +534,8 @@ class Jy3LauncherTest {
                 "13_async_top_level_await.py",
                 "14_zlib_streams.py",
                 "15_hashlib_digests.py",
-                "16_array.py");
+                "16_array.py",
+                "17_re_unicode_classes.py");
     }
 
     /**

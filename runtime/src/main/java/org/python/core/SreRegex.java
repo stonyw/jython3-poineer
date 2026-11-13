@@ -55,17 +55,46 @@ final class SreRegex {
                 javaFlags |= Pattern.UNICODE_CASE;
             }
         }
-        if ((flags & MULTILINE) != 0) {
-            javaFlags |= Pattern.MULTILINE;
-        }
-        if (!ascii) {
-            // `\w`, `\d`, `\s` and `\b` are Unicode-aware for a Python str pattern.
-            javaFlags |= Pattern.UNICODE_CHARACTER_CLASS;
-        }
-        String translated = new Translator(
-                source, names, (flags & DOTALL) != 0, (flags & VERBOSE) != 0).translate();
+        // Java's `UNICODE_CHARACTER_CLASS` is not Python's Unicode mode: its `\w` adds every
+        // combining mark and connector punctuation, and its `\s` lacks U+001C..U+001F. Those four
+        // escapes are therefore written out here instead of being handed to Java; every other
+        // escape keeps Java's default meaning, which is the ASCII one Python uses under `re.ASCII`.
+        // `^` and `$` are written out for the same reason: Python's MULTILINE knows only '\n', while
+        // Java's also breaks at '\r', U+0085, U+2028 and U+2029, so Java's MULTILINE bit stays off.
+        String translated = new Translator(source, names, ascii,
+                (flags & DOTALL) != 0, (flags & MULTILINE) != 0,
+                (flags & VERBOSE) != 0).translate();
         return Pattern.compile(translated, javaFlags);
     }
+
+    /**
+     * Python's Unicode word character, which is {@code str.isalnum()} plus underscore.
+     *
+     * <p>That set is exactly the letters plus every number category, so it is expressible as a Java
+     * class. Java's own {@code \w} under {@code UNICODE_CHARACTER_CLASS} is wider: it also admits
+     * {@code Mn}/{@code Me}/{@code Mc} and {@code Pc}, which is why a combining acute accent matches
+     * Java's {@code \w} but not Python's.
+     */
+    private static final String WORD_CHARS = "\\p{L}\\p{N}_";
+
+    /** Python's {@code \s}: Unicode White_Space plus the four C0 separators Python counts. */
+    private static final String SPACE_CHARS = "\\p{IsWhite_Space}\\x{1c}-\\x{1f}";
+
+    /**
+     * Python's {@code \b}.
+     *
+     * <p>Java has a word-boundary assertion of its own, but it is defined against Java's word set,
+     * so the boundary is spelled as two lookarounds over {@link #WORD_CHARS}: one for a word
+     * character on the left and a non-word one on the right, one for the mirror image.
+     */
+    private static final String WORD_BOUNDARY =
+            "(?:(?<=[" + WORD_CHARS + "])(?![" + WORD_CHARS + "])"
+                    + "|(?<![" + WORD_CHARS + "])(?=[" + WORD_CHARS + "]))";
+
+    /** Python's {@code \B}: everywhere {@link #WORD_BOUNDARY} does not hold. */
+    private static final String NOT_WORD_BOUNDARY =
+            "(?:(?<=[" + WORD_CHARS + "])(?=[" + WORD_CHARS + "])"
+                    + "|(?<![" + WORD_CHARS + "])(?![" + WORD_CHARS + "]))";
 
     /** The re-spelling itself: one pass, with the two scoped flags kept on a stack. */
     private static final class Translator {
@@ -77,12 +106,17 @@ final class SreRegex {
         private int at;
         private boolean dotAll;
         private boolean verbose;
+        private boolean multiline;
+        /** Whether the escapes being translated right now use Python's ASCII tables. */
+        private boolean ascii;
 
-        Translator(String source, Map<String, Integer> names,
-                boolean dotAll, boolean verbose) {
+        Translator(String source, Map<String, Integer> names, boolean ascii,
+                boolean dotAll, boolean multiline, boolean verbose) {
             this.source = source;
             this.names = names;
+            this.ascii = ascii;
             this.dotAll = dotAll;
+            this.multiline = multiline;
             this.verbose = verbose;
         }
 
@@ -103,12 +137,18 @@ final class SreRegex {
                 } else if (c == '.') {
                     out.append("[\\s\\S]");
                     at++;
+                } else if (c == '^') {
+                    out.append(multiline ? "(?:\\A|(?<=\\n))" : "\\A");
+                    at++;
+                } else if (c == '$') {
+                    out.append(multiline ? "(?:\\z|(?=\\n))" : "(?:\\z|(?=\\n\\z))");
+                    at++;
                 } else if (c == '{') {
                     repetition();
                 } else if (c == '}') {
                     out.append("\\}");
                     at++;
-                } else if (verbose && Character.isWhitespace(c)) {
+                } else if (verbose && isVerboseWhitespace(c)) {
                     at++;
                 } else if (verbose && c == '#') {
                     while (at < source.length() && source.charAt(at) != '\n') {
@@ -145,18 +185,45 @@ final class SreRegex {
                 case 'b':
                     // `[\b]` is the backspace character in Python, while Java reads `\b` as a word
                     // boundary and refuses it inside a class; the character is the one that works both
-                    // ways, so the escape is written out. Outside a class Java's meaning is Python's.
-                    out.append(inClass ? "\\x08" : "\\b");
+                    // ways, so the escape is written out. Outside a class Java's boundary is Java's
+                    // word set, so the Unicode one is spelled here instead.
+                    out.append(inClass ? "\\x08" : (ascii ? "\\b" : WORD_BOUNDARY));
                     at++;
                     return;
                 case 'B':
+                    if (inClass) {
+                        // `re._parser` refuses `[\B]`; nothing valid reaches this point.
+                        throw new IllegalArgumentException("bad escape \\B at position " + start);
+                    }
+                    out.append(ascii ? "\\B" : NOT_WORD_BOUNDARY);
+                    at++;
+                    return;
                 case 'd':
+                    out.append(ascii ? "\\d" : "\\p{Nd}");
+                    at++;
+                    return;
                 case 'D':
+                    out.append(ascii ? "\\D" : "\\P{Nd}");
+                    at++;
+                    return;
                 case 's':
+                    out.append(ascii
+                            ? "\\s"
+                            : (inClass ? SPACE_CHARS : "[" + SPACE_CHARS + "]"));
+                    at++;
+                    return;
                 case 'S':
+                    out.append(ascii ? "\\S" : "[^" + SPACE_CHARS + "]");
+                    at++;
+                    return;
                 case 'w':
+                    out.append(ascii
+                            ? "\\w"
+                            : (inClass ? WORD_CHARS : "[" + WORD_CHARS + "]"));
+                    at++;
+                    return;
                 case 'W':
-                    out.append('\\').append(c);
+                    out.append(ascii ? "\\W" : "[^" + WORD_CHARS + "]");
                     at++;
                     return;
                 case 'x':
@@ -190,6 +257,34 @@ final class SreRegex {
                 }
                 default:
                     break;
+            }
+            // Inside a class every numeric escape is an octal character, up to three digits, and
+            // `\41` is `'!'` rather than a group reference. Java would read a one- or two-digit
+            // form as a backreference and refuse it there, so the character is written out.
+            if (inClass && c >= '0' && c <= '7') {
+                int value = c - '0';
+                int digits = 1;
+                at++;
+                while (digits < 3 && at < source.length() && isOctal(source.charAt(at))) {
+                    value = value * 8 + (source.charAt(at) - '0');
+                    at++;
+                    digits++;
+                }
+                codePoint(value);
+                return;
+            }
+            // Outside a class, three octal digits are a character: `\277` is U+00BF even when the
+            // pattern also has 277 groups, while `\41` stays a group reference.
+            if (c >= '1' && c <= '7'
+                    && at + 2 < source.length()
+                    && isOctal(source.charAt(at + 1))
+                    && isOctal(source.charAt(at + 2))) {
+                int value = (c - '0') * 64
+                        + (source.charAt(at + 1) - '0') * 8
+                        + (source.charAt(at + 2) - '0');
+                at += 3;
+                codePoint(value);
+                return;
             }
             if (c >= '1' && c <= '9') {
                 out.append('\\');
@@ -374,13 +469,15 @@ final class SreRegex {
                 boolean[] outer = enclosing.pop();
                 dotAll = outer[0];
                 verbose = outer[1];
+                ascii = outer[2];
+                multiline = outer[3];
             }
             out.append(')');
             at++;
         }
 
         private void enter() {
-            enclosing.push(new boolean[] {dotAll, verbose});
+            enclosing.push(new boolean[] {dotAll, verbose, ascii, multiline});
         }
 
         /**
@@ -401,6 +498,8 @@ final class SreRegex {
             boolean scoped = false;
             boolean newDotAll = dotAll;
             boolean newVerbose = verbose;
+            boolean newMultiline = multiline;
+            boolean newAscii = ascii;
             while (cursor < source.length()) {
                 char flag = source.charAt(cursor);
                 if (flag == '-') {
@@ -419,6 +518,9 @@ final class SreRegex {
                 }
                 switch (flag) {
                     case 'a':
+                        // The escape tables follow the scoped flag; the `uU` pair is what Java uses
+                        // for the same distinction when it is the one reading the escapes.
+                        newAscii = adding;
                         if (adding) {
                             remove.append("uU");
                         } else {
@@ -426,6 +528,7 @@ final class SreRegex {
                         }
                         break;
                     case 'u':
+                        newAscii = !adding;
                         if (adding) {
                             add.append("uU");
                         } else {
@@ -433,12 +536,16 @@ final class SreRegex {
                         }
                         break;
                     case 'i':
-                    case 'm':
                         if (adding) {
                             add.append(flag);
                         } else {
                             remove.append(flag);
                         }
+                        break;
+                    case 'm':
+                        // Kept for the Translator, which spells `^` and `$` itself; Java's own
+                        // MULTILINE would also break at the three terminators Python ignores.
+                        newMultiline = adding;
                         break;
                     case 's':
                         newDotAll = adding;
@@ -462,6 +569,8 @@ final class SreRegex {
             enter();
             dotAll = newDotAll;
             verbose = newVerbose;
+            multiline = newMultiline;
+            ascii = newAscii;
             out.append("(?");
             if (add.length() > 0) {
                 out.append(add);
@@ -515,6 +624,15 @@ final class SreRegex {
 
         private static boolean isDigit(char c) {
             return c >= '0' && c <= '9';
+        }
+
+        /**
+         * The six characters {@code re.VERBOSE} drops, which are CPython's {@code WHITESPACE} set
+         * rather than Java's: {@code Character.isWhitespace} also covers U+001C..U+001F, and those
+         * four are ordinary literals to a Python pattern even under the flag.
+         */
+        private static boolean isVerboseWhitespace(char c) {
+            return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000b' || c == '\f';
         }
 
         private static boolean isOctal(char c) {
