@@ -78,9 +78,27 @@ final class Tokenizer {
     static final int COLONEQUAL = 53;
     static final int EXCLAMATION = 54;
     static final int OP = 55;
+    static final int FSTRING_START = 59;
+    static final int FSTRING_MIDDLE = 60;
+    static final int FSTRING_END = 61;
+    static final int TSTRING_START = 62;
+    static final int TSTRING_MIDDLE = 63;
+    static final int TSTRING_END = 64;
     static final int COMMENT = 65;
     static final int NL = 66;
     static final int ERRORTOKEN = 67;
+
+    /*
+     * What the top of an f-string frame is reading. CONTENT is the literal text between fields;
+     * EXPR is the expression after a `{` (which is the ordinary scanner again, so its tokens come
+     * from the normal path); SPEC is the format specifier after a `:` at the field's own depth.
+     */
+    private static final int CONTENT = 0;
+    private static final int EXPR = 1;
+    private static final int SPEC = 2;
+
+    /** How many fields one f-string may nest before the reference calls it too deep. */
+    private static final int MAXFIELDS = 3;
 
     /* errcode.h. */
     private static final int E_OK = 10;
@@ -111,6 +129,18 @@ final class Tokenizer {
     private int inp;
     private int lineStart;
     private int multiLineStart = -1;
+
+    /**
+     * Where the current logical line began.
+     *
+     * <p>A newline at bracket depth zero ends a logical line, and the reference resets the buffer it
+     * counts EOF offsets from at that point, so this is what the multi-line-statement error's offset
+     * is measured against.
+     */
+    private int logicalStart;
+
+    /** Whether the literal being read reuses the enclosing f-string's own quote and width. */
+    private boolean fstringQuote;
     private int start = -1;
     private int done = E_OK;
     private int lineno;
@@ -128,6 +158,50 @@ final class Tokenizer {
     private boolean implicitNewline;
     private boolean atbol = true;
     private boolean blankline;
+
+    /** The buffer offset each line starts at, so a token can name the line it began on. */
+    private int[] lineStarts = new int[64];
+    private int lineCount;
+
+    /**
+     * One f-string or t-string being read.
+     *
+     * <p>{@code modes} is a small stack whose bottom is always {@link #CONTENT}: every {@code {}
+     * pushes {@link #EXPR}, a {@code :} at the field's own depth turns the top into {@link #SPEC},
+     * and a {@code {} inside a specifier pushes another {@link #EXPR}. {@code bases} remembers the
+     * bracket depth at which each entry was pushed, which is what tells a field's closing brace
+     * from a dict's.
+     */
+    private static final class FString {
+        char quote;
+        int quoteSize;
+        String kind;
+        int startType;
+        int middleType;
+        int endType;
+        int literalStart;
+        int literalLine;
+        int textStart;
+        boolean raw;
+        final int[] modes = new int[MAXFIELDS + 2];
+        final int[] bases = new int[MAXFIELDS + 2];
+        int modeCount;
+    }
+
+    private FString[] fstrings = new FString[4];
+    private int fstringCount;
+
+    /*
+     * Tokens already decided but not yet handed out. A doubled brace or a closing `}` can finish a
+     * run of text and open the next token in the same step, and the reference emits them in that
+     * order; a queue keeps the order without re-reading.
+     */
+    private static final int PENDINGCAPACITY = 8;
+    private final int[] pendingTypes = new int[PENDINGCAPACITY];
+    private final int[] pendingStarts = new int[PENDINGCAPACITY];
+    private final int[] pendingEnds = new int[PENDINGCAPACITY];
+    private int pendingCount;
+    private PyRaise pendingError;
 
     /* The token last read. */
     int type;
@@ -151,6 +225,23 @@ final class Tokenizer {
      * reference leaves that decision to {@code TokenizerIter} too.
      */
     int nextToken() {
+        if (pendingCount > 0) {
+            return nextPendingToken();
+        }
+        if (pendingError != null) {
+            PyRaise failure = pendingError;
+            pendingError = null;
+            throw failure;
+        }
+        if (fstringCount > 0) {
+            FString top = fstringTop();
+            int mode = top.modes[top.modeCount - 1];
+            if (mode != EXPR) {
+                // Inside the literal itself: the text, the braces and the specifier are the
+                // scanner's here, not the ordinary token loop's.
+                return fstringLiteral(top, mode);
+            }
+        }
         if (atbol) {
             atbol = false;
             indentation();
@@ -165,7 +256,7 @@ final class Tokenizer {
         }
         if (done == E_EOF) {
             if (level > 0) {
-                throw eofError();
+                throw eofError(fstringCount > 0 ? cur - logicalStart : 0);
             }
             return emit(ENDMARKER, -1, -1);
         }
@@ -202,7 +293,7 @@ final class Tokenizer {
             }
             if (c == EOF) {
                 if (level > 0) {
-                    throw eofError();
+                    throw eofError(fstringCount > 0 ? cur - logicalStart : 0);
                 }
                 done = E_EOF;
                 return emit(ENDMARKER, -1, -1);
@@ -218,8 +309,12 @@ final class Tokenizer {
                 atbol = true;
                 if (level > 0 || blankline) {
                     blankline = false;
+                    if (level == 0) {
+                        logicalStart = cur;
+                    }
                     return emit(NL, startPos, cur);
                 }
+                logicalStart = cur;
                 return emit(NEWLINE, startPos, cur);
             }
             if (isDigit(c)) {
@@ -289,7 +384,26 @@ final class Tokenizer {
             done = E_EOF;
             return false;
         }
+        int nul = read.indexOf('\0');
+        if (nul >= 0) {
+            // The reference refuses a source with an embedded null before it tokenizes any of it,
+            // and points at the line the byte is on with the text that precedes it.
+            int sourceLine = lineno + 1;
+            String before = read.substring(0, nul);
+            throw syntaxError(
+                    "source code cannot contain null bytes",
+                    ExceptionTypes.SYNTAX_ERROR,
+                    sourceLine,
+                    0,
+                    before,
+                    sourceLine,
+                    0);
+        }
         lineStart = buf.length();
+        if (lineCount == lineStarts.length) {
+            lineStarts = java.util.Arrays.copyOf(lineStarts, lineStarts.length * 2);
+        }
+        lineStarts[lineCount++] = lineStart;
         buf.append(read);
         if (read.charAt(read.length() - 1) != '\n') {
             buf.append('\n');
@@ -392,11 +506,11 @@ final class Tokenizer {
     /**
      * A name, or a string with its prefix.
      *
-     * <p>The prefix loop is the reference's, condition for condition, because the order is what
-     * refuses {@code bu''} while accepting {@code br''}, {@code rb''} and {@code u''}. A quote
-     * reached with {@code f} or {@code t} set is an f-string or template string in 3.14; both are
-     * read as plain strings here, which is the named deviation this slice carries until the
-     * f-string segment lands.
+     * <p>A prefix letter may appear once and only once: a repeated letter ends the prefix scan and
+     * the whole run becomes a name, which is why {@code bb'x'} is a name followed by a string while
+     * {@code br'x'} is one literal. Letters left over at the quote are checked against the pairs
+     * the reference refuses, so {@code bf'x'} is an error rather than a name and a string. A quote
+     * reached with {@code f} or {@code t} set starts an f-string or a template string.
      */
     private int identifier(int c) {
         boolean sawB = false;
@@ -405,21 +519,43 @@ final class Tokenizer {
         boolean sawF = false;
         boolean sawT = false;
         for (;;) {
-            if (!(sawB || sawU || sawF) && (c == 'b' || c == 'B')) {
+            if (c == 'b' || c == 'B') {
+                if (sawB) {
+                    break;
+                }
                 sawB = true;
-            } else if (!(sawB || sawU || sawR || sawF) && (c == 'u' || c == 'U')) {
+            } else if (c == 'u' || c == 'U') {
+                if (sawU) {
+                    break;
+                }
                 sawU = true;
-            } else if (!(sawR || sawU) && (c == 'r' || c == 'R')) {
+            } else if (c == 'r' || c == 'R') {
+                if (sawR) {
+                    break;
+                }
                 sawR = true;
-            } else if (!(sawF || sawB || sawU) && (c == 'f' || c == 'F')) {
+            } else if (c == 'f' || c == 'F') {
+                if (sawF) {
+                    break;
+                }
                 sawF = true;
-            } else if (!(sawT || sawB || sawU) && (c == 't' || c == 'T')) {
+            } else if (c == 't' || c == 'T') {
+                if (sawT) {
+                    break;
+                }
                 sawT = true;
             } else {
                 break;
             }
             c = nextc();
             if (c == '\'' || c == '"') {
+                String pair = prefixConflict(sawB, sawU, sawR, sawF, sawT);
+                if (pair != null) {
+                    throw prefixConflictError(pair);
+                }
+                if (sawF || sawT) {
+                    return fstringStart(c, sawT, sawR);
+                }
                 return letterQuote(c);
             }
         }
@@ -430,9 +566,52 @@ final class Tokenizer {
         return emit(NAME, start, cur);
     }
 
+    /**
+     * The pair of prefixes the reference names first when they cannot go together, in the order it
+     * names them; {@code null} when the set is legal.
+     */
+    private static String prefixConflict(
+            boolean b, boolean u, boolean r, boolean f, boolean t) {
+        if (u && b) {
+            return "'u' and 'b'";
+        }
+        if (u && r) {
+            return "'u' and 'r'";
+        }
+        if (u && f) {
+            return "'u' and 'f'";
+        }
+        if (u && t) {
+            return "'u' and 't'";
+        }
+        if (b && f) {
+            return "'b' and 'f'";
+        }
+        if (b && t) {
+            return "'b' and 't'";
+        }
+        if (f && t) {
+            return "'f' and 't'";
+        }
+        return null;
+    }
+
+    private PyRaise prefixConflictError(String pair) {
+        int end = cur - lineStart;
+        return syntaxError(
+                pair + " prefixes are incompatible",
+                ExceptionTypes.SYNTAX_ERROR,
+                lineno,
+                start - lineStart + 1,
+                currentLine(),
+                lineno,
+                end);
+    }
+
     private int letterQuote(int quote) {
         multiLineStart = lineStart;
         firstLineno = lineno;
+        fstringQuote = false;
         int quoteSize = 1;
         int c = nextc();
         if (c == quote) {
@@ -449,6 +628,11 @@ final class Tokenizer {
         if (quoteSize == 2) {
             return emit(STRING, start, cur);
         }
+        fstringQuote =
+                fstringCount > 0
+                        && inFStringField()
+                        && quote == fstringTop().quote
+                        && quoteSize == fstringTop().quoteSize;
         if (quoteSize == 1) {
             for (;;) {
                 c = nextc();
@@ -504,6 +688,11 @@ final class Tokenizer {
     }
 
     private int unterminatedString(boolean triple) {
+        if (fstringQuote) {
+            // The reference reads a quote that reuses the f-string's own quote as an attempt to
+            // close the field, so an unterminated one is reported that way.
+            throw stringError("f-string: expecting '}'");
+        }
         String message =
                 triple
                         ? "unterminated triple-quoted string literal (detected at line "
@@ -511,6 +700,370 @@ final class Tokenizer {
                                 + ")"
                         : "unterminated string literal (detected at line " + firstLineno + ")";
         throw stringError(message);
+    }
+
+    /* -------------------------------------------------------------- f-strings */
+
+    /**
+     * The quote that opens an f-string or template string, and the frame that reads it.
+     *
+     * <p>{@code start} is the first prefix character, so the START token's text is the whole prefix
+     * and quote. Two quotes are one quote and the closing one rather than the start of a triple,
+     * which is why the third character decides.
+     */
+    private int fstringStart(int quote, boolean template, boolean raw) {
+        int literalStart = start;
+        int quoteStart = cur - 1;
+        int quoteSize = 1;
+        int c = nextc();
+        if (c == quote) {
+            int c2 = nextc();
+            if (c2 == quote) {
+                quoteSize = 3;
+            } else {
+                cur = quoteStart + 1;
+            }
+        } else {
+            backup(c);
+        }
+        FString f = pushFrame();
+        f.quote = (char) quote;
+        f.quoteSize = quoteSize;
+        f.raw = raw;
+        f.kind = template ? "t-string" : "f-string";
+        f.startType = template ? TSTRING_START : FSTRING_START;
+        f.middleType = template ? TSTRING_MIDDLE : FSTRING_MIDDLE;
+        f.endType = template ? TSTRING_END : FSTRING_END;
+        f.literalStart = literalStart;
+        f.literalLine = lineno;
+        f.textStart = cur;
+        f.modeCount = 1;
+        f.modes[0] = CONTENT;
+        f.bases[0] = level;
+        return emitFStringToken(f.startType, literalStart, cur);
+    }
+
+    private FString pushFrame() {
+        if (fstringCount == fstrings.length) {
+            fstrings = java.util.Arrays.copyOf(fstrings, fstrings.length * 2);
+        }
+        FString f = fstrings[fstringCount];
+        if (f == null) {
+            f = new FString();
+            fstrings[fstringCount] = f;
+        }
+        fstringCount++;
+        return f;
+    }
+
+    private FString fstringTop() {
+        return fstrings[fstringCount - 1];
+    }
+
+    /** Whether the ordinary token loop is inside a field, at the field's own bracket depth. */
+    private boolean inFStringField() {
+        if (fstringCount == 0) {
+            return false;
+        }
+        FString f = fstringTop();
+        return f.modes[f.modeCount - 1] == EXPR && level == f.bases[f.modeCount - 1];
+    }
+
+    /**
+     * One token of the literal itself: text, a brace, or the closing quote.
+     *
+     * <p>The braces are read here rather than by the ordinary loop because their meaning depends on
+     * where they are: doubled they are one character of text, alone in the content they open a
+     * field, a lone {@code }} in the content is an error, and inside a specifier neither brace needs
+     * doubling to begin or end a nested field. Each step that decides more than one token — a
+     * doubled brace finishing the text and the next text run beginning, or a closing quote owing
+     * both a last piece of text and the END — queues the rest.
+     */
+    private int fstringLiteral(FString f, int mode) {
+        for (;;) {
+            int c = nextc();
+            int pos = cur - 1;
+            if (c == EOF) {
+                throw unterminatedFString(f);
+            }
+            if (c == '\\' && !f.raw) {
+                int c2 = nextc();
+                if (c2 == EOF) {
+                    throw unterminatedFString(f);
+                }
+                if (c2 == '{') {
+                    // `\{` does not escape the brace: the backslash is text and the brace still
+                    // opens a field. `\N{...}` is the one escape that spans one.
+                    backup(c2);
+                } else if (c2 == 'N') {
+                    int c3 = nextc();
+                    if (c3 == '{') {
+                        // A `\N{...}` name ends the text run where its closing brace is, because
+                        // the reference hands the name to the parser as a token of its own. A
+                        // quote reached first means the literal ends there, and the name is
+                        // left as plain text; a newline in a single-quoted literal or EOF is
+                        // the ordinary unterminated case.
+                        boolean closed = false;
+                        for (;;) {
+                            int c4 = nextc();
+                            if (c4 == EOF) {
+                                throw unterminatedFString(f);
+                            }
+                            if (c4 == '}') {
+                                closed = true;
+                                break;
+                            }
+                            if (c4 == f.quote) {
+                                if (f.quoteSize == 1) {
+                                    backup(c4);
+                                    break;
+                                }
+                                int q = cur - 1;
+                                int c5 = nextc();
+                                if (c5 == f.quote) {
+                                    int c6 = nextc();
+                                    if (c6 == f.quote) {
+                                        cur = q;
+                                        break;
+                                    }
+                                }
+                                continue;
+                            }
+                            if ((c4 == '\n' || c4 == '\r') && f.quoteSize == 1) {
+                                throw unterminatedFString(f);
+                            }
+                        }
+                        if (closed) {
+                            pushPending(f.middleType, f.textStart, cur);
+                            f.textStart = cur;
+                            return nextPendingToken();
+                        }
+                    } else {
+                        backup(c3);
+                    }
+                }
+                continue;
+            }
+            if (c == f.quote) {
+                if (f.quoteSize == 1) {
+                    return endLiteral(f, pos);
+                }
+                int c2 = nextc();
+                if (c2 != f.quote) {
+                    backup(c2);
+                    continue;
+                }
+                int c3 = nextc();
+                if (c3 == f.quote) {
+                    return endLiteral(f, pos);
+                }
+                backup(c3);
+                continue;
+            }
+            if (c == '\n' || c == '\r') {
+                if (f.quoteSize == 3) {
+                    if (c == '\r') {
+                        int c2 = nextc();
+                        if (c2 != '\n') {
+                            backup(c2);
+                        }
+                    }
+                    continue;
+                }
+                if (mode == SPEC) {
+                    throw fstringError(
+                            "f-string: newlines are not allowed in format specifiers for single"
+                                    + " quoted f-strings",
+                            cur - lineStart);
+                }
+                throw unterminatedFString(f);
+            }
+            if (c == '{') {
+                if (mode == CONTENT) {
+                    int c2 = nextc();
+                    if (c2 == '{') {
+                        pushPending(f.middleType, f.textStart, pos + 1);
+                        f.textStart = cur;
+                        return nextPendingToken();
+                    }
+                    backup(c2);
+                    if (pos > f.textStart) {
+                        pushPending(f.middleType, f.textStart, pos);
+                    }
+                } else {
+                    int c2 = nextc();
+                    boolean doubled = c2 == '{';
+                    backup(c2);
+                    // A specifier's brace always opens a field; the text before it is reported only
+                    // when there is some, or when the doubled brace shows the author meant text.
+                    if (pos > f.textStart || doubled) {
+                        pushPending(f.middleType, f.textStart, pos);
+                    }
+                }
+                openField(f, pos);
+                pushPending(LBRACE, pos, cur);
+                return nextPendingToken();
+            }
+            if (c == '}') {
+                if (mode == CONTENT) {
+                    int c2 = nextc();
+                    if (c2 == '}') {
+                        pushPending(f.middleType, f.textStart, pos + 1);
+                        f.textStart = cur;
+                        return nextPendingToken();
+                    }
+                    backup(c2);
+                    pushPending(f.middleType, f.textStart, pos);
+                    pendingError =
+                            fstringError(
+                                    "f-string: single '}' is not allowed", cur - lineStart);
+                    return nextPendingToken();
+                }
+                pushPending(f.middleType, f.textStart, pos);
+                level--;
+                f.modeCount--;
+                f.textStart = cur;
+                pushPending(RBRACE, pos, cur);
+                return nextPendingToken();
+            }
+        }
+    }
+
+    /** The closing quote: the text run before it, if any, then END, then the frame is gone. */
+    private int endLiteral(FString f, int quotePos) {
+        if (quotePos > f.textStart) {
+            pushPending(f.middleType, f.textStart, quotePos);
+        }
+        fstringCount--;
+        pushPending(f.endType, quotePos, cur);
+        return nextPendingToken();
+    }
+
+    private void openField(FString f, int bracePos) {
+        if (f.modeCount > MAXFIELDS) {
+            throw fstringError("f-string: expressions nested too deeply", bracePos - lineStart);
+        }
+        level++;
+        f.modes[f.modeCount] = EXPR;
+        f.bases[f.modeCount] = level;
+        f.modeCount++;
+    }
+
+    /** The {@code :} that leaves the expression for the format specifier. */
+    private int beginSpec() {
+        FString f = fstringTop();
+        f.modes[f.modeCount - 1] = SPEC;
+        f.textStart = cur;
+        return emit(COLON, start, cur);
+    }
+
+    /** The {@code }} that ends the field the expression was in. */
+    private int closeField() {
+        FString f = fstringTop();
+        level--;
+        f.modeCount--;
+        f.textStart = cur;
+        return emit(RBRACE, start, cur);
+    }
+
+    private void pushPending(int tokenType, int startPos, int endPos) {
+        pendingTypes[pendingCount] = tokenType;
+        pendingStarts[pendingCount] = startPos;
+        pendingEnds[pendingCount] = endPos;
+        pendingCount++;
+    }
+
+    private int nextPendingToken() {
+        int tokenType = pendingTypes[0];
+        int startPos = pendingStarts[0];
+        int endPos = pendingEnds[0];
+        System.arraycopy(pendingTypes, 1, pendingTypes, 0, pendingCount - 1);
+        System.arraycopy(pendingStarts, 1, pendingStarts, 0, pendingCount - 1);
+        System.arraycopy(pendingEnds, 1, pendingEnds, 0, pendingCount - 1);
+        pendingCount--;
+        return emitFStringToken(tokenType, startPos, endPos);
+    }
+
+    /**
+     * A token the literal decided, located by buffer offsets.
+     *
+     * <p>These spans cross lines, so the line and column cannot come from {@code lineStart} and
+     * {@code lineno}; the recorded line starts answer both. The reported line text is the start
+     * line's, from its beginning to everything read so far, which is how the reference reports the
+     * line of a token that a later readline has already extended past.
+     */
+    private int emitFStringToken(int tokenType, int startPos, int endPos) {
+        text = buf.substring(startPos, endPos);
+        startLine = lineOf(startPos);
+        startCol = startPos - lineStarts[startLine - 1];
+        endLine = endPos > startPos ? lineOf(endPos) : startLine;
+        endCol = endPos - lineStarts[endLine - 1];
+        int base = lineStarts[startLine - 1];
+        int end = inp - (implicitNewline ? 1 : 0);
+        lineText = buf.substring(base, Math.max(base, end));
+        type = extraTokens && tokenType > DEDENT && tokenType < OP ? OP : tokenType;
+        return type;
+    }
+
+    private int lineOf(int position) {
+        int lo = 0;
+        int hi = lineCount - 1;
+        while (lo < hi) {
+            int mid = (lo + hi + 1) >>> 1;
+            if (lineStarts[mid] <= position) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return lo + 1;
+    }
+
+    /** A line's text with its newline removed and its carriage return kept. */
+    private String lineTextAt(int lineNumber) {
+        if (lineNumber < 1 || lineNumber > lineCount) {
+            return "";
+        }
+        int from = lineStarts[lineNumber - 1];
+        int to = lineNumber < lineCount ? lineStarts[lineNumber] : buf.length();
+        if (to > from && buf.charAt(to - 1) == '\n') {
+            to--;
+        }
+        return buf.substring(from, Math.max(from, to));
+    }
+
+    private PyRaise fstringError(String message, int offset) {
+        return syntaxError(
+                message,
+                ExceptionTypes.SYNTAX_ERROR,
+                lineno,
+                offset,
+                currentLine(),
+                lineno,
+                offset);
+    }
+
+    /** A bare quote where the field's closing brace belongs. */
+    private PyRaise fstringExpectedClose() {
+        return fstringError("f-string: expecting '}'", start - lineStart + 1);
+    }
+
+    private PyRaise unterminatedFString(FString f) {
+        String message =
+                (f.quoteSize == 3 ? "unterminated triple-quoted " : "unterminated ")
+                        + f.kind
+                        + " literal (detected at line "
+                        + lineno
+                        + ")";
+        int offset = f.literalStart - lineStarts[f.literalLine - 1] + 1;
+        return syntaxError(
+                message,
+                ExceptionTypes.SYNTAX_ERROR,
+                f.literalLine,
+                offset,
+                lineTextAt(f.literalLine),
+                f.literalLine,
+                offset);
     }
 
     /* ---------------------------------------------------------------- numbers */
@@ -584,6 +1137,12 @@ final class Tokenizer {
     /* ----------------------------------------------------------- punctuation */
 
     private int punctuation(int c) {
+        if (c == '}' && inFStringField()) {
+            return closeField();
+        }
+        if (c == ':' && inFStringField()) {
+            return beginSpec();
+        }
         switch (c) {
             case '.':
                 return dot();
@@ -844,11 +1403,14 @@ final class Tokenizer {
         return buf.substring(lineStart, Math.max(lineStart, end));
     }
 
+    /**
+     * An unterminated literal, which is reported where the literal began — not where the scan gave
+     * up — with that line's text.
+     */
     private PyRaise stringError(String message) {
-        String line = currentLine();
-        int offset = start - lineStart + 1;
+        int offset = start - lineStarts[firstLineno - 1] + 1;
         return syntaxError(message, ExceptionTypes.SYNTAX_ERROR, firstLineno, offset,
-                line, lineno, offset);
+                lineTextAt(firstLineno), firstLineno, offset);
     }
 
     /**
@@ -874,13 +1436,18 @@ final class Tokenizer {
                 "unexpected character after line continuation character", E_LINECONT);
     }
 
-    /** EOF inside brackets: the one error whose {@code text} is {@code None}. */
-    private PyRaise eofError() {
+    /**
+     * EOF inside brackets: the one error whose {@code text} is {@code None}.
+     *
+     * <p>The offset is zero unless the EOF was reached inside an f-string, where the reference
+     * points at the last character it read.
+     */
+    private PyRaise eofError(int offset) {
         return syntaxError(
                 "unexpected EOF in multi-line statement",
                 ExceptionTypes.SYNTAX_ERROR,
                 lineno,
-                0,
+                offset,
                 null,
                 lineno,
                 -1);

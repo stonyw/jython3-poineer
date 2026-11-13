@@ -13,9 +13,9 @@ continuation, CRLF line ends, and a last line with no newline at all.  The secon
 path: an unterminated string, an unclosed bracket, a bad dedent, mixed tabs and spaces, and an
 unterminated triple quote, each reported with the fields both interpreters fill.
 
-Not exercised here: a prefixed literal.  This runtime still reads `f'...'` as one `STRING` where the
-reference emits `FSTRING_START`/`FSTRING_MIDDLE`/`FSTRING_END`; that is the named deviation of the
-first segment of this slice, and the corpus avoids f-strings until the second segment lands.
+Not exercised here: a prefixed literal.  That is the second segment's subject, and
+`23_tokenize_fstring.py` measures it: `f'...'` and `t'...'` arrive as
+`FSTRING_START`/`FSTRING_MIDDLE`/`FSTRING_END` here too, with the refusal paths beside them.
 """
 import sys
 
