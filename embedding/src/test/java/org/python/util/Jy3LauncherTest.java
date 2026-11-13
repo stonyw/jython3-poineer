@@ -558,7 +558,8 @@ class Jy3LauncherTest {
                 "17_pickle_recipes_and_slot_dispatch.py",
                 "18_datetime.py",
                 "19_socket.py",
-                "20_thread_local.py");
+                "20_thread_local.py",
+                "21_clear_type_descriptors_and_cell.py");
     }
 
     private static List<String> m3Corpus() {

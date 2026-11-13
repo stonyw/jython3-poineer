@@ -265,6 +265,9 @@ final class Constructors {
         if (type == PyType.WEAK_REFERENCE) {
             return Weakref.newRef(args, keywordNames);
         }
+        if (type == PyType.CELL) {
+            return cellNew(args, keywordNames);
+        }
         if (type == PyType.PARTIAL) {
             return FunctoolsModule.newPartial(args, keywordNames);
         }
@@ -337,6 +340,21 @@ final class Constructors {
     }
 
     // --- the descriptor builtins ---------------------------------------------------------------
+
+    /**
+     * {@code cell([contents])}: a box that starts empty or holding the one argument.
+     *
+     * <p>The two refusals come from two different places in the reference and are checked in its order:
+     * {@code cell_new} refuses keywords outright before {@code PyArg_ParseTuple}'s {@code "|O:cell"} counts
+     * what arrived, so {@code cell(1, 2, x=3)} is worded as a keyword complaint. A bare {@code cell()} is
+     * the empty box a closure starts with, which is the state {@code cell_contents} reads as
+     * {@code Cell is empty}.
+     */
+    private static PyObject cellNew(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("cell()", kwNames);
+        Arguments.atMost("cell", args, kwNames, 1);
+        return new PyCell(args.length == 0 ? null : args[0]);
+    }
 
     /**
      * {@code property(fget, fset, fdel, doc)}.

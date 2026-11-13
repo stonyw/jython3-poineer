@@ -927,10 +927,18 @@ final class Builtins {
         if (!Slots.isCallable(args[0])) {
             throw Slots.typeError("iter(v, w): v must be callable");
         }
-        return new Repeated(Slots.call(args[0], new PyObject[0], null), args[1]);
+        return new Repeated(args[0], args[1]);
     }
 
-    /** {@code iter(callable, sentinel)}, the two-argument form. */
+    /**
+     * {@code iter(callable, sentinel)}, the two-argument form.
+     *
+     * <p>The callable is stored, not called: CPython's {@code calliter_next} runs it once per step, so
+     * building the iterator must have no side effect. A {@code StopIteration} out of the callable ends the
+     * loop quietly rather than escaping — the same rule {@code itertools} takes from the reference, which
+     * is what makes {@code tokenize()}'s {@code iter(readline, b"")} stop at the end of the last line
+     * instead of raising through the generator.
+     */
     private static final class Repeated extends PyIterator {
 
         private final PyObject callable;
@@ -943,7 +951,15 @@ final class Builtins {
 
         @Override
         public PyObject nextOrNull() {
-            PyObject value = Slots.call(callable, new PyObject[0], null);
+            PyObject value;
+            try {
+                value = Slots.call(callable, new PyObject[0], null);
+            } catch (PyRaise refusal) {
+                if (!refusal.value().exceptionType().matches(ExceptionTypes.STOP_ITERATION)) {
+                    throw refusal;
+                }
+                return null;
+            }
             return Slots.compareTrue(CompareOp.EQ, value, sentinel) ? null : value;
         }
     }

@@ -1506,6 +1506,41 @@ public final class PyRuntime {
                         + "\n"
                         + "This enters the string in the (global) table of interned strings whose\n"
                         + "purpose is to speed up dictionary lookups."));
+        // `dataclasses._add_slots` clears the two storage descriptors off the original class before it
+        // copies the dictionary to a slotted replacement: the copy would otherwise carry a `__dict__`
+        // getset and a `__weakref__` getset that name the old class's storage. CPython's clear also
+        // invalidates the version tag that its method cache keys on; this runtime has no such cache —
+        // every lookup walks the mro — so removing the two entries from the class dictionary is the
+        // whole effect, not an approximation of it.
+        sys.set("_clear_type_descriptors", new PyNativeFunction(
+                        "_clear_type_descriptors",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("sys._clear_type_descriptors()", args, kwNames);
+                            if (!(args[0] instanceof PyType kind)) {
+                                // The name is the type's `__name__`, the half of a dotted `tp_name` after
+                                // the dot — and the None singleton's type is the one place where that is
+                                // still not what CPython prints: its sentence says "None", measured.
+                                PyType met = args[0].getType();
+                                throw Slots.typeError(
+                                        "_clear_type_descriptors() argument must be type, not %s",
+                                        met == PyType.NONE ? "None" : met.name());
+                            }
+                            if (!(kind instanceof PyClass declared)) {
+                                // A compiled-in type's dictionary is not a heap dictionary, which is the
+                                // one thing CPython says about it that a caller can act on.
+                                throw Slots.typeError("argument is immutable");
+                            }
+                            PyDict namespace = declared.namespace();
+                            namespace.remove(PyStr.interned("__dict__"));
+                            namespace.remove(PyStr.interned("__weakref__"));
+                            return PyNone.INSTANCE;
+                        })
+                .documented("_clear_type_descriptors($module, type, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Private function for clearing certain descriptors from a type's dictionary.\n"
+                        + "\n"
+                        + "See gh-135228 for context."));
         // `inspect.unwrap` reads this while `dataclasses` builds a class, which is the first thing
         // `unittest` imports that asks. The interpreter's stack is Java's, so the number is bookkeeping:
         // a program that raises it may still overflow where the reference would not, and the milestone

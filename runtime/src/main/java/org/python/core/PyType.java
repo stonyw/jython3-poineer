@@ -489,6 +489,14 @@ public class PyType extends PyObject {
      * other — {@code staticmethod} at {@code classmethod}, {@code classmethod} at {@code staticmethod} —
      * which is how a person reading {@code help()} finds the one they meant.
      */
+    private static final String CELL_DOC =
+            "Create a new cell object.\n"
+                    + "\n"
+                    + "  contents\n"
+                    + "    the contents of the cell. If not specified, the cell will be empty,\n"
+                    + "    and further attempts to access its cell_contents attribute will\n"
+                    + "    raise a ValueError.";
+
     private static final String STATICMETHOD_DOC =
             "staticmethod(function, /)\n"
                     + "--\n"
@@ -574,7 +582,7 @@ public class PyType extends PyObject {
     public static final PyType STATIC_METHOD =
             builtin("staticmethod").documented(STATICMETHOD_DOC);
     public static final PyType MODULE = builtin("module");
-    public static final PyType CELL = builtin("cell");
+    public static final PyType CELL = builtin("cell").documented(CELL_DOC);
     public static final PyType ITERATOR = builtin("iterator");
     /**
      * What {@code list[int]} is: the one value of a parameterized built-in type this runtime makes.

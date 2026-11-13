@@ -815,6 +815,10 @@ final class TypeDict {
             weakRefTable(into);
             return;
         }
+        if (owner == PyType.CELL) {
+            cellTable(into);
+            return;
+        }
         if (owner == PyType.BYTES) {
             bytesTable(into);
             return;
@@ -1687,6 +1691,31 @@ final class TypeDict {
         table.member(
                 "__callback__", null, self -> Weakref.callbackOf((Weakref.Holder) self), null);
         table.value("__doc__", docValue(PyType.WEAK_REFERENCE));
+    }
+
+    /**
+     * {@code cell}: one member, and the one member has a deleting half that is not a refusal.
+     *
+     * <p>{@code cell_contents} reads through the box; an empty box is a value the reader can reach — a
+     * closure cell before its scope has bound the name — and the read is where the reference says
+     * {@code Cell is empty}. Writing fills it, and deleting hands the setter a null, which here means the
+     * same thing: empty it, whether or not it held anything. That last half is why this is a getset and
+     * not a member: deleting must be accepted, and a member descriptor would refuse it.
+     */
+    private static void cellTable(PyDict into) {
+        Table table = new Table(PyType.CELL, into);
+        table.getset(
+                "cell_contents",
+                null,
+                self -> {
+                    PyObject held = ((PyCell) self).value();
+                    if (held == null) {
+                        throw Slots.valueError("Cell is empty");
+                    }
+                    return held;
+                },
+                (self, value) -> ((PyCell) self).set(value));
+        table.value("__doc__", docValue(PyType.CELL));
     }
 
     /**
