@@ -559,7 +559,23 @@ public final class PyRuntime {
      * {@code None}, because {@code _PyEval_GetBuiltin} writes that error only when the lookup left none.
      */
     static PyObject builtin(String name) {
-        PyObject callable = builtins().get(PyStr.interned(name));
+        Frame frame = Interpreter.currentFrame();
+        PyObject table = frame == null ? builtins() : frame.builtins();
+        PyStr key = PyStr.interned(name);
+        PyObject callable;
+        if (table instanceof PyDict dict) {
+            callable = dict.get(key);
+        } else {
+            try {
+                callable = Slots.getItem(table, key);
+            } catch (PyRaise missing) {
+                if (missing.value().exceptionType().matches(ExceptionTypes.KEY_ERROR)) {
+                    callable = null;
+                } else {
+                    throw missing;
+                }
+            }
+        }
         if (callable == null) {
             throw Slots.attributeError("%s", name);
         }

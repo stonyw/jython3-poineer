@@ -56,7 +56,7 @@ public final class PyFrame extends PyObject {
             // the interface is what the interpreter stops knowing at.
             case "f_code" -> (PyObject) frame.code();
             case "f_globals" -> frame.globals();
-            case "f_builtins" -> PyRuntime.builtins();
+            case "f_builtins" -> frame.builtins();
             case "f_locals" -> frame.localValues();
             case "f_lineno" -> frame.line() < 0 ? PyNone.INSTANCE : PyInt.of(frame.line());
             case "f_lasti" -> PyInt.of(frame.lasti());

@@ -179,7 +179,7 @@ public final class Interpreter {
                         // interpreter's own, and raises a NameError of its own wording when it is not
                         // there: `__build_class__` is looked up, not compiled in.
                         PyObject builder =
-                                PyRuntime.builtins().get(PyStr.interned("__build_class__"));
+                                readMapping(frame.builtins(), PyStr.interned("__build_class__"));
                         if (builder == null) {
                             throw PyRaise.raise(
                                     ExceptionTypes.NAME_ERROR, "__build_class__ not found");
@@ -1237,14 +1237,17 @@ public final class Interpreter {
         return value != null ? value : lookupGlobal(frame, name);
     }
 
-    /** Globals, then builtins: CPython's order for a name that is not local. */
+    /** Globals, then the frame's own builtins: CPython's order for a name that is not local. */
     private static PyObject lookupGlobal(Frame frame, String name) {
         PyStr key = PyStr.interned(name);
         PyObject value = frame.globals().get(key);
         if (value != null) {
             return value;
         }
-        value = PyRuntime.builtins().get(key);
+        // The builtins a frame sees are the ones its globals name under `__builtins__`, not the
+        // interpreter's own table: a custom mapping is asked through its `__getitem__`, so a missing
+        // name is the same NameError while an accessor that raises has its own error travel out.
+        value = readMapping(frame.builtins(), key);
         if (value != null) {
             return value;
         }
@@ -1752,7 +1755,23 @@ public final class Interpreter {
     private static PyObject importModule(Frame frame, int nameIndex) {
         PyObject fromlist = frame.pop();
         PyObject level = frame.pop();
-        return Import.importName(PyStr.of(frame.name(nameIndex)), frame.globals(), fromlist, level);
+        // `IMPORT_NAME` is a call of the frame's own `__import__`, not of the import machinery: a
+        // `__builtins__` that leaves the name out refuses the statement with ImportError, and one that
+        // replaces it sees the five arguments the reference passes.
+        PyObject importer = readMapping(frame.builtins(), PyStr.interned("__import__"));
+        if (importer == null) {
+            throw PyRaise.raise(ExceptionTypes.IMPORT_ERROR, "__import__ not found");
+        }
+        return Slots.call(
+                importer,
+                new PyObject[] {
+                    PyStr.of(frame.name(nameIndex)),
+                    frame.globals(),
+                    frame.nameHolder(),
+                    fromlist,
+                    level
+                },
+                null);
     }
 
     private static PyObject importFrom(Frame frame, String attribute) {

@@ -152,6 +152,23 @@ public final class Frame {
         return globals;
     }
 
+    /**
+     * {@code f_builtins}: the mapping a global miss is answered from.
+     *
+     * <p>CPython reads it out of the globals' {@code __builtins__} when the frame is pushed, and a module
+     * gives its dictionary there while every other frame is handed the builtins dictionary itself. A
+     * custom mapping is kept as it is rather than copied, because a {@code dict} subclass or a
+     * {@code mappingproxy} is asked through its own {@code __getitem__} and may answer with an error of
+     * its own; that is what makes a read-only or checked builtins table observable.
+     */
+    PyObject builtins() {
+        PyObject value = globals.get(PyStr.interned("__builtins__"));
+        if (value instanceof PyModule module) {
+            return module.dictionary();
+        }
+        return value != null ? value : PyRuntime.builtins();
+    }
+
     /** The dictionary {@code LOAD_NAME} and {@code STORE_NAME} address, or null when there is none. */
     public PyDict locals() {
         return locals;
