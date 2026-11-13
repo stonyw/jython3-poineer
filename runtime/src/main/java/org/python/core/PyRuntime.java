@@ -46,7 +46,7 @@ public final class PyRuntime {
             {"builtins", "sys", "_ast", "_datetime", "_socket", "_io", "_tokenize", "_opcode", "_signal",
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections",
-                "unicodedata", "resource", "_typing"};
+                "unicodedata", "resource", "_typing", "_testinternalcapi"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -273,6 +273,10 @@ public final class PyRuntime {
         PyModule collectionsModule = CollectionsModule.newModule();
         // The collector's control surface, which `test_generators` and `test_descr` import first.
         PyModule gcModule = GcModule.newModule();
+        // The probes `test_class` imports at module scope and the ones `test.support` reaches for by
+        // name, and none of the rest of the reference's internal C API: see `InternalCapiModule` for
+        // why each absent name is absent.
+        PyModule internalCapiModule = InternalCapiModule.newModule();
         modules.put(PyStr.interned("sys"), sysModule);
         modules.put(PyStr.interned("builtins"), home);
         modules.put(PyStr.interned("string.templatelib"), templateLib);
@@ -314,6 +318,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("posix"), posixModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
         modules.put(PyStr.interned("gc"), gcModule);
+        modules.put(PyStr.interned("_testinternalcapi"), internalCapiModule);
         // `_imp.create_builtin` answers from a table of its own rather than from `sys.modules`, so a
         // program that evicts a name — `import_fresh_module` does exactly that with
         // `del sys.modules['_types']` — does not unbuild the module; the next `create_module` still
