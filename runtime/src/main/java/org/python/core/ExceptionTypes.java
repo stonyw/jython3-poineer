@@ -262,6 +262,12 @@ public final class ExceptionTypes {
     public static final PyType BINASCII_INCOMPLETE =
             child("Incomplete", EXCEPTION).filedUnder("binascii.Incomplete");
 
+    /** {@code socket.gaierror}: the address lookup family, filed under {@code socket} beside the module. */
+    public static final PyType GAI_ERROR = child("gaierror", OS_ERROR).filedUnder("socket.gaierror");
+
+    /** {@code socket.herror}: the host lookup family, whose {@code h_errno} was never a real argument. */
+    public static final PyType HER_ERROR = child("herror", OS_ERROR).filedUnder("socket.herror");
+
     /**
      * {@code Warning} and the eleven categories {@code warnings.warn} sorts a message by.
      *

@@ -43,7 +43,7 @@ public final class PyRuntime {
      * extension modules, which are imports this runtime answers in Java instead.
      */
     private static final String[] BUILTIN_MODULE_NAMES =
-            {"builtins", "sys", "_ast", "_datetime", "_io", "_tokenize", "_opcode", "_signal",
+            {"builtins", "sys", "_ast", "_datetime", "_socket", "_io", "_tokenize", "_opcode", "_signal",
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "_codecs", "errno", "math", "time", "posix", "_collections",
                 "unicodedata", "resource", "_typing"};
@@ -587,6 +587,11 @@ public final class PyRuntime {
         // Python and compiled on first import, and `datetime.py` imports it from module scope.
         if (dotted.equals("_datetime")) {
             return cached(DatetimeModule.install(), dotted);
+        }
+        // `_socket` is built the same way: `socket.py` subclasses `_socket.socket` at module scope and
+        // declares `__slots__`, so the base has to be a Python class with slots and no `__dict__`.
+        if (dotted.equals("_socket")) {
+            return cached(SocketModule.install(), dotted);
         }
         int dot = dotted.lastIndexOf('.');
         if (dot <= 0) {
@@ -1424,6 +1429,7 @@ public final class PyRuntime {
                         PyStr.of("sys"),
                         PyStr.of("_ast"),
                         PyStr.of("_datetime"),
+                        PyStr.of("_socket"),
                         PyStr.of("_io"),
                         PyStr.of("_tokenize"),
                         PyStr.of("_opcode"),
