@@ -24,15 +24,19 @@ import java.util.function.IntPredicate;
  * half borrows a Java charset, because a charset that accepts what the reference refuses answers the
  * differentials no one thinks to ask about.
  */
-public final class PyBytes extends PyObject {
+public class PyBytes extends PyObject {
 
     public static final PyBytes EMPTY = new PyBytes(new byte[0]);
 
     private final byte[] value;
 
-    private PyBytes(byte[] value) {
-        super(PyType.BYTES);
+    PyBytes(PyType kind, byte[] value) {
+        super(kind);
         this.value = value;
+    }
+
+    private PyBytes(byte[] value) {
+        this(PyType.BYTES, value);
     }
 
     public static PyBytes of(byte[] value) {

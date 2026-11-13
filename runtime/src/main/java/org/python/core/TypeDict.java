@@ -3209,8 +3209,12 @@ final class TypeDict {
 
     /** {@code float_new} over a {@code tp_new} reached through the dictionary: the class gates first. */
     private static PyObject floatsNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.FLOAT, args, kwNames);
-        return Constructors.floating(tail(args, kwNames), kwNames);
+        PyType subtype = declaredClass(PyType.FLOAT, args, kwNames);
+        PyFloat made = (PyFloat) Constructors.floating(tail(args, kwNames), kwNames);
+        if (subtype == PyType.FLOAT || made.getType() == subtype) {
+            return made;
+        }
+        return new PyFloatSubclass(made.getValue(), subtype);
     }
 
     /**
@@ -4649,13 +4653,17 @@ final class TypeDict {
         PyObject made =
                 Constructors.instantiate(
                         declaring, tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames));
-        // Only `str` and `tuple` have a shape a dictionary can sit beside; the other three types on this
-        // path build their own structs and are never derived from.
+        // The immutable values that carry their run beside them: `str`, `tuple` and `bytes` keep the
+        // same shape when a class Python wrote is the type asking, and the other two types on this path
+        // build their own structs and are never derived from.
         if (declaring == PyType.STR && kind != PyType.STR && made instanceof PyStr text) {
             return new PyStrSubclass(text.getValue(), kind);
         }
         if (declaring == PyType.TUPLE && kind != PyType.TUPLE && made instanceof PyTuple tuple) {
             return new PyTupleSubclass(tuple.getArray(), kind);
+        }
+        if (declaring == PyType.BYTES && kind != PyType.BYTES && made instanceof PyBytes octets) {
+            return new PyBytesSubclass(octets.getValue(), kind);
         }
         return made;
     }
@@ -5932,6 +5940,11 @@ final class TypeDict {
                     // `complex.__new__` reads its one or two arguments before `object.__init__` is
                     // reached, which is why `class Z(complex): pass; Z(1, 2)` is fine.
                     || owner == PyType.COMPLEX
+                    // `float` and `bytes` likewise read their arguments before `object.__init__` is
+                    // reached: `class F(float): pass; F(1.5)` and `class B(bytes): pass; B(b"ab")`
+                    // are fine without a `__new__` of their own.
+                    || owner == PyType.FLOAT
+                    || owner == PyType.BYTES
                     // A subclass of `SimpleNamespace` has already read its one positional argument in
                     // `namespace_init`, so `object.__init__` is not the slot that complains about it.
                     || owner == PyType.NAMESPACE

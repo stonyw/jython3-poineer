@@ -571,7 +571,8 @@ class Jy3LauncherTest {
                 "30_fstring_format.py",
                 "31_exception_cleanup.py",
                 "32_descriptor_protocol.py",
-                "33_builtin_subclasses.py");
+                "33_builtin_subclasses.py",
+                "34_float_bytes_subclasses.py");
     }
 
     private static List<String> m3Corpus() {

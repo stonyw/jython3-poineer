@@ -430,11 +430,17 @@ final class Numeric {
      * {@code float_float}: the coercion every float answers with itself.
      *
      * <p>Four names reach this one C function — {@code +x}, {@code float(x)}, {@code x.__float__()} and the
-     * {@code real} read — and each hands back the very object it was given rather than a copy of it, which
-     * is observable through {@code is}. The copy half of {@code float_float} is written for a value that is
-     * a float <em>subclass</em>, and no class under this runtime builds one.
+     * {@code real} read. An exact float hands back the very object it was given rather than a copy of it,
+     * which is observable through {@code is}; a float <em>subclass</em> — {@code PyFloatSubclass} — is
+     * copied to the plain double, as {@code float_float} does with {@code PyFloat_FromDouble}.
      */
     static PyObject floatFloat(PyObject value) {
+        // `float_float` answers the receiver itself for an exact float (`float(x) is x`), but a class
+        // Python wrote under `float` is not exact: `+f`, `f.__float__()` and `float(f)` all come back as
+        // the double with `float` as its type, which is the identity the reference keeps.
+        if (value instanceof PyFloat number && number.getType() != PyType.FLOAT) {
+            return PyFloat.of(number.getValue());
+        }
         return value;
     }
 

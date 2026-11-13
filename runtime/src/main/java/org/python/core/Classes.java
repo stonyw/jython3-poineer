@@ -345,6 +345,14 @@ final class Classes {
                 // `PyComplexSubclass` keeps as the base already does. `test_descr` writes both
                 // `class C(complex)` and `class Number(complex)` with a slot of its own.
                 || base == PyType.COMPLEX
+                // `float` is the other immutable number with a fixed layout: one double, which
+                // `PyFloatSubclass` keeps as the base already does. `test_descr` writes a `precfloat`
+                // under it with a slot and its own `__repr__`, and `test_types` derives from it beside
+                // a `typing` alias (`class D(B[str], float)`).
+                || base == PyType.FLOAT
+                // `bytes` is an immutable run of octets; `PyBytesSubclass` holds the same run and lets
+                // the class keep a dictionary beside it. `test_descr`'s buffer test subclasses it.
+                || base == PyType.BYTES
                 // A module's state is the dictionary it owns, which is exactly what a class Python
                 // writes can keep beside it: `types.ModuleType` is a base the reference's own tests
                 // (and `runpy`) rely on, and `PyModule` reads class members when its type is a class.
@@ -1489,6 +1497,14 @@ final class Classes {
             PyComplex made =
                     (PyComplex) Constructors.instantiate(PyType.COMPLEX, args, kwNames);
             return new PyComplexSubclass(made.real(), made.imaginary(), kind);
+        }
+        if (kind.matches(PyType.FLOAT)) {
+            PyFloat made = (PyFloat) Constructors.floating(args, names);
+            return new PyFloatSubclass(made.getValue(), kind);
+        }
+        if (kind.matches(PyType.BYTES)) {
+            PyBytes made = (PyBytes) Constructors.instantiate(PyType.BYTES, args, kwNames);
+            return new PyBytesSubclass(made.getValue(), kind);
         }
         // A module's creator is `module_new`: the dictionary is empty until `__init__` fills the five
         // names, which is what makes `M.__new__(M)` a module with nothing in it and `M("a")` one

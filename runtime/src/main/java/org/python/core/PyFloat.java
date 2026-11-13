@@ -6,16 +6,20 @@ import java.math.MathContext;
 import java.math.RoundingMode;
 import java.nio.ByteOrder;
 
-public final class PyFloat extends PyObject {
+public class PyFloat extends PyObject {
 
     /** The most digits a double can need; 17 always round-trips, so the search always terminates. */
     private static final int MAX_SIGNIFICANT_DIGITS = 17;
 
     private final double value;
 
-    private PyFloat(double value) {
-        super(PyType.FLOAT);
+    PyFloat(PyType kind, double value) {
+        super(kind);
         this.value = value;
+    }
+
+    private PyFloat(double value) {
+        this(PyType.FLOAT, value);
     }
 
     public static PyFloat of(double value) {

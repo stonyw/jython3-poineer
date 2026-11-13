@@ -226,21 +226,24 @@ class MetaclassTest {
     }
 
     /**
-     * The two immutable values may be bases; every other built-in still may not.
+     * The immutable values may be bases; every other built-in still may not.
      *
-     * <p>{@code int} and {@code str} are the fourth kind of base: a value whose storage is a single
-     * field, so a subclass is that value with a dictionary beside it. Every other built-in is a Java
-     * class with slots no dictionary can stand in for, so the refusal is this runtime's own and is
-     * named as a deviation. It is a {@code NotImplementedError} rather than a {@code TypeError}
-     * because nothing about the program is wrong — only about what this runtime has built so far.
+     * <p>{@code int}, {@code str}, {@code complex}, {@code float} and {@code bytes} are the fourth
+     * kind of base: a value whose storage is a fixed run of fields, so a subclass is that value with a
+     * dictionary beside it. Every other built-in is a Java class with slots no dictionary can stand
+     * in for, so the refusal is this runtime's own and is named as a deviation. It is a
+     * {@code NotImplementedError} rather than a {@code TypeError} because nothing about the program
+     * is wrong — only about what this runtime has built so far.
      */
     @Test
     void theImmutableValuesAreDerivableAndTheOtherBuiltInsAreNot() {
         assertThat(type("MyStr", new PyType[] {PyType.STR}).getType()).isSameAs(PyType.TYPE);
         assertThat(type("MyInt", new PyType[] {PyType.INT}).getType()).isSameAs(PyType.TYPE);
+        assertThat(type("MyFloat", new PyType[] {PyType.FLOAT}).getType()).isSameAs(PyType.TYPE);
+        assertThat(type("MyBytes", new PyType[] {PyType.BYTES}).getType()).isSameAs(PyType.TYPE);
         refuses(
-                "NotImplementedError: subclassing 'float' is not implemented",
-                () -> type("MyFloat", new PyType[] {PyType.FLOAT}));
+                "NotImplementedError: subclassing 'set' is not implemented",
+                () -> type("MySet", new PyType[] {PyType.SET}));
 
         assertThat(type("Exceptionish", new PyType[] {ExceptionTypes.TYPE_ERROR})
                         .getType())

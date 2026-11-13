@@ -847,7 +847,8 @@ final class Constructors {
             return PyFloat.of(parsed);
         }
         if (args[0] instanceof PyFloat number) {
-            return number;
+            // `float(x)` copies a float subclass to an exact float, and answers an exact float as itself.
+            return number.getType() == PyType.FLOAT ? number : PyFloat.of(number.getValue());
         }
         Double converted = Numbers.floatOf(args[0]);
         if (converted == null) {

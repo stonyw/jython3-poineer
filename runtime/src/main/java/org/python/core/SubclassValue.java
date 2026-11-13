@@ -123,7 +123,9 @@ final class SubclassValue {
                 if (owner == PyType.INT
                         || owner == PyType.STR
                         || owner == PyType.TUPLE
-                        || owner == PyType.COMPLEX) {
+                        || owner == PyType.COMPLEX
+                        || owner == PyType.FLOAT
+                        || owner == PyType.BYTES) {
                     return fallback.getAsLong();
                 }
                 continue;
