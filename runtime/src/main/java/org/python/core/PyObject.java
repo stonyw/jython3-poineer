@@ -213,15 +213,28 @@ public abstract class PyObject {
     }
 
     /**
+     * The cells a class that wrote {@code __slots__} laid out for this value, keyed by the class that
+     * declared each one.
+     *
+     * <p>An {@link PyInstance} keeps its own map because a class a Python statement built is the usual
+     * shape; this one is for the other shape: a value of a class written under a built-in — {@code
+     * class Number(complex): __slots__ = ['prec']} — whose own storage is the value it was born with.
+     * Null until a field is first written, which is why a value whose class declared no slots pays
+     * nothing.
+     */
+    private java.util.Map<SlotKey, PyObject> slotFields;
+
+    /** One declared field: the class that laid it out and the name it gave it. */
+    record SlotKey(PyType owner, String name) {}
+
+    /**
      * {@code self.name} for a field the value's class declared in {@code __slots__} — CPython's {@code
      * T_OBJECT_EX} offset, which this runtime keeps in a storage of its own beside the attributes a value
      * can list.
      *
      * <p>Reached only through the {@code member_descriptor} the class files, so the name is already known
      * to be one of those fields, and an empty one is the {@code AttributeError} the getter of that offset
-     * answers with rather than a missing attribute the class dictionary would have to be asked about. Only
-     * the two value shapes that keep attribute storage — an instance of a class Python wrote, and an
-     * exception — override this; the class system builds no other class with slots to read.
+     * answers with rather than a missing attribute the class dictionary would have to be asked about.
      */
     PyObject slotValue(String name) {
         throw Slots.attributeError(
@@ -245,12 +258,33 @@ public abstract class PyObject {
      * shapes that keep one storage under the names their class filed.
      */
     PyObject slotValue(PyType owner, String name) {
-        return slotValue(name);
+        PyObject held = slotFields == null ? null : slotFields.get(new SlotKey(owner, name));
+        if (held == null) {
+            throw Slots.attributeError(
+                    "'%s' object has no attribute '%s'", getType().filedName(), name);
+        }
+        return held;
     }
 
-    /** The writing half of {@link #slotValue(PyType, String)}. */
+    /**
+     * The writing half of {@link #slotValue(PyType, String)}.
+     *
+     * <p>{@code del} is the same call with nothing handed over, and its refusal is the bare name: the
+     * {@code member_descriptor}'s delete has no attribute sentence of its own.
+     */
     void writeSlot(PyType owner, String name, PyObject value) {
-        writeSlot(name, value);
+        SlotKey key = new SlotKey(owner, name);
+        if (value == null) {
+            if (slotFields == null || slotFields.get(key) == null) {
+                throw Slots.attributeError("%s", name);
+            }
+            slotFields.remove(key);
+            return;
+        }
+        if (slotFields == null) {
+            slotFields = new java.util.HashMap<>();
+        }
+        slotFields.put(key, value);
     }
 
     /**

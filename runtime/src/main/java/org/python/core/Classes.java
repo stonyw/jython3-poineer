@@ -289,6 +289,10 @@ final class Classes {
                 throw Slots.typeError("bases must be types");
             }
             if (!canDeriveFrom(kind)) {
+                if (refusesBase(kind)) {
+                    throw Slots.typeError(
+                            "type '%s' is not an acceptable base type", kind.name());
+                }
                 throw Slots.notImplemented("subclassing '" + kind.name() + "'");
             }
         }
@@ -337,6 +341,14 @@ final class Classes {
                 || base == PyType.INT
                 || base == PyType.STR
                 || base == PyType.TUPLE
+                // `complex` is the second immutable value with a fixed layout: two doubles, which
+                // `PyComplexSubclass` keeps as the base already does. `test_descr` writes both
+                // `class C(complex)` and `class Number(complex)` with a slot of its own.
+                || base == PyType.COMPLEX
+                // A module's state is the dictionary it owns, which is exactly what a class Python
+                // writes can keep beside it: `types.ModuleType` is a base the reference's own tests
+                // (and `runpy`) rely on, and `PyModule` reads class members when its type is a class.
+                || base == PyType.MODULE
                 || base.matches(ExceptionTypes.BASE_EXCEPTION)
                 || base == PyType.CLASS_METHOD
                 || base == PyType.STATIC_METHOD
@@ -374,6 +386,24 @@ final class Classes {
                 // `doctest.py` is `class _SpoofOut(StringIO)`, a Python class that keeps a `write` and
                 // two `getvalue`s of its own over the buffer's rows, so the same rule applies to it.
                 || base == PyType.STRING_IO;
+    }
+
+    /**
+     * The built-in types CPython itself refuses as a base.
+     *
+     * <p>None of them carries {@code Py_TPFLAGS_BASETYPE}, so {@code class X(T)} and {@code
+     * X.__bases__ = (T,)} are both a {@code TypeError} in the reference: {@code type 'NoneType' is not
+     * an acceptable base type}. Naming them apart keeps this runtime's own {@code NotImplementedError}
+     * meaning what it should — "the reference allows it, we have not opened the family yet" — instead
+     * of blurring "the language forbids it" and "this runtime has not caught up".
+     */
+    private static boolean refusesBase(PyType kind) {
+        return kind == PyType.NONE
+                || kind == PyType.BOOL
+                || kind == PyType.FUNCTION
+                || kind == PyType.MEMORYVIEW
+                || kind == PyType.RANGE
+                || kind == PyType.SLICE;
     }
 
     /**
@@ -1450,6 +1480,21 @@ final class Classes {
         if (kind.parent() == PyType.TUPLE) {
             PyTuple made = (PyTuple) Constructors.instantiate(PyType.TUPLE, args, kwNames);
             return new PyTupleSubclass(made.getArray(), kind);
+        }
+        // `complex.__new__` settles the pair before anything else runs, and the subtype keeps it: the
+        // class's own `__init__` runs afterwards beside a value it cannot change, exactly as it does
+        // for `int` and `str`. `matches` rather than `parent` because a class may sit several levels
+        // under the base and still be allocated by the same creator.
+        if (kind.matches(PyType.COMPLEX)) {
+            PyComplex made =
+                    (PyComplex) Constructors.instantiate(PyType.COMPLEX, args, kwNames);
+            return new PyComplexSubclass(made.real(), made.imaginary(), kind);
+        }
+        // A module's creator is `module_new`: the dictionary is empty until `__init__` fills the five
+        // names, which is what makes `M.__new__(M)` a module with nothing in it and `M("a")` one
+        // whose `MT.__init__` wrote `__name__`.
+        if (kind.matches(PyType.MODULE)) {
+            return PyModule.uninitialised(kind);
         }
         // A class written over `weakref.ref` inherits the reference's creator: the referent and the
         // callback are read off the same two positionals, and the value is the subclass's, which is

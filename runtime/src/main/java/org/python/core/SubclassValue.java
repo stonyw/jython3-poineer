@@ -120,7 +120,10 @@ final class SubclassValue {
                             : null;
             if (declared == null) {
                 // The built-in base's own `__hash__` is a slot of the value, not a name in a dictionary.
-                if (owner == PyType.INT || owner == PyType.STR || owner == PyType.TUPLE) {
+                if (owner == PyType.INT
+                        || owner == PyType.STR
+                        || owner == PyType.TUPLE
+                        || owner == PyType.COMPLEX) {
                     return fallback.getAsLong();
                 }
                 continue;

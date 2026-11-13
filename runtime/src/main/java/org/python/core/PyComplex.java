@@ -1,14 +1,18 @@
 package org.python.core;
 
-public final class PyComplex extends PyObject {
+public class PyComplex extends PyObject {
 
     private final double real;
     private final double imaginary;
 
-    private PyComplex(double real, double imaginary) {
-        super(PyType.COMPLEX);
+    PyComplex(PyType kind, double real, double imaginary) {
+        super(kind);
         this.real = real;
         this.imaginary = imaginary;
+    }
+
+    private PyComplex(double real, double imaginary) {
+        this(PyType.COMPLEX, real, imaginary);
     }
 
     public static PyComplex of(double real, double imaginary) {

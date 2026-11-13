@@ -873,6 +873,13 @@ final class TypeDict {
             dictTable(into);
             return;
         }
+        // `types.ModuleType` has a table now that a class may be written under it: the reference's
+        // module slots are `module_new`, `module_init` and the three attribute hooks, and a subclass
+        // reaches them exactly as it reaches `int.__new__`.
+        if (owner == PyType.MODULE) {
+            moduleTable(into);
+            return;
+        }
         if (owner == PyType.DICT_KEYS || owner == PyType.DICT_ITEMS) {
             dictViewTable(owner, true, into);
             return;
@@ -2738,6 +2745,31 @@ final class TypeDict {
     }
 
     /**
+     * The module type's slots, as {@code Objects/moduleobject.c} files them.
+     *
+     * <p>{@code __new__} is raw because {@code M.__new__(M)} names the class it wants; the rest bind,
+     * which is what makes {@code MT.__init__(self, name)} and {@code self.__getattribute__(name)} two
+     * spellings of the same call. {@code __dir__} is here so that a module answers only its
+     * dictionary, which is the reference's {@code module_dir} and the difference a class replacing
+     * {@code __dict__} with a non-mapping turns into a refusal.
+     */
+    private static void moduleTable(PyDict into) {
+        Table table = new Table(PyType.MODULE, into);
+        table.raw("__new__", NEW_DOC, PyModule::allocate);
+        table.wrapper(
+                "__init__", INIT_DOC, (args, kwNames, qualified) -> PyModule.initialise(args, kwNames));
+        table.wrapper(
+                "__getattribute__",
+                GETATTR_DOC,
+                (args, kwNames, qualified) -> PyModule.read(args, kwNames));
+        table.wrapper(
+                "__setattr__", SETATTR_DOC, (args, kwNames, qualified) -> PyModule.write(args, kwNames));
+        table.wrapper(
+                "__delattr__", DELATTR_DOC, (args, kwNames, qualified) -> PyModule.delete(args, kwNames));
+        table.method("__dir__", DIR_DOC, (args, kwNames, qualified) -> PyModule.names(args, kwNames));
+    }
+
+    /**
      * {@code dict}'s own dictionary: the thirty-four names a mapping files.
      *
      * <p>Fifteen of them are slot wrappers, and the shape of the other nineteen is the story of this table.
@@ -3272,8 +3304,14 @@ final class TypeDict {
      * {@code complex.__new__(complex, 1+2j)} the very value it was given.
      */
     private static PyObject complexesNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.COMPLEX, args, kwNames);
-        return Constructors.complexing(tail(args, kwNames), kwNames);
+        PyType subtype = declaredClass(PyType.COMPLEX, args, kwNames);
+        PyComplex made = (PyComplex) Constructors.complexing(tail(args, kwNames), kwNames);
+        if (subtype == PyType.COMPLEX || made.getType() == subtype) {
+            return made;
+        }
+        // `complex.__new__(Sub, ...)` allocates the subtype, exactly as `tp_alloc` does for the
+        // subtype `tp_new` was handed; the pair itself is the one the base constructor settled.
+        return new PyComplexSubclass(made.real(), made.imaginary(), subtype);
     }
 
     /**
@@ -5891,6 +5929,9 @@ final class TypeDict {
             if (owner == PyType.INT
                     || owner == PyType.STR
                     || owner == PyType.TUPLE
+                    // `complex.__new__` reads its one or two arguments before `object.__init__` is
+                    // reached, which is why `class Z(complex): pass; Z(1, 2)` is fine.
+                    || owner == PyType.COMPLEX
                     // A subclass of `SimpleNamespace` has already read its one positional argument in
                     // `namespace_init`, so `object.__init__` is not the slot that complains about it.
                     || owner == PyType.NAMESPACE
