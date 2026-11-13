@@ -449,6 +449,16 @@ public class PyType extends PyObject {
     public static final PyType TRACEBACK = builtin("traceback");
     /** One activation of one code object, as Python sees it through {@code tb_frame} and {@code f_back}. */
     public static final PyType FRAME = builtin("frame").flagged(MAPPING);
+    /**
+     * What {@code frame.f_locals} is on a frame whose names live in slots.
+     *
+     * <p>The reference has answered with a {@code FrameLocalsProxy} since 3.13: a mapping that reads and
+     * writes the frame's fast locals rather than copying them, which is what lets a suspended generator
+     * be steered by writing {@code g.gi_frame.f_locals['.0']}. It is flagged as a mapping for the same
+     * reason {@link #FRAME} is — {@code dict(proxy)} reads {@code keys()} and then the items.
+     */
+    public static final PyType FRAME_LOCALS =
+            builtin("FrameLocalsProxy").flagged(MAPPING).withoutNew();
     public static final PyType FUNCTION = builtin("function");
     public static final PyType BUILTIN_FUNCTION =
             builtin("builtin_function_or_method").withoutNew();

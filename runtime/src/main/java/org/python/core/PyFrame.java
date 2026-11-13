@@ -57,7 +57,7 @@ public final class PyFrame extends PyObject {
             case "f_code" -> (PyObject) frame.code();
             case "f_globals" -> frame.globals();
             case "f_builtins" -> frame.builtins();
-            case "f_locals" -> frame.localValues();
+            case "f_locals" -> frame.localsView();
             case "f_lineno" -> frame.line() < 0 ? PyNone.INSTANCE : PyInt.of(frame.line());
             case "f_lasti" -> PyInt.of(frame.lasti());
             case "f_generator" ->

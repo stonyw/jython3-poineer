@@ -47,6 +47,21 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
     private PyCell[] closure = new PyCell[0];
     private PyDict attributes;
 
+    /**
+     * The name a generator or coroutine this function creates is born with.
+     *
+     * <p>{@code _Py_MakeCoro} copies {@code func_name} and {@code func_qualname} at creation, so a
+     * function renamed afterwards still hands its next generator the new name — the code object's
+     * {@code co_name} is not what the generator answers to.
+     */
+    PyObject coroutineName() {
+        return name;
+    }
+
+    PyObject coroutineQualName() {
+        return qualName;
+    }
+
     /** The PEP 649 annotate function, or null when the compiler attached none. */
     private PyObject annotate;
 

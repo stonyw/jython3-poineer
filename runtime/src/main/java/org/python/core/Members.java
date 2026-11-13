@@ -60,6 +60,9 @@ final class Members {
             Map.entry(PyType.TUPLE, PyTuple.class),
             Map.entry(PyType.LIST, PyList.class),
             Map.entry(PyType.DICT, PyDict.class),
+            // `frame.f_locals` is a mapping built from slots, and its `get`/`keys`/... are registered on
+            // the proxy's own class rather than on the frame's.
+            Map.entry(PyType.FRAME_LOCALS, PyFrameLocals.class),
             Map.entry(PyType.SET, PySet.class),
             Map.entry(PyType.FROZENSET, PySet.class),
             // The three dict views declare their method lists in one place, so their tables belong to that

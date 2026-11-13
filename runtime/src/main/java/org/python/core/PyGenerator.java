@@ -137,12 +137,20 @@ public final class PyGenerator extends PyIterator {
         this.kind = kind;
         this.frame = frame;
         frame.generator = this;
-        // _Py_MakeCoro has no names to give the generator, so both come off the code object.
-        this.name = PyStr.of(frame.code().name());
-        this.qualName =
-                frame.code().qualName() == null
-                        ? this.name
-                        : PyStr.of(frame.code().qualName());
+        // _Py_MakeCoro copies the names off the function the call was making, so a generator made after
+        // `func.__name__ = ...` answers the new name; only a generator made without a function (none
+        // here) falls back on the code object.
+        PyFunction owner = frame.function;
+        if (owner != null) {
+            this.name = owner.coroutineName();
+            this.qualName = owner.coroutineQualName();
+        } else {
+            this.name = PyStr.of(frame.code().name());
+            this.qualName =
+                    frame.code().qualName() == null
+                            ? this.name
+                            : PyStr.of(frame.code().qualName());
+        }
     }
 
     /** The activation this generator owns, for the driver and for tests that read it directly. */
@@ -361,6 +369,19 @@ public final class PyGenerator extends PyIterator {
 
     /** {@code gen_throw}: the argument count the legacy signature checks, and the three it hands over. */
     PyObject throwIn(PyObject[] arguments) {
+        if (arguments.length == 3) {
+            // `throw(type, value, traceback)` is deprecated at the call site, before the walk into a
+            // delegate, so a warning promoted to an error stops the throw where the reference stops it.
+            PyObject warnings = PyRuntime.importModule("warnings");
+            Slots.call(
+                    Slots.getAttr(warnings, "warn"),
+                    new PyObject[] {
+                        PyStr.of("the (type, exc, tb) signature of throw() is deprecated, "
+                                + "use the single-arg signature instead."),
+                        ExceptionTypes.DEPRECATION_WARNING
+                    },
+                    null);
+        }
         PyObject type = arguments[0];
         PyObject value = arguments.length >= 2 ? arguments[1] : null;
         PyObject trace = arguments.length == 3 ? arguments[2] : null;
@@ -450,7 +471,15 @@ public final class PyGenerator extends PyIterator {
         }
         PyBaseException thrown;
         if (type instanceof PyType kind && kind.matches(ExceptionTypes.BASE_EXCEPTION)) {
-            thrown = makeException(kind, value);
+            try {
+                thrown = makeException(kind, value);
+            } catch (PyRaise refused) {
+                // A class whose __new__ answers something other than an exception has not made one, and
+                // the reference leaves that failure in flight rather than reporting it from throw(): the
+                // frame is entered with it, so the body meets it at its yield (or at its first line) and
+                // the generator ends the way the body's own handlers decide.
+                return step(PyNone.INSTANCE, refused);
+            }
         } else if (type instanceof PyBaseException instance) {
             if (value != null && value != PyNone.INSTANCE) {
                 throw Slots.typeError("instance exception may not have a separate value");
@@ -551,8 +580,11 @@ public final class PyGenerator extends PyIterator {
         }
         PyObject made = Slots.call(kind, arguments, null);
         if (!(made instanceof PyBaseException exception)) {
+            // `_PyErr_CreateException` names the thing that was called and the kind of what came back,
+            // because a class whose __new__ answers itself is a call that failed to make an exception.
             throw Slots.typeError(
-                    "%s() should return an exception, got %s", kind.name(), made.getType().name());
+                    "calling %s should have returned an instance of BaseException, not %s",
+                    kind.repr(), made.getType().name());
         }
         return exception;
     }

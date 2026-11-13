@@ -1738,6 +1738,32 @@ public final class PyRuntime {
                         + "This limit prevents infinite recursion from causing an overflow of the C\n"
                         + "stack and crashing Python.  The highest possible limit is platform-\n"
                         + "dependent."));
+        // doctest saves and restores the trace function around every example it runs, so both names have
+        // to exist even where nothing can be traced. Nothing is: there is no tracing hook in this runtime,
+        // so `gettrace()` answers None, `settrace(None)` clears what is already clear, and a real function
+        // is refused by name rather than filed away and never called.
+        sys.set("gettrace", noArguments(
+                "gettrace",
+                () -> PyNone.INSTANCE,
+                "gettrace($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the current global trace function."));
+        sys.set("settrace", new PyNativeFunction(
+                        "settrace",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("settrace", args, kwNames);
+                            if (args[0] != PyNone.INSTANCE) {
+                                throw PyRaise.raise(
+                                        ExceptionTypes.NOT_IMPLEMENTED_ERROR,
+                                        "tracing is not implemented by this runtime");
+                            }
+                            return PyNone.INSTANCE;
+                        })
+                .documented("settrace($module, function, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set the global trace function."));
         sys.set(
                 "exc_info",
                 noArguments(

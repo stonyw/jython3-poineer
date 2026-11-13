@@ -92,7 +92,8 @@ public final class Frame {
      * true as well.
      */
     private PyFrame frameObject;
-
+    /** The live {@code f_locals} window, made once, for a frame whose names live in slots. */
+    private PyFrameLocals frameLocals;
     /** Whether this frame has run its last instruction, which is what {@code frame.clear()} asks. */
     private boolean finished;
 
@@ -225,6 +226,73 @@ public final class Frame {
             }
         }
         return names;
+    }
+
+    /**
+     * {@code frame.f_locals} as the reference answers it: the live proxy when this frame's names live in
+     * slots, and the frame's own dictionary when it is a module or class body.
+     *
+     * <p>The proxy is made once and kept, like the frame object it belongs to, and it holds the frame
+     * rather than a copy of its names — that is what lets a suspended generator be steered through it.
+     */
+    PyObject localsView() {
+        if (cleared || locals != null) {
+            return localValues();
+        }
+        if (frameLocals == null) {
+            frameLocals = new PyFrameLocals(this);
+        }
+        return frameLocals;
+    }
+
+    /**
+     * The index {@code name} occupies among the names this frame can address, or -1.
+     *
+     * <p>This is the locals-plus order — arguments, then the compiler's other locals, then cells and
+     * free variables — which is also the order {@code co_varnames + co_cellvars + co_freevars} gives.
+     * A generator expression's implicit iterator is {@code .0} there, which is the name the reference
+     * lets {@code f_locals} rewrite.
+     */
+    int localSlotIndex(String name) {
+        PyTuple localsPlus = code.localNames();
+        for (int i = 0; i < localsPlus.size() && i < slots.length; i++) {
+            if (((PyStr) localsPlus.at(i)).getValue().equals(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** The name in slot {@code index}, for iterating {@code f_locals} in locals-plus order. */
+    PyStr localSlotName(int index) {
+        return (PyStr) code.localNames().at(index);
+    }
+
+    /** What the slot holds, reading a cell through its box; null while the name is unbound. */
+    PyObject localSlotValue(int index) {
+        return slots[index] instanceof PyCell cell ? cell.value() : slots[index];
+    }
+
+    /**
+     * Write a name through {@code f_locals}: a cell takes the new value into its box, because that is
+     * where the closure reads it, and a plain slot simply becomes it.
+     */
+    void writeLocalSlot(int index, PyObject value) {
+        if (slots[index] instanceof PyCell cell) {
+            cell.set(value);
+        } else {
+            slots[index] = value;
+        }
+    }
+
+    /** How many slots there are to address, which stops short of a cleared frame's nulled array. */
+    int localSlotCount() {
+        return Math.min(code.localNames().size(), slots.length);
+    }
+
+    /** Whether {@code clear()} or a finished activation has dropped this frame's names. */
+    boolean localsCleared() {
+        return cleared;
     }
 
     // --- frame object ----------------------------------------------------------------------
