@@ -35,7 +35,8 @@ import org.python.front.cpython314.Cpython314Compiler;
  * terminal, a line editor and a read-eval-print loop, which the native frontend milestone owns. Those
  * exit 3, which the harness records as {@code NOT_IMPLEMENTED}. The handful of options accepted and
  * ignored are ones that change nothing a script can observe yet — {@code -B}, because no {@code .pyc}
- * is ever written, and {@code -u}, because both streams are already the JVM's own.
+ * is ever written, {@code -u}, because both streams are already the JVM's own, and
+ * {@code -X faulthandler}, because a dying JVM prints a stack trace anyway.
  *
  * <p>Harness protocol, shared with {@code org.jython3.tools.harness.Jython3Backend}:
  *
@@ -86,8 +87,8 @@ public final class jy3 {
                     + "-V     : print the version and exit\n"
                     + "-      : program read from stdin\n"
                     + "\n"
-                    + "Accepted and ignored: -B -E -I -S -s -u\n"
-                    + "Not implemented yet: -m mod (runpy) and -X opt (configuration layer);"
+                    + "Accepted and ignored: -B -E -I -S -s -u -X faulthandler\n"
+                    + "Not implemented yet: -m mod (runpy) and -X options other than faulthandler;"
                     + " -O and -OO (`__debug__` in the code object); the interactive prompt (M5)\n";
 
     public static void main(String[] args) {
@@ -167,7 +168,15 @@ public final class jy3 {
                     if (!argumentExpected(option, args, at)) {
                         return USAGE_ERROR;
                     }
-                    return notImplemented("-X option", "the interpreter-config layer is not implemented");
+                    String configuration = args[at + 1];
+                    if (!configuration.equals("faulthandler")) {
+                        return notImplemented(
+                                "-X " + configuration,
+                                "the interpreter-config layer is not implemented");
+                    }
+                    // What the flag asks for is a stack trace when the process dies; the JVM already
+                    // prints one. The standard library's own test harness always passes it.
+                    at += 2;
                 }
                 case "-O", "-OO" -> {
                     return notImplemented(

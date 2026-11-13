@@ -1265,6 +1265,23 @@ public final class PyRuntime {
     }
 
     /**
+     * {@code sys.executable}: the absolute path of the program that started this run.
+     *
+     * <p>The launcher script is the only thing that knows where it is, so it hands the path over as
+     * {@code -Djy3.executable}, the way CPython's {@code calculate_path} resolves its own binary. A JVM
+     * entered some other way — an embedding, or a test's {@code java -cp ... org.python.util.jy3} — has
+     * no launcher to name, and the bare {@code jy3} is the honest answer there: {@code subprocess} will
+     * then look for it on {@code PATH} rather than be told a path that does not run this runtime.
+     */
+    private static String executable() {
+        String configured = System.getProperty("jy3.executable", "");
+        if (configured.isEmpty()) {
+            return "jy3";
+        }
+        return java.nio.file.Path.of(configured).toAbsolutePath().normalize().toString();
+    }
+
+    /**
      * The items of {@code sys.version_info}, in the order its type files its fields.
      *
      * <p>Kept here rather than in {@link PyVersionInfo} because the three numbers are the ones this
@@ -1474,7 +1491,7 @@ public final class PyRuntime {
         // `_sysconfigdata_*` module it looks for, and the reference's macOS build spells it empty.
         sys.set("abiflags", PyStr.of(""));
         sys.set("version", PyStr.of(pythonVersion() + " (Jython3 on the JVM)"));
-        sys.set("executable", PyStr.of(System.getProperty("jy3.executable", "jy3")));
+        sys.set("executable", PyStr.of(executable()));
         sys.set("prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         // A normal installation keeps both pairs equal, and `sysconfig` reads all four at module scope.

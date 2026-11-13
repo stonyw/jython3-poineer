@@ -39,11 +39,18 @@ public final class Jy3Process {
             throw new IllegalStateException(
                     "this test must run with the runtime classpath visible to java.class.path");
         }
-        return List.of(
-                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-cp",
-                classpath,
-                "org.python.util.jy3");
+        List<String> command = new ArrayList<>();
+        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+        // The installed launcher is what a user types, so a child that `sys.executable` names has to
+        // be that same program. Gradle's test task points this property at build/install/jy3/bin/jy3.
+        String launcher = System.getProperty("jy3.launcher", "");
+        if (!launcher.isEmpty() && Files.isExecutable(Path.of(launcher))) {
+            command.add("-Djy3.executable=" + launcher);
+        }
+        command.add("-cp");
+        command.add(classpath);
+        command.add("org.python.util.jy3");
+        return List.copyOf(command);
     }
 
     public static Result run(

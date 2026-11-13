@@ -9,8 +9,12 @@ import java.math.BigInteger;
  * <p>There is no signal delivery to imitate: a Python program here cannot receive {@code SIGINT}
  * from the operating system, because the interpreter is a JVM process and the handlers would be
  * JVM-wide rather than per-runtime. So what is kept is the bookkeeping the reference keeps in
- * Python-visible state — which handler a signal number was last given — and the three constants and
- * the one callable {@code signal.py} and {@code unittest.signals} read at module scope.
+ * Python-visible state — which handler a signal number was last given — and the constants and the
+ * one callable {@code signal.py} and {@code unittest.signals} read at module scope.
+ *
+ * <p>{@code SIGKILL} is here for {@code subprocess.Popen.kill}, which names it before it asks whether
+ * there is still a process to signal; the standard library's own test harness calls that in a
+ * {@code finally} on every child it starts.
  *
  * <p>The handler table lives in this module's builder rather than in a static field, so two runtimes
  * in one JVM do not see each other's handlers. {@code SIGINT} starts out holding
@@ -27,6 +31,9 @@ final class SignalModule {
     /** The one signal {@code signal.py} has to be able to name for {@code unittest} to import. */
     private static final int SIGINT = 2;
 
+    /** The POSIX number; {@code subprocess.kill} names it, and it is only read, never delivered. */
+    private static final int SIGKILL = 9;
+
     private SignalModule() {
     }
 
@@ -37,6 +44,7 @@ final class SignalModule {
         module.set("SIG_DFL", PyInt.of(SIG_DFL));
         module.set("SIG_IGN", PyInt.of(SIG_IGN));
         module.set("SIGINT", PyInt.of(SIGINT));
+        module.set("SIGKILL", PyInt.of(SIGKILL));
 
         // One table for this module: keyed by signal number, holding the handler last installed.
         PyDict handlers = PyDict.empty();
