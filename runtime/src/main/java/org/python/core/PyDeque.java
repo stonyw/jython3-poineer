@@ -264,7 +264,16 @@ public final class PyDeque extends PyObject {
 
     @Override
     public PyObject iterator() {
-        return SequenceIterators.of(this);
+        return SequenceIterators.deque(this);
+    }
+
+    /** What the cursor reads at every step: the deque as it stands. */
+    int size() {
+        return items.size();
+    }
+
+    PyObject at(int index) {
+        return items.get(index);
     }
 
     @Override

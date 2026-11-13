@@ -83,6 +83,9 @@ final class Members {
             // The one named sequence is declared by its value class too, so that asking the type for a
             // field works before the interpreter has built the value it files.
             Map.entry(PyType.VERSION_INFO, PyVersionInfo.class),
+            // The interpreter's async-generator hook pair, declared by its value class for the same
+            // reason: `type(sys.get_asyncgen_hooks()).n_fields` answers without a call having been made.
+            Map.entry(PyType.ASYNCGEN_HOOKS, PyAsyncGenHooks.class),
             // `time.struct_time` is the other named sequence, and its table is read through the type for the
             // same reason: `struct_time.n_fields` answers before `gmtime` has ever been called.
             Map.entry(PyType.STRUCT_TIME, PyStructTime.class),

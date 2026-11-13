@@ -131,6 +131,20 @@ public final class PyRuntime {
     private static int recursionLimit = 1000;
 
     /**
+     * The pair {@code sys.get_asyncgen_hooks} answers and {@code sys.set_asyncgen_hooks} replaces.
+     *
+     * <p>{@code asyncio.base_events} saves these around {@code run_forever} and restores them after, and
+     * {@code asyncio.runners} reads them to decide whether it is the owner of the hooks. This runtime has
+     * no async-generator finalization protocol — an async generator is a frame this runtime steps, not a
+     * C object with a finalizer — so the pair is kept and handed back faithfully and never invoked. The
+     * one visible consequence is that {@code loop.shutdown_asyncgens()} has nothing registered to close;
+     * the milestone notes record that gap rather than pretend a finalizer ran.
+     */
+    private static PyObject asyncgenFirstiter = PyNone.INSTANCE;
+
+    private static PyObject asyncgenFinalizer = PyNone.INSTANCE;
+
+    /**
      * The compiler an imported source file goes through, installed by the layer that owns one.
      *
      * <p>The design rule that keeps {@code runtime} below {@code front} lives here: a finder can find
@@ -1680,7 +1694,10 @@ public final class PyRuntime {
         // This runtime builds no ABI flags of its own; `sysconfig` splices the name into the
         // `_sysconfigdata_*` module it looks for, and the reference's macOS build spells it empty.
         sys.set("abiflags", PyStr.of(""));
-        sys.set("version", PyStr.of(pythonVersion() + " (Jython3 on the JVM)"));
+        // The trailing bracket is the field `platform._sys_version` parses as the compiler; CPython's
+        // own string always carries one, and without it `platform.python_implementation()` raises, which
+        // `wsgiref.simple_server` — imported by `test.test_asyncio.utils` — hits at module scope.
+        sys.set("version", PyStr.of(pythonVersion() + " (Jython3 on the JVM) [Java]"));
         sys.set("executable", PyStr.of(executable()));
         sys.set("prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
@@ -1881,6 +1898,71 @@ public final class PyRuntime {
                         + "This limit prevents infinite recursion from causing an overflow of the C\n"
                         + "stack and crashing Python.  The highest possible limit is platform-\n"
                         + "dependent."));
+        // `asyncio.base_events` saves this pair around `run_forever` and restores it afterwards, and
+        // `asyncio.runners` reads it to know whether the hooks it wants to install are already its own.
+        // The pair is stored and handed back; neither hook is ever called, because an async generator in
+        // this runtime has no finalizer to run one from (see the field comment above).
+        sys.set("get_asyncgen_hooks", noArguments(
+                "get_asyncgen_hooks",
+                () -> new PyAsyncGenHooks(asyncgenFirstiter, asyncgenFinalizer),
+                "get_asyncgen_hooks($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the installed asynchronous generators hooks.\n"
+                        + "\n"
+                        + "This returns a namedtuple of the form (firstiter, finalizer)."));
+        sys.set("set_asyncgen_hooks", new PyNativeFunction(
+                        "set_asyncgen_hooks",
+                        (args, kwNames) -> {
+                            int positional = Arguments.positional(args, kwNames);
+                            int keywords = kwNames == null ? 0 : kwNames.length;
+                            if (positional + keywords > 2) {
+                                // The legacy parser's sentence, which names the function "function" and
+                                // counts keywords with positionals.
+                                throw Slots.typeError(
+                                        "function takes at most 2 arguments (%d given)",
+                                        positional + keywords);
+                            }
+                            PyObject firstiter = positional > 0 ? args[0] : null;
+                            PyObject finalizer = positional > 1 ? args[1] : null;
+                            for (int i = 0; i < keywords; i++) {
+                                String name = kwNames[i];
+                                PyObject value = args[positional + i];
+                                if (name.equals("firstiter")) {
+                                    if (firstiter != null) {
+                                        throw Slots.typeError(
+                                                "argument for function given by name ('firstiter')"
+                                                        + " and position (1)");
+                                    }
+                                    firstiter = value;
+                                } else if (name.equals("finalizer")) {
+                                    if (finalizer != null) {
+                                        throw Slots.typeError(
+                                                "argument for function given by name ('finalizer')"
+                                                        + " and position (2)");
+                                    }
+                                    finalizer = value;
+                                } else {
+                                    throw Slots.typeError(
+                                            "this function got an unexpected keyword argument '%s'",
+                                            name);
+                                }
+                            }
+                            asyncgenFirstiter = hook("firstiter", firstiter);
+                            asyncgenFinalizer = hook("finalizer", finalizer);
+                            return PyNone.INSTANCE;
+                        })
+                .documented("set_asyncgen_hooks($module, /, firstiter=None, finalizer=None)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set a finalizer for async generators objects."));
+        sys.set("is_finalizing", noArguments(
+                "is_finalizing",
+                () -> PyBool.FALSE,
+                "is_finalizing($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return True if Python is exiting."));
         // doctest saves and restores the trace function around every example it runs, so both names have
         // to exist even where nothing can be traced. Nothing is: there is no tracing hook in this runtime,
         // so `gettrace()` answers None, `settrace(None)` clears what is already clear, and a real function
@@ -2160,6 +2242,17 @@ public final class PyRuntime {
     /** One {@code sys.stdout.write} of a line of text, reached through the stream's own member. */
     private static void write(PyObject stream, String text) {
         Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of(text)}, null);
+    }
+
+    /** One half of {@code sys.set_asyncgen_hooks}: {@code None} clears it, a callable replaces it. */
+    private static PyObject hook(String name, PyObject value) {
+        if (value == null || value == PyNone.INSTANCE) {
+            return PyNone.INSTANCE;
+        }
+        if (!Slots.isCallable(value)) {
+            throw Slots.typeError("callable %s expected, got %s", name, value.getType().name());
+        }
+        return value;
     }
 
     /**

@@ -1079,6 +1079,13 @@ public class PyType extends PyObject {
     /** The cursor over a bytearray, which reads the run as it stands and so sees later appends. */
     static final PyType BYTEARRAY_ITERATOR = builtin("bytearray_iterator").withoutNew();
 
+    /**
+     * {@code type(iter(deque()))}: filed by {@code collections}, which is where the C type lives, and the
+     * one cursor whose {@code __reduce__} names the type itself rather than {@code iter}.
+     */
+    static final PyType DEQUE_ITERATOR =
+            builtin("_deque_iterator").withoutNew().filedUnder("collections._deque_iterator");
+
     /** The cursor of a string with a code point at or above 128 in it. */
     static final PyType STR_ITERATOR = builtin("str_iterator").withoutNew();
 
@@ -1494,6 +1501,21 @@ public class PyType extends PyObject {
     public static final PyType VERSION_INFO =
             namedSequence("sys.version_info")
                     .documented("sys.version_info\n\nVersion information as a named tuple.");
+
+    /**
+     * {@code sys.get_asyncgen_hooks()}'s own class: the second named sequence over {@code tuple}.
+     *
+     * <p>CPython declares it as a {@code structseq}, so what it hands back indexes, unpacks, hashes and
+     * compares as the tuple underneath it and prints as
+     * {@code asyncgen_hooks(firstiter=None, finalizer=None)}. The type is named without a dot, so a
+     * {@code repr} of it reads {@code <class 'asyncgen_hooks'>} and its {@code __module__} is
+     * {@code builtins}, exactly as the reference reports.
+     */
+    public static final PyType ASYNCGEN_HOOKS =
+            namedSequence("asyncgen_hooks")
+                    .documented("asyncgen_hooks\n\nA named tuple providing information about asynchronous\n"
+                            + "generators hooks.  The attributes are read only.")
+                    .withoutNew();
 
     /**
      * {@code time.struct_time}: the named sequence {@code gmtime} and {@code localtime} answer with.

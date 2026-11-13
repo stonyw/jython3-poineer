@@ -75,6 +75,14 @@ final class SequenceIterators {
     private static final Members ASCII_TEXT = book(PyType.STR_ASCII_ITERATOR);
     private static final Members ARRAY = bookWithoutHint(PyType.ARRAY_ITERATOR);
 
+    /**
+     * The deque cursor's two rows. {@code dequeiter_methods} has no {@code __setstate__}, because the
+     * index it carries is the only state there is and CPython never offers to put it somewhere else.
+     */
+    private static final Members DEQUE = Members.of(PyType.DEQUE_ITERATOR)
+            .addNoArgument("__length_hint__", LENGTH_HINT_DOC, self -> ((Cursor) self).hint())
+            .addNoArgument("__reduce__", REDUCE_DOC, self -> ((Cursor) self).reduce());
+
     private SequenceIterators() {
     }
 
@@ -94,6 +102,62 @@ final class SequenceIterators {
      */
     static PyIterator of(PyObject source) {
         return new Fixed(source);
+    }
+
+    /** {@code deque_iter}: one index into a deque that is read as it stands at every step. */
+    static PyIterator deque(PyDeque source) {
+        return new DequeCursor(source);
+    }
+
+    /** {@code dequeiterobject}: an index into a deque, which keeps the deque after the index runs out. */
+    private static final class DequeCursor extends Cursor {
+
+        DequeCursor(PyDeque source) {
+            super(PyType.DEQUE_ITERATOR, source);
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            if (at < size()) {
+                return item(at++);
+            }
+            return null;
+        }
+
+        /** {@code dequeiter_len}: the count comes off the deque as it stands, and a negative is nought. */
+        @Override
+        PyObject hint() {
+            return PyInt.of(Math.max(0, size() - at));
+        }
+
+        /**
+         * {@code dequeiter_reduce} names the type in the first slot and keeps the deque even once the walk
+         * is over, so a second round reports the same source with the index it stopped at.
+         */
+        @Override
+        PyObject reduce() {
+            return PyTuple.of(getType(), PyTuple.of(source), PyInt.of(at));
+        }
+
+        @Override
+        void stepTo(PyObject state) {
+            // dequeiter_methods files no `__setstate__`; the name is never reachable.
+        }
+
+        @Override
+        boolean live() {
+            return true;
+        }
+
+        @Override
+        int size() {
+            return ((PyDeque) source).size();
+        }
+
+        @Override
+        PyObject item(int index) {
+            return ((PyDeque) source).at(index);
+        }
     }
 
     /**
