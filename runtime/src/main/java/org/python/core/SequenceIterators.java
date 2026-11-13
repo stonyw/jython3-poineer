@@ -53,6 +53,19 @@ final class SequenceIterators {
                         });
     }
 
+    /** The two rows an array cursor has: it can be pickled but does not estimate what is left. */
+    private static Members bookWithoutHint(PyType owner) {
+        return Members.of(owner)
+                .addNoArgument("__reduce__", REDUCE_DOC, self -> ((Cursor) self).reduce())
+                .addOne(
+                        "__setstate__",
+                        SETSTATE_DOC,
+                        (self, state) -> {
+                            ((Cursor) self).stepTo(state);
+                            return PyNone.INSTANCE;
+                        });
+    }
+
     private static final Members LIST = book(PyType.LIST_ITERATOR);
     private static final Members LIST_BACK = book(PyType.LIST_REVERSE_ITERATOR);
     private static final Members TUPLE = book(PyType.TUPLE_ITERATOR);
@@ -60,6 +73,7 @@ final class SequenceIterators {
     private static final Members BYTEARRAY = book(PyType.BYTEARRAY_ITERATOR);
     private static final Members TEXT = book(PyType.STR_ITERATOR);
     private static final Members ASCII_TEXT = book(PyType.STR_ASCII_ITERATOR);
+    private static final Members ARRAY = bookWithoutHint(PyType.ARRAY_ITERATOR);
 
     private SequenceIterators() {
     }
@@ -334,6 +348,9 @@ final class SequenceIterators {
             if (source instanceof PyByteArray octets) {
                 return octets.size();
             }
+            if (source instanceof PyArray array) {
+                return array.size();
+            }
             return source instanceof PyBytes octets ? octets.size() : ((PyTuple) source).size();
         }
 
@@ -344,6 +361,9 @@ final class SequenceIterators {
             }
             if (source instanceof PyByteArray octets) {
                 return PyInt.of(octets.byteAt(index) & 0xff);
+            }
+            if (source instanceof PyArray array) {
+                return array.item(index);
             }
             return source instanceof PyBytes octets
                     ? PyInt.of(octets.byteAt(index) & 0xff)
@@ -357,6 +377,9 @@ final class SequenceIterators {
             }
             if (source instanceof PyByteArray) {
                 return PyType.BYTEARRAY_ITERATOR;
+            }
+            if (source instanceof PyArray) {
+                return PyType.ARRAY_ITERATOR;
             }
             return source instanceof PyBytes ? PyType.BYTES_ITERATOR : PyType.TUPLE_ITERATOR;
         }

@@ -313,6 +313,20 @@ public class PyType extends PyObject {
             builtin("bytearray").flagged(MATCH_SELF).documented(BYTEARRAY_DOC);
 
     /**
+     * {@code array.array}, which files itself under the module it is only reachable from.
+     *
+     * <p>The type is not a builtin name: {@code array} alone is a module, and the class is spelled
+     * {@code array.array}. That is why its {@code __module__} is {@code array} while the sentence here
+     * is the one {@code arraymodule.c} gives the type.
+     */
+    public static final PyType ARRAY =
+            builtin("array").documented(ArrayDocs.TYPE_DOC).filedUnder("array.array");
+
+    /** {@code type(iter(array.array('i')))}, which can be pickled but offers no length estimate. */
+    static final PyType ARRAY_ITERATOR =
+            builtin("arrayiterator").withoutNew().filedUnder("array.arrayiterator");
+
+    /**
      * {@code memoryview}'s own sentence, which CPython keeps beside {@code memoryview_new} in
      * {@code Objects/memoryobject.c}.
      *

@@ -78,6 +78,9 @@ final class Constructors {
         if (type == PyType.BYTEARRAY) {
             return bytearray(args, keywordNames);
         }
+        if (type == PyType.ARRAY) {
+            return PyArray.called(type, args, keywordNames);
+        }
         if (type == PyType.MEMORYVIEW) {
             return memoryview(args, keywordNames);
         }

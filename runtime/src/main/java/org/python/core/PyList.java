@@ -247,8 +247,16 @@ public final class PyList extends PyObject {
                 items.subList(range.start(), range.start() + range.count()).clear();
                 return;
             }
-            for (int i = range.count() - 1; i >= 0; i--) {
-                items.remove(range.at(i));
+            // Each removal shifts the indices above it, so the highest index has to go first. A
+            // backward slice already names its indices in that order; a forward one does not.
+            if (range.step() < 0) {
+                for (int i = 0; i < range.count(); i++) {
+                    items.remove(range.at(i));
+                }
+            } else {
+                for (int i = range.count() - 1; i >= 0; i--) {
+                    items.remove(range.at(i));
+                }
             }
             return;
         }

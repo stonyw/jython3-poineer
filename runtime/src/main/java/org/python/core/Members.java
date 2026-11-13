@@ -56,6 +56,7 @@ final class Members {
             Map.entry(PyType.STR, PyStr.class),
             Map.entry(PyType.BYTES, PyBytes.class),
             Map.entry(PyType.BYTEARRAY, PyByteArray.class),
+            Map.entry(PyType.ARRAY, PyArray.class),
             Map.entry(PyType.MEMORYVIEW, PyMemoryView.class),
             Map.entry(PyType.TUPLE, PyTuple.class),
             Map.entry(PyType.LIST, PyList.class),

@@ -1,5 +1,6 @@
 package org.python.core;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -848,6 +849,10 @@ final class TypeDict {
         }
         if (owner == PyType.BYTEARRAY) {
             bytearrayTable(into);
+            return;
+        }
+        if (owner == PyType.ARRAY) {
+            arrayTable(into);
             return;
         }
         if (owner == PyType.MEMORYVIEW) {
@@ -2159,6 +2164,71 @@ final class TypeDict {
                 "translate",
                 "upper",
                 "zfill");
+        table.value("__doc__", docValue(owner));
+        table.value("__hash__", PyNone.INSTANCE);
+    }
+
+    /** The sentence {@code array.array} writes over {@code __class_getitem__}. */
+    private static final String ARRAY_CLASS_GETITEM_DOC =
+            "Arrays are generic over the type of their elements";
+
+    /** {@code typecode} and {@code itemsize}: the two {@code PyGetSetDef} rows of {@code array.array}. */
+    private static final String ARRAY_TYPECODE_DOC =
+            "the typecode character used to create the array";
+
+    private static final String ARRAY_ITEMSIZE_DOC = "the size, in bytes, of one array item";
+
+    /**
+     * {@code array.array}'s type dictionary, in the order the reference prints it.
+     *
+     * <p>A buffer type reaches Python through slots rather than through a dictionary, so the seventeen
+     * wrappers here are the only way {@code value.__getitem__}, {@code super().__new__(cls, ...)} and
+     * {@code isinstance(value, collections.abc.MutableSequence)} — whose own hook asks the type for
+     * {@code __setitem__} and {@code insert} — can see what the C type does. The methods
+     * {@code PyArray}'s member table writes are filed beside them so {@code array.array.append} is the
+     * same descriptor {@code value.append} binds.
+     */
+    private static void arrayTable(PyDict into) {
+        PyType owner = PyType.ARRAY;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::arraysNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__getattribute__", GETATTR_DOC, TypeDict::objectGetAttribute);
+        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__buffer__", BUFFER_DOC, TypeDict::exposeWritableBuffer);
+        table.wrapper("__release_buffer__", RELEASE_BUFFER_DOC, TypeDict::releaseBuffer);
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
+        table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
+        table.wrapper("__add__", ADD_DOC, TypeDict::joined);
+        table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
+        table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);
+        table.wrapper("__contains__", CONTAINS_DOC, args -> args[0].contains(args[1]));
+        table.wrapper("__iadd__", IADD_DOC, TypeDict::joinedInPlace);
+        table.wrapper("__imul__", IMUL_DOC, TypeDict::repeatedInPlace);
+        table.named("append", "buffer_info", "byteswap", "clear", "__copy__", "count");
+        table.named("__deepcopy__", "extend", "fromfile", "fromlist", "frombytes", "fromunicode");
+        table.named("index", "insert", "pop");
+        table.method("__reduce_ex__", OCTETS_REDUCE_EX_DOC, TypeDict::arrayReduceEx);
+        table.named("remove", "reverse", "tofile", "tolist", "tobytes", "tounicode", "__sizeof__");
+        table.genericSubscript(ARRAY_CLASS_GETITEM_DOC);
+        table.getset(
+                "typecode",
+                ARRAY_TYPECODE_DOC,
+                self -> PyStr.of(String.valueOf(((PyArray) self).typecodeValue())),
+                null);
+        table.getset(
+                "itemsize",
+                ARRAY_ITEMSIZE_DOC,
+                self -> PyInt.of(((PyArray) self).itemSizeValue()),
+                null);
         table.value("__doc__", docValue(owner));
         table.value("__hash__", PyNone.INSTANCE);
     }
@@ -4588,6 +4658,58 @@ final class TypeDict {
         return kind == PyType.BYTEARRAY ? PyByteArray.empty() : new PyByteArraySubclass(kind);
     }
 
+    /** {@code array.__new__(cls, typecode[, initializer])}: {@code array_new} consumes both. */
+    private static PyObject arraysNew(PyObject[] args, String[] kwNames, String qualified) {
+        PyType kind = declaredClass(PyType.ARRAY, args, kwNames);
+        return PyArray.subclass(kind, tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * {@code array.__reduce_ex__(protocol)}: what a pickle writes.
+     *
+     * <p>Before protocol three the state is the list of items, which any 3.x can rebuild; from protocol
+     * three on it is the machine format code and the raw octets, which is why the reference keeps a
+     * module-level {@code _array_reconstructor} to read them back.
+     */
+    private static PyObject arrayReduceEx(PyObject[] args, String[] kwNames, String qualified) {
+        PyArray array = (PyArray) args[0];
+        PyObject[] given = tail(args, kwNames);
+        if (given.length == 0) {
+            throw Slots.typeError(
+                    "__reduce_ex__() takes exactly 1 positional argument (0 given)");
+        }
+        if (given.length > 1) {
+            throw Slots.typeError(
+                    "__reduce_ex__() takes at most 1 argument (%d given)", given.length);
+        }
+        BigInteger protocol;
+        if (given[0] instanceof PyInt number) {
+            protocol = number.getValue();
+        } else if (given[0] instanceof PyBool flag) {
+            protocol = flag.getValue() ? BigInteger.ONE : BigInteger.ZERO;
+        } else {
+            throw Slots.typeError("__reduce_ex__ argument should be an integer");
+        }
+        PyObject state = PyNone.INSTANCE;
+        if (array instanceof PyArraySubclass made && made.attributeStore().size() > 0) {
+            state = made.attributeStore();
+        }
+        String typecode = String.valueOf(array.typecodeValue());
+        if (protocol.compareTo(BigInteger.valueOf(3)) < 0) {
+            return PyTuple.of(
+                    array.getType(),
+                    PyTuple.of(PyStr.of(typecode), array.toList()),
+                    state);
+        }
+        return PyTuple.of(
+                ArrayModule.reconstructor(),
+                PyTuple.of(
+                        array.getType(),
+                        PyInt.of(PyArray.machineFormatOf(array.typecodeValue())),
+                        array.toBytes()),
+                state);
+    }
+
     /**
      * {@code memoryview.__new__}: the four {@code tp_new_wrapper} checks, then the constructor's own one
      * argument.
@@ -5966,6 +6088,9 @@ final class TypeDict {
                     // is fine. `set` and `bytearray` fill in their own initialisers and never reach
                     // `object.__init__` at all.
                     || owner == PyType.FROZENSET
+                    // `array_new` consumes both arguments, so a class under `array.array` reaches
+                    // `object.__init__` with nothing left for it to complain about.
+                    || owner == PyType.ARRAY
                     // A subclass of `SimpleNamespace` has already read its one positional argument in
                     // `namespace_init`, so `object.__init__` is not the slot that complains about it.
                     || owner == PyType.NAMESPACE

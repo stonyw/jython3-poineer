@@ -358,6 +358,9 @@ final class Classes {
                 // and lets the class keep a dictionary beside it. Its `__init__` fills the run, so a
                 // second call replaces what the first wrote.
                 || base == PyType.BYTEARRAY
+                // `array.array` is a mutable run as well, and its values keep a class dictionary
+                // beside the same octets; `array_new` does all the work, so the class adds only names.
+                || base == PyType.ARRAY
                 // `set` and `frozenset` are the two hash tables a program writes classes under — an
                 // `enum` mixin, a domain object that is also a set — and both keep their table in the
                 // subclass the same way.
@@ -1520,6 +1523,11 @@ final class Classes {
         // why a subclass's value is empty here and filled by the initialiser the order answers with.
         if (kind.matches(PyType.BYTEARRAY)) {
             return new PyByteArraySubclass(kind);
+        }
+        // `array_new` reads both arguments and builds the run, and `array.array.__init__` is
+        // `object.__init__`, so nothing is left for an initialiser to fill in.
+        if (kind.matches(PyType.ARRAY)) {
+            return PyArray.subclass(kind, args, names);
         }
         // `set.__new__` likewise allocates an empty table; `set_init` fills it afterwards, naming the
         // class the value was made as in its refusals.

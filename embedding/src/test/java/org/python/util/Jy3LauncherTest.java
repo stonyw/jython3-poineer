@@ -505,6 +505,15 @@ class Jy3LauncherTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("m6aCorpus")
     void anM6aCorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
+        if (scriptName.equals("16_array.py")) {
+            // The reference warns when a 'u' array is made; this runtime has no warnings module, so the
+            // sentence is kept out of both streams rather than compared against a stream that lacks it.
+            answersExactlyAsCpythonWithOptions(
+                    "m6a/corpus",
+                    scriptName,
+                    List.of("-W", "ignore::DeprecationWarning"));
+            return;
+        }
         answersExactlyAsCpython("m6a/corpus", scriptName);
     }
 
@@ -524,7 +533,8 @@ class Jy3LauncherTest {
                 "12_compile_ast_inputs.py",
                 "13_async_top_level_await.py",
                 "14_zlib_streams.py",
-                "15_hashlib_digests.py");
+                "15_hashlib_digests.py",
+                "16_array.py");
     }
 
     /**
@@ -960,6 +970,26 @@ class Jy3LauncherTest {
 
     private void answersExactlyAsCpython(String folder, String scriptName) throws Exception {
         answersExactlyAsCpython(folder, scriptName, cpythonCommand());
+    }
+
+    /** The comparison above with interpreter options ahead of the script on both sides. */
+    private void answersExactlyAsCpythonWithOptions(
+            String folder, String scriptName, List<String> options) throws Exception {
+        Path script = write(scriptName, resource(folder + "/" + scriptName));
+
+        List<String> arguments = concat(options, script.toString());
+        Result reference = cpython(arguments);
+        Result jy3 = jy3(arguments);
+
+        assertThat(jy3.exit()).as("%s exit", scriptName).isEqualTo(reference.exit());
+        assertThat(jy3.out()).as("%s stdout", scriptName).isEqualTo(reference.out());
+        assertThat(jy3.err()).as("%s stderr", scriptName).isEqualTo(reference.err());
+    }
+
+    private static List<String> concat(List<String> head, String tail) {
+        List<String> all = new ArrayList<>(head);
+        all.add(tail);
+        return all;
     }
 
     private void answersExactlyAsCpython(String folder, String scriptName, List<String> command)

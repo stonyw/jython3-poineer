@@ -45,7 +45,7 @@ public final class PyRuntime {
     private static final String[] BUILTIN_MODULE_NAMES =
             {"builtins", "sys", "_ast", "_datetime", "_socket", "_io", "_tokenize", "_opcode", "_signal",
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
-                "_struct", "binascii", "zlib", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
+                "_struct", "binascii", "zlib", "array", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi"};
 
@@ -257,6 +257,9 @@ public final class PyRuntime {
         // and `shutil` reach `zlib` directly, and `hashlib.py` is a wrapper that needs `_hashlib`
         // plus the four constructor families it can fall back to.
         PyModule zlibModule = ZlibModule.newModule();
+        // `test_hashlib` imports this before any of its hashing: the reference's own `array` is a
+        // C module, and the tests use it as a bytes-like sink for the digest constructors.
+        PyModule arrayModule = ArrayModule.newModule();
         PyModule[] hashlibModules = HashlibModule.newModules();
         PyModule errnoModule = ErrnoModule.newModule();
         PyModule codecsModule = CodecsModule.newModule();
@@ -312,6 +315,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_struct"), structModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
         modules.put(PyStr.interned("zlib"), zlibModule);
+        modules.put(PyStr.interned("array"), arrayModule);
         for (PyModule hashlibModule : hashlibModules) {
             modules.put(PyStr.interned(((PyStr) hashlibModule.get("__name__")).getValue()), hashlibModule);
         }

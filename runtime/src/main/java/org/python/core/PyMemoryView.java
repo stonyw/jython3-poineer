@@ -80,6 +80,9 @@ public final class PyMemoryView extends PyObject {
     /** Set by {@code release}; every read but {@code repr} and {@code release} then refuses. */
     private boolean released;
 
+    /** Set when this view is the one holding the array's export count, so {@code release} gives it back. */
+    private boolean ownsArrayExport;
+
     /** The views {@code __buffer__} exported from this one and that are still alive. */
     private final List<PyMemoryView> exports = new ArrayList<>();
 
@@ -120,6 +123,9 @@ public final class PyMemoryView extends PyObject {
         if (value instanceof PyByteArray run) {
             return basic(run, run.size(), false);
         }
+        if (value instanceof PyArray array) {
+            return exported(array);
+        }
         if (value instanceof PyBytes octets) {
             return basic(octets, octets.size(), true);
         }
@@ -150,6 +156,9 @@ public final class PyMemoryView extends PyObject {
         if (value instanceof PyByteArray run) {
             return basic(run, run.size(), false);
         }
+        if (value instanceof PyArray array) {
+            return exported(array);
+        }
         throw Slots.typeError(
                 "memoryview: a bytes-like object is required, not '%s'",
                 value.getType().filedName());
@@ -158,6 +167,30 @@ public final class PyMemoryView extends PyObject {
     private static PyMemoryView basic(PyObject exporter, int size, boolean readonly) {
         return new PyMemoryView(
                 exporter, exporter, 0, "B", 1, new long[] {size}, new long[] {1}, readonly);
+    }
+
+    /**
+     * The basic view an array exports: its own format, one element per stride, and writable.
+     *
+     * <p>The count is the array's length in <em>items</em>, which is what {@code buffer_info} reports and
+     * what keeps a view of an {@code 'i'} array four octets wide. The export is counted on the array so a
+     * resize while the view is alive can be refused, and this view is the one that gives it back when it
+     * is released.
+     */
+    private static PyMemoryView exported(PyArray array) {
+        int width = array.itemSizeValue();
+        array.exportBuffer();
+        PyMemoryView view = new PyMemoryView(
+                array,
+                array,
+                0,
+                array.memoryFormatName(),
+                width,
+                new long[] {array.size()},
+                new long[] {width},
+                false);
+        view.ownsArrayExport = true;
+        return view;
     }
 
     /** An independent header over the same run, with the same format and shape. */
@@ -279,6 +312,8 @@ public final class PyMemoryView extends PyObject {
             case 'i':
             case 'I':
             case 'f':
+            case 'u':
+            case 'w':
                 return 4;
             case 'l':
             case 'L':
@@ -408,6 +443,10 @@ public final class PyMemoryView extends PyObject {
         if (live > 0) {
             throw Slots.bufferError(
                     "memoryview has %d exported buffer%s", live, live == 1 ? "" : "s");
+        }
+        if (ownsArrayExport) {
+            ((PyArray) exporter).releaseBuffer();
+            ownsArrayExport = false;
         }
         released = true;
     }
@@ -960,13 +999,21 @@ public final class PyMemoryView extends PyObject {
     /** One octet of the run, read through the offset; a released view never reaches here. */
     private int octetAt(long at) {
         int index = (int) at;
-        return exporter instanceof PyByteArray run
-                ? run.byteAt(index) & 0xff
-                : ((PyBytes) exporter).byteAt(index) & 0xff;
+        if (exporter instanceof PyByteArray run) {
+            return run.byteAt(index) & 0xff;
+        }
+        if (exporter instanceof PyArray array) {
+            return array.byteAt(index) & 0xff;
+        }
+        return ((PyBytes) exporter).byteAt(index) & 0xff;
     }
 
     /** One octet of the run, written in place; only a writable view reaches here. */
     private void writeOctet(long at, int value) {
+        if (exporter instanceof PyArray array) {
+            array.setByteAt((int) at, (byte) value);
+            return;
+        }
         ((PyByteArray) exporter).raw()[(int) at] = (byte) value;
     }
 
@@ -1017,6 +1064,12 @@ public final class PyMemoryView extends PyObject {
                 return PyFloat.of(Float.intBitsToFloat((int) readLE(at, 4)));
             case 'd':
                 return PyFloat.of(Double.longBitsToDouble(readLE(at, 8)));
+            case 'u':
+            case 'w':
+                // The reference still publishes `w`, but neither it nor `u` can be read as an item.
+                throw PyRaise.raise(
+                        ExceptionTypes.NOT_IMPLEMENTED_ERROR,
+                        "memoryview: format " + code() + " not supported");
             default:
                 return PyFloat.of(halfToDouble((short) readLE(at, 2)));
         }
@@ -1337,6 +1390,9 @@ public final class PyMemoryView extends PyObject {
     static byte[] bufferOctets(PyObject value) {
         if (value instanceof PyBytes || value instanceof PyByteArray) {
             return PyBytes.octets(value).clone();
+        }
+        if (value instanceof PyArray array) {
+            return array.rawBytes();
         }
         if (value instanceof PyMemoryView view) {
             view.check();
