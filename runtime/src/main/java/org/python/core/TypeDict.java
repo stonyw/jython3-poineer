@@ -1283,16 +1283,16 @@ final class TypeDict {
         table.wrapper("__ror__", ROR_DOC, TypeDict::windowOr);
         table.wrapper("__ior__", IOR_DOC, TypeDict::refuseIor);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
-        table.wrapper("__getitem__", GETITEM_DOC, (args, kw, q) -> window(args[0]).getItem(args[1]));
+        table.wrapper("__getitem__", GETITEM_DOC, (args, kw, q) -> args[0].getItem(args[1]));
         table.wrapper(
-                "__contains__", CONTAINS_DOC, (args, kw, q) -> window(args[0]).contains(args[1]));
+                "__contains__", CONTAINS_DOC, (args, kw, q) -> args[0].contains(args[1]));
         table.method("get", GET_DOC, TypeDict::proxyGet);
-        table.method("keys", KEYS_DOC, args -> proxyView(args[0], "keys"), METH_NOARGS);
-        table.method("values", VALUES_DOC, args -> proxyView(args[0], "values"), METH_NOARGS);
-        table.method("items", ITEMS_DOC, args -> proxyView(args[0], "items"), METH_NOARGS);
-        table.method("copy", COPY_DOC, args -> window(args[0]).copy(), METH_NOARGS);
+        table.method("keys", KEYS_DOC, args -> proxyCall(args[0], "keys"), METH_NOARGS);
+        table.method("values", VALUES_DOC, args -> proxyCall(args[0], "values"), METH_NOARGS);
+        table.method("items", ITEMS_DOC, args -> proxyCall(args[0], "items"), METH_NOARGS);
+        table.method("copy", COPY_DOC, args -> proxyCall(args[0], "copy"), METH_NOARGS);
         table.genericSubscript(PROXY_CLASS_GETITEM_DOC);
-        table.method("__reversed__", REVERSED_DOC, args -> reversedKeys(window(args[0])), METH_NOARGS);
+        table.method("__reversed__", REVERSED_DOC, args -> reversedKeys(args[0]), METH_NOARGS);
         table.value("__doc__", docValue(owner));
     }
 
@@ -5936,28 +5936,24 @@ final class TypeDict {
     /**
      * The same six for a window, with the mapping underneath doing the comparing.
      *
-     * <p>Two windows are equal when they are windows over the one dictionary rather than when their
-     * contents agree, which is why {@code object.__dict__ == int.__dict__} is false although both hold
-     * {@code __new__}; the four orderings go to the dictionaries, in the words of the operator CPython
-     * reaches after swapping them — {@code p < p} complains about {@code '>'} between two dicts.
+     * <p>{@code mappingproxy_richcompare} hands the mapping to CPython and leaves the other window wrapped,
+     * so a second window is answered by its own reflected leg: its mapping against this one's, with the
+     * operator swapped. Two windows are therefore equal when their mappings are equal, not when they are
+     * windows over the one dictionary, and {@code p < p} escapes that leg's wording — {@code '>'} between
+     * two dicts.
      */
     private static PyObject windowed(PyObject[] args, CompareOp cmp) {
         PyObject other = args.length > 1 ? args[1] : null;
-        PyDict left = window(args[0]);
-        if (other instanceof PyMappingProxy) {
-            PyDict right = window(other);
-            return switch (cmp) {
-                case EQ -> PyBool.of(left == right);
-                case NE -> PyBool.of(left != right);
-                default -> Slots.compare(cmp.reflected(), left, right);
-            };
+        PyObject left = window(args[0]);
+        if (other instanceof PyMappingProxy proxy) {
+            return proxy.richCompare(cmp.reflected(), left);
         }
         return Slots.compare(cmp, left, other);
     }
 
     /** The mapping a window stands for, which is the operand CPython hands to every one of its slots. */
-    private static PyDict window(PyObject value) {
-        return ((PyMappingProxy) value).mapping();
+    private static PyObject window(PyObject value) {
+        return ((PyMappingProxy) value).held();
     }
 
     /**
@@ -5969,15 +5965,13 @@ final class TypeDict {
      * order {@code dir()} takes, which is what makes {@code list(reversed(C.__dict__))} end with the two
      * names a class body writes last.
      */
-    private static PyObject reversedKeys(PyDict mapping) {
-        return mapping.reverseKeyIterator();
+    private static PyObject reversedKeys(PyObject value) {
+        return ((PyMappingProxy) value).reversedKeysIterator();
     }
 
     /** {@code p | q} and {@code q | p} reached as the slot: the operands the window stands for. */
     private static PyObject windowOr(PyObject[] args, String[] kwNames, String qualified) {
-        PyObject other = args[1];
-        return Slots.binary(
-                BinaryOp.OR, window(args[0]), other instanceof PyMappingProxy ? window(other) : other);
+        return Slots.binary(BinaryOp.OR, window(args[0]), args[1]);
     }
 
     /** {@code p |= q}: the one in-place slot the type fills, and it only refuses. */
@@ -6063,40 +6057,58 @@ final class TypeDict {
         return PyList.of(children.toArray(new PyObject[0]));
     }
 
-    /** {@code mappingproxy(mapping)}: a window over the mapping that was handed over. */
+    /**
+     * {@code mappingproxy(mapping)}: a window over the mapping that was handed over.
+     *
+     * <p>{@code mappingproxy_new} accepts what {@code PyMapping_Check} accepts — anything with an {@code
+     * __getitem__} — but refuses the two sequences that have one without being mappings. The value kept is
+     * the argument itself rather than an entries table, which is what lets a {@code ChainMap}, a {@code
+     * dict} subclass with {@code __missing__} or one that overrides {@code __contains__} answer through
+     * the window in its own words.
+     */
     static PyObject proxyNew(PyObject[] args, String[] kwNames, String qualified) {
-        if (Arguments.positional(args, kwNames) != 1) {
-            throw Slots.typeError("mappingproxy() takes exactly one argument (%d given)",
-                    Arguments.positional(args, kwNames));
+        int given = Arguments.positional(args, kwNames);
+        if (given != 1) {
+            throw Slots.typeError("mappingproxy() takes exactly one argument (%d given)", given);
         }
-        // A class written under `dict` keeps its entries in a `PyDict` of its own, so the window has to
-        // be taken over those rather than over the value; a proxy over a proxy is the same window again.
-        PyDict held = PyDict.bodyOf(args[0]);
-        if (held == null) {
-            held = args[0] instanceof PyMappingProxy proxy ? proxy.mapping() : null;
-        }
-        if (held == null) {
+        PyObject argument = args[0];
+        boolean mapping = PyDict.bodyOf(argument) != null
+                || argument instanceof PyMappingProxy
+                || Specials.member(argument.getType(), "__getitem__") != null;
+        boolean sequence = argument instanceof PyList
+                || argument instanceof PyListInstance
+                || argument instanceof PyTuple;
+        if (!mapping || sequence) {
             throw Slots.typeError(
                     "mappingproxy() argument must be a mapping, not %s",
-                    args[0].getType().filedName());
+                    argument.getType().filedName());
         }
-        return PyMappingProxy.of(held);
+        return PyMappingProxy.ofMapping(argument);
     }
 
+    /**
+     * {@code p.get(key[, default])}: the mapping's own {@code get}, called with the arguments as given.
+     *
+     * <p>{@code mappingproxy_get} calls {@code get} on the mapping rather than reading an entry, so a
+     * subclass that overrides it answers and a mapping that has one but is not a dict — a {@code ChainMap}
+     * — works. The default is passed only when it was given, which is what makes the mapping's own
+     * arity checks the ones a caller sees.
+     */
     private static PyObject proxyGet(PyObject[] args, String[] kwNames, String qualified) {
-        PyDict held = ((PyMappingProxy) args[0]).mapping();
+        PyObject mapping = ((PyMappingProxy) args[0]).held();
         PyObject[] rest = tail(args, kwNames);
         if (rest.length < 1 || rest.length > 2) {
             throw Slots.typeError("get() takes at least 1 argument (%d given)", rest.length);
         }
-        PyObject found = held.get(rest[0]);
-        return found == null ? (rest.length > 1 ? rest[1] : PyNone.INSTANCE) : found;
+        PyObject getter = Slots.getAttr(mapping, "get");
+        PyObject[] callArgs = rest.length == 2 ? rest : new PyObject[] {rest[0]};
+        return Slots.call(getter, callArgs, null);
     }
 
-    /** {@code p.keys()} and its two siblings: the dict's own view over the same mapping. */
-    private static PyObject proxyView(PyObject self, String name) {
+    /** {@code p.keys()}, {@code p.copy()} and their siblings: the mapping's own method of that name. */
+    private static PyObject proxyCall(PyObject self, String name) {
         return Slots.call(
-                Slots.getAttr(((PyMappingProxy) self).mapping(), name), new PyObject[0], null);
+                Slots.getAttr(((PyMappingProxy) self).held(), name), new PyObject[0], null);
     }
 
     /**

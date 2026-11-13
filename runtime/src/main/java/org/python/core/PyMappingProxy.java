@@ -13,27 +13,31 @@ package org.python.core;
  * two mutators a dict has are answered for in the container's own words because {@code mappingproxy} has
  * no {@code mp_ass_subscript} at all.
  *
+ * <p>What the window holds is the mapping it was handed, not its entries: a subclass of {@code dict} keeps
+ * its own {@code __getitem__}, {@code __missing__}, {@code __contains__}, {@code __iter__}, {@code __len__}
+ * and {@code get}, and every read of the window is a call to one of those. That is why {@code
+ * mappingproxy(custom)['key']} answers {@code 'getitem=value'} even though the entries underneath are
+ * ordinary, and why a {@code ChainMap} can be wrapped at all. The one shortcut is for a plain dictionary,
+ * where the entries are the mapping.
+ *
  * <p>The half that is not a window is the arithmetic. Every binary and ordering operation hands the
  * <em>mapping</em> to CPython instead of itself, which is why {@code p | {'x': 1}} answers a {@code dict}
  * and {@code p < p} complains about two dicts with {@code '>'} — the reflected leg of the comparison runs
  * on the other window's mapping with the operator swapped, and it is that inner refusal whose wording
  * escapes. A key that will not hash is refused in the dict's own words for the same reason.
- *
- * <p>One of CPython's answers is not modelled: {@code p[int]} declines to answer a generic alias because
- * this runtime has no {@code types.GenericAlias}. The two walks it offers are modelled, and both are the
- * dictionary's own cursors rather than the window's — {@code mappingproxy_getiter} hands the mapping to
- * {@code PyObject_GetIter} and {@code mappingproxy_reversed} calls the mapping's {@code __reversed__}, so
- * {@code type(iter(p)).__name__} is {@code dict_keyiterator} for a window exactly as it is for the dict
- * underneath.
  */
 final class PyMappingProxy extends PyObject {
 
-    /** The one dictionary every window over this type's members shares. */
-    private final PyDict held;
+    /** The mapping the window stands for, exactly as it was handed over. */
+    private final PyObject held;
 
-    private PyMappingProxy(PyDict held) {
+    /** The same value, when the mapping is a plain dictionary: the paths that read entries directly. */
+    private final PyDict dictionary;
+
+    private PyMappingProxy(PyObject held) {
         super(PyType.MAPPING_PROXY);
         this.held = held;
+        this.dictionary = held instanceof PyDict dict ? dict : null;
     }
 
     /** {@code X.__dict__} for the dictionary {@code X} keeps. */
@@ -41,52 +45,64 @@ final class PyMappingProxy extends PyObject {
         return new PyMappingProxy(held);
     }
 
-    /** The mapping underneath, which is what a comparison of two windows is really about. */
-    PyDict mapping() {
+    /** {@code mappingproxy(mapping)} for any mapping the constructor accepted. */
+    static PyMappingProxy ofMapping(PyObject held) {
+        return new PyMappingProxy(held);
+    }
+
+    /** The mapping underneath, which is what every slot and every comparison is really about. */
+    PyObject held() {
         return held;
     }
 
-    /** The entry under {@code key}, for {@code X.__dict__[name]} at Java level. */
-    PyObject at(PyObject key) {
-        return held.getItem(key);
+    /**
+     * The dictionary the window stands for, when the mapping is one; {@code null} otherwise.
+     *
+     * <p>This is the typed read the tests over {@code X.__dict__} take — a type's dictionary is always a
+     * plain {@code dict} — while the slots read {@link #held()} so that a {@code ChainMap} or a subclass
+     * is not mistaken for its entries.
+     */
+    PyDict mapping() {
+        return dictionary;
+    }
+
+    /** The entries, for a window whose mapping is a plain dictionary; {@code null} otherwise. */
+    PyDict dictionary() {
+        return dictionary;
     }
 
     // --- the mapping protocol ------------------------------------------------------------
 
     @Override
     public PyObject length() {
-        return held.length();
+        return dictionary != null ? dictionary.length() : Slots.length(held);
     }
 
     @Override
     public PyObject getItem(PyObject key) {
-        return held.getItem(key);
+        return dictionary != null ? dictionary.getItem(key) : Slots.getItem(held, key);
     }
 
     @Override
     public PyObject contains(PyObject key) {
-        return held.contains(key);
+        return dictionary != null
+                ? dictionary.contains(key)
+                : PyBool.of(Slots.contains(held, key));
     }
 
     @Override
     public PyObject iterator() {
-        return held.iterator();
+        return dictionary != null ? dictionary.iterator() : Slots.iterator(held);
     }
 
-    /**
-     * {@code iter(p)} and {@code reversed(p)} at Java level, in the order the dictionary was written.
-     *
-     * <p>Both follow the mapping's insertion order rather than the sorted order {@code dir()} takes, which
-     * is what makes {@code list(int.__dict__)[:3]} the three names CPython's {@code tp_dict} happened to
-     * fill first.
-     */
+    /** The keys walk, for a caller that wants the iterator itself; the same one {@code __iter__} gives. */
     PyIterator keysIterator() {
-        return held.keyIterator();
+        return (PyIterator) iterator();
     }
 
-    /** {@code p.__reversed__()}: the keys from the last one written back to the first. */
+    /** {@code reversed(p)}: the mapping's own {@code __reversed__}, called as CPython calls it. */
     PyIterator reversedKeysIterator() {
-        return held.reverseKeyIterator();
+        return (PyIterator) Slots.call(Slots.getAttr(held, "__reversed__"), new PyObject[0], null);
     }
 
     /**
@@ -100,46 +116,26 @@ final class PyMappingProxy extends PyObject {
      * filed.
      */
     PyDict copied() {
-        return held.copy();
+        return dictionary.copy();
     }
 
     // --- arithmetic and comparison -------------------------------------------------------
 
     /**
-     * {@code p | q} and {@code q | p}, both of which answer a plain dict.
+     * {@code p | q}: the mapping's own bar, with the window's operand left as it arrived.
      *
-     * <p>The window is not the operand CPython uses: {@code dictproxy_or} hands the mapping over, so the
-     * result is a {@code dict} and a refusal names {@code 'dict'} where a person reading the traceback
-     * would expect {@code 'mappingproxy'}.
+     * <p>{@code mappingproxy_or} is {@code PyNumber_Or(mapping, other)}, so a string window would complain
+     * about {@code 'str' and 'int'} and a window over a dict answers a dict. Leaving the other window
+     * wrapped is deliberate: its {@code __ror__} is what makes {@code p | q} a dict-to-dict merge.
      */
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
-        if (op != BinaryOp.OR) {
-            return PyNotImplemented.INSTANCE;
-        }
-        PyObject right = unwrap(other);
-        if (!(right instanceof PyDict merged)) {
-            throw Slots.typeError(
-                    "unsupported operand type(s) for |: 'dict' and '%s'",
-                    other.getType().filedName());
-        }
-        return joined(held, merged);
+        return op == BinaryOp.OR ? Slots.binary(BinaryOp.OR, held, other) : PyNotImplemented.INSTANCE;
     }
 
     @Override
     public PyObject reflectedOp(BinaryOp op, PyObject other) {
-        if (op != BinaryOp.OR) {
-            return PyNotImplemented.INSTANCE;
-        }
-        // `{'x': 1} | p`: the left operand's own `__or__` declined the window, so the merge starts there
-        // and the mapping underneath this one overrules it, key for key.
-        PyObject left = unwrap(other);
-        if (!(left instanceof PyDict)) {
-            throw Slots.typeError(
-                    "unsupported operand type(s) for |: '%s' and 'dict'",
-                    other.getType().filedName());
-        }
-        return joined(left, held);
+        return op == BinaryOp.OR ? Slots.binary(BinaryOp.OR, other, held) : PyNotImplemented.INSTANCE;
     }
 
     /**
@@ -156,38 +152,18 @@ final class PyMappingProxy extends PyObject {
         return PyNotImplemented.INSTANCE;
     }
 
-    /** The mapping a window stands for, and the window's caller's own operand untouched. */
-    private static PyObject unwrap(PyObject value) {
-        return value instanceof PyMappingProxy window ? window.held : value;
-    }
-
-    private static PyObject joined(PyObject left, PyObject right) {
-        PyDict merged = ((PyDict) left).copy();
-        merged.putAll((PyDict) right);
-        return merged;
-    }
-
     /**
      * {@code p == q}, {@code p != q} and the four orderings.
      *
      * <p>{@code mappingproxy_richcompare} hands the <em>mapping</em> to CPython and leaves the other
-     * operand as it arrived, so a window compared with a window is declined by the first dictionary and
-     * answered by the second leg — the other window's mapping against this one's, which is a compare of
-     * two dictionaries. Two windows are therefore equal when their contents agree, not when they are
-     * windows over the one dictionary; the ordering legs keep the operator swap that same walk makes, and
-     * it is that swap whose wording escapes: {@code p < p} complains about {@code '>'} and two dicts.
+     * operand as it arrived, so a window compared with a window is declined by the first mapping and
+     * answered by the second leg — the other window's mapping against this one's, with the operator
+     * swapped for the orderings. Two windows are therefore equal when their mappings are equal, not when
+     * they are windows over the one dictionary; it is that swap whose wording escapes: {@code p < p}
+     * complains about {@code '>'} and two dicts.
      */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
-        if (other instanceof PyMappingProxy window) {
-            if (cmp == CompareOp.EQ || cmp == CompareOp.NE) {
-                boolean equal = held.eq(window.held);
-                return PyBool.of(cmp == CompareOp.EQ ? equal : !equal);
-            }
-            // The leg CPython's reflected call runs: the other window's mapping, with the operator
-            // swapped, over this one's.
-            return Slots.compare(cmp.reflected(), held, window.held);
-        }
         return Slots.compare(cmp, held, other);
     }
 
@@ -203,12 +179,10 @@ final class PyMappingProxy extends PyObject {
         if (other == this) {
             return true;
         }
-        return other instanceof PyMappingProxy window
-                ? held.eq(window.held)
-                : other instanceof PyDict dict && held.eq(dict);
+        return Slots.compareTrue(CompareOp.EQ, held, other);
     }
 
-    /** {@code hash(p)}: refused in the dict's words, because the mapping is what was hashed. */
+    /** {@code hash(p)}: refused in the mapping's words, because the mapping is what was hashed. */
     @Override
     public long hash() {
         return held.hash();

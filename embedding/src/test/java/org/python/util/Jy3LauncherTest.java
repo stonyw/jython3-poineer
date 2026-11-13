@@ -564,7 +564,8 @@ class Jy3LauncherTest {
                 "23_tokenize_fstring.py",
                 "24_import_chain_seams.py",
                 "25_simple_namespace.py",
-                "26_union_type.py");
+                "26_union_type.py",
+                "27_mappingproxy.py");
     }
 
     private static List<String> m3Corpus() {

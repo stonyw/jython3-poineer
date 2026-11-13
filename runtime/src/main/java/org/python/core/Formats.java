@@ -609,11 +609,49 @@ final class Formats {
                     return repeat(pad, left) + body + repeat(pad, missing - left);
                 default:
                     // '=' keeps a sign glued to the number, which is what a zero-padded field wants.
+                    // The alternate-form prefix is glued too: CPython's `#012b` of 100 is
+                    // `0b0001100100`, not `0000b1100100`, because the field is filled between the
+                    // prefix and the digits.
                     int signLength = body.length() > 0 && "+- ".indexOf(body.charAt(0)) >= 0 ? 1 : 0;
-                    return body.substring(0, signLength)
+                    int glued = signLength;
+                    if (body.length() >= glued + 2
+                            && body.charAt(glued) == '0'
+                            && "boxX".indexOf(body.charAt(glued + 1)) >= 0) {
+                        glued += 2;
+                    }
+                    if (pad == '0' && !grouping.isEmpty()) {
+                        // A grouped number pads with zeros that are digits rather than fill: CPython's
+                        // `010,` of 1234 is `00,001,234`, so the zeros go in before the separators are
+                        // placed and a wide enough field may come out one column over — `08,` of 1234 is
+                        // `0,001,234`, nine columns.
+                        return body.substring(0, glued) + groupedFill(body, glued);
+                    }
+                    return body.substring(0, glued)
                             + repeat(pad, missing)
-                            + body.substring(signLength);
+                            + body.substring(glued);
             }
+        }
+
+        /** The integer digits of {@code body} from {@code glued}, padded with zeros and regrouped. */
+        private String groupedFill(String body, int glued) {
+            char separator = grouping.charAt(0);
+            boolean alternates = !type.isEmpty() && "boxX".indexOf(type.charAt(0)) >= 0;
+            boolean hex = !type.isEmpty() && "xX".indexOf(type.charAt(0)) >= 0;
+            int head = glued;
+            while (head < body.length()
+                    && (Character.isDigit(body.charAt(head))
+                            || body.charAt(head) == separator
+                            || hex && Character.digit(body.charAt(head), 16) >= 0)) {
+                head++;
+            }
+            String digits = body.substring(glued, head).replace(String.valueOf(separator), "");
+            int room = (int) width - glued - (body.length() - head);
+            String filled = group(digits, separator, alternates ? 4 : 3, true);
+            while (filled.length() < room) {
+                digits = "0" + digits;
+                filled = group(digits, separator, alternates ? 4 : 3, true);
+            }
+            return filled + body.substring(head);
         }
 
         private static String repeat(char c, int times) {

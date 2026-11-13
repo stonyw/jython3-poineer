@@ -218,7 +218,7 @@ public final class PyDict extends PyObject {
         // A window over a dict compares as the dict underneath it, which is what makes `dict(p) == p` and
         // `{x: p} == {x: p}` answer rather than fall back to identity. A subclass instance contributes the
         // dictionary it holds, so `{'a': 1} == D(a=1)` answers too.
-        PyObject compared = other instanceof PyMappingProxy window ? window.mapping() : other;
+        PyObject compared = other instanceof PyMappingProxy window ? window.held() : other;
         PyDict d = bodyOf(compared);
         return d != null && items.equals(d.items);
     }
@@ -329,8 +329,9 @@ public final class PyDict extends PyObject {
         }
         if (source instanceof PyMappingProxy window) {
             // `dict(X.__dict__)` and `{**X.__dict__}`: the window is not the mapping, and CPython reads
-            // the mapping it stands for rather than the keys the window iterates.
-            putAll(window.mapping());
+            // the mapping it stands for rather than the keys the window iterates. That mapping is not
+            // necessarily a dict — a window over a ChainMap reads the ChainMap's keys.
+            merge(window.held());
             return;
         }
         PyObject keys = keysOf(source);
