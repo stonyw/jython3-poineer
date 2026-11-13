@@ -17,7 +17,7 @@ import java.util.Arrays;
  * octets in four, and appending to a full one grows it by at least an eighth. {@link #resize} is that
  * arithmetic and the only place the capacity moves.
  */
-public final class PyByteArray extends PyObject {
+public class PyByteArray extends PyObject {
 
     /** The exclusive end of the octet range {@code 0..255}, past {@link BigInteger}'s own byte. */
     private static final BigInteger OCTETS = BigInteger.valueOf(256);
@@ -28,10 +28,14 @@ public final class PyByteArray extends PyObject {
     /** The capacity of the allocation behind {@link #value}, which is what {@code __sizeof__} reports. */
     private int allocated;
 
-    private PyByteArray(byte[] value, int allocated) {
-        super(PyType.BYTEARRAY);
+    PyByteArray(PyType kind, byte[] value, int allocated) {
+        super(kind);
         this.value = value;
         this.allocated = allocated;
+    }
+
+    private PyByteArray(byte[] value, int allocated) {
+        this(PyType.BYTEARRAY, value, allocated);
     }
 
     /** The empty bytearray, whose allocation is nothing at all rather than one spare octet. */

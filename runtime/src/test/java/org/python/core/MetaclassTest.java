@@ -228,12 +228,12 @@ class MetaclassTest {
     /**
      * The immutable values may be bases; every other built-in still may not.
      *
-     * <p>{@code int}, {@code str}, {@code complex}, {@code float} and {@code bytes} are the fourth
-     * kind of base: a value whose storage is a fixed run of fields, so a subclass is that value with a
-     * dictionary beside it. Every other built-in is a Java class with slots no dictionary can stand
-     * in for, so the refusal is this runtime's own and is named as a deviation. It is a
-     * {@code NotImplementedError} rather than a {@code TypeError} because nothing about the program
-     * is wrong — only about what this runtime has built so far.
+     * <p>{@code int}, {@code str}, {@code complex}, {@code float}, {@code bytes}, {@code bytearray},
+     * {@code set} and {@code frozenset} are the fourth kind of base: a value whose storage is a fixed
+     * run of fields, so a subclass is that value with a dictionary beside it. Every other built-in is
+     * a Java class with slots no dictionary can stand in for, so the refusal is this runtime's own and
+     * is named as a deviation. It is a {@code NotImplementedError} rather than a {@code TypeError}
+     * because nothing about the program is wrong — only about what this runtime has built so far.
      */
     @Test
     void theImmutableValuesAreDerivableAndTheOtherBuiltInsAreNot() {
@@ -241,9 +241,14 @@ class MetaclassTest {
         assertThat(type("MyInt", new PyType[] {PyType.INT}).getType()).isSameAs(PyType.TYPE);
         assertThat(type("MyFloat", new PyType[] {PyType.FLOAT}).getType()).isSameAs(PyType.TYPE);
         assertThat(type("MyBytes", new PyType[] {PyType.BYTES}).getType()).isSameAs(PyType.TYPE);
+        assertThat(type("MyByteArray", new PyType[] {PyType.BYTEARRAY}).getType())
+                .isSameAs(PyType.TYPE);
+        assertThat(type("MySet", new PyType[] {PyType.SET}).getType()).isSameAs(PyType.TYPE);
+        assertThat(type("MyFrozenSet", new PyType[] {PyType.FROZENSET}).getType())
+                .isSameAs(PyType.TYPE);
         refuses(
-                "NotImplementedError: subclassing 'set' is not implemented",
-                () -> type("MySet", new PyType[] {PyType.SET}));
+                "NotImplementedError: subclassing 'super' is not implemented",
+                () -> type("MySuper", new PyType[] {PyType.SUPER}));
 
         assertThat(type("Exceptionish", new PyType[] {ExceptionTypes.TYPE_ERROR})
                         .getType())

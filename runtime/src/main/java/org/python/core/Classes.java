@@ -3,6 +3,7 @@ package org.python.core;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -353,6 +354,15 @@ final class Classes {
                 // `bytes` is an immutable run of octets; `PyBytesSubclass` holds the same run and lets
                 // the class keep a dictionary beside it. `test_descr`'s buffer test subclasses it.
                 || base == PyType.BYTES
+                // `bytearray` is the mutable run of octets; `PyByteArraySubclass` keeps the same run
+                // and lets the class keep a dictionary beside it. Its `__init__` fills the run, so a
+                // second call replaces what the first wrote.
+                || base == PyType.BYTEARRAY
+                // `set` and `frozenset` are the two hash tables a program writes classes under — an
+                // `enum` mixin, a domain object that is also a set — and both keep their table in the
+                // subclass the same way.
+                || base == PyType.SET
+                || base == PyType.FROZENSET
                 // A module's state is the dictionary it owns, which is exactly what a class Python
                 // writes can keep beside it: `types.ModuleType` is a base the reference's own tests
                 // (and `runpy`) rely on, and `PyModule` reads class members when its type is a class.
@@ -1505,6 +1515,21 @@ final class Classes {
         if (kind.matches(PyType.BYTES)) {
             PyBytes made = (PyBytes) Constructors.instantiate(PyType.BYTES, args, kwNames);
             return new PyBytesSubclass(made.getValue(), kind);
+        }
+        // `bytearray.__new__` allocates an empty run and leaves the arguments to `__init__`, which is
+        // why a subclass's value is empty here and filled by the initialiser the order answers with.
+        if (kind.matches(PyType.BYTEARRAY)) {
+            return new PyByteArraySubclass(kind);
+        }
+        // `set.__new__` likewise allocates an empty table; `set_init` fills it afterwards, naming the
+        // class the value was made as in its refusals.
+        if (kind.matches(PyType.SET)) {
+            return new PySetSubclass(new LinkedHashSet<>(), kind);
+        }
+        // `frozenset.__new__` reads its one argument into the value it makes — there is no initialiser to
+        // fill it afterwards — so the argument is consumed here, in the receiver's own name.
+        if (kind.matches(PyType.FROZENSET)) {
+            return TypeDict.frozenSetOfType(kind, args, names);
         }
         // A module's creator is `module_new`: the dictionary is empty until `__init__` fills the five
         // names, which is what makes `M.__new__(M)` a module with nothing in it and `M("a")` one

@@ -3,6 +3,7 @@ package org.python.core;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -4389,8 +4390,8 @@ final class TypeDict {
      * can be hashed.
      */
     private static PyObject setsNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.SET, args, kwNames);
-        return PySet.empty();
+        PyType kind = declaredClass(PyType.SET, args, kwNames);
+        return kind == PyType.SET ? PySet.empty() : new PySetSubclass(new LinkedHashSet<>(), kind);
     }
 
     /**
@@ -4404,11 +4405,26 @@ final class TypeDict {
      * as itself.
      */
     private static PyObject frozenSetsNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.FROZENSET, args, kwNames);
-        Arguments.noKeywords("frozenset()", kwNames);
-        PyObject[] rest = tail(args, kwNames);
-        Arguments.atMost(PyType.FROZENSET.name(), rest, kwNames, 1);
-        return PyFrozenSet.collected(rest.length == 0 ? null : rest[0]);
+        PyType kind = declaredClass(PyType.FROZENSET, args, kwNames);
+        return frozenSetOfType(kind, tail(args, kwNames), kwNames);
+    }
+
+    /**
+     * {@code make_new_frozenset} for the class being made: the argument becomes the contents, and a class
+     * under {@code frozenset} keeps them in a value of that class. The count complaint names the receiver
+     * — {@code FS expected at most 1 argument, got 2} — which is {@code type->tp_name}, not the built-in.
+     */
+    static PyObject frozenSetOfType(PyType kind, PyObject[] args, String[] kwNames) {
+        // A class that brings its own `__init__` has a `tp_init` of its own, which is CPython's test
+        // for skipping the keyword refusal; a class that only inherits `object.__init__` does not.
+        if (Specials.lookUp(kind, "__init__") == null) {
+            Arguments.noKeywords("frozenset()", kwNames);
+        }
+        Arguments.atMost(kind.name(), args, kwNames, 1);
+        PySet made = PyFrozenSet.collected(args.length == 0 ? null : args[0]);
+        return kind == PyType.FROZENSET
+                ? made
+                : new PyFrozenSetSubclass(new LinkedHashSet<>(made.getItems()), kind);
     }
 
     /**
@@ -4568,8 +4584,8 @@ final class TypeDict {
      * {@code __init__}, and the slot alone is only the first half.
      */
     private static PyObject bytearraysNew(PyObject[] args, String[] kwNames, String qualified) {
-        declaredClass(PyType.BYTEARRAY, args, kwNames);
-        return PyByteArray.empty();
+        PyType kind = declaredClass(PyType.BYTEARRAY, args, kwNames);
+        return kind == PyType.BYTEARRAY ? PyByteArray.empty() : new PyByteArraySubclass(kind);
     }
 
     /**
@@ -5945,6 +5961,11 @@ final class TypeDict {
                     // are fine without a `__new__` of their own.
                     || owner == PyType.FLOAT
                     || owner == PyType.BYTES
+                    // `frozenset.__new__` reads its one argument before `frozenset`'s absent
+                    // `__init__` gives way to `object.__init__`, so `class F(frozenset): pass; F([1])`
+                    // is fine. `set` and `bytearray` fill in their own initialisers and never reach
+                    // `object.__init__` at all.
+                    || owner == PyType.FROZENSET
                     // A subclass of `SimpleNamespace` has already read its one positional argument in
                     // `namespace_init`, so `object.__init__` is not the slot that complains about it.
                     || owner == PyType.NAMESPACE

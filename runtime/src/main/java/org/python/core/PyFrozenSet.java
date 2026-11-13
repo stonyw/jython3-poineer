@@ -13,13 +13,17 @@ import java.util.Set;
  * order its elements happen to be stored in — CPython's own mixing is an XOR of shuffled element
  * hashes for exactly that reason, and is reproduced here.
  */
-public final class PyFrozenSet extends PySet {
+public class PyFrozenSet extends PySet {
 
     /** The one value this runtime keeps for an empty frozen set, which no Python program ever reads. */
     public static final PyFrozenSet EMPTY = new PyFrozenSet(new LinkedHashSet<>());
 
     PyFrozenSet(Set<PyObject> items) {
-        super(items, PyType.FROZENSET);
+        this(items, PyType.FROZENSET);
+    }
+
+    PyFrozenSet(Set<PyObject> items, PyType kind) {
+        super(items, kind);
     }
 
     public static PyFrozenSet of(PyObject... items) {
