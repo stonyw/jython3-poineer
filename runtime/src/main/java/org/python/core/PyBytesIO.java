@@ -73,6 +73,9 @@ final class PyBytesIO extends PyIOStream {
         if (value instanceof PyMemoryView view) {
             return view.toBytes("C").getValue();
         }
+        if (value instanceof PyArray array) {
+            return array.rawBytes();
+        }
         throw Slots.typeError(
                 "a bytes-like object is required, not '%s'", value.getType().name());
     }

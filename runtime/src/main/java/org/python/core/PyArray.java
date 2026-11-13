@@ -486,6 +486,7 @@ class PyArray extends PyObject {
             return PyNone.INSTANCE;
         }
         int index = arrayIndex(key, "array assignment index out of range");
+        requireResizable(count - 1);
         System.arraycopy(
                 data, (index + 1) * itemsize, data, index * itemsize, (count - index - 1) * itemsize);
         count--;
@@ -544,7 +545,10 @@ class PyArray extends PyObject {
 
     /** Appends {@code value}'s items; a same-typed array is copied as octets, anything else walked. */
     private void extendWith(PyObject value) {
-        if (value instanceof PyArray source && source.typecode == typecode) {
+        if (value instanceof PyArray source) {
+            if (source.typecode != typecode) {
+                throw Slots.typeError("can only extend with array of same kind");
+            }
             appendRaw(Arrays.copyOf(source.data, source.count * itemsize));
             return;
         }
@@ -846,6 +850,7 @@ class PyArray extends PyObject {
     }
 
     private void deleteAt(int index) {
+        requireResizable(count - 1);
         System.arraycopy(
                 data, (index + 1) * itemsize, data, index * itemsize, (count - index - 1) * itemsize);
         count--;

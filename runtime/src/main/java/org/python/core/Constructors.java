@@ -1316,6 +1316,14 @@ final class Constructors {
         if (value instanceof PyBytes source) {
             return PyBytes.wrap(source.getValue().clone());
         }
+        // A buffer argument is copied octet for octet, not element by element: `bytes(array('i',
+        // [1]))` is four octets, and `bytes(memoryview(array('i', [1])))` is the same four.
+        if (value instanceof PyArray array) {
+            return PyBytes.wrap(array.rawBytes());
+        }
+        if (value instanceof PyMemoryView view) {
+            return view.toBytes("C");
+        }
         List<PyObject> items = fromIterator(value);
         byte[] out = new byte[items.size()];
         for (int i = 0; i < out.length; i++) {
@@ -1396,6 +1404,14 @@ final class Constructors {
         }
         if (source instanceof PyByteArray octets) {
             target.set(octets.raw());
+            return;
+        }
+        if (source instanceof PyArray array) {
+            target.set(array.rawBytes());
+            return;
+        }
+        if (source instanceof PyMemoryView view) {
+            target.set(view.toBytes("C").getValue());
             return;
         }
         if (source instanceof PyList || source instanceof PyTuple) {

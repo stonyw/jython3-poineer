@@ -279,6 +279,10 @@ public final class PyFileIO extends PyIOStream {
         if (data instanceof PyMemoryView view) {
             return view.toBytes("C").getValue();
         }
+        // An array is an exporter too: `array.tofile`-style writes hand the run straight over.
+        if (data instanceof PyArray array) {
+            return array.rawBytes();
+        }
         throw Slots.typeError(
                 "a bytes-like object is required, not '%s'", Slots.argumentName(data));
     }

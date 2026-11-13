@@ -137,6 +137,17 @@ class SreRegexDivergenceTest {
         assertThat(matcher.group("g2")).isEqualTo("d");
     }
 
+    /**
+     * A condition may name a group that only closes later in the pattern. Java refuses a
+     * <em>named</em> backreference to a group it has not seen yet but accepts a numeric forward one,
+     * so marker references are written as placeholders and numbered after translation.
+     */
+    @Test
+    void forwardConditionalReferencesWorkByNumber() {
+        assertThat(matches("(a)b(?=(?(2)x|c))(c)", "abc")).isTrue();
+        assertThat(matches("(a)b(?=(?(2)x|c))(c)", "abx")).isFalse();
+    }
+
     @Test
     void numericBackReferencesTakeAtMostTwoDigits() {
         assertThat(matches("(a)(b)\\2\\1", "abba")).isTrue();

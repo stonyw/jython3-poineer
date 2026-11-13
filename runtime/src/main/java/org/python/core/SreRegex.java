@@ -2,6 +2,7 @@ package org.python.core;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -123,6 +124,17 @@ final class SreRegex {
         private final Deque<Integer> openGroups = new ArrayDeque<>();
         /** Groups a conditional asks about after they closed: each needs a participation marker. */
         private final Set<Integer> conditionalGroups = new HashSet<>();
+        /**
+         * The Java number of each participation marker.
+         *
+         * <p>A conditional may name a group that only closes later in the pattern ("group used
+         * before defined"), and Java refuses a <em>named</em> backreference to a group it has not
+         * seen yet. Java does accept a forward <em>numeric</em> one, so the references are written
+         * as placeholders and turned into numbers once the whole pattern has been translated.
+         */
+        private final Map<Integer, Integer> markerNumbers = new HashMap<>();
+        /** How many capturing groups Java has seen so far; markers are numbered from here. */
+        private int javaGroups;
         private int groupCount;
         private int at;
         private boolean dotAll;
@@ -196,7 +208,12 @@ final class SreRegex {
 
         String translate() {
             body(-1);
-            return out.toString();
+            String translated = out.toString();
+            for (Map.Entry<Integer, Integer> marker : markerNumbers.entrySet()) {
+                translated = translated.replace(
+                        "\\k<mk" + marker.getKey() + ">", "\\" + marker.getValue());
+            }
+            return translated;
         }
 
         /**
@@ -462,6 +479,7 @@ final class SreRegex {
                 int number = ++groupCount;
                 enter(number);
                 out.append("(?<").append(groupName(number)).append('>');
+                javaGroups++;
                 at++;
                 return;
             }
@@ -546,6 +564,7 @@ final class SreRegex {
                 groupCount = number;
                 enter(number);
                 out.append("(?<").append(groupName(number)).append('>');
+                javaGroups++;
                 at = close + 1;
                 return;
             }
@@ -586,6 +605,7 @@ final class SreRegex {
         }
 
         private void participationMarker(int number) {
+            markerNumbers.put(number, ++javaGroups);
             out.append("(?<mk").append(number).append(">)");
         }
 

@@ -1,4 +1,4 @@
-# `re` 以 `java.util.regex` 为后备的差异清单（M6-a 切片 12）
+# `re` 以 `java.util.regex` 为后备的差异清单（M6-a 切片 13）
 
 本运行时的 `re` 是参考 3.14 的纯 Python 解析器与编译器（`re/_parser.py`、`re/_compiler.py`），
 运行时只回答一件事：`_sre.compile`。[SreRegex.java](../runtime/src/main/java/org/python/core/SreRegex.java)
@@ -11,6 +11,8 @@
   下面第 1–5 节里**已经对齐**的行为。
 - `embedding/src/test/resources/m6a/corpus/18_re_conditionals.py` —— 条件组与数字反向引用的逐字节
   对照（见 6.2），同样由参考与本运行时同解。
+- `embedding/src/test/resources/m6a/corpus/19_buffer_protocol.py` —— bytes-like 主体与 buffer 导出面
+  的逐字节对照（见第 7 节）。
 - `runtime/src/test/java/org/python/core/SreRegexDivergenceTest.java` —— 直接对翻译层钉住已对齐项，
   并把第 6 节里**仍存**的差异当作现状固定下来，改翻译时先改这两个文件。
 
@@ -122,10 +124,13 @@ Python 支持条件组，Java 没有对应构造，翻译层把它改写成对�
 - marker 会改变 Java 的组编号，因此所有 Python 捕获组改发为 `(?<gN>`，`\1` 写成 `\k<g1>`，
   组访问一律按名字取值（见第 4 节）。
 - 数字反向引用最多两位：`\119` 是组 11 加字面 `9`，与 `re._parser` 的读法一致。
+- 条件可以引用**之后才闭合**的组（`(a)b(?=(?(2)x|c))(c)`，CPython 的 `test_lookahead`）。Java
+  拒绝尚未见到的**命名**反向引用，却接受前置的**数字**反向引用，所以 marker 引用先写成占位符，
+  整条模式翻译完再换成编号。
 
 回归：语料 `18_re_conditionals.py`（与参考 3.14.10 逐字节一致）与 `SreRegexDivergenceTest` 的
 `conditionalGroupsTestParticipation` / `conditionalMarkerKeepsThePythonGroupNumbers` /
-`numericBackReferencesTakeAtMostTwoDigits`。`test_re` 的
+`forwardConditionalReferencesWorkByNumber` / `numericBackReferencesTakeAtMostTwoDigits`。`test_re` 的
 `test_re_groupref_exists_validation_bug`（256 个 subTest）、`test_re_groupref_exists`、
 `test_symbolic_groups`、`test_bug_3629`、`test_debug_flag`、`test_lookahead` 随之离开错误簇。
 
@@ -153,3 +158,28 @@ Python 支持条件组，Java 没有对应构造，翻译层把它改写成对�
 `NotImplementedError`（应报 `TypeError: cannot create 're.Match' instances`）、`Pattern.scanner`、
 `Pattern.__weakref__`、`test_enum`/`test_disallow_instantiation` 的内建类型元数据等。
 这些按里程碑另行处理，不在本清单口径内。
+
+其中两条与主体（subject）有关，切片 13 已让 bytes 模式接受全部 exporter，但**生命期**尚未建模：
+`test_keep_buffer` 要求 `finditer(bytearray)` 在迭代器存活期间持有导出、使 `bytearray` 的
+`append` 抛 `BufferError`；`test_bug_29444` 要求 `Match.group()` 读的是那块活 buffer，而不是匹配时的
+快照。本运行时在匹配入口把主体取成一段 `str`（这正是跨过 Java 引擎必须付的代价），所以这两条
+仍是具名差异，不假造导出计数。
+
+---
+
+## 7. 输入面：bytes-like 主体
+
+bytes 模式的主体按 CPython 的 `getstring` 取数：先问 buffer，拿不到才报
+`expected string or bytes-like object, got 'X'`。因此 `bytearray`、`array.array`、`memoryview` 都是
+合法主体，与 `bytes` 同解；str 主体仍报 `cannot use a bytes pattern on a string-like object`，
+反过来 str 模式遇上 buffer 报 `cannot use a string pattern on a bytes-like object`。
+
+这一节的对拍入口是语料 `19_buffer_protocol.py`：它同时钉住 `memoryview` 的
+`format`/`itemsize`/`ndim`/`shape`/`strides`、切片与 `cast` 之后再导出、`released` 之后的
+`ValueError: operation forbidden on released memoryview object`、`array` 与 `memoryview` 的双向转换
+（`tobytes`/`frombytes`/`buffer_info`、按元素切片）、`bytes()`/`bytearray()`/`BytesIO.write` 的取数
+口径，以及导出期间 `array` 的十种改写各自抛
+`BufferError: cannot resize an array that is exporting buffers`。
+
+唯一不逐字节相同的字段是 `array.buffer_info()[0]`：它是进程地址，JVM 上不存在，本运行时答 `0`；
+语料只比较长度那一半。

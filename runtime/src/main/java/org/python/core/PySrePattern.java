@@ -166,15 +166,22 @@ final class PySrePattern extends PyObject {
      */
     private String subject(PyObject value) {
         if (bytes) {
-            if (value instanceof PyBytes raw) {
-                return new String(raw.getValue(), StandardCharsets.ISO_8859_1);
-            }
             if (value instanceof PyStr) {
                 throw Slots.typeError("cannot use a bytes pattern on a string-like object");
             }
+            if (value instanceof PyBytes raw) {
+                return new String(raw.getValue(), StandardCharsets.ISO_8859_1);
+            }
+            // A bytes pattern asks the subject for a buffer, so every exporter is a subject:
+            // bytearray, array and memoryview included.
+            if (value instanceof PyByteArray || value instanceof PyArray
+                    || value instanceof PyMemoryView) {
+                return new String(PyMemoryView.bufferOctets(value), StandardCharsets.ISO_8859_1);
+            }
         } else if (value instanceof PyStr text) {
             return text.getValue();
-        } else if (value instanceof PyBytes) {
+        } else if (value instanceof PyBytes || value instanceof PyByteArray
+                || value instanceof PyArray || value instanceof PyMemoryView) {
             throw Slots.typeError("cannot use a string pattern on a bytes-like object");
         }
         throw Slots.typeError("expected string or bytes-like object, got '%s'",
