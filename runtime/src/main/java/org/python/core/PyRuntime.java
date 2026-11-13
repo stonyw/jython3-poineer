@@ -92,6 +92,35 @@ public final class PyRuntime {
     private static List<String> sysPath = List.of("");
 
     /**
+     * The switches the launcher read from its own command line, before {@code sys} was built.
+     *
+     * <p>The launcher owns the option surface, so it also owns the decision of which switches it can
+     * honour. What it hands over here is only the part {@code sys} has to answer for: the {@code -W}
+     * options in the order they were given, the members of {@code sys.flags} that a switch really
+     * changes, and the {@code -X} keys that were accepted so {@code sys._xoptions} can list them.
+     */
+    public record CommandLine(
+            List<String> warnOptions,
+            List<String> xOptions,
+            boolean devMode,
+            boolean quiet,
+            boolean dontWriteBytecode,
+            boolean noSite,
+            boolean noUserSite) {
+
+        /** What a launcher given no switches at all reports. */
+        public static final CommandLine NONE =
+                new CommandLine(List.of(), List.of(), false, false, false, false, false);
+    }
+
+    private static CommandLine commandLine = CommandLine.NONE;
+
+    /** Record what the launcher parsed; called once, before {@link #startup()}. */
+    public static void setCommandLine(CommandLine switches) {
+        commandLine = switches;
+    }
+
+    /**
      * What {@code sys.getrecursionlimit} answers, which is a number this runtime stores and does not act
      * on: frames live on the JVM's stack, so depth is bounded by the thread's own size rather than by
      * this value. The reference's default is 1000, and it is what a program reads here until it sets
@@ -1300,25 +1329,43 @@ public final class PyRuntime {
     }
 
     /**
-     * {@code sys.flags}: the interpreter's start-up switches.
+     * {@code sys.flags}: the interpreter's start-up switches, all eighteen the reference answers.
      *
-     * <p>Only {@code context_aware_warnings}, {@code ignore_environment} and {@code optimize} are
-     * answered, because they are the only members this tree reads: {@code _py_warnings} asks the first
-     * once at module scope to decide whether {@code catch_warnings} keeps its filters in a context
-     * variable or in the global list, {@code _colorize.can_colorize} asks the second before it looks at
-     * {@code PYTHON_COLORS}, and {@code importlib._bootstrap_external.cache_from_source} asks the third
-     * before it chooses a cache name. All are 0 — the reference's without {@code -X
-     * context_aware_warnings}, without {@code -E} and without {@code -O} respectively.
-     * {@code utf8_mode} is 0 too, and it is read by {@code test_builtin}'s class body before any test
-     * runs, so answering it is what lets that module load. The rest of the reference's members —
-     * {@code verbose} and the others — are not answered yet, and the milestone notes name the gap.
+     * <p>Each member says what this runtime really does rather than what a switch asked for, because a
+     * flag that is accepted and not applied must not claim otherwise. Three follow that rule visibly:
+     * {@code ignore_environment} and {@code isolated} stay 0 because {@code -E} and {@code -I} are
+     * accepted but {@code PYTHONPATH} is still honoured; {@code optimize} stays 0 because {@code -O} is
+     * refused outright; {@code hash_randomization} is 0 because text hashing is a deterministic FNV-1a
+     * with no per-process seed. {@code dev_mode} and {@code safe_path} are booleans in the reference.
+     *
+     * <p>{@code utf8_mode} is always 1: the source decoder, the filesystem calls and the three streams
+     * are unconditionally UTF-8 here, so {@code -X utf8} asks for what already holds. {@code
+     * context_aware_warnings} stays 0, which is what {@code _py_warnings} reads to decide whether
+     * {@code catch_warnings} keeps its filters in a context variable or in the global list.
+     * {@code int_max_str_digits} is 0, the reference's spelling for "no limit", because this runtime
+     * enforces none.
      */
     private static PyNamespace flags() {
         PyNamespace namespace = new PyNamespace();
-        namespace.set("context_aware_warnings", PyInt.of(0));
-        namespace.set("ignore_environment", PyInt.of(0));
+        namespace.set("debug", PyInt.of(0));
+        namespace.set("inspect", PyInt.of(0));
+        namespace.set("interactive", PyInt.of(0));
         namespace.set("optimize", PyInt.of(0));
-        namespace.set("utf8_mode", PyInt.of(0));
+        namespace.set("dont_write_bytecode", PyInt.of(commandLine.dontWriteBytecode() ? 1 : 0));
+        namespace.set("no_user_site", PyInt.of(commandLine.noUserSite() ? 1 : 0));
+        namespace.set("no_site", PyInt.of(commandLine.noSite() ? 1 : 0));
+        namespace.set("ignore_environment", PyInt.of(0));
+        namespace.set("verbose", PyInt.of(0));
+        namespace.set("bytes_warning", PyInt.of(0));
+        namespace.set("quiet", PyInt.of(commandLine.quiet() ? 1 : 0));
+        namespace.set("hash_randomization", PyInt.of(0));
+        namespace.set("isolated", PyInt.of(0));
+        namespace.set("dev_mode", PyBool.of(commandLine.devMode()));
+        namespace.set("utf8_mode", PyInt.of(1));
+        namespace.set("warn_default_encoding", PyInt.of(0));
+        namespace.set("safe_path", PyBool.FALSE);
+        namespace.set("int_max_str_digits", PyInt.of(0));
+        namespace.set("context_aware_warnings", PyInt.of(0));
         return namespace;
     }
 
@@ -1503,12 +1550,24 @@ public final class PyRuntime {
         sys.set("_jit", jitModule());
         sys.set("implementation", implementation());
         // `_py_warnings` reads both at module scope: the flags to choose between the context-variable
-        // and the global filter list, and the option list to replay `-W` switches.
+        // and the global filter list, and the option list to replay `-W` switches. It replays them
+        // itself, which is why the strings are handed over verbatim rather than interpreted here.
         sys.set("flags", flags());
         // `importlib._bootstrap_external.cache_from_source` branches on this; with `None` there is no
         // `-X pycache_prefix` redirect, so the cache sits in `__pycache__` beside its source.
         sys.set("pycache_prefix", PyNone.INSTANCE);
-        sys.set("warnoptions", PyList.of());
+        PyList warningOptions = PyList.empty();
+        for (String option : commandLine.warnOptions()) {
+            warningOptions.add(PyStr.of(option));
+        }
+        sys.set("warnoptions", warningOptions);
+        // Only the `-X` keys the launcher accepted appear here, with the value the reference gives a
+        // key that stands alone. A refused key never reaches this far.
+        PyDict xOptions = PyDict.empty();
+        for (String option : commandLine.xOptions()) {
+            xOptions.put(PyStr.interned(option), PyBool.TRUE);
+        }
+        sys.set("_xoptions", xOptions);
         sys.set("argv", PyList.of(PyStr.of("jy3")));
         sys.set("path", pathList());
         // The reference's meta_path has three entries; this runtime has no frozen importer because it

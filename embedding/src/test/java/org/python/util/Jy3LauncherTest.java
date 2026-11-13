@@ -574,7 +574,8 @@ class Jy3LauncherTest {
                 "33_builtin_subclasses.py",
                 "34_float_bytes_subclasses.py",
                 "35_bytearray_set_subclasses.py",
-                "36_sys_executable.py");
+                "36_sys_executable.py",
+                "37_command_line_options.py");
     }
 
     private static List<String> m3Corpus() {
@@ -1323,6 +1324,47 @@ class Jy3LauncherTest {
         // The protocol the golden harness reads: 0 pass, 1 fail, 2 skip, 3 not implemented.
         assertThat(result.exit()).isEqualTo(3);
         assertThat(result.err()).contains("test_bool").contains("not implemented");
+    }
+
+    /**
+     * A switch is either honoured or refused by name, never quietly swallowed.
+     *
+     * <p>A refusal exits 3, the harness's {@code NOT_IMPLEMENTED} code, which is how a caller tells "I
+     * understood the option and cannot honour it" from the usage error a letter it does not know gets.
+     * The accepted switches are here because accepting one is a claim, and {@code sys.flags} has to
+     * back it up: the check runs in the same child, so the flag and the switch cannot drift apart.
+     */
+    @Test
+    void switchesAreEitherHonouredOrRefusedByName() throws Exception {
+        for (String refused : List.of("-O", "-OO", "-b", "-bb")) {
+            Result result = jy3(List.of(refused, "-c", "print('ran')"));
+
+            assertThat(result.exit()).as(refused).isEqualTo(3);
+            assertThat(result.out()).as(refused).isEmpty();
+            assertThat(result.err()).as(refused).contains(refused + " is not implemented yet");
+        }
+        for (String key : List.of("tracemalloc", "importtime", "int_max_str_digits=100", "bogus")) {
+            Result result = jy3(List.of("-X", key, "-c", "print('ran')"));
+
+            assertThat(result.exit()).as(key).isEqualTo(3);
+            assertThat(result.err()).as(key).contains("-X " + key + " is not implemented yet");
+        }
+
+        Result accepted =
+                jy3(
+                        List.of(
+                                "-B", "-S", "-s", "-q", "-c",
+                                "import sys; f = sys.flags;"
+                                        + " print(f.dont_write_bytecode, f.no_site,"
+                                        + " f.no_user_site, f.quiet, f.ignore_environment)"));
+        assertThat(accepted.exit()).isZero();
+        // `-E`/`-I` are absent on purpose: they are accepted and not applied, so the honest answer for
+        // `ignore_environment` — and for `isolated` — is 0.
+        assertThat(accepted.out()).isEqualTo("1 1 1 1 0\n");
+
+        Result unknown = jy3(List.of("-Z", "-c", "print('ran')"));
+        assertThat(unknown.exit()).isEqualTo(2);
+        assertThat(unknown.err()).contains("Unknown option: -Z");
     }
 
     // --- running -------------------------------------------------------------------------

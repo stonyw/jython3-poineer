@@ -31,12 +31,21 @@ import org.python.front.cpython314.Cpython314Compiler;
  * that same script, so {@code import java.util} is an ordinary import now, and changed nothing about the
  * options below. The option surface is therefore small, and every omission is reported rather than
  * quietly ignored: {@code -m} needs {@code runpy} on top of the import system, {@code -O} needs
- * {@code __debug__} to mean something to the code object, and the interactive prompt needs a
- * terminal, a line editor and a read-eval-print loop, which the native frontend milestone owns. Those
- * exit 3, which the harness records as {@code NOT_IMPLEMENTED}. The handful of options accepted and
- * ignored are ones that change nothing a script can observe yet — {@code -B}, because no {@code .pyc}
- * is ever written, {@code -u}, because both streams are already the JVM's own, and
- * {@code -X faulthandler}, because a dying JVM prints a stack trace anyway.
+ * {@code __debug__} to mean something to the code object, {@code -b} needs a {@code BytesWarning} at
+ * the comparison site, and the interactive prompt needs a terminal, a line editor and a read-eval-print
+ * loop, which the native frontend milestone owns. Those exit 3, which the harness records as
+ * {@code NOT_IMPLEMENTED}.
+ *
+ * <p>Two options carry a payload. {@code -W} is stored verbatim in {@code sys.warnoptions}, because the
+ * argument's syntax — {@code action[:category[:message[:module[:lineno]]]]}, with the abbreviations
+ * {@code -Wall} and {@code -Wd} that the reference unfolds from prefixes — belongs to {@code warnings},
+ * which replays the list at import time. {@code -X} is matched against the keys this runtime can honour
+ * and refused by name otherwise; an unknown key is never filed away and forgotten. Of the rest, the
+ * ones accepted are ones whose promise already holds — {@code -B}, because no {@code .pyc} is ever
+ * written, {@code -S} and {@code -s}, because no {@code site} or user directory is imported,
+ * {@code -q}, because there is no banner to silence, {@code -u}, because both streams are already the
+ * JVM's own, and {@code -E}/{@code -I}, which are accepted but not applied — {@code PYTHONPATH} is
+ * still honoured under them, and {@code sys.flags} reports that rather than the switch.
  *
  * <p>Harness protocol, shared with {@code org.jython3.tools.harness.Jython3Backend}:
  *
@@ -85,11 +94,14 @@ public final class jy3 {
                     + "-c cmd : program read from string\n"
                     + "-h     : print this help message and exit\n"
                     + "-V     : print the version and exit\n"
+                    + "-W arg : warning control; the argument goes to `warnings` verbatim\n"
+                    + "-X opt : set an implementation-specific option (`utf8`, `dev`, `faulthandler`)\n"
                     + "-      : program read from stdin\n"
                     + "\n"
-                    + "Accepted and ignored: -B -E -I -S -s -u -X faulthandler\n"
-                    + "Not implemented yet: -m mod (runpy) and -X options other than faulthandler;"
-                    + " -O and -OO (`__debug__` in the code object); the interactive prompt (M5)\n";
+                    + "Accepted: -B -E -I -S -s -q -u -W arg -X utf8 -X dev -X faulthandler\n"
+                    + "Not implemented yet: -b and -bb (BytesWarning); -m mod (runpy); -O and -OO"
+                    + " (`__debug__` in the code object); -X keys other than the three above;"
+                    + " the interactive prompt (M5)\n";
 
     public static void main(String[] args) {
         int status;
@@ -125,6 +137,13 @@ public final class jy3 {
         String command = null;
         boolean stdin = false;
         int at = 0;
+        List<String> warnOptions = new ArrayList<>();
+        List<String> xOptions = new ArrayList<>();
+        boolean devMode = false;
+        boolean quiet = false;
+        boolean dontWriteBytecode = false;
+        boolean noSite = false;
+        boolean noUserSite = false;
 
         options:
         while (at < args.length) {
@@ -139,6 +158,14 @@ public final class jy3 {
             }
             if (!option.startsWith("-")) {
                 break;
+            }
+            // `-W` and `-X` take their argument either as the next word or glued on, and the standard
+            // library's own harness writes the glued form (`-Wd`, `-Xutf8`). Split it here so the switch
+            // below sees one spelling of each option.
+            String glued = null;
+            if (option.length() > 2 && (option.startsWith("-W") || option.startsWith("-X"))) {
+                glued = option.substring(2);
+                option = option.substring(0, 2);
             }
             switch (option) {
                 case "-c" -> {
@@ -164,31 +191,131 @@ public final class jy3 {
                     return notImplemented(
                             "-m module", "running a module needs runpy, which comes after the finder");
                 }
+                case "-W" -> {
+                    // The string is kept exactly as it was written, because `warnings` parses it: the
+                    // action, category, message, module and line number are its syntax to check, and an
+                    // invalid one is reported by `_processoptions` the way the reference reports it.
+                    if (glued != null) {
+                        warnOptions.add(glued);
+                        at++;
+                    } else {
+                        if (!argumentExpected(option, args, at)) {
+                            return USAGE_ERROR;
+                        }
+                        warnOptions.add(args[at + 1]);
+                        at += 2;
+                    }
+                }
                 case "-X" -> {
-                    if (!argumentExpected(option, args, at)) {
-                        return USAGE_ERROR;
+                    String configuration;
+                    int consumed;
+                    if (glued != null) {
+                        configuration = glued;
+                        consumed = 1;
+                    } else {
+                        if (!argumentExpected(option, args, at)) {
+                            return USAGE_ERROR;
+                        }
+                        configuration = args[at + 1];
+                        consumed = 2;
                     }
-                    String configuration = args[at + 1];
-                    if (!configuration.equals("faulthandler")) {
-                        return notImplemented(
-                                "-X " + configuration,
-                                "the interpreter-config layer is not implemented");
+                    switch (configuration) {
+                        case "faulthandler" -> {
+                            // What the flag asks for is a stack trace when the process dies; the JVM
+                            // already prints one, and the standard library's harness always passes it.
+                            xOptions.add(configuration);
+                        }
+                        case "utf8" -> {
+                            // Every byte this runtime reads and writes is already UTF-8, so the mode
+                            // the flag selects is the one in force. `sys.flags.utf8_mode` says so.
+                            xOptions.add(configuration);
+                        }
+                        case "dev" -> {
+                            // Development mode is `-W default` plus `-X faulthandler`; the rest of it
+                            // (malloc debugging, checked builds) belongs to a C runtime this one is not.
+                            xOptions.add(configuration);
+                            devMode = true;
+                        }
+                        case "tracemalloc" -> {
+                            return notImplemented(
+                                    "-X tracemalloc", "this runtime has no tracemalloc module");
+                        }
+                        case "importtime" -> {
+                            return notImplemented(
+                                    "-X importtime",
+                                    "timing every import on stderr is not implemented");
+                        }
+                        default -> {
+                            if (configuration.startsWith("int_max_str_digits")) {
+                                return notImplemented(
+                                        "-X " + configuration,
+                                        "this runtime enforces no digit limit on int-to-text"
+                                                + " conversion");
+                            }
+                            return notImplemented(
+                                    "-X " + configuration,
+                                    "-X utf8, -X dev and -X faulthandler are the keys this runtime"
+                                            + " implements");
+                        }
                     }
-                    // What the flag asks for is a stack trace when the process dies; the JVM already
-                    // prints one. The standard library's own test harness always passes it.
-                    at += 2;
+                    at += consumed;
                 }
                 case "-O", "-OO" -> {
                     return notImplemented(
                             option, "__debug__ and the optimize level have to reach the code object");
                 }
-                case "-B", "-E", "-I", "-S", "-s", "-u" -> at++;
+                case "-b", "-bb" -> {
+                    return notImplemented(
+                            option,
+                            "BytesWarning on a bytes/str mixed comparison is not raised by this"
+                                    + " runtime");
+                }
+                case "-q" -> {
+                    // It silences the interactive banner, and this runtime prints none: the promise
+                    // already holds, and `sys.flags.quiet` reports it.
+                    quiet = true;
+                    at++;
+                }
+                case "-B" -> {
+                    // No `.pyc` is ever written, so the flag asks for what already holds.
+                    dontWriteBytecode = true;
+                    at++;
+                }
+                case "-S" -> {
+                    // There is no `site` import to suppress.
+                    noSite = true;
+                    at++;
+                }
+                case "-s" -> {
+                    // No user site directory is ever added to `sys.path`.
+                    noUserSite = true;
+                    at++;
+                }
+                // `-E`, `-I` and `-u` are accepted and not applied: `PYTHONPATH` is still honoured
+                // under them and both streams are already the JVM's own. `sys.flags` reports that
+                // honestly, and the milestone notes name the gap.
+                case "-E", "-I", "-u" -> at++;
                 default -> {
                     write("Unknown option: " + option + "\n" + USAGE);
                     return USAGE_ERROR;
                 }
             }
         }
+
+        if (devMode) {
+            // The reference adds development mode's filter before any `-W` the user wrote, whichever
+            // order the two switches came in.
+            warnOptions.add(0, "default");
+        }
+        PyRuntime.setCommandLine(
+                new PyRuntime.CommandLine(
+                        List.copyOf(warnOptions),
+                        List.copyOf(xOptions),
+                        devMode,
+                        quiet,
+                        dontWriteBytecode,
+                        noSite,
+                        noUserSite));
 
         List<String> operands = new ArrayList<>();
         for (int i = at; i < args.length; i++) {
