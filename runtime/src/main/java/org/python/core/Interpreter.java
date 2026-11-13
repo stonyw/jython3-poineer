@@ -1024,14 +1024,15 @@ public final class Interpreter {
                         // An exact str needs no work, which is why CPython keeps that case inline.
                         frame.push(value instanceof PyStr text
                                 ? text
-                                : PyStr.of(Formats.apply(value, "")));
+                                : Formats.formatValue(value, ""));
                         break;
                     }
                     case Opcodes.FORMAT_WITH_SPEC: {
                         PyObject spec = frame.pop();
                         PyObject value = frame.pop();
-                        frame.push(PyStr.of(
-                                Formats.apply(value, textOrEmpty(spec))));
+                        // The specification is turned into text first, so a nested expression that is
+                        // not a string formats as its str() rather than being refused.
+                        frame.push(Formats.formatValue(value, Slots.str(spec)));
                         break;
                     }
 

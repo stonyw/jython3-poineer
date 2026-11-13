@@ -706,7 +706,7 @@ final class Builtins {
         Arguments.noKeywords("format()", kwNames);
         Arguments.between("format", args, kwNames, 1, 2);
         String spec = args.length == 1 ? "" : asSpec(args[1]);
-        return PyStr.of(Formats.apply(args[0], spec));
+        return Formats.formatValue(args[0], spec);
     }
 
     private static String asSpec(PyObject value) {

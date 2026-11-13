@@ -18,6 +18,30 @@ final class Formats {
     private Formats() {
     }
 
+    /**
+     * {@code PyObject_Format}: the value's type answers, whatever the instance holds under the name.
+     *
+     * <p>{@code __format__} is a special method, so the lookup walks the value's type and its bases —
+     * {@link Specials#lookUp} — and a bound copy put on the instance is never called. A type that
+     * declares none inherits {@code object.__format__}, whose empty specification is {@code
+     * str(value)} and whose non-empty one is the {@code TypeError} naming the type; the built-in
+     * families declare their own and answer through {@link #apply}. A class that writes one is called
+     * with the value and the specification, which is the extension point.
+     */
+    static PyObject formatValue(PyObject value, String spec) {
+        PyObject answer = Specials.invoke(value, "__format__", PyStr.of(spec));
+        if (answer == Slots.DECLINED) {
+            // No class in the order writes one: the built-in family's writer, or object.__format__,
+            // which is what {@link #apply} falls back to. The value is handed over as it is rather
+            // than through a method descriptor, because a bool's own text is not an int's.
+            answer = PyStr.of(apply(value, spec));
+        }
+        if (!(answer instanceof PyStr)) {
+            throw Slots.typeError("__format__ must return a str, not %s", answer.getType().filedName());
+        }
+        return answer;
+    }
+
     /** {@code format(value, spec)}. */
     static String apply(PyObject value, String spec) {
         if (spec.isEmpty()) {

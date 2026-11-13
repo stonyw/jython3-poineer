@@ -567,7 +567,8 @@ class Jy3LauncherTest {
                 "26_union_type.py",
                 "27_mappingproxy.py",
                 "28_breakpoint.py",
-                "29_eval_exec_builtins.py");
+                "29_eval_exec_builtins.py",
+                "30_fstring_format.py");
     }
 
     private static List<String> m3Corpus() {

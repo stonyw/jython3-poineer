@@ -2021,11 +2021,12 @@ public class PyStr extends PyObject {
                 }
                 throw Slots.keyError(PyStr.of(text.substring(start, cursor)));
             }
-            // The conversion happens first, so a specification is applied to the text it produced.
+            // The conversion happens first, so a specification is applied to the text it produced, and
+            // the type's own __format__ is what applies it, exactly as format() does.
             PyObject shown = conversion == 0
                     ? value
                     : PyStr.of(present(value, conversion));
-            out.append(Formats.apply(shown, spec == null ? "" : spec));
+            out.append(((PyStr) Formats.formatValue(shown, spec == null ? "" : spec)).getValue());
         }
 
         /**
