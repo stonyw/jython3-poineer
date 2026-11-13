@@ -143,6 +143,12 @@ final class SreRegex {
                     at++;
                     return;
                 case 'b':
+                    // `[\b]` is the backspace character in Python, while Java reads `\b` as a word
+                    // boundary and refuses it inside a class; the character is the one that works both
+                    // ways, so the escape is written out. Outside a class Java's meaning is Python's.
+                    out.append(inClass ? "\\x08" : "\\b");
+                    at++;
+                    return;
                 case 'B':
                 case 'd':
                 case 'D':

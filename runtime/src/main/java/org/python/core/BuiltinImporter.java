@@ -128,7 +128,9 @@ final class BuiltinImporter {
      * {@code create_module(spec)}: reads {@code spec.name} before anything else, which is why a value
      * with no name refuses as an attribute error and a name outside the built-in table as an import
      * error. A built-in module is built when the interpreter starts, so the module to hand back is
-     * the one already in {@code sys.modules}.
+     * the one already in {@code sys.modules} — read from the table rather than through
+     * {@code importModule}, because a program may have just evicted the name and the finder that
+     * would answer is this one.
      */
     private static PyObject createModule(PyObject[] args, String[] kwNames) {
         PyObject[] values =
@@ -142,7 +144,13 @@ final class BuiltinImporter {
         if (!builtin(name)) {
             throw notBuiltin(name);
         }
-        return PyRuntime.importModule(((PyStr) name).getValue());
+        PyObject module = PyRuntime.builtinModule(((PyStr) name).getValue());
+        if (module == null) {
+            // Every name the built-in table holds is filed at startup or built on first import, so this
+            // is an invariant of the table rather than a state a program can reach.
+            throw new IllegalStateException("built-in module " + name + " was never built");
+        }
+        return module;
     }
 
     /** {@code exec_module(module)}: nothing to run, because a built-in module has no code. */

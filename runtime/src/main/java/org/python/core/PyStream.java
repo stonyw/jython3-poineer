@@ -253,6 +253,29 @@ public final class PyStream extends PyIterator {
     private boolean carriedReturn;
 
     /**
+     * {@code _io.TextIOWrapper} called directly: {@code tp_new} and {@code __init__} in one step.
+     *
+     * <p>The reference's {@code TextIOWrapper} inherits {@code _IOBase.__new__}, which allocates a
+     * cleared object, and its {@code __init__} — {@link #reinitialize} here — fills it. A program never
+     * holds the cleared object between the two, so the two are one call; what this adds over
+     * {@code open} is only that the buffer is whatever the program handed over rather than a layer the
+     * runtime opened.
+     */
+    static PyStream textWrapper(PyObject[] args, String[] kwNames) {
+        PyStream stream = new PyStream();
+        stream.reinitialize(args, kwNames);
+        return stream;
+    }
+
+    /** The cleared stream {@code tp_new} allocates: no buffer, no encoding of its own, no name. */
+    private PyStream() {
+        super(TYPE);
+        this.name = null;
+        this.out = null;
+        this.fd = 0;
+    }
+
+    /**
      * @param autoFlush whether the descriptor is drained on every newline, which is what a terminal
      *     gets and a pipe does not
      */

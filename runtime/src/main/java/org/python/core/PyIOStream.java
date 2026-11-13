@@ -216,17 +216,23 @@ abstract class PyIOStream extends PyIterator {
 
     @Override
     public PyObject getAttr(String attribute) {
-        return switch (attribute) {
-            case "__dict__" -> dictionary;
-            case "_finalizing" -> PyBool.of(finalizing);
-            default -> {
-                // A method row is not a data descriptor, so a name a program wrote covers the class's own
-                // `fileno` just as it covers one the class never filed — which is why the dictionary is
-                // asked before the table.
-                PyObject held = dictionary.get(PyStr.interned(attribute));
-                yield held == null ? Members.find(this, attribute) : held;
-            }
-        };
+        if (attribute.equals("__dict__")) {
+            return dictionary;
+        }
+        if (attribute.equals("_finalizing")) {
+            return PyBool.of(finalizing);
+        }
+        // A class Python wrote over a stream keeps its own namespace in front of the rows this table
+        // inherits, exactly as any other Python instance keeps one: `doctest._SpoofOut` is a
+        // `class _SpoofOut(StringIO)` whose `getvalue` has to win over the buffer's.
+        if (type instanceof PyClass) {
+            return SubclassValue.getAttr(this, dictionary, attribute);
+        }
+        // A method row is not a data descriptor, so a name a program wrote covers the class's own
+        // `fileno` just as it covers one the class never filed — which is why the dictionary is
+        // asked before the table.
+        PyObject held = dictionary.get(PyStr.interned(attribute));
+        return held == null ? Members.find(this, attribute) : held;
     }
 
     @Override

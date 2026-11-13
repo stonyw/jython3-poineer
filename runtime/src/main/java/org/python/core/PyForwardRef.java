@@ -45,6 +45,9 @@ final class PyForwardRef extends PyObject {
 
     private final boolean isClass;
 
+    /** The argument compiled as an expression, which {@code __forward_code__} answers once asked. */
+    private PyCode code;
+
     private PyForwardRef(
             PyStr argument, PyObject module, PyObject owner, boolean isArgument, boolean isClass) {
         super(PyType.FORWARD_REF);
@@ -82,11 +85,40 @@ final class PyForwardRef extends PyObject {
             case "__forward_is_class__" -> PyBool.of(isClass);
             case "__owner__" -> owner;
             case "__globals__", "__weakref__", "__cell__", "__extra_names__", "__ast_node__",
-                    "__stringifier_dict__", "__code__" -> PyNone.INSTANCE;
+                    "__stringifier_dict__" -> PyNone.INSTANCE;
+            case "__code__" -> code == null ? PyNone.INSTANCE : (PyObject) code;
+            case "__forward_code__" -> forwardCode();
             case "__slots__" -> SLOTS;
             case "evaluate" -> new PyNativeFunction("evaluate", PyForwardRef::evaluate).withReceiver(this);
             default -> Slots.DECLINED;
         };
+    }
+
+    /**
+     * {@code __forward_code__}: the argument compiled as an expression, cached in {@code __code__}.
+     *
+     * <p>{@code typing._make_forward_ref} reads this name on every reference it builds — the reference
+     * makes the check that the text is an expression there rather than at evaluation — so a reference
+     * whose text is not one has to complain here, with the reference's own sentence. A leading star is
+     * wrapped the way {@code _rewrite_star_unpack} wraps it, which is what lets {@code *Ts} compile.
+     */
+    private PyObject forwardCode() {
+        if (code != null) {
+            return (PyObject) code;
+        }
+        String text = argument.getValue();
+        String rewritten = text.stripLeading().startsWith("*") ? "(" + text + ",)[0]" : text;
+        try {
+            code = PyRuntime.compileExpression(rewritten, "<string>");
+        } catch (PyRaise failure) {
+            if (!failure.value().matches(ExceptionTypes.SYNTAX_ERROR)) {
+                throw failure;
+            }
+            throw PyRaise.raise(
+                    ExceptionTypes.SYNTAX_ERROR,
+                    "Forward reference must be an expression -- got " + argument.repr());
+        }
+        return (PyObject) code;
     }
 
     /**

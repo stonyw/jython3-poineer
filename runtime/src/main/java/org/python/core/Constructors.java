@@ -318,6 +318,11 @@ final class Constructors {
         if (type == PyType.CODEC_INFO) {
             return PyCodecInfo.called(args, kwNames);
         }
+        if (type == PyStream.TYPE) {
+            // `_io.TextIOWrapper(buffer, ...)`: the reference's `tp_new` allocates and `__init__` fills,
+            // which is the same `reinitialize` the text layer of `_io.open` is built by.
+            return PyStream.textWrapper(args, keywordNames);
+        }
         if (IoBases.owns(type)) {
             return IoBases.instantiate(type, args, kwNames);
         }

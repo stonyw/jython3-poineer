@@ -192,7 +192,9 @@ public class PyInstance extends PyObject {
                 throw raised;
             }
             PyObject fallback = callHook("__getattr__", PyStr.of(name));
-            if (!Slots.declined(fallback)) {
+            // The hook's answer is the value even when it is `NotImplemented`: CPython returns whatever
+            // `__getattr__` said, and only a class with no hook at all leaves the error standing.
+            if (fallback != Slots.DECLINED) {
                 return fallback;
             }
             throw raised;
@@ -210,7 +212,7 @@ public class PyInstance extends PyObject {
     @Override
     PyObject genericGetAttr(String name) {
         PyObject held = genericLookup(name);
-        if (!Slots.declined(held)) {
+        if (held != Slots.DECLINED) {
             return held;
         }
         throw Slots.attributeError(
@@ -230,7 +232,7 @@ public class PyInstance extends PyObject {
      */
     private PyObject owned(String name) {
         PyObject held = genericLookup(name);
-        return Slots.declined(held) ? callHook("__getattr__", PyStr.of(name)) : held;
+        return held == Slots.DECLINED ? callHook("__getattr__", PyStr.of(name)) : held;
     }
 
     /**

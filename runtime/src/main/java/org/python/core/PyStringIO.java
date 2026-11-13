@@ -16,7 +16,7 @@ import java.util.Set;
  * The tuple's order is fixed — carriage return, line feed, then the pair — because that is the order
  * CPython's scanner appends them in, not the order they were met.
  */
-final class PyStringIO extends PyIOStream {
+class PyStringIO extends PyIOStream {
 
     /** The three endings {@code newlines} can report, in the order the reference lists them. */
     private static final int CR = 1;
@@ -24,6 +24,7 @@ final class PyStringIO extends PyIOStream {
     private static final int CRLF = 4;
 
     private static final Members METHODS = Members.of(PyType.STRING_IO)
+            .add("__init__", (self, args, kwNames) -> ((PyStringIO) self).initialize(args, kwNames))
             .add("read", PyStringIO::read)
             .add("readline", PyStringIO::readline)
             .add("readlines", PyStringIO::readlines)
@@ -52,26 +53,44 @@ final class PyStringIO extends PyIOStream {
     private boolean closed;
 
     /** The newline the stream translates to: {@code "\n"}, {@code ""}, {@code null} or a spelling. */
-    private final String newline;
+    private String newline;
 
     /** Which of {@link #CR}, {@link #LF} and {@link #CRLF} the untranslated text has held. */
     private int endings;
 
-    private PyStringIO(PyType type, String initial, String newline) {
+    private PyStringIO(PyType type) {
         super(type);
-        this.newline = newline;
-        if (initial != null && !initial.isEmpty()) {
-            if (newline == null || newline.isEmpty()) {
-                track(initial);
-            }
-            buffer.append(translate(initial));
-        }
     }
 
     /** {@code StringIO(initial_value='', newline='\n')}, whose two arguments are both optional. */
     static PyObject create(PyObject[] args, String[] kwNames) {
+        return create(PyType.STRING_IO, args, kwNames);
+    }
+
+    /**
+     * A class Python wrote over {@code StringIO}: the same body and the same two arguments, filed
+     * under the subclass's type.
+     *
+     * <p>{@code doctest._SpoofOut} is one — {@code class _SpoofOut(StringIO)} — and its whole point is
+     * that the inherited rows still answer for an object of the subclass, so the value has to be a
+     * {@code PyStringIO} rather than a bare instance of the class.
+     */
+    static PyObject create(PyType type, PyObject[] args, String[] kwNames) {
+        PyStringIO stream = new PyStringIO(type);
+        stream.initialize(args, kwNames);
+        return stream;
+    }
+
+    /**
+     * {@code StringIO.__init__}: read the two arguments and reset the buffer to them.
+     *
+     * <p>It is the reference's body rather than the creator alone because a Python class written over
+     * the type runs it after allocation — {@code class S(StringIO)} inherits it — and the reference's
+     * `__init__` is what clears whatever the stream held, so running it twice is running it once.
+     */
+    private PyObject initialize(PyObject[] args, String[] kwNames) {
         PyObject[] given = Arguments.unpackKeywords(
-                "StringIO", args, kwNames, new String[] {"initial_value", "newline"}, 0, 2);
+                type.name(), args, kwNames, new String[] {"initial_value", "newline"}, 0, 2);
         String initial = "";
         if (given[0] != null && given[0] != PyNone.INSTANCE) {
             if (!(given[0] instanceof PyStr text)) {
@@ -97,7 +116,18 @@ final class PyStringIO extends PyIOStream {
                 }
             }
         }
-        return new PyStringIO(PyType.STRING_IO, initial, newline);
+        buffer.setLength(0);
+        position = 0;
+        closed = false;
+        endings = 0;
+        this.newline = newline;
+        if (!initial.isEmpty()) {
+            if (newline == null || newline.isEmpty()) {
+                track(initial);
+            }
+            buffer.append(translate(initial));
+        }
+        return PyNone.INSTANCE;
     }
 
     /** The one table the three translation modes answer through. */

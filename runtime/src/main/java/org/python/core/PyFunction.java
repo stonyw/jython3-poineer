@@ -32,7 +32,11 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
     static final int CLOSURE = 0x8;
     static final int ANNOTATE = 0x10;
 
-    private final PyCode code;
+    /**
+     * The code object, which {@code __code__} may replace while the function keeps the name it was
+     * compiled under.
+     */
+    private PyCode code;
     private final PyDict globals;
     private PyObject name;
     private PyObject qualName;
@@ -78,6 +82,20 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
 
     public PyCode code() {
         return code;
+    }
+
+    /**
+     * {@code __code__} written: the reference swaps the code object and says so when the value is not
+     * one — including the null a {@code del} hands over, which it refuses in the same sentence.
+     *
+     * <p>The name, qualname and docstring stay what they were, because CPython keeps them beside the
+     * code rather than reading them back out of it.
+     */
+    void recode(PyObject value) {
+        if (!(value instanceof PyCode replacement)) {
+            throw Slots.typeError("__code__ must be set to a code object");
+        }
+        code = replacement;
     }
 
     public PyDict globals() {
@@ -489,6 +507,7 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__doc__" -> doc = value;
             case "__module__" -> module = value;
             case "__type_params__" -> typeParams = value;
+            case "__code__" -> recode(value);
             default -> attributes().put(PyStr.interned(attribute), value);
         }
         return PyNone.INSTANCE;

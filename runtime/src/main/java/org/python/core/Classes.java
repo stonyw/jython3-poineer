@@ -366,7 +366,10 @@ final class Classes {
                 // `asyncio/events.py` is `class _Local(threading.local)`, and `threading.local` is
                 // `_thread._local` itself: a value whose storage is a dictionary per thread, which
                 // `ThreadModule.Local` keeps.
-                || base == PyType.LOCAL;
+                || base == PyType.LOCAL
+                // `doctest.py` is `class _SpoofOut(StringIO)`, a Python class that keeps a `write` and
+                // two `getvalue`s of its own over the buffer's rows, so the same rule applies to it.
+                || base == PyType.STRING_IO;
     }
 
     /**
@@ -1400,6 +1403,12 @@ final class Classes {
         PyObject wrapper = allocateWrapper(kind);
         if (wrapper != null) {
             return wrapper;
+        }
+        // A class written over `StringIO` inherits its creator along with its rows: the arguments are
+        // the same two the buffer takes, and the buffer itself is what the subclass's methods reach
+        // through. `doctest._SpoofOut` is the class that needs this.
+        if (kind.matches(PyType.STRING_IO)) {
+            return PyStringIO.create(kind, args, names);
         }
         // A class written over one of the four `_io` bases inherits the base's value: an instance
         // dictionary and the rows the base files. The concrete streams stay the Java values `_io` names;

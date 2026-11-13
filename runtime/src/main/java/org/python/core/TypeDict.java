@@ -779,6 +779,10 @@ final class TypeDict {
             methodWrapperTable(into);
             return;
         }
+        if (owner == PyType.FUNCTION) {
+            functionObjectTable(into);
+            return;
+        }
         if (owner == PyType.METHOD_DESCRIPTOR) {
             methodDescrTable(into);
             return;
@@ -5259,6 +5263,24 @@ final class TypeDict {
                     "UserWarning",
                     "KeyboardInterrupt",
                     "GeneratorExit");
+
+    /**
+     * {@code function}'s two descriptor rows, which the fallback half of {@code types.py} reads when
+     * {@code _types} is blocked: {@code GetSetDescriptorType} is the type of {@code
+     * FunctionType.__code__} and {@code MemberDescriptorType} the type of {@code
+     * FunctionType.__globals__}. The reference files {@code __doc__} between them, which is why the
+     * sentence is added in the middle rather than after.
+     */
+    private static void functionObjectTable(PyDict into) {
+        Table table = new Table(PyType.FUNCTION, into);
+        table.getset(
+                "__code__",
+                null,
+                self -> (PyObject) ((PyFunction) self).code(),
+                (self, value) -> ((PyFunction) self).recode(value));
+        fromTable(PyType.FUNCTION, into);
+        table.member("__globals__", self -> ((PyFunction) self).globals());
+    }
 
     /**
      * The dictionary a built-in value type files: its {@link Members} table, and the sentence beside it.

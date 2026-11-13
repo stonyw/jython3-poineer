@@ -103,6 +103,22 @@ final class Suggestions {
     }
 
     /**
+     * {@code sys.stdlib_module_names}: that same list, as the frozenset the module publishes.
+     *
+     * <p>Sorted only so that this runtime's {@code repr} of it is the same text every run; the reference's
+     * set order is its hash order, which no reading of it depends on.
+     */
+    static PyFrozenSet stdlibModuleNames() {
+        String[] names = STDLIB_MODULES.toArray(new String[0]);
+        Arrays.sort(names);
+        PyObject[] items = new PyObject[names.length];
+        for (int i = 0; i < names.length; i++) {
+            items[i] = PyStr.of(names[i]);
+        }
+        return PyFrozenSet.of(items);
+    }
+
+    /**
      * The text the report adds to {@code str(value)}: {@code . Did you mean: 'x'?}, the forgotten import,
      * or the two of them joined, or nothing at all.
      *

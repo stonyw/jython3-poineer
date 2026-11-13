@@ -75,6 +75,16 @@ public final class PyRuntime {
     private static PyDict modules;
 
     /**
+     * The initialized built-in modules, which is what {@code _imp.create_builtin} answers from.
+     *
+     * <p>It is a table of its own rather than a view of {@link #modules} because the reference's is:
+     * {@code sys.modules} holds the names a program can evict, while the interpreter's table holds the
+     * modules themselves, so {@code del sys.modules['_types']} leaves the next {@code create_module}
+     * with a module to hand back rather than a finder to call again.
+     */
+    private static final PyDict builtinModules = PyDict.empty();
+
+    /**
      * The directories {@code import} searches, as the launcher set them: the script's directory first,
      * then {@code PYTHONPATH}. {@code sys.path} is a list over this same value, so a program that
      * rewrites the list is honoured and a program that reads it sees what this process started with.
@@ -274,6 +284,17 @@ public final class PyRuntime {
         modules.put(PyStr.interned("posix"), posixModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
         modules.put(PyStr.interned("gc"), gcModule);
+        // `_imp.create_builtin` answers from a table of its own rather than from `sys.modules`, so a
+        // program that evicts a name — `import_fresh_module` does exactly that with
+        // `del sys.modules['_types']` — does not unbuild the module; the next `create_module` still
+        // finds it. This is that table. The three names built on first import are added when they are
+        // built, in `builtinModule`.
+        for (String builtIn : BUILTIN_MODULE_NAMES) {
+            PyObject module = modules.get(PyStr.interned(builtIn));
+            if (module != null) {
+                builtinModules.put(PyStr.interned(builtIn), module);
+            }
+        }
         // `string` itself is deliberately not filed here: when a standard library is reachable its
         // `string/__init__.py` is the package every caller means, and only a run with no `string`
         // module anywhere gets the stub {@link #buildStringPackage()} builds, through `rebuild`.
@@ -621,6 +642,43 @@ public final class PyRuntime {
         // what makes `a.b` reachable without a second import.
         Slots.setAttr(parent, tail, child);
         return child;
+    }
+
+    /**
+     * {@code _imp.create_builtin}: the module this runtime already built for a name in the built-in
+     * table, answered without asking the import system again.
+     *
+     * <p>{@link #importModule} reads {@code sys.modules} and, on a miss, consults {@code sys.meta_path}.
+     * A program that has just evicted a name from the mapping — {@code import_fresh_module} does it with
+     * {@code del sys.modules['_types']} — therefore reaches the finder that is asking the question, and
+     * the question repeats until the JVM stack ends. The reference does not ask either:
+     * {@code create_builtin} reads a C table of modules that were initialized at startup. The three
+     * names built on first import are built here, which cannot recurse because {@link #importModule}
+     * answers them before any finder is consulted.
+     *
+     * <p>{@code null} means the table does not hold the name; every caller has already checked.
+     */
+    static PyObject builtinModule(String name) {
+        PyObject module = builtinModules.get(PyStr.interned(name));
+        if (module != null) {
+            return module;
+        }
+        if (name.equals("_ast")) {
+            return keep(AstModule.install(), name);
+        }
+        if (name.equals("_datetime")) {
+            return keep(DatetimeModule.install(), name);
+        }
+        if (name.equals("_socket")) {
+            return keep(SocketModule.install(), name);
+        }
+        return null;
+    }
+
+    /** File a module built on first import in the built-in table, so evicting it rebuilds nothing. */
+    private static PyObject keep(PyObject module, String name) {
+        builtinModules.put(PyStr.interned(name), module);
+        return module;
     }
 
     /**
@@ -1389,6 +1447,10 @@ public final class PyRuntime {
         }
         sys.set("maxsize", PyInt.of(Long.MAX_VALUE));
         sys.set("maxunicode", PyInt.of(0x10FFFF));
+        // `repr(float)` here is the shortest text that reads back as the same number, which is what the
+        // reference calls the `short` style; `test_builtin` only adds its `builtins` doctests when this
+        // says so, and the doctests are what most of that test runs.
+        sys.set("float_repr_style", PyStr.of("short"));
         sys.set("hexversion", PyInt.of(hexVersion()));
         sys.set("api_version", PyInt.of(1013));
         sys.set("byteorder", PyStr.of("little"));
@@ -1451,6 +1513,9 @@ public final class PyRuntime {
                         PyStr.of("select"),
                         PyStr.of("_typing")));
         sys.set("defaultencoding", PyStr.of("utf-8"));
+        // `traceback.TracebackException` asks this before it suggests a forgotten import, and the report
+        // cannot format any failure without it.
+        sys.set("stdlib_module_names", Suggestions.stdlibModuleNames());
         // `bdb.py` reads `sys.monitoring.events` at module scope and registers itself as a tool when the
         // attribute exists, so a debugger cannot be imported without it.
         sys.set("monitoring", Monitoring.newModule());

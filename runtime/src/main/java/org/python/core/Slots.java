@@ -536,6 +536,15 @@ public final class Slots {
             if (published != DECLINED) {
                 return published;
             }
+            // PEP 562: after the dictionary and the type have both declined, a module's own
+            // `__getattr__` is asked. `typing.Match` and `typing.Pattern` are answered this way in 3.14,
+            // which is what `from typing import Match` in `_pyrepl.utils` reads. It is looked up in the
+            // dictionary rather than through this read so that asking for `__getattr__` itself cannot
+            // come back here, and a module that does not define one keeps the refusal below.
+            PyObject fallback = module.get("__getattr__");
+            if (fallback != null && fallback != PyNone.INSTANCE) {
+                return Slots.call(fallback, new PyObject[] {PyStr.of(name)}, null);
+            }
             PyObject shown = module.get("__name__");
             if (shown instanceof PyStr text) {
                 throw failedRead(
@@ -572,6 +581,20 @@ public final class Slots {
      * else, which needs the class dictionary to be walked here as much as it is in the complaining read.
      */
     public static PyObject findAttr(PyObject target, String name) {
+        if (target instanceof PyModule) {
+            // A module's read is not only its dictionary: PEP 562's `__getattr__` sits behind the miss,
+            // and `from typing import Match` asks this way rather than through `getattr`. CPython's
+            // GetOptionalAttr is the complaining read with one refusal swallowed, so the module goes
+            // through that read and only the AttributeError it ends with is turned into "no name here".
+            try {
+                return getAttr(target, name);
+            } catch (PyRaise failure) {
+                if (!failure.value().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                    throw failure;
+                }
+                return null;
+            }
+        }
         PyObject answer = target.getAttr(name);
         if (answer != DECLINED) {
             return answer;
