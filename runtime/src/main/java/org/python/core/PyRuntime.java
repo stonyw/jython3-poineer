@@ -106,11 +106,12 @@ public final class PyRuntime {
             boolean quiet,
             boolean dontWriteBytecode,
             boolean noSite,
-            boolean noUserSite) {
+            boolean noUserSite,
+            int optimize) {
 
         /** What a launcher given no switches at all reports. */
         public static final CommandLine NONE =
-                new CommandLine(List.of(), List.of(), false, false, false, false, false);
+                new CommandLine(List.of(), List.of(), false, false, false, false, false, 0);
     }
 
     private static CommandLine commandLine = CommandLine.NONE;
@@ -1231,15 +1232,58 @@ public final class PyRuntime {
 
     /** Compile the text of an imported file with the installed compiler. */
     static PyCode compileSource(String source, String fileName) {
+        return compileUnit(source, fileName, "exec", 0, -1, -1);
+    }
+
+    /**
+     * Compile one unit with the options {@code compile()} takes: the mode, the checked
+     * {@code PyCF_*} bits, an optimization level ({@code -1} meaning
+     * {@link #optimizeLevel()}), and {@code _feature_version}.
+     */
+    static PyCode compileUnit(
+            String source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
         if (sourceCompiler == null) {
             throw Slots.notImplemented(
                     "importing a source file needs a compiler (setSourceCompiler)");
         }
         try {
-            return sourceCompiler.compile(source, fileName);
+            return sourceCompiler.compile(
+                    source, fileName, mode, flags,
+                    optimize == -1 ? optimizeLevel() : optimize, featureVersion);
         } catch (SourceRefused refused) {
             throw refused.python();
         }
+    }
+
+    /** Compile bytes, leaving the encoding declaration in them to the compiler. */
+    static PyCode compileBytesUnit(
+            byte[] source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        if (sourceCompiler == null) {
+            throw Slots.notImplemented(
+                    "importing a source file needs a compiler (setSourceCompiler)");
+        }
+        try {
+            return sourceCompiler.compileBytes(
+                    source, fileName, mode, flags,
+                    optimize == -1 ? optimizeLevel() : optimize, featureVersion);
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
+    }
+
+    /** The level {@code -O} and {@code -OO} asked for, which is also {@code sys.flags.optimize}. */
+    public static int optimizeLevel() {
+        return commandLine.optimize();
     }
 
     /** Compile one expression with the installed compiler, which is what {@code eval()} runs. */
@@ -1332,11 +1376,12 @@ public final class PyRuntime {
      * {@code sys.flags}: the interpreter's start-up switches, all eighteen the reference answers.
      *
      * <p>Each member says what this runtime really does rather than what a switch asked for, because a
-     * flag that is accepted and not applied must not claim otherwise. Three follow that rule visibly:
+     * flag that is accepted and not applied must not claim otherwise. Two follow that rule visibly:
      * {@code ignore_environment} and {@code isolated} stay 0 because {@code -E} and {@code -I} are
-     * accepted but {@code PYTHONPATH} is still honoured; {@code optimize} stays 0 because {@code -O} is
-     * refused outright; {@code hash_randomization} is 0 because text hashing is a deterministic FNV-1a
-     * with no per-process seed. {@code dev_mode} and {@code safe_path} are booleans in the reference.
+     * accepted but {@code PYTHONPATH} is still honoured; {@code hash_randomization} is 0 because text
+     * hashing is a deterministic FNV-1a with no per-process seed. {@code optimize} is what
+     * {@code -O} or {@code -OO} asked for, because the level really does reach the code objects.
+     * {@code dev_mode} and {@code safe_path} are booleans in the reference.
      *
      * <p>{@code utf8_mode} is always 1: the source decoder, the filesystem calls and the three streams
      * are unconditionally UTF-8 here, so {@code -X utf8} asks for what already holds. {@code
@@ -1350,7 +1395,7 @@ public final class PyRuntime {
         namespace.set("debug", PyInt.of(0));
         namespace.set("inspect", PyInt.of(0));
         namespace.set("interactive", PyInt.of(0));
-        namespace.set("optimize", PyInt.of(0));
+        namespace.set("optimize", PyInt.of(commandLine.optimize()));
         namespace.set("dont_write_bytecode", PyInt.of(commandLine.dontWriteBytecode() ? 1 : 0));
         namespace.set("no_user_site", PyInt.of(commandLine.noUserSite() ? 1 : 0));
         namespace.set("no_site", PyInt.of(commandLine.noSite() ? 1 : 0));

@@ -143,6 +143,7 @@ public final class jy3 {
         boolean quiet = false;
         boolean dontWriteBytecode = false;
         boolean noSite = false;
+        int optimize = 0;
         boolean noUserSite = false;
 
         options:
@@ -261,8 +262,9 @@ public final class jy3 {
                     at += consumed;
                 }
                 case "-O", "-OO" -> {
-                    return notImplemented(
-                            option, "__debug__ and the optimize level have to reach the code object");
+                    // `-OO` is `-O` twice in the reference: the second one strips docstrings too.
+                    optimize = option.equals("-OO") ? 2 : 1;
+                    at++;
                 }
                 case "-b", "-bb" -> {
                     return notImplemented(
@@ -315,7 +317,8 @@ public final class jy3 {
                         quiet,
                         dontWriteBytecode,
                         noSite,
-                        noUserSite));
+                        noUserSite,
+                        optimize));
 
         List<String> operands = new ArrayList<>();
         for (int i = at; i < args.length; i++) {
@@ -325,7 +328,7 @@ public final class jy3 {
         if (command != null) {
             start(importPath(""));
             PyRuntime.setArgv("-c", operands);
-            PyCode compiled = Cpython314Compiler.compileSource(command, "<string>");
+            PyCode compiled = Cpython314Compiler.compileUnit(command, "<string>", "exec", 0, optimize, -1);
             // The command is the only copy of this source there is: a report of a failure in it has
             // to quote it, because no file named <string> exists to read. CPython registers the same
             // text in linecache, for the same reason.
@@ -335,7 +338,8 @@ public final class jy3 {
         if (stdin) {
             start(importPath(""));
             PyRuntime.setArgv("-", operands);
-            return execute(Cpython314Compiler.compileSource(readStdin(), "<stdin>"), "<stdin>");
+            return execute(Cpython314Compiler.compileUnit(
+                    readStdin(), "<stdin>", "exec", 0, optimize, -1), "<stdin>");
         }
         if (operands.isEmpty()) {
             return notImplemented(
@@ -367,7 +371,7 @@ public final class jy3 {
         }
         PyRuntime.setArgv(operands.get(0), operands.subList(1, operands.size()));
         start(importPath(scriptDirectory(script)));
-        Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(script);
+        Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(script, optimize);
         return execute(compiled.code(), compiled.fileName());
     }
 
@@ -466,7 +470,8 @@ public final class jy3 {
         }
         start(importPath(""));
         PyRuntime.setArgv(test.toString(), List.of());
-        Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(test);
+        Cpython314Compiler.Compiled compiled =
+                Cpython314Compiler.compileFile(test, PyRuntime.optimizeLevel());
         return execute(compiled.code(), compiled.fileName());
     }
 

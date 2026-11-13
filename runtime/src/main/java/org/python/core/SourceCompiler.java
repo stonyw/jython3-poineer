@@ -22,6 +22,36 @@ public interface SourceCompiler {
     PyCode compileExpression(String source, String fileName);
 
     /**
+     * Compile one unit the way {@code compile()} does, options and all.
+     *
+     * @param mode {@code exec}, {@code eval} or {@code single}
+     * @param flags the {@code PyCF_*} bits the caller passed, already checked against the reference's
+     *     set
+     * @param optimize {@code 0}..{@code 2}, or {@code -1} for "whatever the interpreter was started
+     *     with"
+     * @param featureVersion {@code _feature_version}, or {@code -1} for the running version
+     */
+    PyCode compile(
+            String source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion);
+
+    /**
+     * Compile bytes exactly as {@code compile()} does, so the encoding declaration in the source is
+     * the one that decodes it.
+     */
+    PyCode compileBytes(
+            byte[] source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion);
+
+    /**
      * Parse {@code source} and answer the tree as the text that rebuilds it.
      *
      * <p>The reference parser knows the tree and this runtime knows the node classes, so neither side

@@ -1602,6 +1602,18 @@ public final class Interpreter {
 
     private static PyObject intrinsic(Frame frame, int id) {
         switch (id) {
+            case 1: {
+                // `single` mode's echo: only an expression statement gets here, and the value it left is
+                // shown the way the reference shows it — repr, one line, and nothing at all for None.
+                PyObject value = frame.pop();
+                if (value != PyNone.INSTANCE) {
+                    Slots.call(
+                            Builtins.namespace().get(PyStr.of("print")),
+                            new PyObject[] {PyStr.of(Slots.repr(value))},
+                            null);
+                }
+                return PyNone.INSTANCE;
+            }
             case 5:
                 return Slots.unary(UnaryOp.POSITIVE, frame.pop());
             case 6: {

@@ -49,6 +49,9 @@ final class Builtins {
         put(out, "False", PyBool.FALSE);
         put(out, "NotImplemented", PyNotImplemented.INSTANCE);
         put(out, "Ellipsis", PyEllipsis.INSTANCE);
+        // `-O` and `-OO` are the only switches that can make this False; the compiler folds the same
+        // answer into every unit it compiles at that level.
+        put(out, "__debug__", PyBool.of(PyRuntime.optimizeLevel() == 0));
     }
 
     /** The type objects, which Python reaches for by name both to construct with and to test against. */
@@ -1359,6 +1362,26 @@ final class Builtins {
 
     /** {@code PyCF_ONLY_AST} from CPython's {@code compile.h}: answer a tree, not a code object. */
     private static final int ONLY_AST = 1024;
+    /** {@code PyCF_TYPE_COMMENTS}: keep {@code # type:} comments on the tree. */
+    private static final int TYPE_COMMENTS = 4096;
+    /** {@code PyCF_ALLOW_TOP_LEVEL_AWAIT}: the unit may await outside a coroutine. */
+    private static final int ALLOW_TOP_LEVEL_AWAIT = 8192;
+    /** {@code PyCF_ALLOW_INCOMPLETE_INPUT}: the unit may end in the middle of a block. */
+    private static final int ALLOW_INCOMPLETE_INPUT = 16384;
+    /** {@code PyCF_OPTIMIZED_AST}'s own bit; the flag itself is this bit plus {@code ONLY_AST}. */
+    private static final int OPTIMIZED_AST = 32768;
+
+    /**
+     * The {@code __future__} bits 3.14 still answers to, which are also the bits {@code compile()}
+     * inherits from the calling frame unless {@code dont_inherit} says otherwise.
+     */
+    private static final int FUTURE_FLAGS =
+            16 | 131072 | 262144 | 524288 | 1048576 | 2097152 | 4194304 | 8388608 | 16777216;
+
+    /** Every bit {@code compile()} accepts; anything else is "unrecognised flags". */
+    private static final int KNOWN_FLAGS =
+            FUTURE_FLAGS | 512 | ONLY_AST | TYPE_COMMENTS | ALLOW_TOP_LEVEL_AWAIT
+                    | ALLOW_INCOMPLETE_INPUT | OPTIMIZED_AST;
 
     /**
      * {@code breakpoint(*args, **kws)}: whatever {@code sys.breakpointhook} says.
@@ -1418,70 +1441,130 @@ final class Builtins {
      * {@code compile(source, filename, mode, flags=0, dont_inherit=False, optimize=-1, *,
      * _feature_version=-1)}.
      *
-     * <p>Two modes compile here — {@code eval} and {@code exec} — and, when the flags ask for a tree,
-     * {@code single} and {@code func_type} as well; {@code single} without that flag is the interactive
-     * prompt's mode and is refused by name. The one compiler flag that is honoured is
-     * {@code PyCF_ONLY_AST}, which is how {@code ast.parse} asks for a tree: the answer is the
-     * {@code _ast} nodes this runtime defines. Every other flag, an explicit optimization level and a
-     * feature version all say what this compiler cannot yet promise, so they are refused by name rather
-     * than silently ignored.
+     * <p>All three executable modes are compiled here, {@code single} included: it is the mode
+     * {@code doctest} runs every example in, and the reference compiler already knows the one
+     * statement it accepts and the echo it leaves for {@code PRINT_EXPR}. {@code func_type} has no
+     * code form and only answers the parser. The flags are checked against the set the reference
+     * accepts and then handed over, as are {@code optimize} and {@code _feature_version}; what
+     * {@code dont_inherit} decides is whether the calling frame's {@code __future__} bits are or-ed
+     * in first, which is the only thing that inheritance ever carried.
      */
     private static PyObject compileCode(PyObject[] args, String[] kwNames) {
         PyObject[] given = Arguments.fill("compile", args, kwNames, COMPILE_NAMES, COMPILE_DEFAULTS);
         for (int i = 0; i < 3; i++) {
             Arguments.required("compile", COMPILE_NAMES, given, i);
         }
-        String fileName = textOf("compile", given[1], 2);
-        String mode;
+        String fileName = fileNameOf(given[1]);
         if (!(given[2] instanceof PyStr modeText)) {
             throw Slots.typeError(
-                    "compile() argument 3 must be str, not %s", given[2].getType().name());
+                    "compile() argument 'mode' must be str, not %s", given[2].getType().name());
         }
-        mode = modeText.getValue();
-        int flags = 0;
-        if (given[3] instanceof PyInt flagValue) {
-            flags = flagValue.getValue().intValue();
-        } else if (Slots.truth(given[3])) {
-            throw Slots.typeError(
-                    "compile() argument 4 must be int, not %s", given[3].getType().name());
+        String mode = modeText.getValue();
+        int flags = Numbers.asIndex(given[3]).intValue();
+        if (!Slots.truth(given[4])) {
+            flags |= inheritedFutureFlags();
+        }
+        if ((flags & ~KNOWN_FLAGS) != 0) {
+            throw Slots.valueError("compile(): unrecognised flags");
         }
         boolean onlyAst = (flags & ONLY_AST) != 0;
-        if ((flags & ~ONLY_AST) != 0) {
-            throw Slots.notImplemented("compile() with compiler flags (M6-a)");
-        }
         if (!mode.equals("exec") && !mode.equals("eval")) {
-            if (mode.equals("single")) {
-                if (!onlyAst) {
-                    throw Slots.notImplemented("compile() mode 'single' (M6-a)");
-                }
-            } else if (mode.equals("func_type")) {
+            if (mode.equals("func_type")) {
                 // Only the parser takes this one: a func_type tree is not a code object's shape.
                 if (!onlyAst) {
                     throw Slots.valueError(
                             "compile() mode 'func_type' requires flag PyCF_ONLY_AST");
                 }
-            } else {
+            } else if (!mode.equals("single")) {
                 throw Slots.valueError(onlyAst
                         ? "compile() mode must be 'exec', 'eval', 'single' or 'func_type'"
                         : "compile() mode must be 'exec', 'eval' or 'single'");
             }
         }
-        if (Slots.truth(given[4])) {
-            throw Slots.notImplemented("compile() dont_inherit (M6-a)");
+        int optimize = Numbers.asIndex(given[5]).intValue();
+        if (optimize < -1 || optimize > 2) {
+            throw Slots.valueError("compile(): invalid optimize value");
         }
-        if (!(given[5] instanceof PyInt optimize) || optimize.getValue().intValue() != -1) {
-            throw Slots.notImplemented(
-                    "compile() with an explicit optimization level (M6-a)");
-        }
-        if (!(given[6] instanceof PyInt featureVersion)
-                || featureVersion.getValue().intValue() != -1) {
-            throw Slots.notImplemented("compile() with a feature version (M5)");
+        int featureVersion = Numbers.asIndex(given[6]).intValue();
+        PyObject source = given[0];
+        // The lexer refuses a NUL byte in the buffer before it parses anything, whichever mode or
+        // flag asked for the parse; the message names no position, so it is a one-argument
+        // SyntaxError rather than the six-field one a parser refusal carries.
+        if (containsNull(source)) {
+            String sentence = "source code string cannot contain null bytes";
+            PyRaise failure = PyRaise.raise(ExceptionTypes.SYNTAX_ERROR, sentence);
+            failure.value().asSyntaxMessage(sentence);
+            throw failure;
         }
         if (onlyAst) {
-            return PyRuntime.parseAst(sourceText("compile", given[0]), fileName, mode);
+            if ((flags & (TYPE_COMMENTS | OPTIMIZED_AST | ALLOW_INCOMPLETE_INPUT)) != 0) {
+                throw Slots.notImplemented(
+                        "compile() with PyCF_TYPE_COMMENTS, PyCF_OPTIMIZED_AST or "
+                                + "PyCF_ALLOW_INCOMPLETE_INPUT (M6-a)");
+            }
+            return PyRuntime.parseAst(sourceText("compile", source), fileName, mode);
         }
-        PyCode code = codeOf("compile", given[0], fileName, mode.equals("eval"));
-        return (PyObject) code;
+        if (source instanceof PyStr text) {
+            return (PyObject) PyRuntime.compileUnit(
+                    text.getValue(), fileName, mode, flags, optimize, featureVersion);
+        }
+        if (source instanceof PyBytes || source instanceof PyByteArray
+                || source instanceof PyMemoryView) {
+            return (PyObject) PyRuntime.compileBytesUnit(
+                    PyMemoryView.bufferOctets(source), fileName, mode, flags, optimize,
+                    featureVersion);
+        }
+        if (Specials.member(source.getType(), "_fields") != null) {
+            throw Slots.notImplemented("compile() from an AST object (M6-a)");
+        }
+        throw Slots.typeError("compile() arg 1 must be a string, bytes or AST object");
+    }
+
+    /** Whether the source buffer carries a NUL: the one refusal the lexer makes before parsing. */
+    private static boolean containsNull(PyObject source) {
+        if (source instanceof PyStr text) {
+            return text.getValue().indexOf('\0') >= 0;
+        }
+        if (source instanceof PyBytes || source instanceof PyByteArray
+                || source instanceof PyMemoryView) {
+            for (byte octet : PyMemoryView.bufferOctets(source)) {
+                if (octet == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The {@code __future__} bits the calling frame's code object carries, if there is a frame. */
+    private static int inheritedFutureFlags() {
+        Frame frame = Interpreter.currentFrame();
+        if (frame == null || frame.code() == null) {
+            return 0;
+        }
+        return frame.code().flags() & FUTURE_FLAGS;
+    }
+
+    /**
+     * A {@code filename} argument: str, bytes, or anything answering {@code __fspath__}.
+     *
+     * <p>The refusal is the one {@code os.fspath} writes, because that is the call the reference
+     * makes on this argument.
+     */
+    private static String fileNameOf(PyObject value) {
+        if (value instanceof PyStr text) {
+            return text.getValue();
+        }
+        if (value instanceof PyBytes bytes) {
+            return new String(bytes.getValue(), StandardCharsets.UTF_8);
+        }
+        if (Specials.member(value.getType(), "__fspath__") != null) {
+            return fileNameOf(Slots.call(
+                    Slots.getAttr(value, "__fspath__"), new PyObject[0], null));
+        }
+        throw Slots.typeError(
+                "expected str, bytes or os.PathLike object, not %s",
+                value.getType().filedName());
     }
 
     /** The code object a source argument names, compiling text or bytes the way {@code expr} says. */

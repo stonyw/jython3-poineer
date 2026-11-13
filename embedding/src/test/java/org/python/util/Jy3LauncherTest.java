@@ -518,7 +518,8 @@ class Jy3LauncherTest {
                 "06_weakref_ref_subclass.py",
                 "07_copy_module.py",
                 "08_eval_partial_and_gc.py",
-                "09_unittest_minimal.py");
+                "09_unittest_minimal.py",
+                "10_compile_modes_and_optimize.py");
     }
 
     /**
@@ -1337,7 +1338,7 @@ class Jy3LauncherTest {
      */
     @Test
     void switchesAreEitherHonouredOrRefusedByName() throws Exception {
-        for (String refused : List.of("-O", "-OO", "-b", "-bb")) {
+        for (String refused : List.of("-b", "-bb")) {
             Result result = jy3(List.of(refused, "-c", "print('ran')"));
 
             assertThat(result.exit()).as(refused).isEqualTo(3);
@@ -1362,6 +1363,14 @@ class Jy3LauncherTest {
         // `-E`/`-I` are absent on purpose: they are accepted and not applied, so the honest answer for
         // `ignore_environment` — and for `isolated` — is 0.
         assertThat(accepted.out()).isEqualTo("1 1 1 1 0\n");
+
+        for (String option : List.of("-O", "-OO")) {
+            Result result =
+                    jy3(List.of(option, "-c", "import sys; print(__debug__, sys.flags.optimize)"));
+
+            assertThat(result.exit()).as(option).isZero();
+            assertThat(result.out()).as(option).isEqualTo(option.equals("-OO") ? "False 2\n" : "False 1\n");
+        }
 
         Result unknown = jy3(List.of("-Z", "-c", "print('ran')"));
         assertThat(unknown.exit()).isEqualTo(2);

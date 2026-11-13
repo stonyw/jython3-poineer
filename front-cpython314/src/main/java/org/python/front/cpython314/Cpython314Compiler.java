@@ -74,10 +74,13 @@ public final class Cpython314Compiler {
 
             payload_kind, payload, file_name, code_kind = (
                 sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+            flags, optimize, feature_version = map(int, sys.argv[5:8])
             if payload_kind == "f":
                 with open(payload, "rb") as stream:
                     source = stream.read()
                 file_name = os.path.abspath(file_name)
+            elif payload_kind == "b":
+                source = base64.b64decode(payload)
             else:
                 source = payload.encode("utf-8")
             try:
@@ -109,10 +112,17 @@ public final class Cpython314Compiler {
                             return "[%s]" % ", ".join(write(item) for item in node)
                         return repr(node)
 
-                    tree = ast.parse(source.decode("utf-8"), file_name, code_kind[4:])
+                    tree = ast.parse(source, file_name, code_kind[4:])
                     sys.stdout.buffer.write(write(tree).encode("utf-8"))
                 else:
-                    code = compile(source, file_name, code_kind, dont_inherit=True)
+                    options = {"dont_inherit": True}
+                    if flags:
+                        options["flags"] = flags
+                    if optimize != -1:
+                        options["optimize"] = optimize
+                    if feature_version != -1:
+                        options["_feature_version"] = feature_version
+                    code = compile(source, file_name, code_kind, **options)
                     sys.stdout.buffer.write(marshal.dumps(code))
             except (SyntaxError, ValueError) as error:
                 # The report the interpreter would have printed for the script, and nothing of the
@@ -172,6 +182,30 @@ public final class Cpython314Compiler {
                 }
 
                 @Override
+                public PyCode compile(
+                        String source,
+                        String fileName,
+                        String mode,
+                        int flags,
+                        int optimize,
+                        int featureVersion) {
+                    return Cpython314Compiler.compileUnit(
+                            source, fileName, mode, flags, optimize, featureVersion);
+                }
+
+                @Override
+                public PyCode compileBytes(
+                        byte[] source,
+                        String fileName,
+                        String mode,
+                        int flags,
+                        int optimize,
+                        int featureVersion) {
+                    return Cpython314Compiler.compileBytes(
+                            source, fileName, mode, flags, optimize, featureVersion);
+                }
+
+                @Override
                 public String parseAst(String source, String fileName, String mode) {
                     return Cpython314Compiler.parseAst(source, fileName, mode);
                 }
@@ -188,9 +222,14 @@ public final class Cpython314Compiler {
      * and the {@code File "..."} line of a syntax error, and a path resolved by Java instead of by the
      * child differs whenever the working directory is reached through a symlink.
      */
-    public static Compiled compileFile(Path script) {
+    public static Compiled compileFile(Path script, int optimize) {
         String resolved = absolutePath(script);
-        return new Compiled(compile("f", script.toString(), resolved, "exec"), resolved);
+        return new Compiled(compile("f", script.toString(), resolved, "exec", 0, optimize, -1), resolved);
+    }
+
+    /** Compile a file at the level the launcher was given, for callers with no {@code -O} of their own. */
+    public static Compiled compileFile(Path script) {
+        return compileFile(script, -1);
     }
 
     /**
@@ -200,7 +239,33 @@ public final class Cpython314Compiler {
      *     {@code <stdin>} for these two
      */
     public static PyCode compileSource(String source, String fileName) {
-        return compile("s", source, fileName, "exec");
+        return compile("s", source, fileName, "exec", 0, -1, -1);
+    }
+
+    /**
+     * Compile one unit with the options {@code compile()} takes, which is the only path that can ask
+     * for {@code single}, a compiler flag, or an optimization level other than the interpreter's own.
+     */
+    public static PyCode compileUnit(
+            String source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        return compile("s", source, fileName, mode, flags, optimize, featureVersion);
+    }
+
+    /** Compile bytes, leaving the encoding declaration in them to the reference decoder. */
+    public static PyCode compileBytes(
+            byte[] source,
+            String fileName,
+            String mode,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        String payload = Base64.getEncoder().encodeToString(source);
+        return compile("b", payload, fileName, mode, flags, optimize, featureVersion);
     }
 
     /**
@@ -212,7 +277,7 @@ public final class Cpython314Compiler {
      * refuses it, as {@link CompilationRefused}.
      */
     public static PyCode compileExpression(String source, String fileName) {
-        return compile("s", source, fileName, "eval");
+        return compile("s", source, fileName, "eval", 0, -1, -1);
     }
 
     /**
@@ -226,7 +291,7 @@ public final class Cpython314Compiler {
      *     {@code func_type}
      */
     public static String parseAst(String source, String fileName, String mode) {
-        return new String(run("s", source, fileName, "ast-" + mode), StandardCharsets.UTF_8);
+        return new String(run("s", source, fileName, "ast-" + mode, 0, -1, -1), StandardCharsets.UTF_8);
     }
 
     /** The reference interpreter this build will invoke, for reporting and for tests. */
@@ -245,8 +310,16 @@ public final class Cpython314Compiler {
         return Path.of("").toAbsolutePath().resolve(script).normalize().toString();
     }
 
-    private static PyCode compile(String payloadKind, String payload, String fileName, String codeKind) {
-        return MarshalReader.readCode(run(payloadKind, payload, fileName, codeKind), 0);
+    private static PyCode compile(
+            String payloadKind,
+            String payload,
+            String fileName,
+            String codeKind,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        return MarshalReader.readCode(
+                run(payloadKind, payload, fileName, codeKind, flags, optimize, featureVersion), 0);
     }
 
     /**
@@ -255,10 +328,19 @@ public final class Cpython314Compiler {
      * <p>Every failure is turned into one of the two exceptions here, because both callers explain a
      * refusal the same way: CPython's own report is the user's, anything else is ours.
      */
-    private static byte[] run(String payloadKind, String payload, String fileName, String codeKind) {
+    private static byte[] run(
+            String payloadKind,
+            String payload,
+            String fileName,
+            String codeKind,
+            int flags,
+            int optimize,
+            int featureVersion) {
         File diagnostics = temporaryFile();
         try {
-            Process process = invoke(payloadKind, payload, fileName, codeKind, diagnostics);
+            Process process = invoke(
+                    payloadKind, payload, fileName, codeKind, flags, optimize, featureVersion,
+                    diagnostics);
             byte[] out;
             try (InputStream stream = process.getInputStream()) {
                 out = stream.readAllBytes();
@@ -286,12 +368,22 @@ public final class Cpython314Compiler {
     }
 
     private static Process invoke(
-            String payloadKind, String payload, String fileName, String codeKind, File diagnostics)
+            String payloadKind,
+            String payload,
+            String fileName,
+            String codeKind,
+            int flags,
+            int optimize,
+            int featureVersion,
+            File diagnostics)
             throws IOException {
         ProcessBuilder builder =
                 new ProcessBuilder(
                         executable(), "-I", "-S", "-c", DRIVER,
-                        payloadKind, payload, fileName, codeKind)
+                        payloadKind, payload, fileName, codeKind,
+                        Integer.toString(flags),
+                        Integer.toString(optimize),
+                        Integer.toString(featureVersion))
                         .redirectError(diagnostics);
         return builder.start();
     }
