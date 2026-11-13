@@ -363,6 +363,10 @@ final class Classes {
                 // metaclass=_ProtocolMeta)`, and every user class written in the type-parameter syntax
                 // lands here too.
                 || base == PyType.TYPING_GENERIC
+                // `types.SimpleNamespace` carries `Py_TPFLAGS_BASETYPE`, so `class Spam(SimpleNamespace)`
+                // is a class a program writes: it inherits `namespace_init` and keeps its pairs in the
+                // instance dictionary the subclass has.
+                || base == PyType.NAMESPACE
                 // `asyncio/events.py` is `class _Local(threading.local)`, and `threading.local` is
                 // `_thread._local` itself: a value whose storage is a dictionary per thread, which
                 // `ThreadModule.Local` keeps.

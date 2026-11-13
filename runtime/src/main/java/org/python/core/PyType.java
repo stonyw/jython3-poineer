@@ -2021,6 +2021,7 @@ public class PyType extends PyObject {
                 || this == TEXT_IO_BASE
                 || this == RAW_IO_BASE
                 || this == BUFFERED_IO_BASE
+                || this == NAMESPACE
                 || matches(ExceptionTypes.BASE_EXCEPTION);
     }
 

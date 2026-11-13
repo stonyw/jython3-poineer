@@ -455,14 +455,24 @@ public class PyInstance extends PyObject {
             }
             PyObject equal = Specials.invoke(this, "__eq__", other);
             return Slots.declined(equal)
-                    ? PyBool.of(this != other)
+                    ? PyBool.of(!sameValue(other))
                     : PyBool.of(!Slots.truth(equal));
         }
         PyObject answer = Specials.invoke(this, cmp.dunder(), other);
         if (!Slots.declined(answer)) {
             return answer;
         }
-        return cmp == CompareOp.EQ ? PyBool.of(this == other) : PyNotImplemented.INSTANCE;
+        return cmp == CompareOp.EQ ? PyBool.of(sameValue(other)) : PyNotImplemented.INSTANCE;
+    }
+
+    /**
+     * The answer when the class wrote no {@code __eq__}: the namespace family compares its pairs, as the
+     * base type's {@code tp_richcompare} does for every subtype, and everything else is identity.
+     */
+    private boolean sameValue(PyObject other) {
+        return type.matches(PyType.NAMESPACE) && PyNamespace.isNamespace(other)
+                ? PyNamespace.sameContents(this, other)
+                : this == other;
     }
 
     // --- container protocol --------------------------------------------------------------
@@ -583,7 +593,7 @@ public class PyInstance extends PyObject {
     public boolean eq(PyObject other) {
         PyObject answer = Specials.invoke(this, "__eq__", other);
         if (Slots.declined(answer)) {
-            return this == other;
+            return sameValue(other);
         }
         return Slots.truth(answer);
     }
@@ -601,6 +611,11 @@ public class PyInstance extends PyObject {
     public long hash() {
         PyObject declared = Specials.lookUp(type, "__hash__");
         if (declared == null) {
+            if (type.matches(PyType.NAMESPACE)) {
+                // `SimpleNamespace` fills `tp_hash` with nothing, which CPython turns into
+                // `__hash__ = None`, and a class written over it inherits that refusal.
+                throw Slots.typeError("unhashable type: '%s'", type.filedName());
+            }
             return System.identityHashCode(PyInstance.this);
         }
         if (!(declared instanceof PyFunction function)) {
@@ -628,6 +643,11 @@ public class PyInstance extends PyObject {
             answer = displayed("__repr__");
         }
         if (answer == null) {
+            if (type.matches(PyType.NAMESPACE)) {
+                // `object.__str__` falls back to the repr slot, and a class over `SimpleNamespace`
+                // inherits `namespace_repr` rather than writing a Python-level method.
+                return PyNamespace.display(type.name(), ensureInstanceDict(), this);
+            }
             return defaultDisplay();
         }
         if (!(answer instanceof PyStr text)) {
@@ -641,6 +661,11 @@ public class PyInstance extends PyObject {
     public String repr() {
         PyObject answer = displayed("__repr__");
         if (answer == null) {
+            if (type.matches(PyType.NAMESPACE)) {
+                // `namespace_repr` is the slot a class written over `SimpleNamespace` inherits, and it
+                // prints the class's own name: `Spam(a=1)`.
+                return PyNamespace.display(type.name(), ensureInstanceDict(), this);
+            }
             return defaultDisplay();
         }
         if (!(answer instanceof PyStr text)) {

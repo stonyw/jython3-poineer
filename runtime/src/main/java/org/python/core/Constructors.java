@@ -101,6 +101,9 @@ final class Constructors {
         if (type == PyType.DICT) {
             return mapping(args, keywordNames);
         }
+        if (type == PyType.NAMESPACE) {
+            return PyNamespace.create(type, args, keywordNames);
+        }
         if (type == PyType.DEQUE) {
             return PyDeque.called(args, kwNames);
         }

@@ -562,7 +562,8 @@ class Jy3LauncherTest {
                 "21_clear_type_descriptors_and_cell.py",
                 "22_tokenize.py",
                 "23_tokenize_fstring.py",
-                "24_import_chain_seams.py");
+                "24_import_chain_seams.py",
+                "25_simple_namespace.py");
     }
 
     private static List<String> m3Corpus() {

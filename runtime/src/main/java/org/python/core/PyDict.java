@@ -317,7 +317,9 @@ public final class PyDict extends PyObject {
      * {@code dict.update} and {@code |=}: a mapping merges as it is, and anything else is read as a
      * sequence of pairs. A {@code dict} and a {@link PyMappingProxy} count as mappings here, which is
      * CPython's {@code Py_TPFLAGS_MAPPING} answer for the two types that set it beside {@code dict} itself;
-     * {@link Slots#isMapping} still cannot tell a class that declares {@code keys} from one that does not.
+     * anything else is asked for {@code keys()} first, which is how {@code PyMapping_Keys} reaches a class
+     * that implements the protocol without inheriting from {@code dict} — {@code UserDict} and the like —
+     * and a source with no such method falls through to the pair walk.
      */
     void merge(PyObject source) {
         PyDict direct = bodyOf(source);
@@ -331,11 +333,38 @@ public final class PyDict extends PyObject {
             putAll(window.mapping());
             return;
         }
+        PyObject keys = keysOf(source);
+        if (keys != null) {
+            PyIterator names = Slots.iterator(Slots.call(keys, new PyObject[0], PyTuple.of()));
+            PyObject key;
+            while ((key = names.nextOrNull()) != null) {
+                put(key, Slots.getItem(source, key));
+            }
+            return;
+        }
         PyIterator iterator = Slots.iterator(source);
         PyObject element;
         for (int position = 0; (element = iterator.nextOrNull()) != null; position++) {
             PyObject[] pair = pair(element, position);
             put(pair[0], pair[1]);
+        }
+    }
+
+    /**
+     * The {@code keys} method of a source that has one, or null when it does not.
+     *
+     * <p>This is {@code PyMapping_Keys}'s test: only a missing attribute counts as "not a mapping", and
+     * the caller reads the absence as a sequence of pairs. Any other refusal from a {@code keys} that is
+     * reached but raises is reported as it stands, the way {@code PyDict_Merge} does.
+     */
+    private static PyObject keysOf(PyObject source) {
+        try {
+            return Slots.getAttr(source, "keys");
+        } catch (PyRaise refusal) {
+            if (refusal.value().exceptionType().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                return null;
+            }
+            throw refusal;
         }
     }
 

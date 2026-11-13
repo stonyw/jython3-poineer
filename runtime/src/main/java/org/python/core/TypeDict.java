@@ -144,6 +144,20 @@ final class TypeDict {
 
     private static final String GETSTATE_DOC = "__getstate__($self, /)\n--\n\nHelper for pickle.";
 
+    /**
+     * The two rows {@code namespace_methods} files, which are what make a namespace picklable and
+     * replaceable.
+     *
+     * <p>Only {@code __replace__} names its arguments, so only it carries a table: {@code __reduce__} is
+     * a {@code METH_NOARGS} whose {@code ml_doc} is the whole sentence, and its
+     * {@code __text_signature__} is cut from the flag.
+     */
+    private static final String NAMESPACE_REDUCE_DOC = "Return state information for pickling";
+
+    private static final String NAMESPACE_REPLACE_DOC =
+            "__replace__($self, /, **changes)\n--\n\nReturn a copy of the namespace object with new"
+                    + " values for the specified attributes.";
+
     /** {@code type.__call__} and the row {@code builtin_function_or_method} files over the same slot. */
     private static final String CALL_DOC =
             "__call__($self, /, *args, **kwargs)\n--\n\nCall self as a function.";
@@ -769,6 +783,10 @@ final class TypeDict {
         }
         if (owner == PyType.MAPPING_PROXY) {
             proxyTable(into);
+            return;
+        }
+        if (owner == PyType.NAMESPACE) {
+            namespaceTable(into);
             return;
         }
         if (owner == PyType.BUILTIN_FUNCTION) {
@@ -5283,6 +5301,82 @@ final class TypeDict {
     }
 
     /**
+     * The two methods {@code namespace_methods} files, and the sentence beside them.
+     *
+     * <p>{@code __reduce__} answers {@code (type(self), (), self.__dict__)}, which every pickle protocol
+     * reaches through {@code object.__reduce_ex__} because this one is declared; {@code __replace__} is
+     * what {@code copy.replace} calls, and both are inherited by a class derived from the type.
+     */
+    private static void namespaceTable(PyDict into) {
+        Table table = new Table(PyType.NAMESPACE, into);
+        // `namespace_getset`'s `__dict__`: a member the reference files with no writer, so the whole
+        // dictionary reads back and replacing or dropping it is `AttributeError: readonly attribute`.
+        table.member("__dict__", PyNamespace::contentsOf);
+        table.raw("__new__", NEW_DOC, TypeDict::namespaceNew);
+        table.method("__reduce__", NAMESPACE_REDUCE_DOC, TypeDict::namespaceReduce, METH_NOARGS);
+        fromTable(PyType.NAMESPACE, into);
+        table.method("__init__", INIT_DOC, TypeDict::namespaceInit, METH_NOARGS);
+        table.method("__replace__", NAMESPACE_REPLACE_DOC, TypeDict::namespaceReplace);
+    }
+
+    /**
+     * {@code namespace_new}: the class checked, a value of it made, and the arguments left to
+     * {@code namespace_init}.
+     *
+     * <p>{@code SimpleNamespace.__new__(SimpleNamespace, x=1)} is empty for that reason: the creator is
+     * the first half of the constructor, and a class derived from the type reaches this row with
+     * {@code super().__new__(cls)} — which is why the value it makes is of the class it was handed.
+     */
+    private static PyObject namespaceNew(PyObject[] args, String[] kwNames, String qualified) {
+        return PyNamespace.empty(declaredClass(PyType.NAMESPACE, args, kwNames));
+    }
+
+    /** {@code namespace_init}: the one positional argument and the keywords, into the value's dictionary. */
+    private static PyObject namespaceInit(PyObject[] args, String[] kwNames, String qualified) {
+        PyNamespace.fill(args[0], tail(args, kwNames), kwNames);
+        return PyNone.INSTANCE;
+    }
+
+    /** {@code namespace_reduce}: the type, no creator arguments, and the dictionary itself. */
+    private static PyObject namespaceReduce(PyObject[] args, String[] kwNames, String qualified) {
+        Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
+        PyObject self = args[0];
+        return PyTuple.of(self.getType(), PyTuple.of(), PyNamespace.contentsOf(self));
+    }
+
+    /**
+     * {@code namespace_replace}: a fresh value of the receiver's class, then the receiver's pairs, then
+     * the changes.
+     *
+     * <p>CPython calls the class before it reads the receiver, so an overridden {@code __new__} that
+     * answers something else is refused rather than updated — the message names the type the method was
+     * written for and the type the creator actually returned.
+     */
+    private static PyObject namespaceReplace(PyObject[] args, String[] kwNames, String qualified) {
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = args.length - keywords;
+        if (positional > 1) {
+            throw Slots.typeError("__replace__() takes no positional arguments");
+        }
+        PyObject self = args[0];
+        PyObject made = Classes.typeCall(self.getType(), new PyObject[0], PyTuple.of());
+        if (!made.getType().matches(PyType.NAMESPACE)) {
+            String kind = self.getType() instanceof PyClass declaring
+                    ? declaring.dottedName()
+                    : self.getType().filedName();
+            throw Slots.typeError(
+                    "expect %s type, but %s() returned '%s' object",
+                    PyType.NAMESPACE.filedName(), kind, made.getType().name());
+        }
+        PyDict into = PyNamespace.contentsOf(made);
+        into.putAll(PyNamespace.contentsOf(self));
+        for (int i = 0; i < keywords; i++) {
+            into.put(PyStr.interned(kwNames[i]), args[positional + i]);
+        }
+        return made;
+    }
+
+    /**
      * The dictionary a built-in value type files: its {@link Members} table, and the sentence beside it.
      *
      * <p>{@code int.__dict__} in the reference interpreter holds sixty-two names, because CPython copies
@@ -5771,6 +5865,9 @@ final class TypeDict {
             if (owner == PyType.INT
                     || owner == PyType.STR
                     || owner == PyType.TUPLE
+                    // A subclass of `SimpleNamespace` has already read its one positional argument in
+                    // `namespace_init`, so `object.__init__` is not the slot that complains about it.
+                    || owner == PyType.NAMESPACE
                     // A subclass of `weakref.ref` inherits a creator written in C that has already taken
                     // the object it refers to and its callback, so `object.__init__` has nothing to refuse.
                     || owner == PyType.WEAK_REFERENCE) {
