@@ -1216,16 +1216,18 @@ public final class PyRuntime {
      * once at module scope to decide whether {@code catch_warnings} keeps its filters in a context
      * variable or in the global list, {@code _colorize.can_colorize} asks the second before it looks at
      * {@code PYTHON_COLORS}, and {@code importlib._bootstrap_external.cache_from_source} asks the third
-     * before it chooses a cache name. All three are 0 — the reference's without {@code -X
-     * context_aware_warnings}, without {@code -E} and without {@code -O} respectively. The rest of the
-     * reference's members — {@code verbose}, {@code utf8_mode} and the others — are not answered yet,
-     * and the milestone notes name the gap.
+     * before it chooses a cache name. All are 0 — the reference's without {@code -X
+     * context_aware_warnings}, without {@code -E} and without {@code -O} respectively.
+     * {@code utf8_mode} is 0 too, and it is read by {@code test_builtin}'s class body before any test
+     * runs, so answering it is what lets that module load. The rest of the reference's members —
+     * {@code verbose} and the others — are not answered yet, and the milestone notes name the gap.
      */
     private static PyNamespace flags() {
         PyNamespace namespace = new PyNamespace();
         namespace.set("context_aware_warnings", PyInt.of(0));
         namespace.set("ignore_environment", PyInt.of(0));
         namespace.set("optimize", PyInt.of(0));
+        namespace.set("utf8_mode", PyInt.of(0));
         return namespace;
     }
 

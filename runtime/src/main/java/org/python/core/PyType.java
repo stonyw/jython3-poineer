@@ -883,14 +883,13 @@ public class PyType extends PyObject {
     /**
      * {@code _tokenize.TokenizerIter}: the tokenizer {@code tokenize.py} drives since 3.14.
      *
-     * <p>Only the name exists. Reading tokens is the reference compiler's job, and this runtime has no
-     * tokenizer of its own; what the standard library needs here is the name, because {@code
-     * traceback.py} imports {@code tokenize} at module scope and {@code tokenize.py} imports this
-     * module at its own. Construction therefore refuses, and {@code tokenize.generate_tokens} stays a
-     * named deviation rather than a call that answers wrong.
+     * <p>Each step answers the five-tuple {@code TokenInfo} is made of, so what the standard library
+     * gets here is the reference's own token stream: names, numbers, strings, indentation, the
+     * comments and blank lines {@code tokenize} keeps, and the refusals with their positions.
+     * {@link PyTokenizerIter} is the implementation, and {@link Tokenizer} the scanner under it.
      */
     public static final PyType TOKENIZER_ITER =
-            builtin("TokenizerIter").filedUnder("_tokenize.TokenizerIter").withoutNew();
+            builtin("TokenizerIter").filedUnder("_tokenize.TokenizerIter");
 
     /**
      * {@code types.CapsuleType}'s sentence, which wraps a C pointer a program cannot open.

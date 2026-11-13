@@ -57,6 +57,9 @@ final class Constructors {
         if (type == PyType.FORWARD_REF) {
             return PyForwardRef.called(args, keywordNames);
         }
+        if (type == PyType.TOKENIZER_ITER) {
+            return PyTokenizerIter.called(args, keywordNames);
+        }
         if (type == PyType.FLOAT) {
             return floating(args, keywordNames);
         }

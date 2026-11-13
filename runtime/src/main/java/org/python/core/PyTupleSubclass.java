@@ -107,6 +107,20 @@ final class PyTupleSubclass extends PyTuple {
         return Slots.declined(answer) ? super.iterator() : answer;
     }
 
+    /**
+     * {@code tuple.__iter__(value)} called by name: the items, never the class's own {@code __iter__}.
+     *
+     * <p>The two reads are different in the reference. {@code iter(value)} goes through the type's
+     * slot, which for a class that writes {@code __iter__} runs that method; calling
+     * {@code tuple.__iter__} runs the inherited wrapper descriptor itself, which allocates a tuple
+     * iterator without looking the name up again. Answering both from {@link #iterator()} made
+     * {@code super().__iter__()} inside such a class call itself until the stack ran out — which is
+     * exactly what {@code platform.uname_result.__iter__} does.
+     */
+    PyObject baseIterator() {
+        return super.iterator();
+    }
+
     // --- equality ------------------------------------------------------------------------
 
     @Override

@@ -899,6 +899,10 @@ final class TypeDict {
             templateIterTable(into);
             return;
         }
+        if (owner == PyType.TOKENIZER_ITER) {
+            tokenizerIterTable(into);
+            return;
+        }
         if (owner == PyType.RANGE) {
             rangeTable(into);
             return;
@@ -2667,7 +2671,12 @@ final class TypeDict {
         table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
         table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
-        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper(
+                "__iter__",
+                ITER_DOC,
+                args -> args[0] instanceof PyTupleSubclass subclass
+                        ? subclass.baseIterator()
+                        : args[0].iterator());
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
         table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
         table.wrapper("__add__", ADD_DOC, TypeDict::joined);
@@ -3341,6 +3350,15 @@ final class TypeDict {
     /** The cursor {@code iter(template)} answers with, which no Python code can construct. */
     private static void templateIterTable(PyDict into) {
         PyType owner = PyType.TEMPLATE_ITERATOR;
+        Table table = new Table(owner, into);
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** The token cursor {@code _tokenize} hands out; it steps until the ENDMARKER token. */
+    private static void tokenizerIterTable(PyDict into) {
+        PyType owner = PyType.TOKENIZER_ITER;
         Table table = new Table(owner, into);
         table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
         table.wrapper("__next__", NEXT_DOC, args -> ((PyIterator) args[0]).stepped());

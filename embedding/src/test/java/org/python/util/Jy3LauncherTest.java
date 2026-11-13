@@ -559,7 +559,8 @@ class Jy3LauncherTest {
                 "18_datetime.py",
                 "19_socket.py",
                 "20_thread_local.py",
-                "21_clear_type_descriptors_and_cell.py");
+                "21_clear_type_descriptors_and_cell.py",
+                "22_tokenize.py");
     }
 
     private static List<String> m3Corpus() {
