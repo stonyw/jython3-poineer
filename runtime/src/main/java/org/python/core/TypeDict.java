@@ -4158,7 +4158,10 @@ final class TypeDict {
                         ((PyStream) self).setAttr("_CHUNK_SIZE", value);
                     }
                 });
-        table.getset("buffer", null, self -> Slots.getAttr(self, "buffer"), null);
+        // The getter must reach the field through the stream's own switch: `Slots.getAttr` would look
+        // the descriptor up again and hand the same lambda back, which is an unbounded recursion
+        // rather than the buffer.
+        table.getset("buffer", null, self -> ((PyStream) self).getAttr("buffer"), null);
         table.value("__doc__", docValue(owner));
     }
 

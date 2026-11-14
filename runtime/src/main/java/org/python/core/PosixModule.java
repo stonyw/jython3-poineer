@@ -420,6 +420,15 @@ final class PosixModule {
                     int options = Numbers.asIndex(args[1]).intValue();
                     return PosixSubprocessModule.waitpid(pid, options);
                 }));
+        module.set("kill", function(
+                "kill",
+                "kill($module, pid, signal, /)\n--\n\nKill a process with a signal.",
+                (args, kwNames) -> {
+                    Arguments.exactly("kill", args, kwNames, 2);
+                    long pid = Numbers.asIndex(args[0]).longValue();
+                    int sig = Numbers.asIndex(args[1]).intValue();
+                    return processSignal(pid, sig);
+                }));
         module.set("waitstatus_to_exitcode", function(
                 "waitstatus_to_exitcode",
                 "waitstatus_to_exitcode($module, /, status)\n--\n\n"
@@ -1029,6 +1038,42 @@ final class PosixModule {
         throw Slots.typeError(
                 "%s: path should be string, bytes, os.PathLike or integer, not %s",
                 function, value.getType().name());
+    }
+
+    /**
+     * {@code kill(2)} over a {@link ProcessHandle}.
+     *
+     * <p>The JVM has no way to hand an arbitrary signal to another process: {@link ProcessHandle} offers
+     * exactly two requests, {@code destroy()} (the polite one, which macOS delivers as {@code SIGTERM}) and
+     * {@code destroyForcibly()} ({@code SIGKILL}). Signal 0 is the reference's existence probe and is
+     * answered from {@code isAlive()}. Everything else — {@code SIGINT}, {@code SIGHUP}, the job-control
+     * signals — names its number and is refused rather than silently mapped onto {@code SIGTERM}, because
+     * a program that asked for {@code SIGHUP} and got a terminate would see the wrong exit status.
+     */
+    private static PyObject processSignal(long pid, int signal) {
+        ProcessHandle child = ProcessHandle.of(pid).orElse(null);
+        if (child == null || !child.isAlive()) {
+            // `PyErr_SetFromErrno(PyExc_ProcessLookupError)` over ESRCH.
+            throw PyRaise.of(PyOSError.create(
+                    ExceptionTypes.OS_ERROR,
+                    new PyObject[] {PyInt.of(3), PyStr.of(strerror(3))}));
+        }
+        switch (signal) {
+            case 0 -> {
+                return PyNone.INSTANCE;
+            }
+            case 9 -> {
+                child.destroyForcibly();
+                return PyNone.INSTANCE;
+            }
+            case 15 -> {
+                child.destroy();
+                return PyNone.INSTANCE;
+            }
+            default -> throw Slots.notImplemented(
+                    "os.kill() can deliver only signal 0, SIGTERM (15) and SIGKILL (9): the JVM has no "
+                            + "arbitrary signal delivery, so signal " + signal + " has no counterpart");
+        }
     }
 
     static PyRaise failure(Exception error, FsPath path) {

@@ -426,22 +426,21 @@ final class Fds {
         }
     }
 
-    /** Whether a write would be accepted. */
+    /**
+     * Whether a write would be accepted.
+     *
+     * <p>A pipe whose reader has closed still answers true: {@code write(2)} would return at once with
+     * {@code EPIPE}, and that is exactly what the kernel reports through {@code POLLERR} — a descriptor
+     * that cannot make progress is "ready", not "busy". Saying false here deadlocks {@code
+     * subprocess.Popen.communicate}, which waits for the write end to become ready and never gets to the
+     * write that would raise the {@code BrokenPipeError} it hides.
+     */
     static boolean writable(int fd) {
         Slot slot = peek(fd);
         if (slot == null || slot.devnull) {
             return true;
         }
-        if (slot.file != null) {
-            return slot.writable;
-        }
-        if (!slot.writable) {
-            return false;
-        }
-        Pipe pipe = slot.pipe;
-        synchronized (pipe) {
-            return !pipe.readerClosed;
-        }
+        return slot.writable;
     }
 
     /** How many bytes a read would return without waiting. */
@@ -497,6 +496,10 @@ final class Fds {
                     throw ioFailure();
                 }
             }
+        }
+        if (slot.pipe == null) {
+            // The null device holds nothing, and `fstat` on it reports st_size 0.
+            return 0;
         }
         synchronized (slot.pipe) {
             return slot.pipe.length;

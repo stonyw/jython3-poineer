@@ -319,8 +319,18 @@ final class PosixSubprocessModule {
      * candidate here is the same walk, done in the parent because there is no child to do it.
      */
     private static List<String> executable(List<String> argv, List<String> candidates) {
+        // `execve` cannot carry a NUL inside any argument: the reference's child raises ValueError before
+        // it ever looks at the file, and Java would raise InvalidPathException out of `Path.of` instead.
+        for (String argument : argv) {
+            if (argument.indexOf('\0') >= 0) {
+                throw Slots.valueError("embedded null byte");
+            }
+        }
         String chosen = null;
         for (String candidate : candidates) {
+            if (candidate.indexOf('\0') >= 0) {
+                throw Slots.valueError("embedded null byte");
+            }
             if (Files.isExecutable(Path.of(candidate))) {
                 chosen = candidate;
                 break;
@@ -340,6 +350,9 @@ final class PosixSubprocessModule {
         Map<String, String> environment = new LinkedHashMap<>();
         for (PyObject entry : items(list)) {
             String text = text(entry);
+            if (text.indexOf('\0') >= 0) {
+                throw Slots.valueError("embedded null byte");
+            }
             int equals = text.indexOf('=');
             if (equals > 0) {
                 environment.put(text.substring(0, equals), text.substring(equals + 1));

@@ -1549,9 +1549,14 @@ public final class PyStream extends PyIterator {
                     // considers it detached.
                     checkInitialized();
                 }
-                // A writing stream has no buffer of its own in this runtime, so the row that would
-                // report one is the AttributeError of a name that was never filed: see the deviation
-                // note in PLAN-progress.md.
+                if (writableLayer || out != null) {
+                    // The reference's std streams and `open(..., 'w')` rest on a binary layer; this
+                    // runtime has no writer class under the text one, so the layer is built on first
+                    // read, over the same descriptor and without owning it. It is a `FileIO` where the
+                    // reference reports a `BufferedWriter`; the deviation is named in PLAN-progress.md.
+                    buffer = new PyFileIO(name, Fds.outputStream(fd), fd, false);
+                    yield buffer;
+                }
                 yield Members.find(this, attribute);
             }
             // The reference works this out as it reads, which is why the answer is the set of endings the
@@ -1585,6 +1590,18 @@ public final class PyStream extends PyIterator {
     @Override
     PyDict attributeStore() {
         return dictionary;
+    }
+
+    /**
+     * The identity hash CPython gives every stream object, which {@code dict} keys and {@code
+     * subprocess._communicate}'s file-object table rely on.
+     *
+     * <p>{@link PyIOStream} already answers this for the binary layer; the text layer is the one {@code
+     * TextIOWrapper} objects reach, and without the override the default would call it unhashable.
+     */
+    @Override
+    public long hash() {
+        return System.identityHashCode(this);
     }
 
     /**
