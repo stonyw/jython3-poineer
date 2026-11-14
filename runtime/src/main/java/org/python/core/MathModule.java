@@ -54,7 +54,7 @@ final class MathModule {
         module.set("expm1", unary("expm1", Math::expm1));
         module.set("log", logarithmlike());
         module.set("log2", unary("log2", x -> positiveLog(x, Math.log(x) / Math.log(2))));
-        module.set("log10", unary("log10", x -> positiveLog(x, Math.log10(x))));
+        module.set("log10", log10());
         module.set("log1p", unary("log1p", x -> {
             if (x <= -1) {
                 throw Slots.valueError("expected argument value > -1, got %s",
@@ -317,6 +317,35 @@ final class MathModule {
         return answer;
     }
 
+    /**
+     * {@code math.log10}: an integer is measured without becoming a float first.
+     *
+     * <p>{@code math.log10(10**1000)} is 1000.0 in the reference, while converting that integer to a
+     * double overflows long before the logarithm is asked for. CPython's {@code loghelper} takes the
+     * integer apart with {@code _PyLong_Frexp} instead — {@code n = m * 2**e} with {@code 0.5 <= m < 1}
+     * — and {@code log10(m) + e*log10(2)} carries the answer without the detour.
+     */
+    private static PyNativeFunction log10() {
+        return new PyNativeFunction("log10", (args, kwNames) -> {
+            Arguments.exactlyOne("math.log10()", args, kwNames);
+            if (args[0] instanceof PyInt integer) {
+                BigInteger n = integer.getValue();
+                if (n.signum() <= 0) {
+                    throw Slots.valueError("expected a positive input");
+                }
+                if (n.bitLength() <= 1023) {
+                    return PyFloat.of(Math.log10(n.doubleValue()));
+                }
+                int bits = n.bitLength();
+                double mantissa =
+                        new BigDecimal(n.shiftRight(bits - 53)).doubleValue() / Math.pow(2.0, 53);
+                return PyFloat.of(Math.log10(mantissa) + bits * Math.log10(2.0));
+            }
+            double x = real(args[0]);
+            return PyFloat.of(errno("log10", x, positiveLog(x, Math.log10(x))));
+        });
+    }
+
     private static double boundedUnit(double x, double answer) {
         if (x < -1 || x > 1) {
             throw Slots.valueError("expected a number in range from -1 up to 1, got %s",
@@ -342,11 +371,30 @@ final class MathModule {
         });
     }
 
+    /**
+     * {@code math.floor}/{@code ceil}/{@code trunc}: the same three names CPython's wrappers ask of a
+     * value that is not a float.
+     *
+     * <p>CPython calls {@code __floor__} and its two siblings before it reaches for a double, which is
+     * how {@code math.floor(Decimal('1.7'))} answers an {@code int} without rounding through a float.
+     * The built-in numbers declare none of these names to {@link Specials#invoke}, so they still take
+     * the conversion path below; an integer is its own floor and truncation, as in the reference.
+     */
     private static PyNativeFunction integral(
             String name, java.util.function.DoubleUnaryOperator operation) {
         return new PyNativeFunction(name, (args, kwNames) -> {
             Arguments.exactlyOne("math." + name + "()", args, kwNames);
-            double x = real(args[0]);
+            PyObject value = args[0];
+            if (value instanceof PyInt) {
+                return value;
+            }
+            if (!(value instanceof PyFloat) && !(value instanceof PyBool)) {
+                PyObject answer = Specials.invoke(value, "__" + name + "__");
+                if (!Slots.declined(answer)) {
+                    return answer;
+                }
+            }
+            double x = real(value);
             if (Double.isNaN(x)) {
                 throw Slots.valueError("cannot convert float NaN to integer");
             }

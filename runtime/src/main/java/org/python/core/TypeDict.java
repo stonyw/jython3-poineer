@@ -1153,8 +1153,15 @@ final class TypeDict {
         Table table = new Table(owner, into);
         table.raw("__new__", NEW_DOC, TypeDict::objectNew);
         table.wrapper("__repr__", REPR_DOC, TypeDict::objectRepr);
-        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
-        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].str()));
+        // `object.__hash__` is `_Py_HashPointer`, the identity hash — not `hash()`, which would ask the
+        // value's own `__hash__` and hand the name straight back to itself. `_pydecimal` names this method
+        // from inside `Decimal.__hash__` for the NaN case, so asking `hash()` here recurses until the stack
+        // gives out.
+        table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].identityHash()));
+        // `object.__str__` is `object_str`, which asks the *repr* slot — not `str()` again. A class that
+        // names `object.__str__` as its own (doctest's `DocTestCase` does) would otherwise find this
+        // wrapper through `displayed("__str__")` and call itself forever.
+        table.wrapper("__str__", STR_DOC, args -> PyStr.of(args[0].repr()));
         table.wrapper("__getattribute__", GETATTR_DOC, TypeDict::objectGetAttribute);
         table.wrapper("__setattr__", SETATTR_DOC, TypeDict::objectSetAttribute);
         table.wrapper("__delattr__", DELATTR_DOC, TypeDict::objectDelAttribute);

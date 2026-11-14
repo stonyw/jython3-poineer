@@ -131,6 +131,16 @@ public final class PyRuntime {
     private static int recursionLimit = 1000;
 
     /**
+     * What {@code sys.get_int_max_str_digits} answers and {@code sys.set_int_max_str_digits} replaces.
+     *
+     * <p>The reference bounds how many digits a decimal integer may convert to and from text; this
+     * runtime converts without a bound, so it reports 0 — the reference's own spelling for "no limit"
+     * — and keeps whatever a program sets for the benefit of the code that reads it back. The bound is
+     * therefore bookkeeping here in the same way the recursion limit is, and the milestone notes say so.
+     */
+    private static int maxStrDigits = 0;
+
+    /**
      * The pair {@code sys.get_asyncgen_hooks} answers and {@code sys.set_asyncgen_hooks} replaces.
      *
      * <p>{@code asyncio.base_events} saves these around {@code run_forever} and restores them after, and
@@ -950,7 +960,11 @@ public final class PyRuntime {
             modules.remove(PyStr.interned(name));
             throw failure;
         }
-        return module;
+        // A module may replace itself while its body runs — `decimal` does exactly that, handing back
+        // `_pydecimal` — so the answer is the entry the mapping holds now, not the object built here.
+        // The reference reads `sys.modules[spec.name]` again for this reason.
+        PyObject answer = modules.get(PyStr.interned(name));
+        return answer != null ? answer : module;
     }
 
     /** {@code _init_module_attrs}: the six names a freshly built module takes from its spec. */
@@ -1922,6 +1936,42 @@ public final class PyRuntime {
                         + "This limit prevents infinite recursion from causing an overflow of the C\n"
                         + "stack and crashing Python.  The highest possible limit is platform-\n"
                         + "dependent."));
+        // `test.test_decimal` saves and restores this around its long-digit cases. No conversion here is
+        // bounded, so the value is kept and handed back rather than acted on; 0 is the spelling both
+        // sides use for "no limit".
+        sys.set("get_int_max_str_digits", noArguments(
+                "get_int_max_str_digits", () -> PyInt.of(maxStrDigits),
+                "get_int_max_str_digits($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the maximum number of digits allowed in the integer string\n"
+                        + "conversion.\n"
+                        + "\n"
+                        + "If no limit is set, returns 0."));
+        sys.set("set_int_max_str_digits", new PyNativeFunction(
+                        "set_int_max_str_digits",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("set_int_max_str_digits", args, kwNames);
+                            BigInteger asked = Numbers.asIndex(args[0]);
+                            if (asked.bitLength() > 31) {
+                                throw Slots.overflowError(
+                                        "Python int too large to convert to C int");
+                            }
+                            int digits = asked.intValue();
+                            if (digits != 0 && digits < 640) {
+                                throw Slots.valueError(
+                                        "maxdigits must be >= 640 or 0 for unlimited");
+                            }
+                            maxStrDigits = digits;
+                            return PyNone.INSTANCE;
+                        })
+                .documented("set_int_max_str_digits($module, maxdigits, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set the maximum number of digits allowed in the integer string\n"
+                        + "conversion.\n"
+                        + "\n"
+                        + "If maxdigits is 0, the limit is disabled."));
         // `asyncio.base_events` reads this pair around `run_forever`; the value is bookkeeping here for
         // the reason the field comment gives.
         sys.set("get_coroutine_origin_tracking_depth", noArguments(

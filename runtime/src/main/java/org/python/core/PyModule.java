@@ -61,6 +61,17 @@ public class PyModule extends PyObject {
     }
 
     /**
+     * {@code hash(module)}: identity, as the reference's {@code module_hash} answers.
+     *
+     * <p>A module is neither compared nor hashed by contents, so two modules holding the same names
+     * are still two keys — {@code test_decimal} builds {@code {C: ..., P: ...}} out of exactly that.
+     */
+    @Override
+    public long hash() {
+        return PyHash.avoidMinusOne(System.identityHashCode(this));
+    }
+
+    /**
      * {@code module.__init__(self, name, doc=None)}: the five names a module made by hand carries.
      *
      * <p>The reference's {@code module_init} files them in this order, and the last three are

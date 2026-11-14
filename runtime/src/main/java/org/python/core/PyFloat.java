@@ -619,7 +619,10 @@ public class PyFloat extends PyObject {
             value = negate ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
         } else if (matchesIgnoreCase(text, position, "nan")) {
             position += 3;
-            value = negate ? -Double.NaN : Double.NaN;
+            // `-Double.NaN` is folded to the canonical NaN by javac — JLS says the negation of NaN is
+            // NaN — so the sign bit has to be set after the fact. `float('-NaN')` keeps its sign, and
+            // `Decimal('-NaN')` reaches this path through `float(str(self))`.
+            value = negate ? Math.copySign(Double.NaN, -1.0) : Double.NaN;
         } else {
             position = at;
             value = -1.0;
@@ -711,7 +714,11 @@ public class PyFloat extends PyObject {
         if (other instanceof PyInt || other instanceof PyBool || other instanceof PyComplex) {
             return other.eq(this);
         }
-        return false;
+        // `float`'s slot answers `NotImplemented` for anything else, and the comparison protocol then
+        // asks the other operand. A dict lookup arrives here — Java compares the query against the
+        // stored key — and the stored key must still get that turn: `10.0 in {Decimal('10.0'): ...}`
+        // is the reference setting `FloatOperation` from `Decimal.__eq__`.
+        return other.eq(this);
     }
 
     @Override

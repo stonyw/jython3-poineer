@@ -395,6 +395,18 @@ public abstract class PyObject {
                 "unhashable type: '" + type.name() + "'");
     }
 
+    /**
+     * {@code object.__hash__(self)}: CPython's {@code _Py_HashPointer}, which hashes the object rather
+     * than its value.
+     *
+     * <p>This is the default slot, and a class that names {@code object.__hash__} — the reference's own
+     * metadata does, and {@code _pydecimal} does for a NaN — must get the pointer answer, not a call back
+     * into its own {@code __hash__}. {@link #hash()} is the Python-level question; this one never asks it.
+     */
+    public long identityHash() {
+        return System.identityHashCode(this);
+    }
+
     /** Python {@code ==}, for the cases where the answer is definite. */
     public boolean eq(PyObject other) {
         return this == other;

@@ -460,15 +460,30 @@ public class PyInstance extends PyObject {
                 return custom;
             }
             PyObject equal = Specials.invoke(this, "__eq__", other);
-            return Slots.declined(equal)
-                    ? PyBool.of(!sameValue(other))
-                    : PyBool.of(!Slots.truth(equal));
+            if (Slots.declined(equal)) {
+                // A declined `__eq__` declines `!=` as well, so the other operand gets its turn. The
+                // namespace family is the exception: its comparison lives in the type, not the namespace
+                // dictionary, and this is where that answer is spelled out.
+                return type.matches(PyType.NAMESPACE)
+                        ? PyBool.of(!sameValue(other))
+                        : PyNotImplemented.INSTANCE;
+            }
+            return PyBool.of(!Slots.truth(equal));
         }
         PyObject answer = Specials.invoke(this, cmp.dunder(), other);
         if (!Slots.declined(answer)) {
             return answer;
         }
-        return cmp == CompareOp.EQ ? PyBool.of(sameValue(other)) : PyNotImplemented.INSTANCE;
+        if (cmp == CompareOp.EQ) {
+            // Handing back `False` here would hide the refusal: `Decimal(10) == E()` is the reference
+            // asking `E.__eq__` after `Decimal.__eq__` declined, and the answer is `E`'s, not a bool.
+            // `Slots.compare` falls back to identity once both operands decline; the namespace family's
+            // content comparison is not written in its dictionary, so it is answered here instead.
+            return type.matches(PyType.NAMESPACE)
+                    ? PyBool.of(sameValue(other))
+                    : PyNotImplemented.INSTANCE;
+        }
+        return PyNotImplemented.INSTANCE;
     }
 
     /**

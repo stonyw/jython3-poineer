@@ -194,6 +194,22 @@ public class PyComplex extends PyObject {
         if (other instanceof PyInt || other instanceof PyBool) {
             return imaginary == 0.0 && realPart().eq(other);
         }
+        // CPython's complex_richcompare converts with PyComplex_AsCComplex, which asks `__complex__`.
+        // That is how `(0.25+0j) == Decimal('0.25')` is True: the Decimal names itself a complex value.
+        if (other instanceof PyInstance) {
+            PyObject converted;
+            try {
+                converted = Specials.invoke(other, "__complex__");
+            } catch (PyRaise raised) {
+                if (!raised.value().exceptionType().matches(ExceptionTypes.TYPE_ERROR)) {
+                    throw raised;
+                }
+                return false;
+            }
+            if (!Slots.declined(converted) && converted instanceof PyComplex c) {
+                return eq(c);
+            }
+        }
         return false;
     }
 

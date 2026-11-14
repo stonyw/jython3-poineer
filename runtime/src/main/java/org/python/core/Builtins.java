@@ -443,8 +443,7 @@ final class Builtins {
                                 + "A tuple, as in ``issubclass(x, (A, B, ...))``, may be given as the\n"
                                 + "target to check against.  This is equivalent to ``issubclass(x, A) or\n"
                                 + "issubclass(x, B) or ...``."));
-        put(out, "divmod", twoArgument("divmod", (a, b) -> PyTuple.of(
-                Slots.binary(BinaryOp.FLOORDIV, a, b), Slots.binary(BinaryOp.MOD, a, b)))
+        put(out, "divmod", twoArgument("divmod", Builtins::divmod)
                 .documented(
                         "divmod($module, x, y, /)\n"
                                 + "--\n"
@@ -635,6 +634,30 @@ final class Builtins {
             Arguments.exactlyOne(name + "()", args, kwNames);
             return body.apply(args[0]);
         });
+    }
+
+    /**
+     * {@code divmod(x, y)}: a slot of its own, not the pair {@code x // y}, {@code x % y}.
+     *
+     * <p>CPython's {@code builtin_divmod} runs {@code nb_divmod}, which a class written in Python fills
+     * with {@code __divmod__} and {@code __rdivmod__}. Rebuilding the pair from {@code //} and {@code %}
+     * loses those hooks: {@code test_decimal.test_rop} trains a class to answer {@code divmod} directly,
+     * and its answer has no quotient or remainder to rebuild from. The two operators remain the fallback
+     * for the built-in numbers, whose slot is that pair and whose types declare neither name to
+     * {@link Specials#invoke}.
+     */
+    private static PyObject divmod(PyObject left, PyObject right) {
+        PyObject answer = Specials.invoke(left, "__divmod__", right);
+        if (!Slots.declined(answer)) {
+            return answer;
+        }
+        answer = Specials.invoke(right, "__rdivmod__", left);
+        if (!Slots.declined(answer)) {
+            return answer;
+        }
+        return PyTuple.of(
+                Slots.binary(BinaryOp.FLOORDIV, left, right),
+                Slots.binary(BinaryOp.MOD, left, right));
     }
 
     /** A builtin of exactly two positional arguments, in {@code isinstance}'s legacy family. */

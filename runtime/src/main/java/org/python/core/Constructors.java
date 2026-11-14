@@ -902,7 +902,9 @@ final class Constructors {
             return negative ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
         }
         if (body.equals("nan")) {
-            return Double.NaN;
+            // The sign of a NaN survives the parse in CPython: `float('-nan')` is negative, and
+            // `math.copysign(1, ...)` sees it.
+            return negative ? Math.copySign(Double.NaN, -1.0) : Double.NaN;
         }
         if (body.indexOf('x') >= 0 || body.indexOf('d') >= 0 || body.indexOf('f') >= 0) {
             return null;
