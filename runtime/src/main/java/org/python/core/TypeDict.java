@@ -2211,7 +2211,7 @@ final class TypeDict {
         table.wrapper("__buffer__", BUFFER_DOC, TypeDict::exposeWritableBuffer);
         table.wrapper("__release_buffer__", RELEASE_BUFFER_DOC, TypeDict::releaseBuffer);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
-        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__getitem__", GETITEM_DOC, args -> ((PyArray) args[0]).baseItem(args[1]));
         table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
         table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
         table.wrapper("__add__", ADD_DOC, TypeDict::joined);
@@ -4668,7 +4668,11 @@ final class TypeDict {
     /** {@code array.__new__(cls, typecode[, initializer])}: {@code array_new} consumes both. */
     private static PyObject arraysNew(PyObject[] args, String[] kwNames, String qualified) {
         PyType kind = declaredClass(PyType.ARRAY, args, kwNames);
-        return PyArray.subclass(kind, tail(args, kwNames), kwNames);
+        // array_new reads the positional prefix only; a keyword is the class's __init__ to interpret,
+        // so `Sub('b', newarg=1)` builds an empty array rather than iterating over 1.
+        int given = Arguments.positional(args, kwNames);
+        PyObject[] positional = Arrays.copyOfRange(args, 1, given);
+        return PyArray.subclass(kind, positional, kwNames);
     }
 
     /**
@@ -4712,6 +4716,7 @@ final class TypeDict {
                 ArrayModule.reconstructor(),
                 PyTuple.of(
                         array.getType(),
+                        PyStr.of(typecode),
                         PyInt.of(PyArray.machineFormatOf(array.typecodeValue())),
                         array.toBytes()),
                 state);

@@ -543,7 +543,8 @@ class Jy3LauncherTest {
                 "22_platform_surface.py",
                 "23_asyncio_io.py",
                 "24_threads.py",
-                "25_decimal.py");
+                "25_decimal.py",
+                "26_array_pickle_buffer.py");
     }
 
     /**

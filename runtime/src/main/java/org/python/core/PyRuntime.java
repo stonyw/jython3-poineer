@@ -295,8 +295,10 @@ public final class PyRuntime {
         // plus the four constructor families it can fall back to.
         PyModule zlibModule = ZlibModule.newModule();
         // `test_hashlib` imports this before any of its hashing: the reference's own `array` is a
-        // C module, and the tests use it as a bytes-like sink for the digest constructors.
-        PyModule arrayModule = ArrayModule.newModule();
+        // C module, and the tests use it as a bytes-like sink for the digest constructors. It is built
+        // on first import rather than here because its module exec registers the type with
+        // `collections.abc`, which is a Python module and cannot be reached while sys is still being put
+        // together; see `builtinModule`.
         PyModule[] hashlibModules = HashlibModule.newModules();
         PyModule errnoModule = ErrnoModule.newModule();
         PyModule codecsModule = CodecsModule.newModule();
@@ -352,7 +354,6 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_struct"), structModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
         modules.put(PyStr.interned("zlib"), zlibModule);
-        modules.put(PyStr.interned("array"), arrayModule);
         for (PyModule hashlibModule : hashlibModules) {
             modules.put(PyStr.interned(((PyStr) hashlibModule.get("__name__")).getValue()), hashlibModule);
         }
@@ -777,6 +778,13 @@ public final class PyRuntime {
         }
         if (name.equals("_socket")) {
             return keep(SocketModule.install(), name);
+        }
+        // `array` is built on first import for the same reason, one step further: its module exec
+        // registers the type with `collections.abc.MutableSequence` (gh-153210 in 3.14 has no
+        // `__subclasshook__` to answer for a C type), and `collections.abc` is Python that cannot be
+        // imported while `sys` is still being assembled.
+        if (name.equals("array")) {
+            return keep(ArrayModule.newModule(), name);
         }
         return null;
     }

@@ -63,7 +63,9 @@ class PyArray extends PyObject {
 
     private static PyArray build(
             PyType kind, PyObject[] args, String[] kwNames, boolean subclass) {
-        if (kwNames != null && kwNames.length > 0) {
+        // The exact type refuses keywords outright; a class under it may take its own, which
+        // array_new never reads, so a subclass's __init__ is the only place they mean anything.
+        if (kwNames != null && kwNames.length > 0 && kind == PyType.ARRAY) {
             throw Slots.typeError("array.array() takes no keyword arguments");
         }
         if (args.length < 1) {
@@ -278,24 +280,44 @@ class PyArray extends PyObject {
         return (int) raw;
     }
 
-    /** Stores one Python value at {@code index}, in each code's own conversion and refusal. */
+    /**
+     * Stores one Python value at {@code index}, in each code's own conversion and refusal.
+     *
+     * <p>The value is converted first and the index is checked afterwards, because the conversion can
+     * change the array: an {@code __index__}/{@code __float__} that clears or shrinks it leaves the
+     * slot gone, and the reference raises {@code IndexError} rather than writing past the new end.
+     */
     private void store(int index, PyObject value) {
-        int at = index * itemsize;
         if (isUnicode(typecode)) {
-            put(codePointOf(value), at);
+            int codePoint = codePointOf(value);
+            int at = slot(index) * itemsize;
+            put(codePoint, at);
         } else if (typecode == 'f') {
-            put(Float.floatToRawIntBits((float) realNumber(value)), at);
+            float number = (float) realNumber(value);
+            int at = slot(index) * itemsize;
+            put(Float.floatToRawIntBits(number), at);
         } else if (typecode == 'd') {
-            putDouble(realNumber(value), at);
+            double number = realNumber(value);
+            int at = slot(index) * itemsize;
+            putDouble(number, at);
         } else {
-            BigInteger number = Numbers.asIndex(value);
-            put(narrow(number), at);
+            long number = narrow(Numbers.asIndex(value));
+            int at = slot(index) * itemsize;
+            put(number, at);
         }
+    }
+
+    /** The slot's index if the array still has it: {@code array_ass_item}'s check after conversion. */
+    private int slot(int index) {
+        if (index < 0 || index >= count) {
+            throw Slots.indexError("array assignment index out of range");
+        }
+        return index;
     }
 
     /** {@code PyFloat_AsDouble}'s one refusal, in the reference's words. */
     private static double realNumber(PyObject value) {
-        Double number = Numeric.doubleOf(value);
+        Double number = Numbers.floatOf(value);
         if (number == null) {
             throw Slots.typeError(
                     "must be real number, not %s", value.getType().filedName());
@@ -396,7 +418,13 @@ class PyArray extends PyObject {
 
     private void append(PyObject value) {
         resizeTo(count + 1);
-        store(count - 1, value);
+        try {
+            store(count - 1, value);
+        } catch (RuntimeException refused) {
+            // array_append deletes the item it just made room for, so a refused item leaves no gap.
+            count--;
+            throw refused;
+        }
     }
 
     private void appendCodePoint(int codePoint) {
@@ -426,6 +454,15 @@ class PyArray extends PyObject {
 
     @Override
     public PyObject getItem(PyObject key) {
+        return baseItem(key);
+    }
+
+    /**
+     * The {@code sq_item} slot itself, which a class's own {@code __getitem__} never replaces:
+     * {@code array.array.__getitem__(subclass_value, i)} reaches this body even when the class writes
+     * a method of the same name, exactly as the reference's method descriptor does.
+     */
+    final PyObject baseItem(PyObject key) {
         if (key instanceof PySlice slice) {
             Slices.Range range = Slices.of(slice, count);
             PyArray out = new PyArray(PyType.ARRAY, typecode);
@@ -511,6 +548,11 @@ class PyArray extends PyObject {
             throw Slots.typeError("bad argument type for built-in operation");
         }
         Slices.Range range = Slices.of(slice, count);
+        // `a[::-1] = a` reads the run it is writing, so the incoming octets are taken first: the
+        // reference walks the same sequence, and without the copy the item just written feeds the next.
+        byte[] incoming = source == this
+                ? Arrays.copyOf(source.data, source.count * itemsize)
+                : source.data;
         if (range.step() != 1) {
             if (range.count() != source.count) {
                 throw Slots.valueError(
@@ -519,7 +561,7 @@ class PyArray extends PyObject {
             }
             for (int i = 0; i < range.count(); i++) {
                 System.arraycopy(
-                        source.data,
+                        incoming,
                         i * itemsize,
                         data,
                         range.at(i) * itemsize,
@@ -539,7 +581,7 @@ class PyArray extends PyObject {
                 data,
                 (start + source.count) * itemsize,
                 (count - start - removed) * itemsize);
-        System.arraycopy(source.data, 0, data, start * itemsize, source.count * itemsize);
+        System.arraycopy(incoming, 0, data, start * itemsize, source.count * itemsize);
         count = next;
     }
 
@@ -592,11 +634,17 @@ class PyArray extends PyObject {
 
     @Override
     public boolean eq(PyObject other) {
-        return other instanceof PyArray that
-                && count == that.count
-                && Arrays.equals(
-                        Arrays.copyOf(data, count * itemsize),
-                        Arrays.copyOf(that.data, that.count * that.itemsize));
+        if (!(other instanceof PyArray that) || count != that.count) {
+            return false;
+        }
+        // Item by item rather than octet by octet: a NaN compares unequal to itself, and the
+        // reference's equality asks each pair, not their machine words.
+        for (int i = 0; i < count; i++) {
+            if (!item(i).eq(that.item(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
@@ -686,13 +734,15 @@ class PyArray extends PyObject {
     }
 
     private PyArray repeated(long times) {
-        long total = count * times;
         if (times < 0) {
-            total = 0;
+            times = 0;
         }
-        if (total > Integer.MAX_VALUE / Math.max(1, itemsize)) {
+        // `count * times` overflows a word before it can be compared, so the product is guarded the
+        // way array_repeat guards it: a size that cannot be addressed is a MemoryError.
+        if (times != 0 && count > Integer.MAX_VALUE / Math.max(1, itemsize) / times) {
             throw Slots.memoryError();
         }
+        long total = count * times;
         PyArray out = new PyArray(PyType.ARRAY, typecode);
         out.allocateExact((int) total);
         for (int i = 0; i < total; i++) {

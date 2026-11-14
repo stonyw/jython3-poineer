@@ -709,7 +709,9 @@ public class PyFloat extends PyObject {
     @Override
     public boolean eq(PyObject other) {
         if (other instanceof PyFloat f) {
-            return Double.compare(value, f.value) == 0;
+            // IEEE equality, which is what float_richcompare asks: NaN is unequal to itself and
+            // -0.0 equals 0.0, neither of which Double.compare's total order gives.
+            return value == f.value;
         }
         if (other instanceof PyInt || other instanceof PyBool || other instanceof PyComplex) {
             return other.eq(this);

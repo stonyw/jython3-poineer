@@ -1525,9 +1525,11 @@ final class Classes {
             return new PyByteArraySubclass(kind);
         }
         // `array_new` reads both arguments and builds the run, and `array.array.__init__` is
-        // `object.__init__`, so nothing is left for an initialiser to fill in.
+        // `object.__init__`, so nothing is left for an initialiser to fill in. Only the positional
+        // prefix is read: `Sub('b', newarg=1)` leaves `newarg` to the class's own `__init__`.
         if (kind.matches(PyType.ARRAY)) {
-            return PyArray.subclass(kind, args, names);
+            int given = Arguments.positional(args, names);
+            return PyArray.subclass(kind, Arrays.copyOfRange(args, 0, given), names);
         }
         // `set.__new__` likewise allocates an empty table; `set_init` fills it afterwards, naming the
         // class the value was made as in its refusals.
