@@ -82,6 +82,7 @@ public final class Interpreter {
         Frame caller = EXECUTING.get();
         frame.setBack(caller);
         EXECUTING.set(frame);
+        Gil.enter();
         try {
             if (thrown != null) {
                 frame.lookUpFromPreviousUnit();
@@ -97,6 +98,7 @@ public final class Interpreter {
                 frame.finish();
             }
             EXECUTING.set(caller);
+            Gil.exit();
         }
     }
 
@@ -137,6 +139,7 @@ public final class Interpreter {
         // `RERAISE` — jump straight to the handler table without logging, and every other failure,
         // including a call into Java that raises, passes the way that logs.
         boolean logsFrame = true;
+        int ticks = 0;
         while (frame.ip() < limit) {
             int index = frame.ip();
             frame.setIp(index + 1);
@@ -145,6 +148,16 @@ public final class Interpreter {
             int opcode = code.opcodeAt(index);
             int arg = code.argAt(index);
             try {
+                // The switch point stands inside the instruction's own handler scope: a signal a
+                // worker aimed at this thread through `interrupt_main` is raised here, and it has to
+                // be answered by the `try` block this instruction sits in, exactly as CPython's
+                // eval-breaker raise is. Outside this `catch` it would skip the frame's handlers and
+                // leave `except KeyboardInterrupt:` behind.
+                if (++ticks >= Gil.switchTicks()) {
+                    ticks = 0;
+                    Gil.switchThreads();
+                    ThreadModule.deliverPending();
+                }
                 switch (opcode) {
 
                     // --- instructions with no observable effect at this stage ---------------

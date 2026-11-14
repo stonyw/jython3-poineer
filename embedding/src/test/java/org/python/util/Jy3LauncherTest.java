@@ -541,7 +541,8 @@ class Jy3LauncherTest {
                 "20_asyncio_subset.py",
                 "21_defaultdict_binding.py",
                 "22_platform_surface.py",
-                "23_asyncio_io.py");
+                "23_asyncio_io.py",
+                "24_threads.py");
     }
 
     /**

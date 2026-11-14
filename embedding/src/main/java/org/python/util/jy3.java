@@ -123,6 +123,9 @@ public final class jy3 {
             bug.printStackTrace();
             status = INTERNAL_CRASH;
         }
+        // A non-daemon Python thread is one the reference joins before `atexit` runs; doing it in
+        // that order is what lets a thread that logs through an `atexit` handler finish first.
+        PyRuntime.awaitThreads();
         // The reference runs `atexit` callbacks on the way out of a normal shutdown, before the
         // streams are drained; `logging`'s handler flush is the one this runtime already relies on.
         PyRuntime.runExitFunctions();

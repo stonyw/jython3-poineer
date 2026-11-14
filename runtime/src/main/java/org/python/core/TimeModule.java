@@ -176,10 +176,13 @@ final class TimeModule {
             throw Slots.valueError("sleep length must be non-negative");
         }
         long total = Math.round(seconds * 1_000_000_000.0);
+        int holds = Gil.suspend();
         try {
             Thread.sleep(total / 1_000_000L, (int) (total % 1_000_000L));
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+        } finally {
+            Gil.resume(holds);
         }
         return PyNone.INSTANCE;
     }

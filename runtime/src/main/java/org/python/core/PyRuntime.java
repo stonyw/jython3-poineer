@@ -1445,6 +1445,14 @@ public final class PyRuntime {
         AtexitModule.runExitFunctions();
     }
 
+    /**
+     * Wait for the non-daemon Python threads, which the reference does from {@code threading._shutdown}
+     * before {@code atexit} callbacks run. A launcher calls this once, after the program has finished.
+     */
+    public static void awaitThreads() {
+        ThreadModule.shutdownAtExit();
+    }
+
     /** Drain both streams, which a process about to exit must do because stdout is block-buffered. */
     public static void flushStreams() {
         if (stdout != null) {
@@ -2035,6 +2043,78 @@ public final class PyRuntime {
                         + "--\n"
                         + "\n"
                         + "Set the global trace function."));
+        // The profiling hook is stored and handed back, but nothing calls it: this runtime has no
+        // profiler. `threading.setprofile_all_threads` needs all three names to exist, and a thread it
+        // has just told about a profile function reads it back through `sys.getprofile()`, so the
+        // storage is the part the threading tests measure.
+        sys.set("getprofile", noArguments(
+                "getprofile",
+                () -> THREAD_PROFILE.get() != null ? THREAD_PROFILE.get() : ALL_THREADS_PROFILE,
+                "getprofile($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the profiling function set with sys.setprofile()."));
+        sys.set("setprofile", new PyNativeFunction(
+                        "setprofile",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("setprofile", args, kwNames);
+                            PyObject function = args[0];
+                            if (function != PyNone.INSTANCE && !Slots.isCallable(function)) {
+                                throw Slots.typeError(
+                                        "setprofile() argument must be callable or None");
+                            }
+                            THREAD_PROFILE.set(function);
+                            return PyNone.INSTANCE;
+                        })
+                .documented("setprofile($module, function, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set the profiling function.  It will be called on each function call\n"
+                        + "and return."));
+        sys.set("_setprofileallthreads", new PyNativeFunction(
+                        "_setprofileallthreads",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("_setprofileallthreads", args, kwNames);
+                            PyObject function = args[0];
+                            if (function != PyNone.INSTANCE && !Slots.isCallable(function)) {
+                                throw Slots.typeError(
+                                        "_setprofileallthreads() argument must be callable or None");
+                            }
+                            // Every thread without a function of its own sees this one; the calling
+                            // thread drops its override so that it sees it too, which is what keeps
+                            // the restore in `setprofile_all_threads`'s `finally` visible here.
+                            ALL_THREADS_PROFILE = function;
+                            THREAD_PROFILE.remove();
+                            return PyNone.INSTANCE;
+                        })
+                .documented("_setprofileallthreads($module, func, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set the profiling function for all currently running threads."));
+        sys.set("getswitchinterval", noArguments(
+                "getswitchinterval",
+                () -> PyFloat.of(Gil.switchInterval()),
+                "getswitchinterval($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the current thread switch interval; see setswitchinterval()."));
+        sys.set("setswitchinterval", new PyNativeFunction(
+                        "setswitchinterval",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("setswitchinterval", args, kwNames);
+                            Double seconds = Numbers.floatOf(args[0]);
+                            if (seconds == null) {
+                                throw Slots.typeError(
+                                        "must be real number, not %s",
+                                        args[0].getType().name());
+                            }
+                            Gil.setSwitchInterval(seconds);
+                            return PyNone.INSTANCE;
+                        })
+                .documented("setswitchinterval($module, interval, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set the current thread switch interval; see getswitchinterval()."));
         sys.set(
                 "exc_info",
                 noArguments(
@@ -2300,6 +2380,12 @@ public final class PyRuntime {
         }
         return value;
     }
+
+    /** The profile function {@code sys.setprofile} installed for this thread, or null for none of its own. */
+    private static final ThreadLocal<PyObject> THREAD_PROFILE = new ThreadLocal<>();
+
+    /** The profile function {@code sys._setprofileallthreads} installed, seen by every thread without its own. */
+    private static volatile PyObject ALL_THREADS_PROFILE = PyNone.INSTANCE;
 
     /**
      * A {@code METH_NOARGS} member of {@code sys}, with the sentence its clinic row carries.

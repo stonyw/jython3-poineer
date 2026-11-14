@@ -153,6 +153,11 @@ final class SelectModule {
             // A pipe can become ready while the selector sleeps, and nothing here would wake it.
             wait = wait < 0 ? PIPE_POLL_MILLIS : Math.min(wait, PIPE_POLL_MILLIS);
         }
+        // A wait is where other Python threads get to run, so the interpreter lock is given up for
+        // the whole of it: otherwise a thread that is waiting for another thread to finish — the
+        // event loop waiting for an executor worker, say — would keep that worker from taking the
+        // lock and finishing.
+        int holds = Gil.suspend();
         try {
             if (selector.keys().isEmpty()) {
                 sleep(wait);
@@ -165,6 +170,8 @@ final class SelectModule {
             }
         } catch (IOException failure) {
             throw badDescriptor();
+        } finally {
+            Gil.resume(holds);
         }
     }
 
