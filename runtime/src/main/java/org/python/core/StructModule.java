@@ -544,7 +544,8 @@ final class StructModule {
             ascending[little ? width - 1 - i : i] = data[at + i];
         }
         BigInteger value = new BigInteger(1, ascending);
-        if (signed && (ascending[width - 1] & 0x80) != 0) {
+        // `ascending` is big-endian whatever the source order was, so the sign bit is its first byte.
+        if (signed && (ascending[0] & 0x80) != 0) {
             value = value.subtract(BigInteger.ONE.shiftLeft(width * 8));
         }
         return value;

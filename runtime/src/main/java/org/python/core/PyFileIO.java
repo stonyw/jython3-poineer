@@ -59,12 +59,23 @@ public final class PyFileIO extends PyIOStream {
      */
     private final RandomAccessFile file;
 
-    private final int fd;
+    /**
+     * The descriptor number, or {@code -1} until one is asked for.
+     *
+     * <p>A stream {@code open()} made reaches the file system through {@link RandomAccessFile} directly,
+     * so the JVM has handed out no number for it. {@code fileno()} puts it in the descriptor table the
+     * first time it is called, and every later question — {@code fstat}, {@code os.read} — goes through
+     * that number and finds the same handle.
+     */
+    private int fd;
 
     private boolean closed;
 
     /** {@code closefd}, which is False for the three streams the interpreter builds itself. */
     private final boolean closefd;
+
+    /** The name the stream reports, and the path a late descriptor entry is filed under. */
+    private final String name;
 
     /** The three facts the mode string decides, which the rows below answer instead of assuming. */
     private final boolean readable;
@@ -124,6 +135,7 @@ public final class PyFileIO extends PyIOStream {
         this.out = sink;
         this.file = file;
         this.fd = fd;
+        this.name = name;
         this.closefd = closefd;
         this.readable = readable;
         this.writable = writable;
@@ -419,16 +431,24 @@ public final class PyFileIO extends PyIOStream {
     }
 
     /** {@code fileno}: the descriptor number, which is the one thing here a Java runtime knows exactly. */
-    private PyObject fileno() {
+    private synchronized PyObject fileno() {
         checkGetter();
         if (fd < 0) {
-            throw Slots.notImplemented("fileno() on a stream opened by open()");
+            if (file == null) {
+                throw Slots.notImplemented("fileno() on a stream opened by open()");
+            }
+            // The first ask files the handle in the descriptor table, so that `os.fstat(fp.fileno())`
+            // and `os.read(fp.fileno(), n)` see the same position as the stream itself.
+            fd = Fds.register(file, PosixModule.resolve(name), writable, appending);
         }
         return PyInt.of(fd);
     }
 
     private PyObject isatty() {
         checkGetter();
+        if (file != null) {
+            return PyBool.FALSE;
+        }
         // Java reports one console for the process; CPython asks this descriptor.
         return PyBool.of(fd >= 0 && System.console() != null);
     }

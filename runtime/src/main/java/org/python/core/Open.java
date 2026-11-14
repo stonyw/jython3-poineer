@@ -99,7 +99,7 @@ final class Open {
                     "Must have exactly one of create/read/write/append mode and at most one plus");
         }
         if (descriptorNumber) {
-            return descriptorStream(file, parsed, buffering, closefd);
+            return descriptorStream(file, parsed, buffering, closefd, mode, encoding, errors, newline);
         }
         if (!closefd) {
             throw Slots.valueError("Cannot use closefd=False with file name");
@@ -108,7 +108,8 @@ final class Open {
             // `tempfile` hands over an opener that answers a descriptor it has already made, so the
             // stream is that number rather than a second open of the same name.
             return descriptorStream(
-                    PyInt.of(descriptorFromOpener(opener, path, parsed)), parsed, buffering, closefd);
+                    PyInt.of(descriptorFromOpener(opener, path, parsed)), parsed, buffering, closefd,
+                    mode, encoding, errors, newline);
         }
 
         String ioMode = ioMode(parsed);
@@ -131,12 +132,19 @@ final class Open {
      * {@code io.open(fd, mode)}: the descriptor is one this runtime handed out, so the stream is the
      * in-memory pipe end rather than a file.
      *
-     * <p>Only a binary mode is built here. A text wrapper would have to name the descriptor and pick a
-     * codec, and nothing in {@code subprocess} asks for one: its two ends are always wrapped as
-     * {@code 'rb'} or {@code 'wb'} and decoded by the caller.
+     * <p>A descriptor that names a real file answers a text mode as well, wrapped the way {@code open()}
+     * would wrap it: {@code os.fdopen} is the caller, and it only ever hands over a file. A pipe end in
+     * text mode would have to name the descriptor and pick a codec, and nothing in {@code subprocess}
+     * asks for one: its two ends are always wrapped as {@code 'rb'} or {@code 'wb'}.
      */
     private static PyObject descriptorStream(
-            PyObject file, Mode parsed, int buffering, boolean closefd) {
+            PyObject file, Mode parsed, int buffering, boolean closefd,
+            String mode, String encoding, String errors, String newline) {
+        if (file instanceof PyBool) {
+            // `_io.FileIO` warns rather than refusing, because `True` is 1 and `os.fdopen(True)` used to
+            // return a stream on stdout; under `-W error` the test framework turns this into the failure.
+            PyRuntime.warn("bool is used as a file descriptor", "RuntimeWarning");
+        }
         int fd = Numbers.asIndex(file).intValue();
         if (!Fds.known(fd)) {
             throw PyRaise.of(PyOSError.create(
@@ -144,7 +152,18 @@ final class Open {
                     new PyObject[] {PyInt.of(9), PyStr.of("Bad file descriptor")}));
         }
         if (!parsed.binary) {
-            throw Slots.notImplemented("open() on a file descriptor in text mode");
+            if (!Fds.isFile(fd)) {
+                throw Slots.notImplemented("open() on a file descriptor in text mode");
+            }
+            PyFileIO raw = PyFileIO.forDescriptor(Integer.toString(fd), fd, closefd,
+                    parsed.readable(), parsed.writable(), false, ioMode(parsed));
+            try {
+                return text(raw, Integer.toString(fd), buffering, encoding, errors, newline,
+                        mode, parsed);
+            } catch (RuntimeException failure) {
+                raw.close();
+                throw failure;
+            }
         }
         if (parsed.readable() && parsed.writable()) {
             if (Fds.isFile(fd)) {

@@ -27,6 +27,16 @@ final class Fds {
     /** Descriptors 0, 1 and 2 belong to the streams the runtime started with, so the table starts here. */
     private static final int FIRST = 3;
 
+    /**
+     * The three descriptors every process starts with: standard input, output and error.
+     *
+     * <p>A JVM has no descriptor table of its own, but {@code sys.stdin} and the console behind it are
+     * still numbers 0, 1 and 2 to a program. They are kept outside {@link #SLOTS} so the allocator keeps
+     * handing out numbers from three, and they are never closed by {@link #close}: the console is the
+     * process's, not this table's.
+     */
+    private static final Slot[] STANDARDS = {new Slot(0), new Slot(1), new Slot(2)};
+
     /** One pipe: a byte queue and the state of its two ends. */
     private static final class Pipe {
         private byte[] buffer = new byte[8192];
@@ -52,31 +62,51 @@ final class Fds {
         final java.nio.file.Path path;
         /** Whether every write seeks to the end first, which is what {@code O_APPEND} asks for. */
         final boolean appending;
+        /** 0, 1 or 2 for one of the inherited console descriptors, -1 for everything this table made. */
+        final int standard;
         int references = 1;
         /** Whether a read with nothing buffered waits for a writer, as {@code set_blocking(fd, True)} says. */
         volatile boolean blocking = true;
 
         Slot(Pipe pipe, boolean writable, boolean devnull) {
-            this(pipe, writable, devnull, null, null, false);
+            this(pipe, writable, devnull, null, null, false, -1);
         }
 
         Slot(java.io.RandomAccessFile file, java.nio.file.Path path,
                 boolean writable, boolean appending) {
-            this(null, writable, false, file, path, appending);
+            this(null, writable, false, file, path, appending, -1);
+        }
+
+        /** A standard descriptor: number 0 reads, 1 and 2 write, and the JVM owns the console. */
+        Slot(int standard) {
+            this(null, standard != 0, false, null, null, false, standard);
         }
 
         private Slot(Pipe pipe, boolean writable, boolean devnull,
-                java.io.RandomAccessFile file, java.nio.file.Path path, boolean appending) {
+                java.io.RandomAccessFile file, java.nio.file.Path path, boolean appending,
+                int standard) {
             this.pipe = pipe;
             this.writable = writable;
             this.devnull = devnull;
             this.file = file;
             this.path = path;
             this.appending = appending;
+            this.standard = standard;
         }
     }
 
     private static final ArrayList<Slot> SLOTS = new ArrayList<>();
+
+    /**
+     * {@code FD_CLOEXEC}, per descriptor number rather than per file description.
+     *
+     * <p>The reference keeps this flag in the kernel's descriptor table, where {@code dup} clears it on
+     * the copy alone. There is no {@code exec} here for it to matter to, but {@code os.get_inheritable}
+     * and {@code os.set_inheritable} are asked about descriptors this table knows, so the answer is
+     * remembered beside the number. A descriptor with no entry falls back to the rule the reference
+     * follows: the three inherited ones are inheritable, everything opened here is not.
+     */
+    private static final java.util.Map<Integer, Boolean> INHERITABLE = new java.util.HashMap<>();
 
     private Fds() {
     }
@@ -94,6 +124,16 @@ final class Fds {
     /** {@code open("/dev/null", O_RDWR)}: a descriptor every read answers end-of-file and every write eats. */
     static synchronized int devnull() {
         return allocate(new Slot(null, false, true));
+    }
+
+    /**
+     * A descriptor for a handle someone else opened: {@code open()}'s stream asks for one the first time
+     * {@code fileno()} is called, so that the number and the stream read and write the same position.
+     */
+    static synchronized int register(
+            java.io.RandomAccessFile file, java.nio.file.Path path,
+            boolean writable, boolean appending) {
+        return allocate(new Slot(file, path, writable, appending));
     }
 
     /**
@@ -152,18 +192,58 @@ final class Fds {
         return dup(fd);
     }
 
+    /**
+     * {@code closerange(2)}: close every descriptor in {@code [first, second)}, ignoring the ones that
+     * were never open.
+     *
+     * <p>A range covers numbers this table never handed out, which the reference's own loop also walks
+     * past: {@code EBADF} is what it ignores rather than what it reports.
+     */
+    static void closerange(int first, int second) {
+        for (int fd = Math.max(first, 0); fd < second; fd++) {
+            try {
+                close(fd);
+            } catch (PyRaise ignored) {
+                // The number was not open, which is the state closerange is asking for anyway.
+            }
+        }
+    }
+
+    /** {@code get_inheritable(fd)}: whether an {@code exec} would pass this descriptor to a child. */
+    static boolean inheritable(int fd) {
+        Slot slot = slot(fd);
+        synchronized (Fds.class) {
+            Boolean flag = INHERITABLE.get(fd);
+            return flag != null ? flag : slot.standard >= 0;
+        }
+    }
+
+    /** {@code set_inheritable(fd, inheritable)}: the {@code FD_CLOEXEC} flag, remembered per number. */
+    static void setInheritable(int fd, boolean value) {
+        slot(fd);
+        synchronized (Fds.class) {
+            INHERITABLE.put(fd, value);
+        }
+    }
+
     /** {@code close(2)}: drops this descriptor, closing the pipe end when the last one naming it goes. */
     static void close(int fd) {
+        if (fd >= 0 && fd < FIRST) {
+            // Closing the inherited console is not something this runtime can do for the process, and
+            // nothing it hands out points at one: the number stays open, as the JVM's own does.
+            return;
+        }
         Slot slot;
         synchronized (Fds.class) {
             slot = slot(fd);
             SLOTS.set(fd, null);
+            INHERITABLE.remove(fd);
             slot.references--;
             if (slot.references > 0) {
                 return;
             }
         }
-        if (slot.devnull) {
+        if (slot.devnull || slot.standard >= 0) {
             return;
         }
         if (slot.file != null) {
@@ -209,6 +289,21 @@ final class Fds {
      */
     static byte[] read(int fd, int length) {
         Slot slot = slot(fd);
+        if (slot.standard >= 0) {
+            if (slot.standard != 0) {
+                throw badFd(fd);
+            }
+            byte[] bytes = new byte[Math.max(length, 0)];
+            try {
+                int count = System.in.read(bytes);
+                if (count <= 0) {
+                    return new byte[0];
+                }
+                return count == bytes.length ? bytes : Arrays.copyOf(bytes, count);
+            } catch (IOException error) {
+                throw ioFailure();
+            }
+        }
         if (slot.file != null) {
             synchronized (slot) {
                 byte[] bytes = new byte[Math.max(length, 0)];
@@ -253,6 +348,17 @@ final class Fds {
     /** {@code write(2)}: appends to the pipe, or eats the bytes when this is the null device. */
     static int write(int fd, byte[] bytes) {
         Slot slot = slot(fd);
+        if (slot.standard >= 0) {
+            if (slot.standard == 0) {
+                throw badFd(fd);
+            }
+            java.io.PrintStream console = slot.standard == 1 ? System.out : System.err;
+            synchronized (console) {
+                console.write(bytes, 0, bytes.length);
+                console.flush();
+            }
+            return bytes.length;
+        }
         if (slot.file != null) {
             if (!slot.writable) {
                 throw badFd(fd);
@@ -355,7 +461,7 @@ final class Fds {
 
     /** Whether this table handed the number out and it has not been closed since. */
     static boolean known(int fd) {
-        return peek(fd) != null;
+        return (fd >= 0 && fd < FIRST) || peek(fd) != null;
     }
 
     /** Whether the descriptor is the null device {@code os.devnull} opens. */
@@ -475,6 +581,9 @@ final class Fds {
 
     private static synchronized Slot slot(int fd) {
         Slot slot = peek(fd);
+        if (slot == null && fd >= 0 && fd < FIRST) {
+            slot = STANDARDS[fd];
+        }
         if (slot == null) {
             throw badFd(fd);
         }

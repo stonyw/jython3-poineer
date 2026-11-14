@@ -23,6 +23,7 @@ public final class PyStatResult extends PyTuple {
     };
 
     private static final Members METHODS = Members.of(PyType.STAT_RESULT)
+            .addNoArgument("__reduce__", PyStatResult::reduced)
             .addField("st_mode", "protection bits.")
             .addField("st_ino", "inode number.")
             .addField("st_dev", "device.")
@@ -30,19 +31,29 @@ public final class PyStatResult extends PyTuple {
             .addField("st_uid", "user ID of owner.")
             .addField("st_gid", "group ID of owner.")
             .addField("st_size", "total size, in bytes.")
-            .addField("st_atime", "time of last access.")
-            .addField("st_mtime", "time of last modification.")
-            .addField("st_ctime", "time of last change.")
+            // The three item times are whole seconds, as the C `time_t` holds them; the float the
+            // attribute answers with is the same instant plus the fraction from the `_ns` fields. A
+            // value built by `os.stat_result(sequence)` has no fraction to add, and answers the item
+            // itself — which the reference leaves as the integer it was given.
+            .addField("st_atime", "time of last access.",
+                    self -> ((PyStatResult) self).time(((PyStatResult) self).atimeNs, 7))
+            .addField("st_mtime", "time of last modification.",
+                    self -> ((PyStatResult) self).time(((PyStatResult) self).mtimeNs, 8))
+            .addField("st_ctime", "time of last change.",
+                    self -> ((PyStatResult) self).time(((PyStatResult) self).ctimeNs, 9))
             .addField("st_atime_ns", "time of last access in nanoseconds",
-                    self -> PyInt.of(((PyStatResult) self).atimeNs))
+                    self -> nanos(((PyStatResult) self).atimeNs))
             .addField("st_mtime_ns", "time of last modification in nanoseconds",
-                    self -> PyInt.of(((PyStatResult) self).mtimeNs))
+                    self -> nanos(((PyStatResult) self).mtimeNs))
             .addField("st_ctime_ns", "time of last change in nanoseconds",
-                    self -> PyInt.of(((PyStatResult) self).ctimeNs))
+                    self -> nanos(((PyStatResult) self).ctimeNs))
             .addField("st_birthtime", "time of creation",
-                    self -> PyFloat.of(((PyStatResult) self).birthtimeNs / 1_000_000_000.0))
+                    self -> {
+                        Long ns = ((PyStatResult) self).birthtimeNs;
+                        return ns == null ? PyNone.INSTANCE : PyFloat.of(ns / 1_000_000_000.0);
+                    })
             .addField("st_birthtime_ns", "time of creation in nanoseconds",
-                    self -> PyInt.of(((PyStatResult) self).birthtimeNs))
+                    self -> nanos(((PyStatResult) self).birthtimeNs))
             .addField("st_rdev", "device type (if inode device).",
                     self -> PyInt.of(((PyStatResult) self).rdev))
             .addValue("__doc__", PyType.STAT_RESULT.getAttr("__doc__"))
@@ -50,19 +61,22 @@ public final class PyStatResult extends PyTuple {
             .addValue("n_fields", PyInt.of(FIELDS.length + EXTRA_FIELDS.length + 1))
             .addValue("n_unnamed_fields", PyInt.of(0));
 
-    /** {@code st_atime_ns}, {@code st_mtime_ns} and {@code st_ctime_ns}. */
-    private final long atimeNs;
-    private final long mtimeNs;
-    private final long ctimeNs;
+    /**
+     * {@code st_atime_ns}, {@code st_mtime_ns} and {@code st_ctime_ns}, or null for a value a program
+     * built from a sequence, which was given no fraction and answers {@code None} for each.
+     */
+    private final Long atimeNs;
+    private final Long mtimeNs;
+    private final Long ctimeNs;
 
-    /** {@code st_birthtime_ns}, which the item times do not carry. */
-    private final long birthtimeNs;
+    /** {@code st_birthtime_ns}, which the item times do not carry; null when the file system has none. */
+    private final Long birthtimeNs;
 
     /** {@code st_rdev}. */
     private final long rdev;
 
     private PyStatResult(
-            PyObject[] items, long atimeNs, long mtimeNs, long ctimeNs, long birthtimeNs, long rdev) {
+            PyObject[] items, Long atimeNs, Long mtimeNs, Long ctimeNs, Long birthtimeNs, long rdev) {
         super(items, PyType.STAT_RESULT);
         this.atimeNs = atimeNs;
         this.mtimeNs = mtimeNs;
@@ -74,7 +88,57 @@ public final class PyStatResult extends PyTuple {
     /** A value the file system read, with the five extras the ten items cannot hold. */
     static PyStatResult of(
             PyObject[] items, long atimeNs, long mtimeNs, long ctimeNs, long birthtimeNs, long rdev) {
-        return new PyStatResult(items, atimeNs, mtimeNs, ctimeNs, birthtimeNs, rdev);
+        return new PyStatResult(
+                items, atimeNs, mtimeNs, ctimeNs, birthtimeNs, rdev);
+    }
+
+    /**
+     * {@code os.stat_result(sequence)}: the ten items, with no fraction or birth time to name.
+     *
+     * <p>The reference refuses a sequence shorter or longer than the ten items, with the two sentences
+     * a struct sequence writes, and keeps the items as the integers it was handed.
+     */
+    static PyObject called(PyObject[] args, PyTuple keywordNames) {
+        // `structseq_new` unpacks one positional; a keyword one is reported as the missing positional,
+        // and any other count as the dict the constructor never had.
+        if (keywordNames != null && keywordNames.size() > 0) {
+            throw Slots.typeError("structseq() missing required argument 'sequence' (pos 1)");
+        }
+        if (args.length != 1) {
+            throw Slots.typeError("os.stat_result() takes a dict as second arg, if any");
+        }
+        java.util.List<PyObject> values = new java.util.ArrayList<>();
+        PyIterator iterator = Slots.iterator(args[0]);
+        for (PyObject item = iterator.nextOrNull(); item != null; item = iterator.nextOrNull()) {
+            values.add(item);
+        }
+        if (values.size() < FIELDS.length) {
+            throw Slots.typeError(
+                    "os.stat_result() takes an at least %d-sequence (%d-sequence given)",
+                    FIELDS.length, values.size());
+        }
+        // A longer sequence is accepted and the extra items are ignored, as `structseq_new` does.
+        PyObject[] items = new PyObject[FIELDS.length];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = PyInt.of(Numbers.asIndex(values.get(i)).longValue());
+        }
+        return new PyStatResult(items, null, null, null, null, 0);
+    }
+
+    /** {@code __reduce__}: {@code (stat_result, (items,))}, which is what the reference pickles. */
+    private static PyObject reduced(PyObject self) {
+        return PyTuple.of(self.getType(),
+                PyTuple.of(PyTuple.of(((PyStatResult) self).elements())));
+    }
+
+    /** An {@code _ns} field: the number, or {@code None} when the value has none. */
+    private static PyObject nanos(Long value) {
+        return value == null ? PyNone.INSTANCE : PyInt.of(value.longValue());
+    }
+
+    /** {@code st_atime}, {@code st_mtime} or {@code st_ctime}: the item plus the fraction, if any. */
+    private PyObject time(Long value, int item) {
+        return value == null ? at(item) : PyFloat.of(value / 1_000_000_000.0);
     }
 
     @Override

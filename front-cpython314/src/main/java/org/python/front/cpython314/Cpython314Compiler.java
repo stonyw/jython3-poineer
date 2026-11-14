@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.python.core.PyCode;
 import org.python.core.SourceCompiler;
@@ -496,6 +497,57 @@ public final class Cpython314Compiler {
     }
 
     /**
+     * The answers the driver has already given, oldest evicted first so a long run keeps a bounded memory.
+     *
+     * <p>Every call is a fresh process, so compiling or parsing the same source twice costs the same as
+     * the first time. `traceback` parses each frame's line — twice — and formats one failure several
+     * times, and a test that fails once per case pays for the same lines again and again. A source
+     * longer than {@link #CACHEABLE_PAYLOAD} is left out: a script is compiled once anyway, and the
+     * key would hold a second copy of it.
+     */
+    private static final Map<String, byte[]> ANSWERED = new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+            return size() > 512;
+        }
+    };
+
+    private static final int CACHEABLE_PAYLOAD = 8192;
+
+    /**
+     * Whether the payload <em>is</em> the text the answer belongs to.
+     *
+     * <p>Only two kinds qualify: a source string and the base-64 of a byte string. The other two hand the
+     * driver something that merely names the text — a file path, or the path of a freshly written tree —
+     * and a path can be written again with different contents between two calls, so remembering an answer
+     * under it would hand the old text's code back for the new text.
+     */
+    private static boolean cacheable(String payloadKind, String payload) {
+        return ("s".equals(payloadKind) || "b".equals(payloadKind))
+                && payload.length() <= CACHEABLE_PAYLOAD;
+    }
+
+    /** The refusals seen so far: a source that does not compile is refused the same way every time. */
+    private static final Map<String, String> REFUSED = new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            return size() > 512;
+        }
+    };
+
+    private static String answerKey(
+            String payloadKind,
+            String payload,
+            String fileName,
+            String codeKind,
+            int flags,
+            int optimize,
+            int featureVersion) {
+        return payloadKind + '\u0000' + codeKind + '\u0000' + flags + '\u0000' + optimize
+                + '\u0000' + featureVersion + '\u0000' + fileName + '\u0000' + payload;
+    }
+
+    /**
      * Run the driver and answer the bytes it wrote on stdout — marshalled code, or an AST dump.
      *
      * <p>Every failure is turned into one of the two exceptions here, because both callers explain a
@@ -511,6 +563,19 @@ public final class Cpython314Compiler {
             int featureVersion) {
         File diagnostics = temporaryFile();
         try {
+            String key = cacheable(payloadKind, payload)
+                    ? answerKey(payloadKind, payload, fileName, codeKind, flags, optimize, featureVersion)
+                    : null;
+            if (key != null) {
+                byte[] remembered = ANSWERED.get(key);
+                if (remembered != null) {
+                    return remembered;
+                }
+                String refusal = REFUSED.get(key);
+                if (refusal != null) {
+                    throw refused(refusal);
+                }
+            }
             Process process = invoke(
                     payloadKind, payload, fileName, codeKind, flags, optimize, featureVersion,
                     diagnostics);
@@ -520,6 +585,9 @@ public final class Cpython314Compiler {
             }
             int status = waitFor(process);
             if (status == 0) {
+                if (key != null) {
+                    ANSWERED.put(key, out);
+                }
                 return out;
             }
             String report = read(diagnostics);
@@ -530,6 +598,11 @@ public final class Cpython314Compiler {
                 throw new CompilerUnavailable(
                         "the reference compiler exited " + status + " after writing output: "
                                 + report.strip());
+            }
+            // A source that does not compile is refused the same way every time, and `traceback` asks
+            // about the same fragments once per frame of every failure it formats.
+            if (key != null) {
+                REFUSED.put(key, report);
             }
             throw refused(report);
         } catch (IOException e) {

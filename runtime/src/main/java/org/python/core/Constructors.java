@@ -286,6 +286,9 @@ final class Constructors {
         if (type == PyType.STRUCT_TIME) {
             return PyStructTime.called(args, kwNames);
         }
+        if (type == PyType.STAT_RESULT) {
+            return PyStatResult.called(args, kwNames);
+        }
         if (type == PyType.STRUCT_RUSAGE) {
             return ResourceModule.StructRusage.called(args, kwNames);
         }

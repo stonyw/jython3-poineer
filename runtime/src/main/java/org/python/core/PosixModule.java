@@ -16,6 +16,7 @@ import java.nio.file.NotDirectoryException;
 import java.nio.file.NotLinkException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
@@ -225,7 +226,17 @@ final class PosixModule {
                     PyObject[] values = Arguments.parameters(
                             "open", args, kwNames,
                             new String[] {"path", "flags", "mode", "dir_fd"},
-                            new PyObject[] {null, null, PyInt.of(511), PyNone.INSTANCE}, 2);
+                            new PyObject[] {null, null, PyInt.of(511), PyNone.INSTANCE}, 0);
+                    // Both are required but may be named, so the bound is zero and the missing one is
+                    // reported here with the sentence clinic would use.
+                    if (values[0] == null) {
+                        throw Slots.typeError(
+                                "open() missing required argument 'path' (pos 1)");
+                    }
+                    if (values[1] == null) {
+                        throw Slots.typeError(
+                                "open() missing required argument 'flags' (pos 2)");
+                    }
                     FsPath path = fsPath(values[0], "open");
                     if (values[3] != null && values[3] != PyNone.INSTANCE) {
                         throw Slots.notImplemented("open() with dir_fd");
@@ -300,6 +311,36 @@ final class PosixModule {
                     Arguments.exactlyOne("dup", args, kwNames);
                     return PyInt.of(Fds.dup(Numbers.asIndex(args[0]).intValue()));
                 }));
+        module.set("closerange", function(
+                "closerange",
+                "closerange($module, fd_low, fd_high, /)\n--\n\n"
+                        + "Closes all file descriptors in [fd_low, fd_high), ignoring any errors.\n"
+                        + "The first fd_low file descriptors are ignored.",
+                (args, kwNames) -> {
+                    Arguments.exactly("closerange", args, kwNames, 2);
+                    Fds.closerange(
+                            Numbers.asIndex(args[0]).intValue(),
+                            Numbers.asIndex(args[1]).intValue());
+                    return PyNone.INSTANCE;
+                }));
+        module.set("get_inheritable", function(
+                "get_inheritable",
+                "get_inheritable($module, fd, /)\n--\n\n"
+                        + "Get the close-on-exit flag of a file descriptor.",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("get_inheritable", args, kwNames);
+                    return PyBool.of(Fds.inheritable(Numbers.asIndex(args[0]).intValue()));
+                }));
+        module.set("set_inheritable", function(
+                "set_inheritable",
+                "set_inheritable($module, fd, inheritable, /)\n--\n\n"
+                        + "Set the close-on-exit flag of a file descriptor.",
+                (args, kwNames) -> {
+                    Arguments.exactly("set_inheritable", args, kwNames, 2);
+                    Fds.setInheritable(
+                            Numbers.asIndex(args[0]).intValue(), Slots.truth(args[1]));
+                    return PyNone.INSTANCE;
+                }));
         module.set("get_blocking", function(
                 "get_blocking",
                 "get_blocking($module, fd, /)\n--\n\n"
@@ -308,6 +349,21 @@ final class PosixModule {
                 (args, kwNames) -> {
                     Arguments.exactlyOne("get_blocking", args, kwNames);
                     return PyBool.of(Fds.blocking(Numbers.asIndex(args[0]).intValue()));
+                }));
+        module.set("isatty", function(
+                "isatty",
+                "isatty($module, fd, /)\n--\n\nReturn True if the fd is connected to a terminal.",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("isatty", args, kwNames);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    if (fd >= 0 && fd <= 2) {
+                        // The three inherited descriptors are the console's when the JVM was started
+                        // with one; a JVM has no other way to ask, so this is what it says.
+                        return PyBool.of(System.console() != null);
+                    }
+                    // Every other descriptor is a pipe, the null device or not open at all, and the
+                    // reference answers False for all three: CPython 3.14 made isatty() swallow EBADF.
+                    return PyBool.FALSE;
                 }));
         module.set("fstat", function(
                 "fstat",
@@ -336,9 +392,9 @@ final class PosixModule {
                                 PyInt.of(0),
                                 PyInt.of(0),
                                 PyInt.of(size),
-                                PyFloat.of(0.0),
-                                PyFloat.of(0.0),
-                                PyFloat.of(0.0),
+                                PyInt.of(0),
+                                PyInt.of(0),
+                                PyInt.of(0),
                             },
                             0, 0, 0, 0, 0);
                 }));
@@ -610,6 +666,59 @@ final class PosixModule {
                     int mode = Numbers.asIndex(values[1]).intValueExact();
                     return PyBool.of(allowed(resolve(path.text()), mode));
                 }));
+        module.set("utime", function(
+                "utime",
+                "utime($module, path, times=None, *, ns=None, dir_fd=None, follow_symlinks=True)\n"
+                        + "--\n\nSet the access and modified time of path.",
+                (args, kwNames) -> {
+                    PyObject[] values = Arguments.parameters(
+                            "utime", args, kwNames,
+                            new String[] {"path", "times", "ns", "dir_fd", "follow_symlinks"},
+                            new PyObject[] {null, PyNone.INSTANCE, PyNone.INSTANCE,
+                                    PyNone.INSTANCE, PyBool.TRUE},
+                            1);
+                    FsPath path = fsPath(values[0], "utime");
+                    if (values[3] != null && values[3] != PyNone.INSTANCE) {
+                        throw Slots.notImplemented("utime() with dir_fd");
+                    }
+                    if (!Slots.truth(values[4])) {
+                        // `_have_functions` is empty, so `os.supports_follow_symlinks` is too and the
+                        // reference itself answers this way on a platform without utimensat.
+                        throw Slots.notImplemented("utime() with follow_symlinks=False");
+                    }
+                    PyObject times = values[1] == null ? PyNone.INSTANCE : values[1];
+                    PyObject ns = values[2] == null ? PyNone.INSTANCE : values[2];
+                    FileTime atime;
+                    FileTime mtime;
+                    if (ns != PyNone.INSTANCE) {
+                        if (times != PyNone.INSTANCE) {
+                            throw Slots.valueError(
+                                    "utime: you may specify either 'times' or 'ns' but not both");
+                        }
+                        PyObject[] pair = pair(ns, "ns");
+                        atime = FileTime.from(Numbers.asIndex(pair[0]).longValue(),
+                                TimeUnit.NANOSECONDS);
+                        mtime = FileTime.from(Numbers.asIndex(pair[1]).longValue(),
+                                TimeUnit.NANOSECONDS);
+                    } else if (times != PyNone.INSTANCE) {
+                        PyObject[] pair = pair(times, "times");
+                        atime = seconds(pair[0]);
+                        mtime = seconds(pair[1]);
+                    } else {
+                        FileTime now = FileTime.fromMillis(System.currentTimeMillis());
+                        atime = now;
+                        mtime = now;
+                    }
+                    Path target = resolve(path.text());
+                    BasicFileAttributeView view = Files.getFileAttributeView(
+                            target, BasicFileAttributeView.class);
+                    try {
+                        view.setTimes(mtime, atime, null);
+                    } catch (IOException e) {
+                        throw failure(e, path);
+                    }
+                    return PyNone.INSTANCE;
+                }));
         module.set("cpu_count", function(
                 "cpu_count",
                 "cpu_count($module, /)\n--\n\nReturn the number of CPUs in the system; return None if indeterminable.",
@@ -701,6 +810,26 @@ final class PosixModule {
         return fsPath(values[0], name);
     }
 
+    /** The {@code (atime, mtime)} pair {@code utime} takes, or the reference's refusal. */
+    private static PyObject[] pair(PyObject value, String parameter) {
+        if (value instanceof PyTuple tuple && tuple.size() == 2) {
+            return tuple.getArray();
+        }
+        throw Slots.typeError(
+                "utime: '%s' must be either a tuple of two ints or None", parameter);
+    }
+
+    /** One of the two seconds {@code utime(times=...)} takes, as the nanoseconds it sets. */
+    private static FileTime seconds(PyObject value) {
+        Double seconds = Numbers.floatOf(value);
+        if (seconds == null) {
+            throw Slots.typeError("utime: 'times' must be either a tuple of two ints or None");
+        }
+        // `utimes` reads the float as a `timeval`, so a fraction finer than the field is dropped rather
+        // than rounded — the reference's own comment says os.utime() rounds towards minus infinity.
+        return FileTime.from((long) Math.floor(seconds * 1_000_000_000L), TimeUnit.NANOSECONDS);
+    }
+
     private static PyObject listdir(PyObject[] args, String[] kwNames) {
         PyObject[] values = Arguments.parameters(
                 "listdir", args, kwNames, PATH, new PyObject[] {PyNone.INSTANCE}, 0);
@@ -769,9 +898,11 @@ final class PosixModule {
                         PyInt.of(number(unix, "uid")),
                         PyInt.of(number(unix, "gid")),
                         PyInt.of(basic.size()),
-                        PyFloat.of(atime / 1e9),
-                        PyFloat.of(mtime / 1e9),
-                        PyFloat.of(ctime / 1e9),
+                        // The ten items are the raw `stat` fields: whole seconds, as the C `time_t`
+                        // holds them. The fractional part is what `st_atime` and `st_atime_ns` add.
+                        PyInt.of(atime / 1_000_000_000L),
+                        PyInt.of(mtime / 1_000_000_000L),
+                        PyInt.of(ctime / 1_000_000_000L),
                     },
                     atime, mtime, ctime, birthtime, rdev);
         } catch (IOException e) {
