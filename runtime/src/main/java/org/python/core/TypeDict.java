@@ -6059,15 +6059,20 @@ final class TypeDict {
      * {@code object.__init__}, which takes its receiver and nothing else — for a class whose values the
      * default creator makes.
      *
-     * <p>The refusal names the initializer rather than the call, because that is what {@code object_init}
-     * says when {@code tp_new} is still {@code object_new} and somebody handed arguments anyway. A type
-     * that fills its own {@code tp_new} — every built-in here, and any class that wrote {@code __new__} —
-     * takes them and throws them away, which is what {@code object.__init__(3, 1)} is.
+     * <p>{@code object_init} words the refusal by which {@code tp_init} it is running under. A class that
+     * wrote no initializer still has {@code object_init} itself in the slot, so the refusal names the
+     * receiver's class — {@code C.__init__() takes exactly one argument}. A class that wrote one owns
+     * the slot even when all it does is pass its arguments up, so asking that class for {@code
+     * C().__init__(42)} reaches {@code object.__init__} through the class's own method and the refusal
+     * names {@code object} instead. A type that fills its own {@code tp_new} — every built-in here, and
+     * any class that wrote {@code __new__} — takes the arguments and throws them away.
      */
     private static PyObject objectInit(PyObject[] args, String[] kwNames, String qualified) {
         if (args.length > 1 && !makesItsOwnValues(args[0].getType())) {
+            PyType kind = args[0].getType();
             throw Slots.typeError(
-                    "object.__init__() takes exactly one argument (the instance to initialize)");
+                    "%s.__init__() takes exactly one argument (the instance to initialize)",
+                    inheritsObjectInit(kind) ? kind.name() : PyType.OBJECT.name());
         }
         return PyNone.INSTANCE;
     }

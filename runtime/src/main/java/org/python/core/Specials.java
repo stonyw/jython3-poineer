@@ -137,4 +137,36 @@ final class Specials {
         }
         return Slots.DECLINED;
     }
+
+    /**
+     * {@code lookup_maybe_method} followed by the call, which is what {@code slot_tp_richcompare} does.
+     *
+     * <p>The difference from {@link #invoke} is one clause of {@code lookup_method_ex}: with {@code
+     * raise_attribute_error} clear, a descriptor that refuses to bind with {@code AttributeError} is
+     * treated as though the class had never filed the name, and the refusal is cleared rather than
+     * propagated. A class that files {@code __eq__ = property(booh)} therefore compares by identity and
+     * never raises, while an {@code AttributeError} raised by the method <em>body</em> is still its own.
+     */
+    static PyObject invokeMaybe(PyObject self, String name, PyObject... arguments) {
+        PyObject declared = lookUp(self.getType(), name);
+        if (declared instanceof PyFunction method) {
+            PyObject[] all = new PyObject[arguments.length + 1];
+            all[0] = self;
+            System.arraycopy(arguments, 0, all, 1, arguments.length);
+            return method.call(all, null);
+        }
+        if (declared != null && Descriptors.binds(declared)) {
+            PyObject bound;
+            try {
+                bound = Descriptors.get(declared, self, self.getType());
+            } catch (PyRaise refused) {
+                if (refused.value().exceptionType().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                    return Slots.DECLINED;
+                }
+                throw refused;
+            }
+            return Slots.call(bound, arguments, null);
+        }
+        return Slots.DECLINED;
+    }
 }

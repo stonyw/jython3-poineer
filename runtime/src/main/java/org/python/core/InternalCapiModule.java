@@ -12,9 +12,10 @@ import java.util.Set;
  *
  * <p>This is a test-support module, and the only reason to build one is to let a test run honestly or
  * skip honestly — not to make it pass. So only the questions whose answer this runtime really has are
- * filed here. {@code has_inline_values} answers False because objects in this runtime keep their
- * attributes in a dictionary and have no inline values array at all: False is the truth about this
- * object model, not a placeholder for a number the reference would report. {@code get_recursion_depth}
+ * filed here. {@code has_inline_values} follows the value's own state: a value of a class with the
+ * inline-values layout starts with the array and keeps it until its dictionary materializes or is
+ * detached, which is the same lifecycle the reference's {@code PyDictValues.valid} records.
+ * {@code get_recursion_depth}
  * answers the number of Python frames standing on the caller, counted along the same {@code f_back}
  * chain {@code sys._getframe()} walks. {@code get_static_builtin_types} answers the types this runtime
  * files under {@code builtins}, which is the same set {@code test.support}'s own naive fallback walks.
@@ -46,9 +47,10 @@ final class InternalCapiModule {
                 "has_inline_values",
                 PyNativeFunction.positional("has_inline_values", args -> {
                     Arguments.exactlyOne("has_inline_values()", args, null);
-                    // Instance attributes live in a PyDict here, never in a values array beside the
-                    // object, so there is no inline allocation to report for any object.
-                    return PyBool.FALSE;
+                    // A value of a class whose layout includes inline values keeps the array until it
+                    // grows past the class's key slots or its dictionary is detached; every other value
+                    // has none, which is also the truth for a class that declares `__slots__`.
+                    return PyBool.of(args[0] instanceof PyInstance held && held.hasInlineValues());
                 }).documented(
                         "has_inline_values($module, obj, /)\n"
                                 + "--\n"

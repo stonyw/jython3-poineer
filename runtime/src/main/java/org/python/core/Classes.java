@@ -1396,10 +1396,17 @@ final class Classes {
             return self;
         }
         PyObject[] withReceiver = withSelf(args, self);
-        PyObject answer =
-                declared instanceof PyFunction init
-                        ? init.call(withReceiver, kwNames)
-                        : Slots.call(declared, withReceiver, kwNames);
+        PyObject answer;
+        if (declared instanceof PyFunction init) {
+            answer = init.call(withReceiver, kwNames);
+        } else if (Descriptors.binds(declared)) {
+            // `slot_tp_init` reads the name with `lookup_method`, which binds a descriptor through
+            // `tp_descr_get` before the call: a property filed as `__init__` refuses here exactly as
+            // reading it would, and a descriptor that binds to a function is called without the receiver.
+            answer = Slots.call(Descriptors.get(declared, self, made), args, kwNames);
+        } else {
+            answer = Slots.call(declared, withReceiver, kwNames);
+        }
         if (answer != PyNone.INSTANCE) {
             throw Slots.typeError("__init__() should return None, not '%s'", answer.getType().name());
         }

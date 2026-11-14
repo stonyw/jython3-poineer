@@ -221,6 +221,15 @@ final class TypeLayout {
         return (flags(type) & HEAPTYPE) != 0;
     }
 
+    /**
+     * Whether a value of this class keeps its attributes in CPython's inline values array, which is
+     * {@code Py_TPFLAGS_INLINE_VALUES}. {@link PyInstance} reads it to know whether a value starts out
+     * with such an array and therefore answers {@code _testinternalcapi.has_inline_values} with true.
+     */
+    static boolean inlineValues(PyType type) {
+        return (flags(type) & INLINE_VALUES) != 0;
+    }
+
     /** {@code type.__flags__}. */
     static long flags(PyType type) {
         if (type instanceof PyClass held) {

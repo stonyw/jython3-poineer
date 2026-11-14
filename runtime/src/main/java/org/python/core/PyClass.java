@@ -1,5 +1,6 @@
 package org.python.core;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -66,6 +67,25 @@ public class PyClass extends PyType {
      */
     private List<String> slotLayout;
 
+    /** CPython's {@code SHARED_KEYS_MAX_SIZE}: the number of key slots a class's keys start with. */
+    private static final int SHARED_KEYS_MAX_SIZE = 30;
+
+    /**
+     * CPython's {@code ht_cached_keys}: the names an instance's inline values array reserves slots for,
+     * in the order they were added.
+     *
+     * <p>This runtime keeps every attribute in a {@link PyDict}, but the length of this list and {@link
+     * #cachedUsable} together are what {@code shared_keys_usable_size} reports for the class, and that
+     * number is the size of the array each new value allocates ({@code _PyObject_InitInlineValues}). A
+     * write of a name the list does not hold either claims a slot from {@link #cachedUsable} or, when
+     * none is left, makes the value materialize its dictionary and become a value without inline values.
+     * {@code __static_attributes__} fills the list at class creation, which is {@code make_new_keys}.
+     */
+    private final List<String> cachedKeys = new ArrayList<>();
+
+    /** {@code dk_usable}: key slots not yet claimed; one is spent by each value the class makes. */
+    private int cachedUsable = SHARED_KEYS_MAX_SIZE;
+
     PyClass(
             String name,
             PyTuple bases,
@@ -77,6 +97,47 @@ public class PyClass extends PyType {
         this.bases = bases;
         this.namespace = namespace;
         this.qualName = PyStr.of(qualName);
+        PyObject declared = namespace.get(PyStr.interned("__static_attributes__"));
+        if (declared instanceof PyTuple attributes) {
+            for (int i = 0; i < attributes.size(); i++) {
+                if (attributes.at(i) instanceof PyStr attribute) {
+                    cachedKeys.add(attribute.getValue());
+                }
+            }
+        }
+    }
+
+    /**
+     * The bookkeeping half of {@code _PyObject_InitInlineValues}: one new value spends one key slot.
+     *
+     * <p>The reference sizes the array it allocates at {@code shared_keys_usable_size} — the keys known
+     * plus the remaining budget — so any insertion {@code insert_split_key} later accepts lands inside
+     * an array allocated earlier. What this runtime has to mirror is only the budget being spent.
+     */
+    void spendInlineSlot() {
+        if (cachedUsable > 1) {
+            cachedUsable--;
+        }
+    }
+
+    /** Whether these keys already name {@code name}, so no new slot has to be claimed for it. */
+    boolean holdsInlineKey(String name) {
+        return cachedKeys.contains(name);
+    }
+
+    /**
+     * {@code insert_split_key}: claim a slot for one new name.
+     *
+     * @return false when the budget is spent, which is the reference's {@code DKIX_EMPTY}: the value
+     *     writing the name materializes its dictionary and keeps no inline values from then on
+     */
+    boolean claimInlineKey(String name) {
+        if (cachedUsable <= 0) {
+            return false;
+        }
+        cachedKeys.add(name);
+        cachedUsable--;
+        return true;
     }
 
     /** The two slot storages this class's values have, told to it by the class system. */

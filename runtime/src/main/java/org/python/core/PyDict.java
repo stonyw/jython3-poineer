@@ -24,6 +24,17 @@ public final class PyDict extends PyObject {
 
     private final Map<PyObject, PyObject> items;
 
+    /**
+     * The value whose inline values array this dictionary stands in for, or null for the dictionary of
+     * anything else.
+     *
+     * <p>CPython hands {@code obj.__dict__} out as a dictionary that shares its values array, so a write
+     * through that view is the same write as {@code obj.name = value} and spends the class's key slots
+     * the same way. This runtime's values are attributes of a plain dictionary, so the dictionary has to
+     * name the value it belongs to for {@code noteNewAttribute} to run on that path too.
+     */
+    private PyInstance inlineOwner;
+
     private PyDict(Map<PyObject, PyObject> items) {
         super(PyType.DICT);
         this.items = items;
@@ -31,6 +42,11 @@ public final class PyDict extends PyObject {
 
     public static PyDict empty() {
         return new PyDict(new LinkedHashMap<>());
+    }
+
+    /** Files {@code owner} as the value this dictionary stands in for; see {@link #inlineOwner}. */
+    void ownInlineValues(PyInstance owner) {
+        this.inlineOwner = owner;
     }
 
     /**
@@ -67,7 +83,10 @@ public final class PyDict extends PyObject {
 
     public void put(PyObject key, PyObject value) {
         try {
-            items.put(key, value);
+            PyObject previous = items.put(key, value);
+            if (previous == null && inlineOwner != null && key instanceof PyStr name) {
+                inlineOwner.noteNewAttribute(name.getValue());
+            }
         } catch (PyRaise refusal) {
             throw unhashable(key, refusal);
         }

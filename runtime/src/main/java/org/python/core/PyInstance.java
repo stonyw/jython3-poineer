@@ -35,6 +35,17 @@ public class PyInstance extends PyObject {
      */
     private PyDict dictionary;
 
+    /**
+     * Whether this value still holds CPython's inline values array, {@code PyDictValues.valid}.
+     *
+     * <p>The array is allocated when the value is made, for a class whose layout gives it one ({@link
+     * TypeLayout#inlineValues}), and it stays valid while every attribute it is asked to hold fits in
+     * the class's key slots and nobody detaches the dictionary. Growing past those slots materializes
+     * a combined dictionary, and {@code del self.__dict__} detaches one; either way the array is gone
+     * for good, which is what {@code _testinternalcapi.has_inline_values} reports.
+     */
+    private boolean inlineValuesValid;
+
     PyInstance(PyType kind) {
         this(kind, kind.hasValueDict());
     }
@@ -46,6 +57,13 @@ public class PyInstance extends PyObject {
     PyInstance(PyType kind, boolean storesDict) {
         super(kind);
         this.dictionary = storesDict ? PyDict.empty() : null;
+        if (dictionary != null) {
+            dictionary.ownInlineValues(this);
+        }
+        if (dictionary != null && TypeLayout.inlineValues(kind) && kind instanceof PyClass written) {
+            written.spendInlineSlot();
+            inlineValuesValid = true;
+        }
     }
 
     /** {@code _PyObject_GetDictPtr}: where this value keeps its attributes, or null when nowhere. */
@@ -59,6 +77,30 @@ public class PyInstance extends PyObject {
             dictionary = PyDict.empty();
         }
         return dictionary;
+    }
+
+    /** {@code _PyObject_HasInlineValues}: whether the values array is still allocated and valid. */
+    boolean hasInlineValues() {
+        return inlineValuesValid;
+    }
+
+    /**
+     * One name reached {@link #dictionary} for the first time, which is {@code store_instance_attr}'s
+     * {@code insert_split_key} step.
+     *
+     * <p>A name the class's keys already hold needs no slot. A new one claims a slot while the budget
+     * lasts; when it is spent {@code insert_split_key} answers {@code DKIX_EMPTY}, the dictionary is
+     * materialized as a combined one, and the inline values array is detached — {@code valid} stays
+     * zero from then on, however many attributes are deleted again.
+     */
+    void noteNewAttribute(String name) {
+        if (!inlineValuesValid || !(getType() instanceof PyClass written)) {
+            return;
+        }
+        if (written.holdsInlineKey(name) || written.claimInlineKey(name)) {
+            return;
+        }
+        inlineValuesValid = false;
     }
 
     /** {@code subtype_dict}: the read of the descriptor a class files for the storage it introduces. */
@@ -88,7 +130,10 @@ public class PyInstance extends PyObject {
                     "__dict__ must be set to a dictionary, not a '%s'", value.getType().filedName());
         }
         if (self instanceof PyInstance held) {
+            // `_PyObject_SetManagedDict`: handing over a dictionary — or nothing, which detaches the
+            // current one — runs `clear_inline_values`, so the array is gone either way.
             held.dictionary = replacement;
+            held.inlineValuesValid = false;
             return;
         }
         self.replaceAttributeStore(replacement);
@@ -398,6 +443,20 @@ public class PyInstance extends PyObject {
      */
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
+        try {
+            return dispatchCall(args, kwNames);
+        } catch (StackOverflowError exhausted) {
+            // `X.__call__ = X()` calls back into this slot with no Python frame in between, so the stack
+            // runs out inside this runtime's own calls — above any `try` the call is written under, and
+            // therefore not at a frame boundary `Interpreter` would turn into a `RecursionError`. The
+            // reference's `_Py_EnterRecursiveCall` raises at the offending call itself, which is here.
+            throw PyRaise.raise(
+                    ExceptionTypes.RECURSION_ERROR, "maximum recursion depth exceeded");
+        }
+    }
+
+    /** The body of {@link #call}, so the stack overflow it can cause is caught where the call is made. */
+    private PyObject dispatchCall(PyObject[] args, PyTuple kwNames) {
         PyObject declared = Specials.member(getType(), "__call__");
         if (declared == null) {
             return super.call(args, kwNames);
@@ -454,12 +513,15 @@ public class PyInstance extends PyObject {
      */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
+        // `slot_tp_richcompare` binds the special name with `lookup_maybe_method`: a descriptor that
+        // refuses to bind with `AttributeError` counts as absent and identity decides, rather than the
+        // refusal escaping the comparison.
         if (cmp == CompareOp.NE) {
-            PyObject custom = Specials.invoke(this, "__ne__", other);
+            PyObject custom = Specials.invokeMaybe(this, "__ne__", other);
             if (!Slots.declined(custom)) {
                 return custom;
             }
-            PyObject equal = Specials.invoke(this, "__eq__", other);
+            PyObject equal = Specials.invokeMaybe(this, "__eq__", other);
             if (Slots.declined(equal)) {
                 // A declined `__eq__` declines `!=` as well, so the other operand gets its turn. The
                 // namespace family is the exception: its comparison lives in the type, not the namespace
@@ -470,7 +532,7 @@ public class PyInstance extends PyObject {
             }
             return PyBool.of(!Slots.truth(equal));
         }
-        PyObject answer = Specials.invoke(this, cmp.dunder(), other);
+        PyObject answer = Specials.invokeMaybe(this, cmp.dunder(), other);
         if (!Slots.declined(answer)) {
             return answer;
         }

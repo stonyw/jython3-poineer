@@ -152,16 +152,25 @@ public final class PyBoundMethod extends PyObject {
 
     @Override
     public boolean eq(PyObject other) {
-        // Bound methods compare on receiver and name, so a list's own append is never the append of a
-        // second list, but is the same method object asked twice of one list.
-        return other instanceof PyBoundMethod m
-                && m.name.equals(name)
-                && m.target.eq(target);
+        // `method_richcompare` compares the two halves by identity — the receiver and the function —
+        // and never runs the receiver's own `__eq__`: `a1.f == a2.f` is false although `a1 == a2` is
+        // true. A built-in method has no function object here, so its name stands in for one.
+        if (!(other instanceof PyBoundMethod m) || m.target != target) {
+            return false;
+        }
+        return function != null ? m.function == function : m.name.equals(name);
     }
 
     @Override
     public long hash() {
-        return target.hash() * 31 + PyHash.textHash(name);
+        // `method_hash`: the receiver is hashed by pointer and the function by its own hash. The
+        // receiver's `__hash__` is never asked, which is why a method of a class whose `__hash__`
+        // raises is still hashable.
+        long receiver = PyHash.avoidMinusOne(System.identityHashCode(target));
+        long callable = function != null
+                ? function.hash()
+                : PyHash.avoidMinusOne(PyHash.textHash(name));
+        return PyHash.avoidMinusOne(receiver ^ callable);
     }
 
     @Override
