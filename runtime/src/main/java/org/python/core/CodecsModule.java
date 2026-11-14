@@ -12,9 +12,9 @@ import java.util.List;
  * neighbours) are the last group, and the escape and charmap families are named gaps — nothing in the
  * measured stdlib reaches for them before the import machinery is complete.
  *
- * <p>{@code lookup} consults the built-in fourteen first and the registered search functions afterwards.
+ * <p>{@code lookup} consults the built-in seventeen first and the registered search functions afterwards.
  * CPython consults the registry first and lets an entry override a built-in; the difference is only
- * visible to a program that registers a replacement for one of the fourteen, which is not a thing the
+ * visible to a program that registers a replacement for one of the seventeen, which is not a thing the
  * stdlib does.
  */
 final class CodecsModule {
@@ -39,6 +39,9 @@ final class CodecsModule {
         {"utf_32_be", "utf-32-be"},
         {"utf_7", "utf-7"},
         {"cp1252", "cp1252"},
+        {"cp1251", "cp1251"},
+        {"cp437", "cp437"},
+        {"iso8859_7", "iso8859-7"},
         {"unicode_escape", "unicode-escape"},
         {"raw_unicode_escape", "raw-unicode-escape"}
     };
@@ -156,7 +159,7 @@ final class CodecsModule {
         try {
             canonical = Encoder.codec(name);
         } catch (PyRaise unknown) {
-            // Not one of the fourteen: a search function may still know it, so fall through.
+            // Not one of the seventeen: a search function may still know it, so fall through.
         }
         if (canonical != null) {
             for (String[] codec : CODECS) {

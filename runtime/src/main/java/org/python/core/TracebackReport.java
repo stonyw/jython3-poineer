@@ -15,6 +15,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * The report a person reads when nothing catches an exception.
@@ -123,7 +125,19 @@ public final class TracebackReport {
 
     /** {@code of} written to {@code sys.stderr}, which is how an uncaught exception reaches a person. */
     public static void print(PyBaseException error) {
-        PyRuntime.stderr().writeText(of(error));
+        String text = of(error);
+        PyObject stream = PyRuntime.sysAttribute("stderr");
+        if (stream == null || stream instanceof PyNone) {
+            PyRuntime.stderr().writeText(text);
+            return;
+        }
+        try {
+            Slots.call(Slots.getAttr(stream, "write"), new PyObject[] {PyStr.of(text)}, null);
+        } catch (PyRaise ignored) {
+            // `_PyErr_Display` asks `sys.stderr` and, where writing to it fails, falls back to the stream
+            // the interpreter was started with rather than losing the report.
+            PyRuntime.stderr().writeText(text);
+        }
     }
 
     /**
@@ -536,15 +550,65 @@ public final class TracebackReport {
         return lines == null ? List.of() : lines;
     }
 
+    /**
+     * The lines {@code linecache} would answer for a file, read through {@code tokenize.open}: the encoding
+     * is the one the file declares in a PEP 263 cookie, or UTF-8, and a UTF-8 BOM is not part of the first
+     * line.
+     *
+     * <p>Reading as plain UTF-8 was visible twice. A file that says {@code # coding: latin1} and then writes
+     * a latin-1 letter had no line quoted under its frame at all, because the bytes would not decode; a file
+     * that starts with a BOM had the BOM quoted and every caret one column to the right, because the BOM had
+     * survived as text. The reference opens these files the way the tokenizer does, so this reads them the
+     * same way.
+     */
     private static List<String> readLines(String fileName) {
+        byte[] bytes;
         try {
-            return Files.readAllLines(Path.of(fileName), StandardCharsets.UTF_8);
+            bytes = Files.readAllBytes(Path.of(fileName));
         } catch (IOException | InvalidPathException unreadable) {
             // A source that has gone, or that cannot be decoded, is the same answer as a line the
             // file does not have: the entry is still reported, without anything under it.
             return List.of();
         }
+        String text;
+        try {
+            text = Decoder.decode(bytes, declaredEncoding(bytes), "replace");
+        } catch (PyRaise unknown) {
+            text = Decoder.decode(bytes, "utf_8", "replace");
+        }
+        return List.of(text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1));
     }
+
+    /** The encoding a PEP 263 cookie names, or {@code utf_8_sig} for a BOM, or {@code utf_8}. */
+    private static String declaredEncoding(byte[] bytes) {
+        if (bytes.length >= 3
+                && (bytes[0] & 0xff) == 0xef
+                && (bytes[1] & 0xff) == 0xbb
+                && (bytes[2] & 0xff) == 0xbf) {
+            return "utf_8_sig";
+        }
+        int at = 0;
+        for (int line = 0; line < 2 && at < bytes.length; line++) {
+            int end = at;
+            while (end < bytes.length && bytes[end] != '\n') {
+                end++;
+            }
+            String candidate = new String(bytes, at, end - at, StandardCharsets.ISO_8859_1);
+            Matcher cookie = COOKIE.matcher(candidate);
+            if (cookie.find()) {
+                return cookie.group(1).toLowerCase(java.util.Locale.ROOT).replace('-', '_');
+            }
+            if (line == 0 && !candidate.strip().isEmpty() && !candidate.strip().startsWith("#")) {
+                break;
+            }
+            at = end + 1;
+        }
+        return "utf_8";
+    }
+
+    /** {@code tokenize.cookie_re}, anchored the way the tokenizer anchors it. */
+    private static final Pattern COOKIE =
+            Pattern.compile("^[ \\t\\f]*#.*?coding[:=][ \\t]*([-_.a-zA-Z0-9]+)");
 
     // --- the complaint -------------------------------------------------------------------
 
@@ -568,6 +632,155 @@ public final class TracebackReport {
             text += sentence;
         }
         return type + (text.isEmpty() ? "" : ": " + text) + "\n";
+    }
+
+    /**
+     * {@code TracebackException._format_syntax_error}: a syntax error's block, which quotes the source the
+     * parser refused and underlines the span it refused.
+     *
+     * <p>This is the one block whose text does not come from a code object. A {@code SyntaxError} carries a
+     * file name, a line number, the source line and a one-based column span in its own members, and those
+     * are what the reference prints — a value made by hand with {@code SyntaxError('bad', ('bad.py', 1, 2,
+     * 'abcdefg', 1, 7))} is shown exactly so. The members are read as what they are, not as what they
+     * should be: {@code lineno} prints as {@code True} when a caller filed a bool, and carets are drawn only
+     * where {@code offset} answers {@code isinstance(x, int)}, which a bool does and a string does not.
+     *
+     * <p>The span rules are the reference's, and each has a reason: an {@code end_offset} of zero or a
+     * different {@code end_lineno} means "no named end", a span past the end of the text is clipped to one
+     * character past it, and a reversed or negative end is replaced by one caret. The leading whitespace the
+     * parser reports as part of {@code offset} is removed from the quoted line and kept in the caret line,
+     * except that tabs stay as tabs so the carets land under the right characters.
+     */
+    private static String syntax(PyBaseException value) {
+        StringBuilder out = new StringBuilder();
+        PyObject filename = value.memberField("filename");
+        PyObject lineno = value.memberField("lineno");
+        PyObject offset = value.memberField("offset");
+        PyObject endLineno = value.memberField("end_lineno");
+        PyObject endOffset = value.memberField("end_offset");
+        PyObject source = value.memberField("text");
+        PyObject message = value.memberField("msg");
+
+        String suffix = "";
+        if (!absent(lineno)) {
+            out.append("  File \"")
+                    .append(!absent(filename) && Slots.truth(filename) ? stated(filename) : "<string>")
+                    .append("\", line ")
+                    .append(stated(lineno))
+                    .append('\n');
+        } else if (!absent(filename)) {
+            suffix = " (" + stated(filename) + ")";
+        }
+
+        if (source instanceof PyStr quoted) {
+            String full = quoted.getValue();
+            String raw = trailingNewlinesCut(full);
+            String line = leadingBlanksCut(raw);
+            int spaces = raw.length() - line.length();
+            Long start = asInt(offset);
+            if (absent(offset)) {
+                out.append("    ").append(line).append('\n');
+            } else if (start != null) {
+                long end;
+                if (sameValue(lineno, endLineno)) {
+                    Long named = asInt(endOffset);
+                    end = named != null && named != 0 ? named : start;
+                } else {
+                    end = raw.length() + 1L;
+                }
+                if (start > full.length()) {
+                    start = (long) raw.length() + 1;
+                }
+                if (end > full.length()) {
+                    end = raw.length() + 1L;
+                }
+                if (start >= end || end < 0) {
+                    end = start + 1;
+                }
+                long column = start - 1 - spaces;
+                long endColumn = end - 1 - spaces;
+                if (column >= 0) {
+                    int[] codePoints = line.codePoints().toArray();
+                    StringBuilder caretSpace = new StringBuilder();
+                    for (int at = 0; at < column && at < codePoints.length; at++) {
+                        caretSpace.append(
+                                Character.isWhitespace(codePoints[at])
+                                                || Character.isSpaceChar(codePoints[at])
+                                        ? (char) codePoints[at]
+                                        : ' ');
+                    }
+                    out.append("    ").append(line).append('\n');
+                    out.append("    ").append(caretSpace);
+                    for (long at = column; at < endColumn; at++) {
+                        out.append('^');
+                    }
+                    out.append('\n');
+                } else {
+                    out.append("    ").append(line).append('\n');
+                }
+            } else if (absent(offset)) {
+                out.append("    ").append(line).append('\n');
+            }
+        }
+
+        String detail =
+                absent(message) || !Slots.truth(message) ? "<no detail available>" : stated(message);
+        return out.append(typeName(value.exceptionType()))
+                .append(": ")
+                .append(detail)
+                .append(suffix)
+                .append('\n')
+                .toString();
+    }
+
+    /** Whether a member holds nothing: never filled, deleted, or {@code None}. */
+    private static boolean absent(PyObject value) {
+        return value == null || value instanceof PyNone;
+    }
+
+    /** What CPython's {@code format} prints for a value: {@code str} for everything but nothing at all. */
+    private static String stated(PyObject value) {
+        return safe("value", "str", value::str);
+    }
+
+    /** {@code isinstance(value, int)}, which a bool answers and a float does not. */
+    private static Long asInt(PyObject value) {
+        if (value instanceof PyInt number) {
+            return number.getValue().longValue();
+        }
+        if (value instanceof PyBool flag) {
+            return flag.getValue() ? 1L : 0L;
+        }
+        return null;
+    }
+
+    /** {@code a == b} for two members, false where the comparison itself fails. */
+    private static boolean sameValue(PyObject left, PyObject right) {
+        try {
+            return Slots.truth(Slots.compare(CompareOp.EQ, left, right));
+        } catch (RuntimeException failed) {
+            return false;
+        }
+    }
+
+    private static String trailingNewlinesCut(String text) {
+        int end = text.length();
+        while (end > 0 && text.charAt(end - 1) == '\n') {
+            end--;
+        }
+        return text.substring(0, end);
+    }
+
+    private static String leadingBlanksCut(String text) {
+        int start = 0;
+        while (start < text.length()) {
+            char c = text.charAt(start);
+            if (c != ' ' && c != '\n' && c != '\f') {
+                break;
+            }
+            start++;
+        }
+        return text.substring(start);
     }
 
     /**
@@ -616,7 +829,10 @@ public final class TracebackReport {
      * {@code repr}, which is the difference CPython draws with {@code isinstance(x, Sequence)}.
      */
     private static String only(PyBaseException value, Frame innermost) {
-        StringBuilder text = new StringBuilder(complaint(value, innermost));
+        StringBuilder text = new StringBuilder(
+                Classes.instanceOf(value, ExceptionTypes.SYNTAX_ERROR)
+                        ? syntax(value)
+                        : complaint(value, innermost));
         PyObject notes = value.getAttr("__notes__");
         if (notes == null || notes instanceof PyNone || notes == Slots.DECLINED) {
             return text.toString();

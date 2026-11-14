@@ -215,8 +215,8 @@ public class PyInstance extends PyObject {
         if (held != Slots.DECLINED) {
             return held;
         }
-        throw Slots.attributeError(
-                "'%s' object has no attribute '%s'", getType().filedName(), name);
+        throw Slots.failedRead(
+                this, name, "'%s' object has no attribute '%s'", getType().filedName(), name);
     }
 
     /**

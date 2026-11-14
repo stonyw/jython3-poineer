@@ -38,12 +38,12 @@ import java.util.Set;
 final class Encoder {
 
     /**
-     * The fourteen codec modules this runtime has, under the names {@code encodings} imports.
+     * The seventeen codec modules this runtime has, under the names {@code encodings} imports.
      *
      * <p>A name reaches one of them exactly as CPython's {@code encodings.search_function} decides it: the
      * {@code _Py_normalize_encoding} of Objects/unicodeobject.c:3605 first, then one step through the alias
      * table of {@code Lib/encodings/aliases.py} as {@code Lib/encodings/__init__.py:87} reads it. Only the
-     * aliases of these fourteen are copied, and they are copied verbatim, because an invented alias would answer
+     * aliases of these seventeen are copied, and they are copied verbatim, because an invented alias would answer
      * for a name the reference refuses — the way {@code u-t-f8} normalizes to {@code u_t_f8} and is no codec
      * at all, while {@code utf 8} and {@code UTF-8} and {@code utf-8} all normalize to {@code utf_8} and are.
      * {@code unicode_escape} has no alias at all, which is why {@code unicodeescape} is refused while
@@ -51,10 +51,10 @@ final class Encoder {
      */
     private static final Set<String> CODECS = Set.of(
             "ascii", "latin_1", "utf_8", "utf_8_sig", "utf_16", "utf_16_le", "utf_16_be",
-            "utf_32", "utf_32_le", "utf_32_be", "utf_7", "cp1252", "unicode_escape",
-            "raw_unicode_escape");
+            "utf_32", "utf_32_le", "utf_32_be", "utf_7", "cp1252", "cp1251", "cp437",
+            "iso8859_7", "unicode_escape", "raw_unicode_escape");
 
-    /** The lines of {@code aliases.py} whose target is one of the fourteen. */
+    /** The lines of {@code aliases.py} whose target is one of the seventeen. */
     private static final Map<String, String> ALIASES = Map.ofEntries(
             Map.entry("646", "ascii"),
             Map.entry("ansi_x3.4_1968", "ascii"),
@@ -95,6 +95,19 @@ final class Encoder {
             Map.entry("utf_32le", "utf_32_le"),
             Map.entry("1252", "cp1252"),
             Map.entry("windows_1252", "cp1252"),
+            Map.entry("1251", "cp1251"),
+            Map.entry("windows_1251", "cp1251"),
+            Map.entry("437", "cp437"),
+            Map.entry("cspc8codepage437", "cp437"),
+            Map.entry("ibm437", "cp437"),
+            Map.entry("csisolatingreek", "iso8859_7"),
+            Map.entry("ecma_118", "iso8859_7"),
+            Map.entry("elot_928", "iso8859_7"),
+            Map.entry("greek", "iso8859_7"),
+            Map.entry("greek8", "iso8859_7"),
+            Map.entry("iso_8859_7", "iso8859_7"),
+            Map.entry("iso_8859_7_1987", "iso8859_7"),
+            Map.entry("iso_ir_126", "iso8859_7"),
             Map.entry("u8", "utf_8"),
             Map.entry("utf", "utf_8"),
             Map.entry("utf8", "utf_8"),
@@ -143,6 +156,65 @@ final class Encoder {
         return -1;
     }
 
+    /** A character below {@code 0x80} stands for itself in all four charmap codecs, so only the high half is kept. */
+    static final int[] CP1251_HIGH = high(
+            "\u0402\u0403\u201a\u0453\u201e\u2026\u2020\u2021\u20ac\u2030\u0409\u2039\u040a\u040c\u040b\u040f"
+            + "\u0452\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u0000\u2122\u0459\u203a\u045a\u045c\u045b\u045f"
+            + "\u00a0\u040e\u045e\u0408\u00a4\u0490\u00a6\u00a7\u0401\u00a9\u0404\u00ab\u00ac\u00ad\u00ae\u0407"
+            + "\u00b0\u00b1\u0406\u0456\u0491\u00b5\u00b6\u00b7\u0451\u2116\u0454\u00bb\u0458\u0405\u0455\u0457"
+            + "\u0410\u0411\u0412\u0413\u0414\u0415\u0416\u0417\u0418\u0419\u041a\u041b\u041c\u041d\u041e\u041f"
+            + "\u0420\u0421\u0422\u0423\u0424\u0425\u0426\u0427\u0428\u0429\u042a\u042b\u042c\u042d\u042e\u042f"
+            + "\u0430\u0431\u0432\u0433\u0434\u0435\u0436\u0437\u0438\u0439\u043a\u043b\u043c\u043d\u043e\u043f"
+            + "\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044a\u044b\u044c\u044d\u044e\u044f");
+
+    static final int[] CP437_HIGH = high(
+            "\u00c7\u00fc\u00e9\u00e2\u00e4\u00e0\u00e5\u00e7\u00ea\u00eb\u00e8\u00ef\u00ee\u00ec\u00c4\u00c5"
+            + "\u00c9\u00e6\u00c6\u00f4\u00f6\u00f2\u00fb\u00f9\u00ff\u00d6\u00dc\u00a2\u00a3\u00a5\u20a7\u0192"
+            + "\u00e1\u00ed\u00f3\u00fa\u00f1\u00d1\u00aa\u00ba\u00bf\u2310\u00ac\u00bd\u00bc\u00a1\u00ab\u00bb"
+            + "\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255d\u255c\u255b\u2510"
+            + "\u2514\u2534\u252c\u251c\u2500\u253c\u255e\u255f\u255a\u2554\u2569\u2566\u2560\u2550\u256c\u2567"
+            + "\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256b\u256a\u2518\u250c\u2588\u2584\u258c\u2590\u2580"
+            + "\u03b1\u00df\u0393\u03c0\u03a3\u03c3\u00b5\u03c4\u03a6\u0398\u03a9\u03b4\u221e\u03c6\u03b5\u2229"
+            + "\u2261\u00b1\u2265\u2264\u2320\u2321\u00f7\u2248\u00b0\u2219\u00b7\u221a\u207f\u00b2\u25a0\u00a0");
+
+    /** {@code iso8859-7} keeps the C1 range as its own characters, so its table starts one block higher. */
+    static final int[] ISO8859_7_HIGH = high(
+            "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f"
+            + "\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f"
+            + "\u00a0\u2018\u2019\u00a3\u20ac\u20af\u00a6\u00a7\u00a8\u00a9\u037a\u00ab\u00ac\u00ad\u0000\u2015"
+            + "\u00b0\u00b1\u00b2\u00b3\u0384\u0385\u0386\u00b7\u0388\u0389\u038a\u00bb\u038c\u00bd\u038e\u038f"
+            + "\u0390\u0391\u0392\u0393\u0394\u0395\u0396\u0397\u0398\u0399\u039a\u039b\u039c\u039d\u039e\u039f"
+            + "\u03a0\u03a1\u0000\u03a3\u03a4\u03a5\u03a6\u03a7\u03a8\u03a9\u03aa\u03ab\u03ac\u03ad\u03ae\u03af"
+            + "\u03b0\u03b1\u03b2\u03b3\u03b4\u03b5\u03b6\u03b7\u03b8\u03b9\u03ba\u03bb\u03bc\u03bd\u03be\u03bf"
+            + "\u03c0\u03c1\u03c2\u03c3\u03c4\u03c5\u03c6\u03c7\u03c8\u03c9\u03ca\u03cb\u03cc\u03cd\u03ce\u0000");
+
+    /**
+     * The 128 characters above {@code 0x7f}, with {@code -1} where the table has no character: one control
+     * character per octet is what the reference's tables read, and the holes are the ones CPython's
+     * {@code charmap_build} leaves.
+     */
+    static int[] high(String table) {
+        int[] codePoints = new int[128];
+        for (int at = 0; at < 128; at++) {
+            char c = table.charAt(at);
+            codePoints[at] = c == '\u0000' ? -1 : c;
+        }
+        return codePoints;
+    }
+
+    /** The octet one of the tabulated codecs writes for a character, or {@code -1} where it has none. */
+    static int octetIn(int[] high, int codePoint) {
+        if (codePoint < 0x80) {
+            return codePoint;
+        }
+        for (int at = 0; at < 128; at++) {
+            if (high[at] == codePoint) {
+                return 0x80 + at;
+            }
+        }
+        return -1;
+    }
+
     /** The eight names the registry files, in the order its table walks them. */
     private enum Handler {
         STRICT,
@@ -167,6 +239,8 @@ final class Encoder {
         UTF32,
         /** A table of 256 octets, five of which stand for no character. */
         CHARMAP,
+        /** A table of 128 characters above {@code 0x7f}, holes included: {@code cp1251}, {@code cp437}, {@code iso8859-7}. */
+        TABLED,
         /** A backslash escape for every character, so nothing is ever refused. */
         ESCAPED,
         /** A backslash escape only where the character does not fit one octet, so nothing is refused. */
@@ -182,34 +256,43 @@ final class Encoder {
      * can leave it empty.
      */
     private record Codec(String reported, String reason, int limit, boolean collects, byte[] prefix,
-            Kind kind) {
+            Kind kind, int[] high) {
 
         private static final Codec ASCII =
-                new Codec("ascii", "ordinal not in range(128)", 0x80, true, null, Kind.ONE_BYTE);
+                new Codec("ascii", "ordinal not in range(128)", 0x80, true, null, Kind.ONE_BYTE, null);
         private static final Codec LATIN1 =
-                new Codec("latin-1", "ordinal not in range(256)", 0x100, true, null, Kind.ONE_BYTE);
+                new Codec("latin-1", "ordinal not in range(256)", 0x100, true, null, Kind.ONE_BYTE, null);
         private static final Codec UTF8 =
-                new Codec("utf-8", "surrogates not allowed", 0, true, null, Kind.UTF8);
+                new Codec("utf-8", "surrogates not allowed", 0, true, null, Kind.UTF8, null);
         private static final Codec UTF8_SIG =
-                new Codec("utf-8", "surrogates not allowed", 0, true, UTF8_BOM, Kind.UTF8);
+                new Codec("utf-8", "surrogates not allowed", 0, true, UTF8_BOM, Kind.UTF8, null);
         private static final Codec UTF16 =
-                new Codec("utf-16", "surrogates not allowed", 0, false, UTF16_BOM, Kind.UTF16);
+                new Codec("utf-16", "surrogates not allowed", 0, false, UTF16_BOM, Kind.UTF16, null);
         private static final Codec UTF16_LE =
-                new Codec("utf-16-le", "surrogates not allowed", 0, false, null, Kind.UTF16);
+                new Codec("utf-16-le", "surrogates not allowed", 0, false, null, Kind.UTF16, null);
         private static final Codec UTF16_BE =
-                new Codec("utf-16-be", "surrogates not allowed", 0, false, null, Kind.UTF16);
+                new Codec("utf-16-be", "surrogates not allowed", 0, false, null, Kind.UTF16, null);
         private static final Codec UTF32 =
-                new Codec("utf-32", "surrogates not allowed", 0, false, UTF32_BOM, Kind.UTF32);
+                new Codec("utf-32", "surrogates not allowed", 0, false, UTF32_BOM, Kind.UTF32, null);
         private static final Codec UTF32_LE =
-                new Codec("utf-32-le", "surrogates not allowed", 0, false, null, Kind.UTF32);
+                new Codec("utf-32-le", "surrogates not allowed", 0, false, null, Kind.UTF32, null);
         private static final Codec UTF32_BE =
-                new Codec("utf-32-be", "surrogates not allowed", 0, false, null, Kind.UTF32);
+                new Codec("utf-32-be", "surrogates not allowed", 0, false, null, Kind.UTF32, null);
         private static final Codec CP1252 =
-                new Codec("charmap", "character maps to <undefined>", 0, true, null, Kind.CHARMAP);
+                new Codec("charmap", "character maps to <undefined>", 0, true, null, Kind.CHARMAP, null);
+        private static final Codec CP1251 =
+                new Codec("charmap", "character maps to <undefined>", 0, true, null, Kind.TABLED,
+                        CP1251_HIGH);
+        private static final Codec CP437 =
+                new Codec("charmap", "character maps to <undefined>", 0, true, null, Kind.TABLED,
+                        CP437_HIGH);
+        private static final Codec ISO8859_7 =
+                new Codec("charmap", "character maps to <undefined>", 0, true, null, Kind.TABLED,
+                        ISO8859_7_HIGH);
         private static final Codec UNICODE_ESCAPE =
-                new Codec("unicode-escape", "", 0, false, null, Kind.ESCAPED);
+                new Codec("unicode-escape", "", 0, false, null, Kind.ESCAPED, null);
         private static final Codec RAW_UNICODE_ESCAPE =
-                new Codec("rawunicodeescape", "", 0, false, null, Kind.RAW_ESCAPED);
+                new Codec("rawunicodeescape", "", 0, false, null, Kind.RAW_ESCAPED, null);
 
         /** Whether this is a character the codec refuses to write at all. */
         boolean refuses(int codePoint) {
@@ -217,6 +300,7 @@ final class Encoder {
                 case ONE_BYTE -> codePoint >= limit;
                 case UTF8, UTF16, UTF32 -> isSurrogate(codePoint);
                 case CHARMAP -> octetOf(codePoint) < 0;
+                case TABLED -> octetIn(high, codePoint) < 0;
                 case ESCAPED, RAW_ESCAPED -> false;
             };
         }
@@ -234,6 +318,7 @@ final class Encoder {
                 case UTF16 -> units(out, codePoint);
                 case UTF32 -> quads(out, codePoint);
                 case CHARMAP -> out.write(octetOf(codePoint));
+                case TABLED -> out.write(octetIn(high, codePoint));
                 case ESCAPED -> escaped(out, codePoint);
                 case RAW_ESCAPED -> rawEscaped(out, codePoint);
             }
@@ -814,6 +899,9 @@ final class Encoder {
             case "utf_32_le" -> Codec.UTF32_LE;
             case "utf_32_be" -> Codec.UTF32_BE;
             case "cp1252" -> Codec.CP1252;
+            case "cp1251" -> Codec.CP1251;
+            case "cp437" -> Codec.CP437;
+            case "iso8859_7" -> Codec.ISO8859_7;
             case "unicode_escape" -> Codec.UNICODE_ESCAPE;
             case "raw_unicode_escape" -> Codec.RAW_UNICODE_ESCAPE;
             default -> throw new AssertionError(encoding);

@@ -87,6 +87,9 @@ final class Decoder {
             case "utf_32_be" -> utf32(out, data, errors, new Utf32(true, "utf-32-be", 0));
             case "utf_7" -> utf7(out, data, errors);
             case "cp1252" -> charmap(out, data, errors);
+            case "cp1251" -> tabled(out, data, errors, Encoder.CP1251_HIGH);
+            case "cp437" -> tabled(out, data, errors, Encoder.CP437_HIGH);
+            case "iso8859_7" -> tabled(out, data, errors, Encoder.ISO8859_7_HIGH);
             case "unicode_escape" -> unicodeEscape(out, data, errors);
             case "raw_unicode_escape" -> rawUnicodeEscape(out, data, errors);
             default -> throw new AssertionError(encoding);
@@ -547,6 +550,24 @@ final class Decoder {
     private static void charmap(StringBuilder out, byte[] data, String errors) {
         for (int at = 0; at < data.length; ) {
             int codePoint = Encoder.cp1252(data[at] & 0xff);
+            if (codePoint >= 0) {
+                out.append((char) codePoint);
+                at++;
+                continue;
+            }
+            at = handled(errors, "charmap", data, out, at, at + 1, "character maps to <undefined>");
+        }
+    }
+
+    /**
+     * The other three charmap codecs: the same one-octet walk, with the high half read off a table whose
+     * holes ({@code 0x98} in {@code cp1251}, {@code 0xae}, {@code 0xd2} and {@code 0xff} in {@code iso8859-7})
+     * are the octets the reference has no character for.
+     */
+    private static void tabled(StringBuilder out, byte[] data, String errors, int[] high) {
+        for (int at = 0; at < data.length; ) {
+            int octet = data[at] & 0xff;
+            int codePoint = octet < 0x80 ? octet : high[octet - 0x80];
             if (codePoint >= 0) {
                 out.append((char) codePoint);
                 at++;
