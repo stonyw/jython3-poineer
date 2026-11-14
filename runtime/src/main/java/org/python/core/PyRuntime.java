@@ -1507,8 +1507,23 @@ public final class PyRuntime {
      * <p>Only an {@code eval}-mode code object returns a value; a module's and a {@code single} one's
      * answer is {@code None} by construction.
      */
-    static PyObject runIn(PyCode code, PyDict globals, PyDict locals) {
-        return Interpreter.run(new Frame(code, globals, locals, new PyObject[code.localCount()]));
+    static PyObject runIn(PyCode code, PyObject globals, PyObject locals) {
+        return runIn(code, globals, locals, null);
+    }
+
+    /**
+     * The same, with the cells a code object's free variables read from.
+     *
+     * <p>{@code exec(code, ..., closure=cells)} runs a function's code object at top level; its free
+     * variables have no function to copy them from, so the trailing slots start out holding the cells
+     * the caller gave. Null for code that has none.
+     */
+    static PyObject runIn(PyCode code, PyObject globals, PyObject locals, PyCell[] closure) {
+        PyObject[] slots = new PyObject[code.localCount()];
+        if (closure != null) {
+            System.arraycopy(closure, 0, slots, slots.length - closure.length, closure.length);
+        }
+        return Interpreter.run(new Frame(code, globals, locals, slots));
     }
 
     /**

@@ -179,14 +179,14 @@ final class Suggestions {
         if (innermost == null) {
             return null;
         }
-        PyDict locals = innermost.localValues();
+        PyObject locals = innermost.localValues();
         List<String> names = new ArrayList<>();
-        collect(names, locals.keys());
-        collect(names, innermost.globals().keys());
+        collect(names, mappingKeys(locals));
+        collect(names, mappingKeys(innermost.globals()));
         collect(names, PyRuntime.builtins().keys());
         // The receiver of a method answers a bare name before any distance is worked out — and with the
         // dotted spelling, which no candidate list holds.
-        PyObject self = locals.get(PyStr.interned("self"));
+        PyObject self = Slots.mappingGet(locals, PyStr.interned("self"));
         if (self != null && holds(self, wrongName)) {
             return "self." + wrongName;
         }
@@ -223,10 +223,26 @@ final class Suggestions {
         return closest(names, wrongName);
     }
 
-    /** Whether the frame's own {@code self} is the very object the read failed on. */
+    /** The frame's own {@code self} is the very object the read failed on. */
     private static boolean holdsSelf(Frame innermost, PyObject target) {
-        PyObject self = innermost.localValues().get(PyStr.interned("self"));
+        PyObject self = Slots.mappingGet(innermost.localValues(), PyStr.interned("self"));
         return self != null && self == target;
+    }
+
+    /**
+     * The keys of a namespace, asked the way the reference asks: a dictionary through its storage, any
+     * other mapping through its own {@code keys()}. No keys at all contributes nothing to a suggestion.
+     */
+    private static PyObject[] mappingKeys(PyObject mapping) {
+        if (mapping instanceof PyDict dict) {
+            return dict.keys();
+        }
+        PyObject keys = Slots.findAttr(mapping, "keys");
+        if (keys == null) {
+            return new PyObject[0];
+        }
+        return Constructors.materialise(Slots.call(keys, new PyObject[0], null))
+                .toArray(new PyObject[0]);
     }
 
     /**

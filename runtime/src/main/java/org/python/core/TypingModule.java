@@ -775,7 +775,9 @@ final class TypingModule {
 
     private static PyStr callerModule() {
         Frame caller = Interpreter.currentFrame();
-        PyObject name = caller == null ? null : caller.globals().get(PyStr.interned("__name__"));
+        PyObject name = caller == null
+                ? null
+                : Slots.mappingGet(caller.globals(), PyStr.interned("__name__"));
         return name instanceof PyStr text ? text : PyStr.interned("builtins");
     }
 

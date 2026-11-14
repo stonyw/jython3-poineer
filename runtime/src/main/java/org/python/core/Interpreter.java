@@ -355,14 +355,17 @@ public final class Interpreter {
                         break;
                     }
                     case Opcodes.STORE_GLOBAL:
-                        frame.globals().put(PyStr.interned(frame.name(arg)), frame.pop());
+                        Slots.mappingPut(
+                                frame.globals(), PyStr.interned(frame.name(arg)), frame.pop());
                         break;
-                    case Opcodes.DELETE_GLOBAL:
-                        if (frame.globals().get(PyStr.interned(frame.name(arg))) == null) {
+                    case Opcodes.DELETE_GLOBAL: {
+                        PyStr name = PyStr.interned(frame.name(arg));
+                        if (readMapping(frame.globals(), name) == null) {
                             throw Slots.nameError(frame.name(arg));
                         }
-                        frame.globals().getItems().remove(PyStr.interned(frame.name(arg)));
+                        Slots.delItem(frame.globals(), name);
                         break;
+                    }
 
                     // --- cells and free variables --------------------------------------------
                     case Opcodes.MAKE_CELL: {
@@ -375,10 +378,14 @@ public final class Interpreter {
                         break;
                     }
                     case Opcodes.COPY_FREE_VARS: {
-                        PyCell[] cells = frame.function.closureCells();
-                        int offset = frame.code().localCount() - arg;
-                        for (int i = 0; i < arg; i++) {
-                            frame.setSlot(offset + i, cells[i]);
+                        // An exec'd code object arrives with no function to copy from: `exec(..., closure=...)`
+                        // has already placed the cells in the trailing slots, so the copy is a no-op.
+                        if (frame.function != null) {
+                            PyCell[] cells = frame.function.closureCells();
+                            int offset = frame.code().localCount() - arg;
+                            for (int i = 0; i < arg; i++) {
+                                frame.setSlot(offset + i, cells[i]);
+                            }
                         }
                         break;
                     }
@@ -1346,25 +1353,11 @@ public final class Interpreter {
      * fallback behaves.
      */
     private static PyObject readMapping(PyObject mapping, PyStr name) {
-        if (mapping instanceof PyDict dict) {
-            return dict.get(name);
-        }
-        try {
-            return Slots.getItem(mapping, name);
-        } catch (PyRaise missing) {
-            if (!missing.value().exceptionType().matches(ExceptionTypes.KEY_ERROR)) {
-                throw missing;
-            }
-            return null;
-        }
+        return Slots.mappingGet(mapping, name);
     }
 
     private static void putMapping(PyObject mapping, PyStr name, PyObject value) {
-        if (mapping instanceof PyDict dict) {
-            dict.put(name, value);
-        } else {
-            Slots.setItem(mapping, name, value);
-        }
+        Slots.mappingPut(mapping, name, value);
     }
 
     private static PyObject loadName(Frame frame, String name) {
@@ -1376,7 +1369,7 @@ public final class Interpreter {
     /** Globals, then the frame's own builtins: CPython's order for a name that is not local. */
     private static PyObject lookupGlobal(Frame frame, String name) {
         PyStr key = PyStr.interned(name);
-        PyObject value = frame.globals().get(key);
+        PyObject value = readMapping(frame.globals(), key);
         if (value != null) {
             return value;
         }
@@ -1708,7 +1701,7 @@ public final class Interpreter {
                     "argument to MAKE_FUNCTION must be a code object, not %s",
                     value.getType().name());
         }
-        return new PyFunction(code, frame.globals());
+        return new PyFunction(code, frame.globalsDict());
     }
 
     // --- misc ---------------------------------------------------------------------------

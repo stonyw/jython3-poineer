@@ -491,8 +491,9 @@ final class Classes {
         // did — which a class statement's body always does, since the compiler writes `__module__` first.
         if (dict.get(PyStr.interned("__module__")) == null) {
             Frame caller = Interpreter.currentFrame();
-            PyObject module =
-                    caller == null ? null : caller.globals().get(PyStr.interned("__name__"));
+            PyObject module = caller == null
+                    ? null
+                    : Slots.mappingGet(caller.globals(), PyStr.interned("__name__"));
             if (module != null) {
                 dict.put(PyStr.interned("__module__"), module);
             }

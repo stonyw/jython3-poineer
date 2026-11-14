@@ -1495,7 +1495,10 @@ final class Builtins {
         Arguments.noKeywords("dir()", kwNames);
         Arguments.atMost("dir", args, kwNames, 1);
         if (args.length == 0) {
-            return sorted(new PyObject[] {currentLocals()}, null);
+            // The reference asks the frame's locals for `keys()` — not for its iteration — so a mapping
+            // handed to `exec`/`eval` as locals answers its own key list, in whatever order it keeps.
+            PyObject keys = Slots.getAttr(currentLocals(), "keys");
+            return sorted(new PyObject[] {Slots.call(keys, new PyObject[0], null)}, null);
         }
         PyObject[] items = Dirs.itemsOf(args[0]).toArray(new PyObject[0]);
         return sorted(new PyObject[] {PyList.of(items)}, null);
@@ -1516,7 +1519,10 @@ final class Builtins {
     // --- code builtins ---------------------------------------------------------------------
 
     private static final String[] NAMESPACE_NAMES = {"source", "globals", "locals"};
-    private static final PyObject[] NAMESPACE_DEFAULTS = {PyNone.INSTANCE, PyNone.INSTANCE};
+    /** {@code eval}'s parameters: {@code source} is positional-only, as its reference signature says. */
+    private static final String[] EVAL_NAMES = {"", "globals", "locals"};
+    /** {@code exec}'s parameter list: the same three, plus 3.14's keyword-only {@code closure}. */
+    private static final String[] EXEC_NAMES = {"", "globals", "locals", "closure"};
 
     private static final String[] COMPILE_NAMES = {
         "source", "filename", "mode", "flags", "dont_inherit", "optimize", "_feature_version"
@@ -1564,42 +1570,106 @@ final class Builtins {
         return hook.call(args, PyBoundMethod.keywordTuple(kwNames));
     }
 
-    /** {@code eval(source, globals=None, locals=None)}: one expression's value. */
+    /** {@code eval(source, /, globals=None, locals=None)}: one expression's value. */
     private static PyObject evaluate(PyObject[] args, String[] kwNames) {
-        PyObject[] given = Arguments.fill("eval", args, kwNames, NAMESPACE_NAMES, NAMESPACE_DEFAULTS);
-        Arguments.required("eval", NAMESPACE_NAMES, given, 0);
+        // The reference words eval's arity refusal "arguments" rather than "positional arguments" —
+        // its parser has no keyword-only parameter — so that one sentence is raised before the clinic
+        // unpacker, which would say it the other way.
+        if (Arguments.positional(args, kwNames) > NAMESPACE_NAMES.length) {
+            throw Slots.typeError(
+                    "eval() takes at most %d arguments (%d given)",
+                    NAMESPACE_NAMES.length, args.length);
+        }
+        PyObject[] given =
+                Arguments.unpackKeywords("eval", args, kwNames, EVAL_NAMES, 1, EVAL_NAMES.length);
         PyCode code = evaluatingCode(given[0]);
-        PyDict globals;
-        PyDict locals;
-        if (given[1] == PyNone.INSTANCE) {
+        PyObject globals;
+        PyObject locals;
+        if (given[1] == null || given[1] == PyNone.INSTANCE) {
             globals = runningGlobals();
-            locals = localValues();
+            locals = given[2] == null || given[2] == PyNone.INSTANCE
+                    ? localValues()
+                    : localsOf("eval", given[2]);
         } else {
-            globals = namespaceOf("eval", given[1], "globals");
-            locals = given[2] == PyNone.INSTANCE
+            globals = globalsOf("eval", given[1]);
+            locals = given[2] == null || given[2] == PyNone.INSTANCE
                     ? globals
-                    : namespaceOf("eval", given[2], "locals");
+                    : localsOf("eval", given[2]);
         }
         return PyRuntime.runIn(code, globals, locals);
     }
 
-    /** {@code exec(source, globals=None, locals=None)}: statements, answering None. */
+    /**
+     * {@code exec(source, /, globals=None, locals=None, *, closure=None)}: statements, answering None.
+     *
+     * <p>{@code closure} is 3.14's addition: it lets a function's code object — one whose free variables
+     * would otherwise have no function to copy them from — run at top level, with the cells handed over
+     * as a tuple. The argument parser is the clinic one, so {@code source} is positional-only and
+     * {@code closure} keyword-only.
+     */
     private static PyObject execute(PyObject[] args, String[] kwNames) {
-        PyObject[] given = Arguments.fill("exec", args, kwNames, NAMESPACE_NAMES, NAMESPACE_DEFAULTS);
-        Arguments.required("exec", NAMESPACE_NAMES, given, 0);
+        PyObject[] given = Arguments.unpackKeywords(
+                "exec", args, kwNames, EXEC_NAMES, 1, EXEC_NAMES.length - 1);
         PyCode code = codeOf("exec", given[0], "<string>", false);
-        PyDict globals;
-        PyDict locals;
-        if (given[1] == PyNone.INSTANCE) {
+        PyCell[] closure = closureOf(given[0], given[3], code);
+        PyObject globals;
+        PyObject locals;
+        if (given[1] == null || given[1] == PyNone.INSTANCE) {
             globals = runningGlobals();
-            locals = localValues();
+            locals = given[2] == null || given[2] == PyNone.INSTANCE
+                    ? localValues()
+                    : localsOf("exec", given[2]);
         } else {
-            globals = namespaceOf("exec", given[1], "globals");
-            locals = given[2] == PyNone.INSTANCE
+            globals = globalsOf("exec", given[1]);
+            locals = given[2] == null || given[2] == PyNone.INSTANCE
                     ? globals
-                    : namespaceOf("exec", given[2], "locals");
+                    : localsOf("exec", given[2]);
         }
-        return PyRuntime.runIn(code, globals, locals);
+        PyRuntime.runIn(code, globals, locals, closure);
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * The cells {@code exec(..., closure=...)} hands a code object's free variables.
+     *
+     * <p>Absent and {@code None} are the same thing — "no closure" — which is only an error when the
+     * code object has free variables. Everything else is refused with the two sentences the reference
+     * uses: a closure with a source that is not a code object, one for code that needs none, and one
+     * whose shape or contents do not match exactly.
+     */
+    private static PyCell[] closureOf(PyObject source, PyObject value, PyCode code) {
+        boolean given = value != null && value != PyNone.INSTANCE;
+        if (given && !(source instanceof PyCode)) {
+            throw Slots.typeError("closure can only be used when source is a code object");
+        }
+        int free = code.freeVars().size();
+        if (!given) {
+            if (free > 0) {
+                throw Slots.typeError(
+                        "code object requires a closure of exactly length %d", free);
+            }
+            return null;
+        }
+        if (free == 0) {
+            throw Slots.typeError("cannot use a closure with this code object");
+        }
+        PyCell[] cells = new PyCell[free];
+        PyTuple tuple = value instanceof PyTuple candidate ? candidate : null;
+        if (tuple != null && tuple.size() != free) {
+            tuple = null;
+        }
+        boolean exact = tuple != null;
+        for (int i = 0; exact && i < free; i++) {
+            if (!(tuple.at(i) instanceof PyCell cell)) {
+                exact = false;
+            } else {
+                cells[i] = cell;
+            }
+        }
+        if (!exact) {
+            throw Slots.typeError("code object requires a closure of exactly length %d", free);
+        }
+        return cells;
     }
 
     /**
@@ -1799,31 +1869,62 @@ final class Builtins {
     }
 
     /**
-     * A namespace argument of {@code eval} and {@code exec}: the dictionary given, with
-     * {@code __builtins__} added when it is not already there, as CPython does before running code
-     * in a caller's dictionary.
+     * The globals argument of {@code eval} and {@code exec}: a dictionary or a dictionary subclass,
+     * with {@code __builtins__} added when the caller did not put one there.
+     *
+     * <p>A subclass's {@code __setitem__} is deliberately not asked: CPython inserts the key with
+     * {@code PyDict_SetItem}, which writes straight into a dictionary subclass's storage. That is why a
+     * read-only mapping passed as globals fails at the first name its code binds, not at this insert.
+     * The two sentences differ between the two builtins in the reference, so they are reproduced here
+     * rather than shared.
      */
-    private static PyDict namespaceOf(String name, PyObject value, String role) {
-        if (!(value instanceof PyDict dict)) {
+    private static PyObject globalsOf(String name, PyObject value) {
+        PyDict storage;
+        if (value instanceof PyDict dict) {
+            storage = dict;
+        } else if (value instanceof PyDictInstance instance) {
+            storage = instance.entries();
+        } else if (name.equals("eval")) {
+            throw Slots.typeError("globals must be a dict");
+        } else {
             throw Slots.typeError(
-                    "%s() %s must be a dict, not %s", name, role, value.getType().name());
+                    "%s() globals must be a dict, not %s", name, value.getType().name());
         }
-        if (dict.get(BUILTINS_NAME) == null) {
-            dict.put(BUILTINS_NAME, PyRuntime.builtins());
+        if (storage.get(BUILTINS_NAME) == null) {
+            storage.put(BUILTINS_NAME, PyRuntime.builtins());
         }
-        return dict;
+        return value;
+    }
+
+    /**
+     * The locals argument of {@code eval} and {@code exec}: any mapping, asked through its own
+     * {@code __getitem__}/{@code __setitem__}.
+     *
+     * <p>The reference's test is {@code PyMapping_Check}, which is "the type has an
+     * {@code mp_subscript}", and a Python class has one exactly when it defines {@code __getitem__} —
+     * so a class with only {@code keys()} is not a mapping while one with only {@code __getitem__} is.
+     */
+    private static PyObject localsOf(String name, PyObject value) {
+        if (value instanceof PyDict || Slots.findAttr(value, "__getitem__") != null) {
+            return value;
+        }
+        if (name.equals("eval")) {
+            throw Slots.typeError("locals must be a mapping");
+        }
+        throw Slots.typeError(
+                "locals must be a mapping or None, not %s", value.getType().name());
     }
 
     private static final PyStr BUILTINS_NAME = PyStr.interned("__builtins__");
 
     /** The globals of the running frame, or {@code __main__}'s when a builtin is called from Java. */
-    private static PyDict runningGlobals() {
+    private static PyObject runningGlobals() {
         Frame frame = Interpreter.currentFrame();
         return frame == null ? PyRuntime.mainModule().dictionary() : frame.globals();
     }
 
-    /** The locals of the running frame as a dictionary, the {@code locals()} answer. */
-    private static PyDict localValues() {
+    /** The locals of the running frame as a mapping, the {@code locals()} answer. */
+    private static PyObject localValues() {
         Frame frame = Interpreter.currentFrame();
         return frame == null ? PyRuntime.mainModule().dictionary() : frame.localValues();
     }

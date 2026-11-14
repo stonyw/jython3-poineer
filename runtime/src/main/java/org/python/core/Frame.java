@@ -15,9 +15,19 @@ package org.python.core;
 public final class Frame {
 
     private final PyCode code;
-    private final PyDict globals;
-    /** {@code f_locals}: the module's dictionary at module level, null in optimized code. */
-    private final PyDict locals;
+    /**
+     * {@code f_globals}: the namespace the caller handed to {@code exec}/{@code eval}, or a module's
+     * dictionary. A dictionary subclass is kept as itself rather than copied, because the reference
+     * asks it through its own {@code __getitem__}/{@code __setitem__} — that is what makes a read-only
+     * globals mapping observable.
+     */
+    private final PyObject globals;
+    /**
+     * {@code f_locals}: the mapping a module or class body writes its names into, null in optimized
+     * code. {@code exec}/{@code eval} may be given any mapping here, which is why this is not a
+     * dictionary.
+     */
+    private final PyObject locals;
 
     /**
      * The mapping a class body writes into when the metaclass's {@code __prepare__} returned something
@@ -110,7 +120,7 @@ public final class Frame {
      */
     private boolean delegating;
 
-    Frame(PyCode code, PyDict globals, PyObject[] slots) {
+    Frame(PyCode code, PyObject globals, PyObject[] slots) {
         this(code, globals, (code.flags() & PyCode.CO_OPTIMIZED) == 0 ? globals : null, slots);
     }
 
@@ -122,7 +132,7 @@ public final class Frame {
      * prepared. The two dictionaries stay separate — {@code LOAD_NAME} reads the class dictionary first
      * and the module's only for a name the body has not defined.
      */
-    Frame(PyCode code, PyDict globals, PyDict locals, PyObject[] slots) {
+    Frame(PyCode code, PyObject globals, PyObject locals, PyObject[] slots) {
         this(code, globals, locals, null, slots);
     }
 
@@ -134,7 +144,7 @@ public final class Frame {
      * itself, which is how {@code EnumDict.__setitem__} sees every member; keeping the dictionary too
      * lets {@code LOAD_NAME} and {@code f_locals} read the same names back without a mapping call.
      */
-    Frame(PyCode code, PyDict globals, PyDict locals, PyObject namespace, PyObject[] slots) {
+    Frame(PyCode code, PyObject globals, PyObject locals, PyObject namespace, PyObject[] slots) {
         this.code = code;
         this.globals = globals;
         this.locals = locals;
@@ -149,8 +159,20 @@ public final class Frame {
         return code;
     }
 
-    public PyDict globals() {
+    public PyObject globals() {
         return globals;
+    }
+
+    /**
+     * The globals as a real {@link PyDict}, for the one thing that requires one: a function object made
+     * by {@code MAKE_FUNCTION}. A dictionary subclass keeps its entries in a dictionary of its own, so
+     * that dictionary is the answer; every other frame is a module frame, whose globals are already it.
+     */
+    PyDict globalsDict() {
+        if (globals instanceof PyDict dict) {
+            return dict;
+        }
+        return globals instanceof PyDictInstance instance ? instance.entries() : PyDict.empty();
     }
 
     /**
@@ -163,15 +185,15 @@ public final class Frame {
      * its own; that is what makes a read-only or checked builtins table observable.
      */
     PyObject builtins() {
-        PyObject value = globals.get(PyStr.interned("__builtins__"));
+        PyObject value = Slots.mappingGet(globals, PyStr.interned("__builtins__"));
         if (value instanceof PyModule module) {
             return module.dictionary();
         }
         return value != null ? value : PyRuntime.builtins();
     }
 
-    /** The dictionary {@code LOAD_NAME} and {@code STORE_NAME} address, or null when there is none. */
-    public PyDict locals() {
+    /** The mapping {@code LOAD_NAME} and {@code STORE_NAME} address, or null when there is none. */
+    public PyObject locals() {
         return locals;
     }
 
@@ -210,7 +232,7 @@ public final class Frame {
      * its slots on request; this reads the slots into a new dict in the same order, following a cell to
      * what it holds and leaving a name out while its slot is empty.
      */
-    PyDict localValues() {
+    PyObject localValues() {
         if (cleared) {
             return PyDict.empty();
         }

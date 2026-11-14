@@ -404,6 +404,38 @@ public final class Slots {
     }
 
     /**
+     * {@code mapping[key]} with a {@code KeyError} read as "the name is not there": the read half of
+     * {@code LOAD_NAME}, {@code STORE_NAME} and {@code globals()}.
+     *
+     * <p>The reference asks a namespace through {@code PyObject_GetItem}, so a dictionary subclass that
+     * overrides {@code __getitem__} is asked its own way; only an exact dictionary takes the plain
+     * lookup. {@link PyDict} is final, so the type test <em>is</em> the exactness test. Any exception
+     * other than {@code KeyError} is the mapping's own answer and travels out.
+     */
+    static PyObject mappingGet(PyObject mapping, PyObject key) {
+        if (mapping instanceof PyDict dict) {
+            return dict.get(key);
+        }
+        try {
+            return getItem(mapping, key);
+        } catch (PyRaise missing) {
+            if (!missing.value().exceptionType().matches(ExceptionTypes.KEY_ERROR)) {
+                throw missing;
+            }
+            return null;
+        }
+    }
+
+    /** {@code mapping[key] = value}: the write half, with the same exact-dictionary fast path. */
+    static void mappingPut(PyObject mapping, PyObject key, PyObject value) {
+        if (mapping instanceof PyDict dict) {
+            dict.put(key, value);
+        } else {
+            setItem(mapping, key, value);
+        }
+    }
+
+    /**
      * {@code item in container}, as {@code CONTAINS_OP} wants it: both sides get a chance, and a
      * refusal for a value that has neither {@code __contains__} nor an iteration protocol is an
      * error rather than a false.
