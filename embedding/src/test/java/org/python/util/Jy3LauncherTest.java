@@ -505,13 +505,19 @@ class Jy3LauncherTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("m6aCorpus")
     void anM6aCorpusScriptAnswersExactlyAsCpythonAnswers(String scriptName) throws Exception {
-        if (scriptName.equals("16_array.py")) {
-            // The reference warns when a 'u' array is made; this runtime has no warnings module, so the
-            // sentence is kept out of both streams rather than compared against a stream that lacks it.
-            answersExactlyAsCpythonWithOptions(
-                    "m6a/corpus",
-                    scriptName,
-                    List.of("-W", "ignore::DeprecationWarning"));
+        if (scriptName.equals("28_warnings_command_line.py")) {
+            // One script, one comparison per -W combination: the filters, the default action and the
+            // registry all answer differently, and every answer has to agree byte for byte.
+            for (List<String> options : List.of(
+                    List.<String>of(),
+                    List.of("-W", "ignore"),
+                    List.of("-W", "once"),
+                    List.of("-W", "always"),
+                    List.of("-W", "error::UserWarning"),
+                    List.of("-W", "module::UserWarning"),
+                    List.of("-W", "default::DeprecationWarning"))) {
+                answersExactlyAsCpythonWithOptions("m6a/corpus", scriptName, options);
+            }
             return;
         }
         answersExactlyAsCpython("m6a/corpus", scriptName);
@@ -544,7 +550,9 @@ class Jy3LauncherTest {
                 "23_asyncio_io.py",
                 "24_threads.py",
                 "25_decimal.py",
-                "26_array_pickle_buffer.py");
+                "26_array_pickle_buffer.py",
+                "27_warnings_filters.py",
+                "28_warnings_command_line.py");
     }
 
     /**

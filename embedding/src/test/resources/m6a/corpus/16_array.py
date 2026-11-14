@@ -1,3 +1,10 @@
+import sys
+
+# `warnings` is standard library and this runtime has no library of its own, so the reference's is
+# put on the path before `array` is built: the deprecated 'u' typecode warns through it.
+STD = "/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14"
+sys.path.insert(0, STD)
+
 import array
 
 # The file surface is measured with a Python object that has the two rows `fromfile`/`tofile` use,

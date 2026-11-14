@@ -141,6 +141,16 @@ public final class jy3 {
         boolean stdin = false;
         int at = 0;
         List<String> warnOptions = new ArrayList<>();
+        // `PYTHONWARNINGS` is the same list as `-W`, read before the switches: the reference appends
+        // the command line's entries after the environment's, and empty fields are dropped from both.
+        String fromEnvironment = System.getenv("PYTHONWARNINGS");
+        if (fromEnvironment != null) {
+            for (String entry : fromEnvironment.split(",")) {
+                if (!entry.isEmpty()) {
+                    warnOptions.add(entry);
+                }
+            }
+        }
         List<String> xOptions = new ArrayList<>();
         boolean devMode = false;
         boolean quiet = false;
@@ -385,6 +395,18 @@ public final class jy3 {
         // After startup, because the finders it installs go into the module table startup builds.
         JavaInterop.install();
         PyRuntime.setSourceCompiler(Cpython314Compiler.COMPILER);
+        // `-W` and `PYTHONWARNINGS` are replayed by `warnings` itself when it is imported, so the
+        // reference imports it during startup whenever it has options; doing the same is what puts
+        // the module in `sys.modules` before the script runs and what reports a malformed option.
+        if (!PyRuntime.warnOptions().isEmpty()) {
+            try {
+                PyRuntime.importModule("warnings");
+            } catch (PyRaise missing) {
+                if (!missing.value().matches(ExceptionTypes.MODULE_NOT_FOUND_ERROR)) {
+                    throw missing;
+                }
+            }
+        }
     }
 
     /**

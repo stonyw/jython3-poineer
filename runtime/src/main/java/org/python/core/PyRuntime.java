@@ -47,7 +47,7 @@ public final class PyRuntime {
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "zlib", "array", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
-                "unicodedata", "resource", "_typing", "_testinternalcapi"};
+                "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -120,6 +120,18 @@ public final class PyRuntime {
     /** Record what the launcher parsed; called once, before {@link #startup()}. */
     public static void setCommandLine(CommandLine switches) {
         commandLine = switches;
+    }
+
+    /**
+     * The {@code -W} switches the launcher read, in order, after {@code PYTHONWARNINGS}.
+     *
+     * <p>The launcher asks for them when it decides whether to import {@code warnings} before user
+     * code runs: the reference loads the module during startup whenever it has options to replay,
+     * which is what makes {@code sys.modules['warnings']} exist under {@code -Wi} and what prints the
+     * complaint about an option the filter syntax cannot parse.
+     */
+    public static List<String> warnOptions() {
+        return commandLine.warnOptions();
     }
 
     /**
@@ -785,6 +797,11 @@ public final class PyRuntime {
         // imported while `sys` is still being assembled.
         if (name.equals("array")) {
             return keep(ArrayModule.newModule(), name);
+        }
+        // `_warnings` is built on first import for the same reason plus one of its own: its default
+        // filters are `re` patterns, and `re` is Python that cannot be imported at startup.
+        if (name.equals("_warnings")) {
+            return keep(WarningsModule.install(), name);
         }
         return null;
     }
@@ -2321,14 +2338,34 @@ public final class PyRuntime {
 
     /** CPython's one warning for a name it cannot import; a warning promoted to an error propagates. */
     private static void ignoreBreakpointSetting(String setting) {
-        PyObject warnings = PyRuntime.importModule("warnings");
-        PyObject category = Slots.getAttr(PyRuntime.importModule("builtins"), "RuntimeWarning");
+        warn("Ignoring unimportable $PYTHONBREAKPOINT: \"" + setting + "\"", "RuntimeWarning");
+    }
+
+    /**
+     * {@code PyErr_WarnEx}: report a warning raised from a Java-implemented operation.
+     *
+     * <p>The caller has no Python frame of its own, so {@code warnings.warn} with the default
+     * {@code stacklevel} attributes the warning to the frame that called into this runtime — which is
+     * what the C function does when its {@code stacklevel} is 1.
+     *
+     * <p>{@code warnings} is the reference's own {@code warnings.py}; a run with no standard library
+     * reachable has none to import, and that run keeps going rather than turning a warning into an
+     * error the reference never raises.
+     */
+    static void warn(String message, String categoryName) {
+        PyObject warnings;
+        try {
+            warnings = importModule("warnings");
+        } catch (PyRaise missing) {
+            if (missing.value().exceptionType().matches(ExceptionTypes.MODULE_NOT_FOUND_ERROR)) {
+                return;
+            }
+            throw missing;
+        }
+        PyObject category = Slots.getAttr(importModule("builtins"), categoryName);
         Slots.call(
                 Slots.getAttr(warnings, "warn"),
-                new PyObject[] {
-                    PyStr.of("Ignoring unimportable $PYTHONBREAKPOINT: \"" + setting + "\""),
-                    category
-                },
+                new PyObject[] {PyStr.of(message), category},
                 null);
     }
 

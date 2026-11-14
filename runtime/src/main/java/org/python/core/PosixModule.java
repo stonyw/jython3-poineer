@@ -9,6 +9,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
@@ -700,7 +701,15 @@ final class PosixModule {
                 function, args, kwNames, PATH_AND_FOLLOW, PATH_AND_FOLLOW_DEFAULTS, 1);
         FsPath path = fsPath(values[0], function);
         boolean follows = follow && Slots.truth(values[1]);
-        Path target = resolve(path.text());
+        Path target;
+        try {
+            target = resolve(path.text());
+        } catch (InvalidPathException unrepresentable) {
+            // A path with a lone surrogate is one the reference encodes back to the byte it stands for
+            // and then asks the file system about. The JVM cannot name that file, so the honest answer
+            // is the one the file system gives for a name that is not there.
+            throw failure(new NoSuchFileException(path.text()), path);
+        }
         LinkOption[] options = follows
                 ? new LinkOption[0]
                 : new LinkOption[] {LinkOption.NOFOLLOW_LINKS};

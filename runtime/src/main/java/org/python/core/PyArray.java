@@ -75,6 +75,13 @@ class PyArray extends PyObject {
             throw Slots.typeError("array() takes at most 2 arguments (%d given)", args.length);
         }
         char code = codeOf(args[0]);
+        if (code == 'u') {
+            // The reference keeps the deprecated code but says so at construction, once per call site
+            // under the default filter: `array_new` warns, `array_init` and the copy paths do not.
+            PyRuntime.warn(
+                    "The 'u' type code is deprecated and will be removed in Python 3.16",
+                    "DeprecationWarning");
+        }
         PyArray array = subclass && kind != PyType.ARRAY
                 ? new PyArraySubclass(kind, code)
                 : new PyArray(kind, code);
