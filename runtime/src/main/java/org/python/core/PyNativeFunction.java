@@ -70,6 +70,18 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     private final boolean onType;
 
     /**
+     * Whether this is a method filed in a class's own namespace — {@code defaultdict.__missing__} — rather
+     * than a plain builtin.
+     *
+     * <p>CPython writes such a member as a {@code PyMethodDef} row of the type, so its dictionary holds a
+     * method descriptor and a read off a value binds that value. A hand-built class has no method table to
+     * compile one from, so the function itself says it binds: the read makes a {@link PyBoundBuiltin} that
+     * hands the body its receiver first. A {@code staticmethod} row and the function a module exports stay
+     * not descriptors, which is the difference {@code bytes.maketrans is b''.maketrans} rests on.
+     */
+    private final boolean method;
+
+    /**
      * The type whose dictionary holds this class method, or {@code null} for every other builtin.
      *
      * <p>A {@code classmethod_descriptor} names its declaring type in three places: as {@code
@@ -98,7 +110,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     private PyObject module;
 
     public PyNativeFunction(String name, Body body) {
-        this(name, body, null, null, null, false, null);
+        this(name, body, null, null, null, false, null, false);
     }
 
     private PyNativeFunction(
@@ -108,7 +120,8 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
             String doc,
             PyType declaredBy,
             boolean onType,
-            PyType declaring) {
+            PyType declaring,
+            boolean method) {
         super(
                 onType && receiver == null
                         ? PyType.CLASS_METHOD_DESCRIPTOR
@@ -120,6 +133,18 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
         this.declaredBy = declaredBy;
         this.onType = onType;
         this.declaring = declaring;
+        this.method = method;
+    }
+
+    /**
+     * A method of a class whose dictionary is written by hand rather than compiled from a table.
+     *
+     * <p>{@code _collections.defaultdict} is the one such class: its three members take a receiver the way
+     * {@code defdict_missing} does, and a read off a value has to bind it. Everything else built here is a
+     * module function or a class method and is filed by the factory below or by {@link Members}.
+     */
+    public static PyNativeFunction method(String name, Body body) {
+        return new PyNativeFunction(name, body, null, null, null, false, null, true);
     }
 
     /**
@@ -129,7 +154,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * {@code bool.from_bytes} are two objects naming two different classes over one body.
      */
     static PyNativeFunction onType(PyType owner, String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, null, true, owner);
+        return new PyNativeFunction(name, body, null, null, null, true, owner, false);
     }
 
     /**
@@ -140,17 +165,17 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * that names it.
      */
     static PyNativeFunction declaredBy(PyType owner, String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, owner, false, null);
+        return new PyNativeFunction(name, body, null, null, owner, false, null, false);
     }
 
     /** This method read through {@code owner}, with the receiver already attached to it. */
     PyNativeFunction withReceiver(PyObject owner) {
-        return keeping(new PyNativeFunction(name, body, owner, doc, declaredBy, onType, declaring));
+        return keeping(new PyNativeFunction(name, body, owner, doc, declaredBy, onType, declaring, method));
     }
 
     /** This function answering {@code __doc__} with {@code text} rather than with {@code None}. */
     PyNativeFunction documented(String text) {
-        return keeping(new PyNativeFunction(name, body, receiver, text, declaredBy, onType, declaring));
+        return keeping(new PyNativeFunction(name, body, receiver, text, declaredBy, onType, declaring, method));
     }
 
     /**
@@ -205,7 +230,24 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      */
     @Override
     public PyObject asAttribute(PyObject obj, PyObject owner) {
-        return onType && receiver == null ? boundTo(owner) : this;
+        if (onType && receiver == null) {
+            return boundTo(owner);
+        }
+        if (method && obj != null) {
+            return new PyBoundBuiltin(
+                    name,
+                    doc,
+                    0,
+                    (self, args, kwNames) -> {
+                        PyObject[] all = new PyObject[args.length + 1];
+                        all[0] = self;
+                        System.arraycopy(args, 0, all, 1, args.length);
+                        return body.apply(all, kwNames);
+                    },
+                    obj,
+                    obj.adaptedFor(obj.getType()));
+        }
+        return this;
     }
 
     /**
@@ -229,10 +271,13 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
         return withReceiver(owner);
     }
 
-    /** Only a class method is a descriptor; a static method or a plain builtin is not one. */
+    /**
+     * Only a class method or a method of a hand-written class is a descriptor; a static method or a plain
+     * builtin is not one.
+     */
     @Override
     public boolean binds() {
-        return onType;
+        return onType || method;
     }
 
     /** The name CPython qualifies a receiver-bound method with: {@code int.mro}. */

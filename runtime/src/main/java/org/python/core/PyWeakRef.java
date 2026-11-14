@@ -70,6 +70,33 @@ final class PyWeakRef extends PyObject implements Weakref.Holder {
         return Weakref.hashOf(this);
     }
 
+    /** Whether {@link #frozenHash} has been computed, and the value it froze. */
+    private boolean hashed;
+
+    private int frozenHash;
+
+    /**
+     * Java's hash: the answer {@link #hash()} gave the first time it was asked, kept after the
+     * referent dies.
+     *
+     * <p>A container that holds references — {@code weakref.WeakSet}'s {@code data} — hashes each
+     * one when it is put in, and hashes them again when the container is copied. CPython never
+     * copies a reference whose subject is already gone, because the reference's callback removes it
+     * at that moment; this runtime has no such callback (see the class comment on {@link PyWeakRef}),
+     * so a dead reference stays in the container and the copy would raise. Freezing the first
+     * answer keeps the copy working while {@code hash(ref)} itself still refuses once gone, which is
+     * the answer a program sees.
+     */
+    @Override
+    public int hashCode() {
+        if (!hashed) {
+            long h = Weakref.hashOf(this);
+            frozenHash = (int) (h ^ (h >>> 32));
+            hashed = true;
+        }
+        return frozenHash;
+    }
+
     @Override
     public boolean eq(PyObject other) {
         return Weakref.equal(this, other);

@@ -41,13 +41,13 @@ final class CollectionsModule {
         namespace.put(PyStr.interned("__qualname__"), PyStr.of("defaultdict"));
         namespace.put(
                 PyStr.interned("__init__"),
-                new PyNativeFunction("__init__", CollectionsModule::defaultDictInit));
+                PyNativeFunction.method("__init__", CollectionsModule::defaultDictInit));
         namespace.put(
                 PyStr.interned("__missing__"),
-                new PyNativeFunction("__missing__", CollectionsModule::defaultDictMissing));
+                PyNativeFunction.method("__missing__", CollectionsModule::defaultDictMissing));
         namespace.put(
                 PyStr.interned("__repr__"),
-                new PyNativeFunction("__repr__", CollectionsModule::defaultDictRepr));
+                PyNativeFunction.method("__repr__", CollectionsModule::defaultDictRepr));
         return Classes.declare(
                 "defaultdict", PyTuple.of(PyType.DICT), namespace, PyType.TYPE, new PyObject[0], null);
     }

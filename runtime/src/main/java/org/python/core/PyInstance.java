@@ -687,10 +687,17 @@ public class PyInstance extends PyObject {
         return text.getValue();
     }
 
-    /** What the class's own method named {@code name} answers, or null when it declares none. */
+    /**
+     * What the class's method named {@code name} answers, or null when it declares none.
+     *
+     * <p>A built-in member of a hand-built class — {@code defaultdict.__repr__} — binds here like any other
+     * method, so the two ways a class can file one both answer.
+     */
     private PyObject displayed(String name) {
-        PyFunction method = Specials.function(type, name);
-        return method == null ? null : method.call(new PyObject[] {this}, null);
+        PyObject answer = Specials.invoke(this, name);
+        // Only "the class declares no such method" is absence. A method that answered
+        // `NotImplemented` has answered, and `str`/`repr` report the wrong type it returned.
+        return answer == Slots.DECLINED ? null : answer;
     }
 
     /** CPython's {@code object.__repr__} says where the value is; an address this runtime has no use for. */

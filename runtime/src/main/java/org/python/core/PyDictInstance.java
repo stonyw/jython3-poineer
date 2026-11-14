@@ -82,9 +82,15 @@ final class PyDictInstance extends PyInstance {
      */
     @Override
     public PyObject getItem(PyObject key) {
-        PyObject answer = Specials.invoke(this, "__getitem__", key);
-        if (!Slots.declined(answer)) {
-            return answer;
+        // `dict.__getitem__` inherited unchanged is not a declaration of this class: what it does is
+        // the entries lookup below, and its KeyError would leave `__missing__` unasked — the one
+        // protocol a `defaultdict` has. Only a class that files something else under the name gets
+        // the first say, and then its answer (or its own KeyError) is the whole answer.
+        if (Specials.lookUp(type, "__getitem__") != Specials.lookUp(PyType.DICT, "__getitem__")) {
+            PyObject answer = Specials.invoke(this, "__getitem__", key);
+            if (!Slots.declined(answer)) {
+                return answer;
+            }
         }
         try {
             return entries.getItem(key);

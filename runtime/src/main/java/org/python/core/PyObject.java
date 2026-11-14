@@ -407,7 +407,7 @@ public abstract class PyObject {
 
     /** The int form of {@link #hash()}, for use as a Java key. */
     @Override
-    public final int hashCode() {
+    public int hashCode() {
         long h = hash();
         return (int) (h ^ (h >>> 32));
     }

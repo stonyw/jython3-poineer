@@ -538,7 +538,8 @@ class Jy3LauncherTest {
                 "17_re_unicode_classes.py",
                 "18_re_conditionals.py",
                 "19_buffer_protocol.py",
-                "20_asyncio_subset.py");
+                "20_asyncio_subset.py",
+                "21_defaultdict_binding.py");
     }
 
     /**
