@@ -35,7 +35,10 @@ final class PyBytesIO extends PyIOStream {
             .add("__enter__", (self, args, kwNames) -> ((PyBytesIO) self).enter(args, kwNames))
             .add("__exit__", (self, args, kwNames) -> ((PyBytesIO) self).exit(args))
             .add("__iter__", PyBytesIO::iterRow)
-            .add("__next__", PyBytesIO::nextRow);
+            .add("__next__", PyBytesIO::nextRow)
+            .addClassNamed("__new__", PyBytesIO::newRow)
+            .add("__getstate__", PyBytesIO::getStateRow)
+            .add("__setstate__", PyBytesIO::setStateRow);
 
     private byte[] data = new byte[0];
 
@@ -59,12 +62,74 @@ final class PyBytesIO extends PyIOStream {
         PyObject[] given = Arguments.unpackKeywords(
                 kind.name(), args, kwNames, new String[] {"initial_bytes"}, 0, 1);
         PyBytesIO stream = new PyBytesIO(kind);
-        if (given[0] != null) {
+        // `io.BytesIO(None)` is an empty buffer in the reference: the creator reads only a bytes-like
+        // object and treats the default the clinic writes as absent rather than as an octet sequence.
+        if (given[0] != null && given[0] != PyNone.INSTANCE) {
             byte[] initial = octetsOf(given[0]);
             stream.data = initial.clone();
             stream.length = initial.length;
         }
         return stream;
+    }
+
+    /**
+     * {@code io.BytesIO.__new__(cls)}: the empty buffer {@code bytesio_new} builds.
+     *
+     * <p>The creator reads neither arguments nor keywords — {@code io.BytesIO.__new__(io.BytesIO, b'x')}
+     * is the empty buffer — and refuses a class that is not a subtype in the words of
+     * {@code tp_new_wrapper}. This row is what {@code copyreg.__newobj__} reaches when a
+     * {@code TarFile} holding a buffer is copied; without it the walk ends at {@code object.__new__},
+     * which refuses to build a {@code BytesIO}.
+     */
+    private static PyObject newRow(PyObject kind, PyObject[] args, String[] kwNames) {
+        if (!(kind instanceof PyType subtype)) {
+            throw Slots.typeError(
+                    "_io.BytesIO.__new__(X): X is not a type object (%s)", kind.getType().name());
+        }
+        if (!subtype.matches(PyType.BYTES_IO)) {
+            throw Slots.typeError(
+                    "_io.BytesIO.__new__(%s): %s is not a subtype of _io.BytesIO",
+                    subtype.filedName(), subtype.filedName());
+        }
+        return create(subtype, new PyObject[0], null);
+    }
+
+    /**
+     * {@code BytesIO.__getstate__}: the contents, the cursor and the instance dictionary.
+     *
+     * <p>The reference writes the third item as {@code None} when nothing was filed beside the buffer,
+     * which is the shape {@code __setstate__} accepts back; the buffer itself is a copy, so a later write
+     * to either stream does not show in the other.
+     */
+    private static PyObject getStateRow(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.none("BytesIO.__getstate__()", args, kwNames);
+        PyBytesIO stream = (PyBytesIO) self;
+        PyDict held = stream.attributeStore();
+        return PyTuple.of(
+                PyBytes.wrap(Arrays.copyOf(stream.data, stream.length)),
+                PyInt.of(stream.position),
+                held.size() == 0 ? PyNone.INSTANCE : held);
+    }
+
+    /** {@code BytesIO.__setstate__(state)}: the three items {@code __getstate__} wrote back. */
+    private static PyObject setStateRow(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.exactlyOne("BytesIO.__setstate__()", args, kwNames);
+        if (!(args[0] instanceof PyTuple state) || state.size() != 3) {
+            throw Slots.typeError(
+                    "_io.BytesIO.__setstate__ argument should be 3-tuple, got %s",
+                    args[0].getType().name());
+        }
+        PyBytesIO stream = (PyBytesIO) self;
+        byte[] initial = octetsOf(state.at(0));
+        stream.data = initial.clone();
+        stream.length = initial.length;
+        stream.position = Numbers.asIndex(state.at(1)).intValue();
+        if (state.at(2) instanceof PyDict entries) {
+            for (java.util.Map.Entry<PyObject, PyObject> entry : entries.getItems().entrySet()) {
+                stream.attributeStore().put(entry.getKey(), entry.getValue());
+            }
+        }
+        return PyNone.INSTANCE;
     }
 
     /** What the writes accept, and what a wrong one refuses with the reference's sentence. */

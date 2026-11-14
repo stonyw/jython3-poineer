@@ -62,7 +62,7 @@ final class Open {
         boolean closefd = values[6] == null || Slots.truth(values[6]);
         PyObject opener = values[7];
 
-        PyObject file = values[0];
+        PyObject file = fspath(values[0]);
         String path = null;
         boolean descriptorNumber = false;
         boolean numeric = false;
@@ -142,7 +142,7 @@ final class Open {
         boolean closefd = values[2] == null || Slots.truth(values[2]);
         PyObject opener = values[3];
 
-        PyObject file = values[0];
+        PyObject file = fspath(values[0]);
         String path = null;
         boolean descriptorNumber = false;
         boolean numeric = false;
@@ -287,6 +287,30 @@ final class Open {
     private static PyRaise pathTypeError(PyObject file) {
         return Slots.typeError(
                 "expected str, bytes or os.PathLike object, not %s", Slots.argumentName(file));
+    }
+
+    /**
+     * {@code PyOS_FSPath}: the str or bytes a path-like object stands for.
+     *
+     * <p>Anything that declares {@code __fspath__} is asked for it once, which is what lets
+     * {@code pathlib.Path} and the test suite's {@code FakePath} reach every function that takes a
+     * path. A non-path is returned unchanged so the caller can raise its own sentence.
+     */
+    static PyObject fspath(PyObject file) {
+        if (file instanceof PyStr || file instanceof PyBytes) {
+            return file;
+        }
+        PyObject method = Specials.lookUp(file.getType(), "__fspath__");
+        if (method == null) {
+            return file;
+        }
+        PyObject answer = Slots.call(Descriptors.get(method, file, file.getType()), new PyObject[0], null);
+        if (answer instanceof PyStr || answer instanceof PyBytes) {
+            return answer;
+        }
+        throw Slots.typeError(
+                "expected __fspath__() to return str or bytes, not %s",
+                Slots.argumentName(answer));
     }
 
     /**

@@ -976,7 +976,14 @@ final class PosixModule {
     }
 
     static Path resolve(String path) {
-        return cwd.resolve(path);
+        try {
+            return cwd.resolve(path);
+        } catch (InvalidPathException unrepresentable) {
+            // Names carrying a lone surrogate cannot be spelled to this JVM's file system at all. The
+            // reference encodes them back to the byte the surrogate stands for and asks the file system,
+            // whose answer for such a name is "not there"; that is what every caller here reports.
+            throw failure(new NoSuchFileException(path), new FsPath(path, false));
+        }
     }
 
     /**
@@ -987,7 +994,14 @@ final class PosixModule {
      * path is returned unchanged, which is what {@link Path#resolve(String)} does.
      */
     static String absolute(String path) {
-        return cwd.resolve(path).toString();
+        try {
+            return cwd.resolve(path).toString();
+        } catch (InvalidPathException unrepresentable) {
+            // A name carrying a lone surrogate is one CPython joins lexically and only then fails to
+            // encode when it reaches the file system. The JVM refuses to name it at all, so answer the
+            // same lexical join here and let the open itself report the missing file.
+            return path.startsWith("/") ? path : cwd + "/" + path;
+        }
     }
 
     private static long number(Map<String, Object> attributes, String name) {
@@ -1028,6 +1042,7 @@ final class PosixModule {
     }
 
     static FsPath fsPath(PyObject value, String function) {
+        value = Open.fspath(value);
         if (value instanceof PyStr text) {
             return new FsPath(text.getValue(), false);
         }

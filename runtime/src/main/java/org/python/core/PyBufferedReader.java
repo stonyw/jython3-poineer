@@ -46,7 +46,7 @@ public final class PyBufferedReader extends PyIOStream {
     private static final String SEEK = "seek of closed file";
     private static final String TRUNCATE = "truncate of closed file";
 
-    private final PyObject descriptor;
+    private PyObject descriptor;
 
     /** {@code self->buffer}, with {@code self->pos} into it and {@code self->read_end} at its far edge. */
     private final byte[] store = new byte[BUFFER_SIZE];
@@ -57,8 +57,8 @@ public final class PyBufferedReader extends PyIOStream {
     private boolean detached;
 
     /** The two directions the mode string chose, which decide what the rows below refuse. */
-    private final boolean readable;
-    private final boolean writable;
+    private boolean readable;
+    private boolean writable;
 
     /**
      * {@code self->buffer}: the octets a writer has accepted but not yet handed to the descriptor.
@@ -93,6 +93,39 @@ public final class PyBufferedReader extends PyIOStream {
         boolean readable = kind.matches(PyType.BUFFERED_READER)
                 || kind.matches(PyType.BUFFERED_RANDOM);
         return new PyBufferedReader(values[0], kind, readable, writable);
+    }
+
+    /**
+     * {@code io.BufferedReader.__init__(raw, buffer_size=DEFAULT_BUFFER_SIZE)}.
+     *
+     * <p>The row exists for the classes written over this one. The reference builds a subclass's value
+     * in {@code tp_new} from whatever the call was given and then lets the Python {@code __init__} run;
+     * a class whose {@code __init__} is its own (tarfile's {@code ExFileObject}) calls
+     * {@code super().__init__(fileobj)} with the raw it built, and that call is what re-points the layer.
+     */
+    private PyObject initRow(PyObject[] args, String[] kwNames) {
+        PyObject[] values = Arguments.unpackKeywords(
+                getType().name() + ".__init__",
+                args,
+                kwNames,
+                new String[] {"raw", "buffer_size"},
+                1,
+                2);
+        initialize(values[0]);
+        return PyNone.INSTANCE;
+    }
+
+    /** Point this layer at {@code raw}: the descriptor and the cursors, as {@code buffered_init} does. */
+    private void initialize(PyObject raw) {
+        descriptor = raw;
+        detached = false;
+        readable = getType().matches(PyType.BUFFERED_READER)
+                || getType().matches(PyType.BUFFERED_RANDOM);
+        writable = getType().matches(PyType.BUFFERED_WRITER)
+                || getType().matches(PyType.BUFFERED_RANDOM);
+        pos = 0;
+        readEnd = -1;
+        outgoing.reset();
     }
 
     /**
@@ -315,13 +348,48 @@ public final class PyBufferedReader extends PyIOStream {
         reset();
         ByteArrayOutputStream answer = new ByteArrayOutputStream();
         writeInto(answer, buffered);
-        PyObject rest = ask("readall");
-        if (rest instanceof PyBytes tail) {
-            writeInto(answer, tail.getValue());
-        } else if (!(rest instanceof PyNone)) {
+        writeInto(answer, restartOfRaw());
+        return answer.toByteArray();
+    }
+
+    /**
+     * The descriptor's own {@code readall()}, or — for a raw object that has only {@code read}, as
+     * tarfile's {@code _FileInFile} does — {@code read} in blockfuls until one comes back empty. That
+     * second shape is what {@code _bufferedreader_read_all} falls back to.
+     */
+    private byte[] restartOfRaw() {
+        PyObject source = held();
+        PyObject method;
+        try {
+            method = Slots.getAttr(source, "readall");
+        } catch (PyRaise missing) {
+            method = null;
+        }
+        if (method != null) {
+            PyObject rest = Slots.call(method, new PyObject[0], null);
+            if (rest instanceof PyBytes tail) {
+                return tail.getValue();
+            }
+            if (rest instanceof PyNone) {
+                return new byte[0];
+            }
             throw Slots.typeError("readall() should return bytes");
         }
-        return answer.toByteArray();
+        ByteArrayOutputStream answer = new ByteArrayOutputStream();
+        while (true) {
+            PyObject chunk = Slots.call(
+                    Slots.getAttr(source, "read"), new PyObject[] {PyInt.of(BUFFER_SIZE)}, null);
+            if (chunk instanceof PyNone) {
+                return answer.toByteArray();
+            }
+            if (!(chunk instanceof PyBytes given)) {
+                throw Slots.typeError("read() should return bytes");
+            }
+            if (given.getValue().length == 0) {
+                return answer.toByteArray();
+            }
+            writeInto(answer, given.getValue());
+        }
     }
 
     /**
@@ -706,6 +774,8 @@ public final class PyBufferedReader extends PyIOStream {
                     ((PyIOStream) self).deallocWarn(args, kwNames))
             .add("__getstate__", (self, args, kwNames) -> ((PyIOStream) self).getState(args, kwNames))
             .add("__enter__", (self, args, kwNames) -> ((PyIOStream) self).enter(args, kwNames))
+            .add("__init__", (self, args, kwNames) ->
+                    ((PyBufferedReader) self).initRow(args, kwNames))
             .add("__exit__", (self, args, kwNames) -> ((PyIOStream) self).exit(args));
     }
 

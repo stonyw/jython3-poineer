@@ -671,6 +671,12 @@ final class Builtins {
     }
 
     private static PyObject ordinal(PyObject value) {
+        if (value instanceof PyBytes octets) {
+            return singleOctet(octets.getValue());
+        }
+        if (value instanceof PyByteArray octets) {
+            return singleOctet(octets.raw());
+        }
         if (!(value instanceof PyStr s)) {
             throw Slots.typeError(
                     "ord() expected string of length 1, but %s found", value.getType().name());
@@ -682,6 +688,16 @@ final class Builtins {
         }
         return PyInt.of(s.codePointAt(0));
     }
+
+    /** {@code ord} of a one-octet buffer, which is the reference's second accepted input. */
+    private static PyObject singleOctet(byte[] raw) {
+        if (raw.length != 1) {
+            throw Slots.typeError(
+                    "ord() expected a character, but string of length %d found", raw.length);
+        }
+        return PyInt.of(raw[0] & 0xFF);
+    }
+
 
     private static PyObject character(PyObject value) {
         BigInteger code = integerOrRefusal(value);

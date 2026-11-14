@@ -1313,6 +1313,18 @@ public class PyType extends PyObject {
                                     + "first iterable until it is exhausted, then elements from the"
                                     + " next\n"
                                     + "iterable, until all of the iterables are exhausted.");
+    static final PyType GROUPBY =
+            builtin("groupby")
+                    .filedUnder("itertools.groupby")
+                    .documented(
+                            "groupby(iterable, key=None) -> make an iterator that returns"
+                                    + " consecutive\n"
+                                    + "keys and groups from the iterable");
+
+    /** The {@code []} each group is: {@code itertools._grouper}, a cursor over the parent. */
+    static final PyType GROUPBY_GROUP =
+            builtin("_grouper").filedUnder("itertools._grouper");
+
     static final PyType ISLICE =
             builtin("islice")
                     .filedUnder("itertools.islice")
@@ -1725,6 +1737,15 @@ public class PyType extends PyObject {
     public static final PyType ZLIB_DECOMPRESS =
             builtin("Decompress").filedUnder("zlib.Decompress").withoutNew();
 
+    /**
+     * {@code zlib._ZlibDecompressor}: the small decompressor {@code gzip} drives in 3.14.
+     *
+     * <p>It is the reference's C accelerator over the same zlib state, with one extra bit:
+     * {@code needs_input} says whether the next call should bring bytes or just drain output.
+     */
+    public static final PyType ZLIB_DECOMPRESSOR =
+            builtin("_ZlibDecompressor").filedUnder("zlib._ZlibDecompressor").withoutNew();
+
     /** {@code _hashlib.HASH}: a fixed-length digest object. */
     public static final PyType HASH = builtin("HASH").filedUnder("_hashlib.HASH").withoutNew();
 
@@ -2114,6 +2135,9 @@ public class PyType extends PyObject {
                 || this == BUFFERED_WRITER
                 || this == BUFFERED_RANDOM
                 || this == FILE_IO
+                // `_io.BytesIO` is the other stream that keeps a dictionary: `BytesIO().name = 'x'` is
+                // what `tarfile` writes on the buffer it hands `gzip`, and `__getstate__` reports it.
+                || this == BYTES_IO
                 || this == IO_BASE
                 || this == TEXT_IO_BASE
                 || this == RAW_IO_BASE

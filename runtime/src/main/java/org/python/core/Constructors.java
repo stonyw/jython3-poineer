@@ -152,6 +152,9 @@ final class Constructors {
         if (type == PyType.CHAIN) {
             return Itertools.chaining(args, keywordNames);
         }
+        if (type == PyType.GROUPBY) {
+            return Itertools.grouping(args, keywordNames);
+        }
         if (type == PyType.ISLICE) {
             return Itertools.slicing(args, keywordNames);
         }

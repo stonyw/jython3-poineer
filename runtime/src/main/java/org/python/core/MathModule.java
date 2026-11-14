@@ -15,10 +15,11 @@ import java.util.List;
  * result too large to represent. The integer functions ({@code factorial}, {@code isqrt}, {@code comb},
  * {@code perm}, {@code gcd}, {@code lcm}) do their arithmetic in {@link BigInteger} and never round.
  *
- * <p>Two names are absent: {@code erf} and {@code erfc}. Java's standard library has no implementation of
- * them, and no library module this runtime can import asks for one. {@code gamma} and {@code lgamma} are
- * here, but as a Lanczos approximation rather than a libm call, so a value may differ from the reference
- * in the last ulp — the deviation {@code PLAN.md} names.
+ * <p>{@code erf} is absent. Java's standard library has no implementation of it, and nothing this runtime
+ * can import asks for one; {@code erfc} is here because {@code statistics} imports it at module level.
+ * {@code gamma}, {@code lgamma} and {@code erfc} are not libm calls but approximations — Lanczos for the
+ * first two and the regularized incomplete gamma for the third — so a value may differ from the reference
+ * in the last few ulp, the deviation {@code PLAN.md} names.
  */
 final class MathModule {
 
@@ -166,6 +167,7 @@ final class MathModule {
         module.set("ulp", unary("ulp", MathModule::ulp));
         module.set("gamma", unary("gamma", MathModule::gamma));
         module.set("lgamma", unary("lgamma", MathModule::logGamma));
+        module.set("erfc", unary("erfc", MathModule::complementaryError));
 
         module.set("factorial", new PyNativeFunction("factorial", (args, kwNames) -> {
             Arguments.exactlyOne("math.factorial()", args, kwNames);
@@ -231,6 +233,9 @@ final class MathModule {
 
     // --- the Lanczos approximation -----------------------------------------------------------------
 
+    /** {@code log(sqrt(pi))}, the exact {@code lgamma(0.5)} the {@code erfc} expansions divide by. */
+    private static final double LOG_SQRT_PI = 0.5723649429247001;
+
     /** The nine coefficients of the g=7, n=9 Lanczos sum. */
     private static final double[] LANCZOS = {
         0.99999999999980993, 676.5203681218851, -1259.1392167224028,
@@ -284,11 +289,96 @@ final class MathModule {
         return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(sum);
     }
 
+    /**
+     * {@code erfc(x)}: the tail of the error function, through the regularized incomplete gamma.
+     *
+     * <p>{@code erf(x)} is {@code sign(x) * P(1/2, x²)} and {@code erfc} is its complement, so the tail
+     * {@code Q(1/2, x²)} is computed directly and the sign folded in — subtracting {@code P} from one
+     * would lose every digit of a small {@code erfc}. The two expansions switch at {@code x² = 1.5}, where
+     * the series below and the continued fraction above both converge in a few dozen terms.
+     */
+    private static double complementaryError(double x) {
+        if (Double.isNaN(x)) {
+            return x;
+        }
+        if (Double.isInfinite(x)) {
+            return x > 0 ? 0.0 : 2.0;
+        }
+        double z = x * x;
+        double tail = z < 1.5 ? 1.0 - gammaSeries(0.5, z) : gammaContinuedFraction(0.5, z);
+        return x < 0 ? 2.0 - tail : tail;
+    }
+
+    /** {@code P(a, x)} by its power series, for {@code x} below {@code a + 1}. */
+    private static double gammaSeries(double a, double x) {
+        if (x <= 0) {
+            return 0.0;
+        }
+        double ap = a;
+        double del = 1.0 / a;
+        double sum = del;
+        for (int n = 0; n < 500; n++) {
+            ap += 1;
+            del *= x / ap;
+            sum += del;
+            if (Math.abs(del) < Math.abs(sum) * 1e-16) {
+                break;
+            }
+        }
+        return sum * prefactor(a, x);
+    }
+
+    /** {@code Q(a, x)} by Lentz's continued fraction, for {@code x} at or above {@code a + 1}. */
+    private static double gammaContinuedFraction(double a, double x) {
+        final double tiny = 1e-300;
+        double b = x + 1 - a;
+        double c = 1 / tiny;
+        double d = 1 / b;
+        double h = d;
+        for (int i = 1; i < 500; i++) {
+            double an = -i * (i - a);
+            b += 2;
+            d = an * d + b;
+            if (Math.abs(d) < tiny) {
+                d = tiny;
+            }
+            c = b + an / c;
+            if (Math.abs(c) < tiny) {
+                c = tiny;
+            }
+            d = 1 / d;
+            double del = d * c;
+            h *= del;
+            if (Math.abs(del - 1) < 1e-15) {
+                break;
+            }
+        }
+        return prefactor(a, x) * h;
+    }
+
+    /**
+     * {@code x**a * e**-x / Gamma(a)}, the factor both incomplete-gamma expansions share.
+     *
+     * <p>{@code erfc} only ever asks for {@code a = 1/2}, where {@code Gamma(1/2)} is exactly
+     * {@code sqrt(pi)} — so the {@code log(sqrt(pi))} constant is written down rather than reached through
+     * the Lanczos sum, whose one-ulp error in {@code lgamma(0.5)} would otherwise show up in the last
+     * digit of every answer.
+     */
+    private static double prefactor(double a, double x) {
+        return Math.exp(-x + a * Math.log(x) - LOG_SQRT_PI);
+    }
+
     // --- conversion and the two errno answers ------------------------------------------------------
 
-    /** {@code PyFloat_AsDouble}: a real number, or the refusal CPython's converter makes. */
+    /**
+     * {@code PyFloat_AsDouble}: a real number, or the refusal CPython's converter makes.
+     *
+     * <p>{@link Numbers#floatOf} is that converter, {@code __float__} included, which is how
+     * {@code math.sqrt(Decimal("2"))} and a {@code Fraction} are read. {@link Numeric#doubleOf} would
+     * accept only the built-in numbers and refuse both.
+     */
     private static double real(PyObject value) {
-        Double number = Numeric.doubleOf(value);
+        Double number = Numbers.floatOf(value);
         if (number == null) {
             throw Slots.typeError("must be real number, not %s", value.getType().name());
         }
@@ -605,18 +695,26 @@ final class MathModule {
         });
     }
 
+    /**
+     * {@code math.prod}'s multiplication: the number protocol, not a conversion to double.
+     *
+     * <p>{@code prod} and {@code sumprod} run {@code PyNumber_Multiply} and {@code PyNumber_Add} on whatever
+     * the iterable yields, so a {@code Decimal} stays a {@code Decimal} and a {@code Fraction} stays
+     * exact. Converting through {@link #real} first — which is what this did — made
+     * {@code math.prod(map(Decimal, ...))} answer a float.
+     */
     private static PyObject multiply(PyObject left, PyObject right) {
         if (left instanceof PyInt a && right instanceof PyInt b) {
             return PyInt.of(a.getValue().multiply(b.getValue()));
         }
-        return PyFloat.of(real(left) * real(right));
+        return Slots.binary(BinaryOp.MUL, left, right);
     }
 
     private static PyObject add(PyObject left, PyObject right) {
         if (left instanceof PyInt a && right instanceof PyInt b) {
             return PyInt.of(a.getValue().add(b.getValue()));
         }
-        return PyFloat.of(real(left) + real(right));
+        return Slots.binary(BinaryOp.ADD, left, right);
     }
 
     private static PyNativeFunction fsum() {
@@ -655,24 +753,68 @@ final class MathModule {
         });
     }
 
+    /**
+     * {@code math.sumprod(p, q)}: the sum of the pairwise products, exact for floats.
+     *
+     * <p>For a pair of floats the answer is the correctly rounded exact sum, which plain
+     * {@code sum(a * b)} is not — {@code sumprod((x, h), (y, -h))} is what {@code statistics._sqrtprod}
+     * adds its correction from, and it agrees with a 200-digit reference where the naive sum does not.
+     * Each product is split into its high and lost-low halves with {@link Math#fma}, and the four
+     * terms are accumulated with Neumaier's compensation. A term that is not a float (a {@code Decimal},
+     * a {@code Fraction}) flushes the pending double total and continues in the number protocol, so the
+     * type of the sum is conserved as it is for {@code math.prod}.
+     */
     private static PyNativeFunction sumprod() {
         return new PyNativeFunction("sumprod", (args, kwNames) -> {
             Arguments.between("sumprod", args, kwNames, 2, 2);
             PyIterator p = Slots.iterator(args[0]);
             PyIterator q = Slots.iterator(args[1]);
             PyObject sum = PyInt.of(0);
+            // acc[0] is the running total and acc[1] the Neumaier correction it has dropped.
+            double[] acc = new double[2];
+            boolean pending = false;
             while (true) {
                 PyObject left = p.nextOrNull();
                 PyObject right = q.nextOrNull();
                 if (left == null && right == null) {
-                    return sum;
+                    return pending
+                            ? add(sum, PyFloat.of(acc[0] + acc[1]))
+                            : sum;
                 }
                 if (left == null || right == null) {
                     throw Slots.valueError("Inputs are not the same length");
                 }
-                sum = add(sum, multiply(left, right));
+                PyObject term = multiply(left, right);
+                if (term instanceof PyFloat exact) {
+                    double product = exact.getValue();
+                    // The product itself is a rounding: fma recovers the part it lost.
+                    double lost = Math.fma(real(left), real(right), -product);
+                    accumulate(acc, product);
+                    accumulate(acc, lost);
+                    pending = true;
+                } else {
+                    if (pending) {
+                        sum = add(sum, PyFloat.of(acc[0] + acc[1]));
+                        acc[0] = 0;
+                        acc[1] = 0;
+                        pending = false;
+                    }
+                    sum = add(sum, term);
+                }
             }
         });
+    }
+
+    /** Neumaier's compensated addition of one more term into a running {@code total, correction} pair. */
+    private static void accumulate(double[] acc, double value) {
+        double total = acc[0];
+        double next = total + value;
+        if (Math.abs(total) >= Math.abs(value)) {
+            acc[1] += (total - next) + value;
+        } else {
+            acc[1] += (value - next) + total;
+        }
+        acc[0] = next;
     }
 
     private static List<PyObject> drain(PyObject iterable) {

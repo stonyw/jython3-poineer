@@ -1613,6 +1613,30 @@ public final class PyRuntime {
     }
 
     /**
+     * {@code sys.float_info}: the shape of the C {@code double} this runtime computes in.
+     *
+     * <p>Every member is the IEEE-754 binary64 answer — the same ones the reference reports on any
+     * platform whose {@code double} is binary64, which is what Java's {@code double} is. {@code dig} is
+     * the number of decimal digits that survive a round trip and {@code rounds} is 1 for "to nearest".
+     * {@code statistics} reads {@code mant_dig} at module scope to size its exact-arithmetic window.
+     */
+    private static PyNamespace floatInfo() {
+        PyNamespace namespace = new PyNamespace();
+        namespace.set("epsilon", PyFloat.of(Math.ulp(1.0)));
+        namespace.set("dig", PyInt.of(15));
+        namespace.set("mant_dig", PyInt.of(53));
+        namespace.set("max", PyFloat.of(Double.MAX_VALUE));
+        namespace.set("max_exp", PyInt.of(1024));
+        namespace.set("max_10_exp", PyInt.of(308));
+        namespace.set("min", PyFloat.of(Double.MIN_NORMAL));
+        namespace.set("min_exp", PyInt.of(-1021));
+        namespace.set("min_10_exp", PyInt.of(-307));
+        namespace.set("radix", PyInt.of(2));
+        namespace.set("rounds", PyInt.of(1));
+        return namespace;
+    }
+
+    /**
      * {@code sys._jit}: the observation point for a just-in-time compiler.
      *
      * <p>This runtime has no JIT, so all three answers are False — which is what the reference answers
@@ -1770,6 +1794,7 @@ public final class PyRuntime {
         sys.set("platlibdir", PyStr.of("lib"));
         sys.set("version_info", PyVersionInfo.current());
         sys.set("hash_info", hashInfo());
+        sys.set("float_info", floatInfo());
         sys.set("_jit", jitModule());
         sys.set("implementation", implementation());
         // `_py_warnings` reads both at module scope: the flags to choose between the context-variable

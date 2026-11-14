@@ -54,6 +54,7 @@ final class Itertools {
         module.set("compress", PyType.COMPRESS);
         module.set("dropwhile", PyType.DROPWHILE);
         module.set("filterfalse", PyType.FILTERFALSE);
+        module.set("groupby", PyType.GROUPBY);
         module.set("islice", PyType.ISLICE);
         module.set("starmap", PyType.STAR_MAP);
         module.set("takewhile", PyType.TAKE_WHILE);
@@ -129,6 +130,106 @@ final class Itertools {
         Arguments.noKeywords("from_iterable()", kwNames);
         Arguments.exactly("from_iterable", args, kwNames, 1);
         return new Chain(args[0]);
+    }
+
+    /** {@code groupby}'s "no group yet" marker: a key can never be this object. */
+    private static final PyObject NO_GROUP = new PyObject() {
+        @Override
+        public String repr() {
+            return "<no group>";
+        }
+    };
+
+    /**
+     * {@code groupby(iterable, key=None)}: consecutive runs of one key, with a sub-cursor per run.
+     *
+     * <p>Both halves read one cursor, which is why a group stops when the parent has moved on: the
+     * reference marks each call to {@code __next__} with a fresh {@code id} object, and a group yields
+     * only while that marker is still the parent's and its key is still the run's. The marker is a Java
+     * identity here for the same reason — {@code is} is what the reference compares.
+     */
+    static final class GroupBy extends Cursor {
+        private final PyObject keyfunc;
+        private final PyIterator source;
+        private PyObject currKey = PyNone.INSTANCE;
+        private PyObject currValue = PyNone.INSTANCE;
+        private PyObject tgtKey = NO_GROUP;
+        private boolean primed;
+        private Object id = new Object();
+
+        GroupBy(PyObject iterable, PyObject keyfunc) {
+            super(PyType.GROUPBY);
+            this.keyfunc = keyfunc;
+            this.source = Slots.iterator(iterable);
+        }
+
+        private boolean sameKey(PyObject left, PyObject right) {
+            return Slots.truth(Slots.compare(CompareOp.EQ, left, right));
+        }
+
+        /** Read one item and its key; false when the source ran out. */
+        private boolean advance() {
+            PyObject item = source.nextOrNull();
+            if (item == null) {
+                primed = false;
+                return false;
+            }
+            currValue = item;
+            currKey = keyfunc == null
+                    ? item
+                    : Slots.call(keyfunc, new PyObject[] {item}, null);
+            primed = true;
+            return true;
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            id = new Object();
+            // The first call always advances: the reference starts with `currkey == tgtkey`, both the
+            // same sentinel, so the loop body runs once before any key has been seen.
+            while (!primed || sameKey(currKey, tgtKey)) {
+                if (!advance()) {
+                    return null;
+                }
+            }
+            tgtKey = currKey;
+            return PyTuple.of(currKey, new Grouper(this, tgtKey, id));
+        }
+    }
+
+    /** {@code itertools._grouper}: the run handed out beside a key, reading the parent's cursor. */
+    static final class Grouper extends PyIterator {
+        private final GroupBy parent;
+        private final PyObject tgtKey;
+        private final Object id;
+        private boolean done;
+
+        Grouper(GroupBy parent, PyObject tgtKey, Object id) {
+            super(PyType.GROUPBY_GROUP);
+            this.parent = parent;
+            this.tgtKey = tgtKey;
+            this.id = id;
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            if (done || parent.id != id || !parent.sameKey(parent.currKey, tgtKey)) {
+                return null;
+            }
+            PyObject value = parent.currValue;
+            if (!parent.advance()) {
+                done = true;
+            }
+            return value;
+        }
+    }
+
+    /** {@code groupby(iterable, key=None)}: the key argument is the only optional one. */
+    static PyObject grouping(PyObject[] args, String[] kwNames) {
+        PyObject[] values = Arguments.unpackKeywords(
+                "groupby", args, kwNames, new String[] {"iterable", "key"}, 1, 2);
+        PyObject key = values[1] == null || values[1] == PyNone.INSTANCE ? null : values[1];
+        return new GroupBy(values[0], key);
     }
 
     /** {@code count(start=0, step=1, /)}: consecutive values, integral until one argument is not. */

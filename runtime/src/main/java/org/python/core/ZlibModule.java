@@ -80,10 +80,15 @@ final class ZlibModule {
         module.set("decompress", new PyNativeFunction("decompress", ZlibModule::decompress));
         module.set("compressobj", new PyNativeFunction("compressobj", ZlibModule::compressobj));
         module.set("decompressobj", new PyNativeFunction("decompressobj", ZlibModule::decompressobj));
+        module.set(
+                "_ZlibDecompressor",
+                new PyNativeFunction("_ZlibDecompressor", ZlibModule::decompressor)
+                        .documented(DECOMPRESSOR_DOC));
         module.set("adler32", new PyNativeFunction("adler32", ZlibModule::adler32));
         module.set("crc32", new PyNativeFunction("crc32", ZlibModule::crc32));
         Compress.members();
         Decompress.members();
+        StreamDecompressor.members();
         return module;
     }
 
@@ -191,6 +196,26 @@ final class ZlibModule {
             throw Slots.valueError("Invalid initialization option");
         }
         return new Decompress(wbits, zdict);
+    }
+
+    /** {@code zlib._ZlibDecompressor(wbits=15, zdict=b'')}, the constructor {@code gzip} calls. */
+    private static PyObject decompressor(PyObject[] args, String[] kwNames) {
+        if (args.length > 2) {
+            throw Slots.typeError(
+                    "_ZlibDecompressor() takes at most 2 arguments (%d given)", args.length);
+        }
+        PyObject[] values = Arguments.fill(
+                "_ZlibDecompressor",
+                args,
+                kwNames,
+                new String[] {"wbits", "zdict"},
+                new PyObject[] {PyInt.of(MAX_WBITS), PyBytes.of(EMPTY)});
+        int wbits = (int) Numbers.clipped(values[0]);
+        byte[] zdict = values[1] == null ? EMPTY : PyMemoryView.bufferOctets(values[1]);
+        if (!validInflateWbits(wbits)) {
+            throw Slots.valueError("Invalid initialization option");
+        }
+        return new StreamDecompressor(wbits, zdict);
     }
 
     private static PyObject adler32(PyObject[] args, String[] kwNames) {
@@ -833,8 +858,18 @@ final class ZlibModule {
                     }
                 }
                 int remaining = inflater.getRemaining();
-                byte[] rest = remaining == 0 ? EMPTY
-                        : java.util.Arrays.copyOfRange(input, input.length - remaining, input.length);
+                // With empty input the inflater is still draining the *previous* call's bytes, and
+                // `getRemaining()` counts those, not the zero-length array just handed in. It also
+                // shrinks as that drain proceeds, so the answer is the tail of the saved block, not the
+                // whole block: a stream that ends here must report only the octets really left over.
+                byte[] rest;
+                if (remaining == 0) {
+                    rest = EMPTY;
+                } else if (input.length == 0) {
+                    rest = java.util.Arrays.copyOfRange(tail, tail.length - remaining, tail.length);
+                } else {
+                    rest = java.util.Arrays.copyOfRange(input, input.length - remaining, input.length);
+                }
                 if (inflater.finished()) {
                     if (mode == 1) {
                         finishGzip(rest);
@@ -862,6 +897,101 @@ final class ZlibModule {
                     | ((b[at + 1] & 0xFFL) << 8)
                     | ((b[at + 2] & 0xFFL) << 16)
                     | ((b[at + 3] & 0xFFL) << 24);
+        }
+
+        /** Whether the stream reached its end, as {@code _ZlibDecompressor.eof} reports it. */
+        boolean ended() {
+            return eof;
+        }
+
+        /** The bytes after the end of the stream, as {@code _ZlibDecompressor.unused_data}. */
+        byte[] unusedData() {
+            return unused;
+        }
+    }
+
+    // --- the gzip-facing decompressor ---------------------------------------------------------
+
+    private static final String DECOMPRESSOR_DOC =
+            "Create a decompressor object for decompressing data incrementally.\n"
+                    + "\n"
+                    + "  wbits = 15\n"
+                    + "  zdict\n"
+                    + "     The predefined compression dictionary. This is a sequence of bytes\n"
+                    + "     (such as a bytes object) containing subsequences that are expected\n"
+                    + "     to occur frequently in the data that is to be compressed. Those\n"
+                    + "     subsequences that are expected to be most common should come at the\n"
+                    + "     end of the dictionary. This must be the same dictionary as used by the\n"
+                    + "     compressor that produced the input data.";
+
+    /**
+     * {@code zlib._ZlibDecompressor}: the same inflater as {@link Decompress}, plus
+     * {@code needs_input}.
+     *
+     * <p>The reference added this type in 3.14 so that {@code gzip}'s reader can ask whether the next
+     * call should bring another block or just drain what the last one buffered. The answer is the
+     * one the C code gives: true while the stream is unfinished and the last call's output was
+     * shorter than the bound it was given, false while output is still pending and false once the
+     * stream has ended.
+     */
+    static final class StreamDecompressor extends PyObject {
+
+        private static Members members;
+
+        private final Decompress inner;
+        private boolean needsInput = true;
+
+        StreamDecompressor(int wbits, byte[] zdict) {
+            super(PyType.ZLIB_DECOMPRESSOR);
+            this.inner = new Decompress(wbits, zdict);
+        }
+
+        static Members members() {
+            if (members == null) {
+                members = Members.of(PyType.ZLIB_DECOMPRESSOR)
+                        .add(
+                                "decompress",
+                                (self, args, kw) -> ((StreamDecompressor) self).decompress(args, kw));
+            }
+            return members;
+        }
+
+        @Override
+        public PyObject getAttr(String name) {
+            switch (name) {
+                case "eof":
+                    return PyBool.of(inner.ended());
+                case "needs_input":
+                    return PyBool.of(needsInput);
+                case "unused_data":
+                    return PyBytes.of(inner.unusedData());
+                default:
+                    return Members.find(this, name);
+            }
+        }
+
+        private PyObject decompress(PyObject[] args, String[] kwNames) {
+            if (inner.ended()) {
+                throw PyRaise.raise(ExceptionTypes.EOF_ERROR, "End of stream already reached");
+            }
+            Arguments.positional(args, kwNames);
+            PyObject[] values = Arguments.fill(
+                    "decompress",
+                    args,
+                    kwNames,
+                    new String[] {"data", "max_length"},
+                    new PyObject[] {PyInt.of(0)});
+            if (values[0] == null) {
+                throw Slots.typeError("decompress() missing required argument 'data' (pos 1)");
+            }
+            byte[] data = PyMemoryView.bufferOctets(values[0]);
+            long maxLength = sizeArgument(values[1]);
+            if (maxLength < 0) {
+                throw Slots.valueError("max_length must be non-negative");
+            }
+            byte[] out = inner.feed(data, maxLength);
+            needsInput = !inner.ended() && (maxLength == 0 || out.length < maxLength);
+            return PyBytes.of(out);
         }
     }
 
