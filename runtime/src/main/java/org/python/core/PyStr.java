@@ -374,8 +374,11 @@ public class PyStr extends PyObject {
                 int tabsize = Numbers.cInteger(Arguments.parameters(
                         "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]);
                 // CPython's first pass notes whether there is a tab at all and hands the same string
-                // back when there is none. A bytes has no such shortcut: its copy is always new.
-                return text.indexOf('\t') < 0 ? self : PyStr.of(expandTabs(text, tabsize));
+                // back when there is none — a copy of it, for a subclass, so `S(a).expandtabs()` is
+                // a plain str.
+                return text.indexOf('\t') < 0
+                        ? unchanged((PyStr) self)
+                        : PyStr.of(expandTabs(text, tabsize));
             })
             .add("find", (self, args, kwNames) -> search(self, args, kwNames, "find", false, false))
             .add("format", (self, args, kwNames) ->
@@ -1158,6 +1161,15 @@ public class PyStr extends PyObject {
         return text;
     }
 
+    /**
+     * {@code unicode_result_unchanged}: a method that would hand its receiver back at once answers an
+     * exact copy instead when the receiver is a subclass, which is why {@code S('a').upper()} and
+     * {@code S('a').ljust(1)} are plain {@code str}.
+     */
+    private static PyObject unchanged(PyStr self) {
+        return self.getType() == PyType.STR ? self : PyStr.of(self.value);
+    }
+
     /** The fill character of {@code center}, {@code ljust} and {@code rjust}. */
     private static String fill(PyObject value) {
         String text = Numbers.asText(value);
@@ -1182,7 +1194,7 @@ public class PyStr extends PyObject {
         String fill = args.length > 1 ? fill(args[1]) : " ";
         long margin = width - text.codePoints;
         if (margin <= 0) {
-            return self;
+            return unchanged(text);
         }
         // An odd margin is not split by rounding: the extra character goes left only when the width is
         // odd as well, which is CPython's `marg / 2 + (marg & width & 1)` and reads as
@@ -1333,13 +1345,13 @@ public class PyStr extends PyObject {
      * {@code zfill}: zeros in front of a number, and a sign stays in front of the zeros.
      *
      * <p>Only the first character can be a sign, and it moves rather than being re-read, so
-     * {@code '--1'.zfill(6)} is {@code '-000-1'}. A value already as wide as it was asked to be is the
-     * value itself, which is the same answer a bytes gives.
+     * {@code '--1'.zfill(6)} is {@code '-000-1'}. A value already as wide as it was asked to be comes
+     * back unchanged — as a copy, for a subclass, the same rule the three padding methods follow.
      */
     private static PyObject zeroFilled(PyObject self, String text, long width) {
         int codePoints = text.codePointCount(0, text.length());
         if (codePoints >= width) {
-            return self;
+            return unchanged((PyStr) self);
         }
         long margin = width - codePoints;
         Numbers.total(text.length() + margin);

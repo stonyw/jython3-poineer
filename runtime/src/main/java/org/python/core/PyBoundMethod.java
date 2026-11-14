@@ -30,6 +30,15 @@ public final class PyBoundMethod extends PyObject {
     /** The Python method this value wraps, or null when the body is Java's. */
     private final PyFunction function;
 
+    /**
+     * The callable a {@code types.MethodType(callable, instance)} wrap carries, or null for the two
+     * kinds above.
+     *
+     * <p>Such a value is a {@code method} whose {@code __func__} is not a function at all, so it keeps
+     * the callable for {@code __func__}, {@code __name__} and the {@code repr} that has to read them.
+     */
+    private final PyObject wrapped;
+
     public PyBoundMethod(PyObject target, String name, Body body) {
         this(target, name, body, null);
     }
@@ -42,6 +51,7 @@ public final class PyBoundMethod extends PyObject {
         this.body = body;
         this.doc = doc;
         this.function = null;
+        this.wrapped = null;
     }
 
     /** {@code p.as_text}: a function found on the instance's class, with the instance attached to it. */
@@ -52,6 +62,29 @@ public final class PyBoundMethod extends PyObject {
         this.body = null;
         this.doc = null;
         this.function = function;
+        this.wrapped = null;
+    }
+
+    /** {@code types.MethodType(callable, instance)}: a method whose function is any callable. */
+    PyBoundMethod(PyObject target, PyObject wrapped, Body body) {
+        super(PyType.METHOD);
+        this.target = target;
+        this.name = wrappedName(wrapped);
+        this.body = body;
+        this.doc = null;
+        this.function = null;
+        this.wrapped = wrapped;
+    }
+
+    /** {@code method_repr}'s name: {@code __qualname__}, then {@code __name__}, then {@code "?"}. */
+    private static String wrappedName(PyObject callable) {
+        for (String attribute : new String[] {"__qualname__", "__name__"}) {
+            PyObject name = callable.getAttr(attribute);
+            if (name instanceof PyStr text) {
+                return text.getValue();
+            }
+        }
+        return "?";
     }
 
     /**
@@ -107,19 +140,25 @@ public final class PyBoundMethod extends PyObject {
     public PyObject getAttr(String attribute) {
         return switch (attribute) {
             case "__self__" -> target;
-            case "__func__" -> function == null ? Slots.DECLINED : function;
-            case "__name__" -> PyStr.of(name);
+            case "__func__" -> function != null
+                    ? function
+                    : wrapped != null ? wrapped : Slots.DECLINED;
+            case "__name__" -> function != null
+                    ? PyStr.of(name)
+                    : PyStr.of(wrapped != null ? wrappedName(wrapped) : name);
             case "__qualname__" -> function != null
                     ? function.getAttr("__qualname__")
-                    : PyStr.of(target.getType().name() + "." + name);
+                    : PyStr.of(wrapped != null
+                            ? wrappedName(wrapped)
+                            : target.getType().name() + "." + name);
             case "__doc__" -> function != null
                     ? function.getAttr("__doc__")
                     : PyNativeFunction.docOf(name, doc);
             // `method_get`: a bound method of a Python function is a descriptor, but since gh-113157
             // `a.meth.__get__(b, B)` does not rebind — it answers a fresh method still bound to `a`, so
             // the call is only the argument check and the one refusal, `__get__(None)`. A built-in method
-            // has no `__get__` at all.
-            case "__get__" -> function == null
+            // has no `__get__` at all; a `types.MethodType` wrap does.
+            case "__get__" -> function == null && wrapped == null
                     ? Slots.DECLINED
                     : new PyNativeFunction("__get__", (args, kwNames) -> rebind(args, kwNames));
             default -> Slots.DECLINED;
@@ -147,7 +186,9 @@ public final class PyBoundMethod extends PyObject {
         if (args[0] == PyNone.INSTANCE && (args.length < 2 || args[1] == PyNone.INSTANCE)) {
             throw Slots.typeError("__get__(None, None) is invalid");
         }
-        return new PyBoundMethod(target, function);
+        return function != null
+                ? new PyBoundMethod(target, function)
+                : new PyBoundMethod(target, wrapped, body);
     }
 
     @Override
@@ -158,7 +199,10 @@ public final class PyBoundMethod extends PyObject {
         if (!(other instanceof PyBoundMethod m) || m.target != target) {
             return false;
         }
-        return function != null ? m.function == function : m.name.equals(name);
+        if (function != null) {
+            return m.function == function;
+        }
+        return wrapped != null ? m.wrapped == wrapped : m.name.equals(name);
     }
 
     @Override
@@ -169,19 +213,20 @@ public final class PyBoundMethod extends PyObject {
         long receiver = PyHash.avoidMinusOne(System.identityHashCode(target));
         long callable = function != null
                 ? function.hash()
-                : PyHash.avoidMinusOne(PyHash.textHash(name));
+                : wrapped != null
+                        ? wrapped.hash()
+                        : PyHash.avoidMinusOne(PyHash.textHash(name));
         return PyHash.avoidMinusOne(receiver ^ callable);
     }
 
     @Override
     public String repr() {
-        if (function == null) {
+        if (function == null && wrapped == null) {
             return "<built-in method " + name + " of " + target.getType().name() + " object>";
         }
-        return "<bound method "
-                + function.getAttr("__qualname__").str()
-                + " of "
-                + target.repr()
-                + ">";
+        String qualname = function != null
+                ? function.getAttr("__qualname__").str()
+                : wrappedName(wrapped);
+        return "<bound method " + qualname + " of " + target.repr() + ">";
     }
 }

@@ -296,7 +296,16 @@ final class Classes {
                 }
                 throw Slots.notImplemented("subclassing '" + kind.name() + "'");
             }
+            // A base whose `tp_mro` is still NULL — one being built right now — has no order to walk,
+            // which CPython reports rather than dereferencing the NULL.
+            if (kind.filingOrder()) {
+                throw Slots.typeError("Cannot extend an incomplete type '%s'", kind.name());
+            }
         }
+        // `best_base`: the storage every value of the new class has to fit into. Two bases with unrelated
+        // layouts — `list` and `dict`, or `ModuleType` and `str` — are refused here rather than on the
+        // first value the class makes.
+        bestBase(bases);
         return declare(
                 name.getValue(),
                 bases,
@@ -431,6 +440,7 @@ final class Classes {
     private static boolean refusesBase(PyType kind) {
         return kind == PyType.NONE
                 || kind == PyType.BOOL
+                || kind == PyType.BUILTIN_FUNCTION
                 || kind == PyType.FUNCTION
                 || kind == PyType.MEMORYVIEW
                 || kind == PyType.RANGE
@@ -496,6 +506,20 @@ final class Classes {
         }
 
         PyClass kind = new PyClass(name, bases, dict, qualified, metatype);
+        // `type_new_check_dict` warns about every key of the namespace that is not a string; the class is
+        // still made, and the sentence names only the class, never the key.
+        for (PyObject key : dict.keys()) {
+            if (!(key instanceof PyStr)) {
+                PyObject warnings = PyRuntime.importModule("warnings");
+                Slots.call(
+                        Slots.getAttr(warnings, "warn"),
+                        new PyObject[] {
+                            PyStr.of("non-string key in the __dict__ of class " + name),
+                            ExceptionTypes.RUNTIME_WARNING
+                        },
+                        null);
+            }
+        }
         // `type_new_impl` files the sentence here rather than leaving it in the dictionary: a `__doc__` the
         // body wrote as a string becomes the type's own text, and any other value — `None` above all, which
         // is what a class with no docstring ends with — leaves the field empty. Nothing writes it again, so
@@ -503,7 +527,28 @@ final class Classes {
         if (dict.get(docKey) instanceof PyStr stated) {
             kind.documented(stated.getValue());
         }
-        kind.order = linearize(kind, bases);
+        // `type_new_set_mro`: the order is the metatype's `mro()` when that is not `type`'s, which is what
+        // makes `PerverseMetaType`'s reversed order the one `X.__mro__` answers with. The order stays
+        // unfiled while that call runs — CPython's `tp_mro` is still NULL — so `cls.__mro__` is `None`
+        // and `type.mro(cls)` recomputes from the new bases.
+        if (metatype != PyType.TYPE) {
+            // `lookup_maybe_method` searches the metatype, not the class: reading `kind.mro` through the
+            // class would walk its order and cache the parent chain before the metatype has answered.
+            PyObject writer = Specials.member(metatype, "mro");
+            PyObject invoked = Descriptors.get(writer, kind, metatype);
+            kind.filingOrder(true);
+            PyObject result;
+            try {
+                result = Slots.call(invoked, new PyObject[0], null);
+            } finally {
+                kind.filingOrder(false);
+            }
+            if (kind.order == null) {
+                kind.order = mroInvoke(kind, result);
+            }
+        } else {
+            kind.order = linearize(kind, bases);
+        }
         // `type_new_set_classcell` runs before the members are filed, so a class that names one of the
         // two cells in `__slots__` ends with the member descriptor under that name rather than the cell:
         // the cell is filled and taken out of the dictionary first.
@@ -1070,22 +1115,32 @@ final class Classes {
      * {@code solid_base}: the nearest ancestor whose instance shape this type keeps.
      *
      * <p>CPython walks up while {@code shape_differs} is false for {@code tp_basicsize}/{@code
-     * tp_itemsize} and returns the first ancestor that differs. Here that is {@link PyClass#instanceSize}
-     * alone, since every value is one {@link PyInstance} and no class has items. Every built-in root is
-     * sixteen bytes wide in that model — the named deviation when the real {@code tp_basicsize} differs —
-     * and that is still enough to keep {@code L(list)} and {@code object} apart, because {@code list} is
-     * its own solid base either way.
+     * tp_itemsize} and returns the first ancestor that differs. Here that is {@link TypeLayout#basicsize}
+     * alone, since every value is one {@link PyInstance} and no class has items: a written class reports
+     * its {@code instanceSize} and a compiled-in type the size measured for it, so the walk crosses both
+     * kinds. That is what keeps {@code LookupError} and {@code SystemError} combinable (both are
+     * {@code BaseException}'s size) while keeping {@code list} and {@code dict} apart.
      */
     private static PyType solidBase(PyType type) {
-        if (!(type instanceof PyClass held)) {
-            return type;
-        }
-        PyType parent = held.parent();
+        // Built-in types walk too: `LookupError` and `SystemError` are both the size of
+        // `BaseException`, so neither introduces storage and the two may be combined, while `list`
+        // and `dict` each introduce their own and may not.
+        PyType parent = type.parent();
         if (parent == null) {
             return type;
         }
         PyType base = solidBase(parent);
-        return held.instanceSize() == size(base) ? base : type;
+        int own = size(type);
+        int inherited = size(base);
+        if (own > inherited) {
+            // x86-64 keeps a 16-byte alignment; a size that grew only to reach it leaves the field
+            // inside the padding, which is CPython's one exception to "bigger means a new layout".
+            if (own % 16 == 0 && inherited % 16 != 0) {
+                return base;
+            }
+            return type;
+        }
+        return base;
     }
 
     /**
@@ -1311,6 +1366,15 @@ final class Classes {
                         "mro() returned base with unsuitable layout ('%s')", base.filedName());
             }
             order[i] = base;
+        }
+        // The class has to name itself somewhere in the order it returns; `PerverseMetaType` puts itself
+        // last, which is allowed, while `(B,)` for a class deriving from `object` is not. CPython's own
+        // wording for this comes from the `super(type, obj)` check it runs over the result.
+        if (!contains(order, kind)) {
+            throw Slots.typeError(
+                    "super(type, obj): obj (type %s) is not an instance or subtype of type (%s)",
+                    kind.name(),
+                    kind.name());
         }
         return order;
     }

@@ -447,18 +447,12 @@ final class Constructors {
             return new PyBoundMethod(values[1], function);
         }
         PyObject callable = values[0];
-        return new PyBoundMethod(values[1], functionName(callable), (self, callArgs, callNames) -> {
+        return new PyBoundMethod(values[1], callable, (self, callArgs, callNames) -> {
             PyObject[] withSelf = new PyObject[callArgs.length + 1];
             withSelf[0] = self;
             System.arraycopy(callArgs, 0, withSelf, 1, callArgs.length);
             return Slots.call(callable, withSelf, PyBoundMethod.keywordTuple(callNames));
         });
-    }
-
-    /** The name a wrapped {@code method}'s {@code __func__} carries, or {@code "method"} if it has none. */
-    private static String functionName(PyObject callable) {
-        PyObject name = callable.getAttr("__name__");
-        return name instanceof PyStr text ? text.getValue() : "method";
     }
 
     private static void oneArgument(String name, PyObject[] args, String[] kwNames) {
@@ -968,7 +962,9 @@ final class Constructors {
         // `complex("1+2j")` is 1+2j.
         boolean parts = positional > 1 || kwNames != null;
         if (!parts) {
-            if (real instanceof PyComplex taken) {
+            // `complex(z) is z` only for an exact complex: a subclass is copied into a plain one by
+            // `PyComplex_FromCComplex`, exactly as `long___pos__` collapses an int subclass.
+            if (real instanceof PyComplex taken && taken.getType() == PyType.COMPLEX) {
                 return taken;
             }
             if (real instanceof PyStr s) {

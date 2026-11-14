@@ -1839,6 +1839,12 @@ public class PyType extends PyObject {
     PyType[] order;
 
     /**
+     * Whether {@link #order} is being asked of a metatype right now, CPython's {@code TP_MRO_NULL} while
+     * {@code type_new_set_mro} runs: {@code cls.__mro__} answers {@code None} for that window only.
+     */
+    private boolean filingOrder;
+
+    /**
      * The bases as more than a parent, which only {@code ExceptionGroup} among the built-ins has; null for
      * every type whose inheritance a single {@link #parent} pointer describes.
      */
@@ -2184,6 +2190,22 @@ public class PyType extends PyObject {
     }
 
     /**
+     * Whether the order is being asked of a metatype right now, CPython's {@code TP_MRO_NULL} window.
+     *
+     * <p>During the custom {@code mro} call CPython's {@code tp_mro} is still {@code NULL}, so
+     * {@code cls.__mro__} is {@code None} and {@code type.mro(cls)} recomputes the order from the bases
+     * instead of caching a parent chain the class may no longer have. Every type outside that window
+     * answers through {@link #mro()}, which builds and files the parent chain when none was filed.
+     */
+    final boolean filingOrder() {
+        return filingOrder;
+    }
+
+    final void filingOrder(boolean filing) {
+        filingOrder = filing;
+    }
+
+    /**
      * {@code int.__name__}, {@code int.__base__}, {@code int.bit_length}.
      *
      * A method reached through the type rather than through one of its values is a
@@ -2210,7 +2232,7 @@ public class PyType extends PyObject {
             case "__doc__" -> TypeDict.docOf(this);
             case "__base__" -> parent == null ? PyNone.INSTANCE : parent;
             case "__bases__" -> parent == null ? PyTuple.EMPTY : PyTuple.of(bases());
-            case "__mro__" -> PyTuple.of(mro());
+            case "__mro__" -> filingOrder ? PyNone.INSTANCE : PyTuple.of(mro());
             case "__class__" -> type;
             case "__dict__" -> PyMappingProxy.of(namespace());
             default -> classMember(attribute);

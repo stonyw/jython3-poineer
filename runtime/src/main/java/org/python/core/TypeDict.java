@@ -516,6 +516,16 @@ final class TypeDict {
             new Member(
                     PyType.TYPE, "__init__", Shape.WRAPPER, null, INIT_DOC, TypeDict::initMember);
 
+    /**
+     * {@code object.__init__}'s implementation — the {@code tp_init} every type keeps until it writes
+     * one of its own.
+     *
+     * <p>Two rows are built from it: {@code object}'s and the copy {@code weakref.ReferenceType} files,
+     * which is why the comparison in {@link #inheritsObjectInit} is against this one function rather
+     * than against {@code object}'s dictionary entry.
+     */
+    private static final Method OBJECT_INIT = TypeDict::objectInit;
+
     /** {@code type.__call__(cls, *args)}: {@code type_call} for the class given as the receiver. */
     static final Member CALL =
             new Member(
@@ -1171,7 +1181,7 @@ final class TypeDict {
         table.wrapper("__ne__", NE_DOC, TypeDict::objectNe);
         table.wrapper("__gt__", GT_DOC, (args, kw, q) -> identity(args, CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, (args, kw, q) -> identity(args, CompareOp.GE));
-        table.wrapper("__init__", INIT_DOC, TypeDict::objectInit);
+        table.wrapper("__init__", INIT_DOC, OBJECT_INIT);
         table.method("__reduce_ex__", REDUCE_EX_DOC, TypeDict::objectReduceEx);
         table.method("__reduce__", REDUCE_DOC, TypeDict::objectReduce);
         table.method("__getstate__", GETSTATE_DOC, TypeDict::objectState);
@@ -1754,7 +1764,9 @@ final class TypeDict {
                     PyType declared = declaredClass(PyType.WEAK_REFERENCE, args, kwNames);
                     return Weakref.newRef(declared, tail(args, kwNames), kwNames);
                 });
-        table.wrapper("__init__", INIT_DOC, TypeDict::objectInit);
+        // `weakref_init` is a no-op of its own rather than `object_init`: the reference is made by
+        // `tp_new` out of the receiver's arguments, so the initializer accepts anything and ignores it.
+        table.wrapper("__init__", INIT_DOC, TypeDict::referenceInit);
         table.named("__call__");
         table.named("__repr__");
         table.named("__hash__");
@@ -4046,7 +4058,7 @@ final class TypeDict {
                 "readlines",
                 "writelines");
         table.getset("__dict__", null, IoBases::dictionary, null);
-        table.getset("closed", null, IoBases::closed, null);
+        table.getset("closed", "True if the file is closed", IoBases::closed, null);
         table.value("__doc__", docValue(owner));
     }
 
@@ -5680,11 +5692,17 @@ final class TypeDict {
 
     /** {@code type.__abstractmethods__}: only ever set by {@code ABCMeta}, and refused while unset. */
     private static PyObject abstractMethods(PyObject target) {
-        PyObject filed = ((PyType) target).namespace().get(PyStr.interned("__abstractmethods__"));
-        if (filed == null) {
-            throw Slots.attributeError("__abstractmethods__");
+        // `type` files this descriptor in its own dictionary, so reading it back through itself would
+        // answer the descriptor rather than what a class set. CPython's `type_abstractmethods` refuses
+        // that one receiver and reads the key out of every other type's dictionary.
+        if (target != PyType.TYPE) {
+            PyObject filed =
+                    ((PyType) target).namespace().get(PyStr.interned("__abstractmethods__"));
+            if (filed != null) {
+                return filed;
+            }
         }
-        return filed;
+        throw Slots.attributeError("__abstractmethods__");
     }
 
     /** {@code type.__annotations__}: the dictionary the body filled, made empty when nothing was annotated. */
@@ -5956,7 +5974,8 @@ final class TypeDict {
 
     /** {@code type.__mro__}: the same order {@code mro()} answers with, as a tuple. */
     private static PyObject mroOf(PyObject target) {
-        return PyTuple.of(((PyType) target).mro());
+        PyType owner = (PyType) target;
+        return owner.filingOrder() ? PyNone.INSTANCE : PyTuple.of(owner.mro());
     }
 
     /** {@code type.__base__}: the first of those, or {@code None} for {@code object} itself. */
@@ -6046,10 +6065,25 @@ final class TypeDict {
      * wrote that names none is left with {@code object}'s, and one that names one has a pointer of its own
      * in the slot even when what it says is only {@code pass}.
      */
+    /**
+     * {@code weakref_init}: the initializer {@code weakref.ReferenceType} owns.
+     *
+     * <p>It accepts the arguments {@code tp_new} has already consumed and does nothing, which is what
+     * makes {@code super().__init__(ob, callback)} in a subclass legal where {@code object.__init__}
+     * would count the extra arguments and refuse.
+     */
+    private static PyObject referenceInit(PyObject[] args, String[] kwNames, String qualified) {
+        return PyNone.INSTANCE;
+    }
+
     private static boolean inheritsObjectInit(PyType kind) {
         for (PyType owner : kind.mro()) {
-            if (owner.namespace().get(PyStr.interned("__init__")) != null) {
-                return owner == PyType.OBJECT;
+            PyObject filed = owner.namespace().get(PyStr.interned("__init__"));
+            if (filed != null) {
+                // A row built from `OBJECT_INIT` is object's own initializer however a type came to
+                // hold it: `weakref.ReferenceType` files a copy, and its `tp_init` is still
+                // `object_init`. Only a row with a different body gives its values their own.
+                return filed instanceof Member member && member.body == OBJECT_INIT;
             }
         }
         return true;
@@ -6059,20 +6093,31 @@ final class TypeDict {
      * {@code object.__init__}, which takes its receiver and nothing else — for a class whose values the
      * default creator makes.
      *
-     * <p>{@code object_init} words the refusal by which {@code tp_init} it is running under. A class that
-     * wrote no initializer still has {@code object_init} itself in the slot, so the refusal names the
-     * receiver's class — {@code C.__init__() takes exactly one argument}. A class that wrote one owns
-     * the slot even when all it does is pass its arguments up, so asking that class for {@code
-     * C().__init__(42)} reaches {@code object.__init__} through the class's own method and the refusal
-     * names {@code object} instead. A type that fills its own {@code tp_new} — every built-in here, and
-     * any class that wrote {@code __new__} — takes the arguments and throws them away.
+     * <p>{@code object_init} words the refusal in the order its two branches are written. A class that
+     * wrote an initializer of its own owns the {@code tp_init} slot even when all it does is pass its
+     * arguments up, so asking that class for {@code object.__init__(C(), 42)} reports the call to
+     * {@code object.__init__} itself. Otherwise the question is whether the class also wrote
+     * {@code __new__}: a type that fills its own {@code tp_new} — every built-in here, and any class
+     * that wrote {@code __new__} — takes the arguments and throws them away, while one that inherited
+     * both defaults gets the refusal naming its own class, {@code C.__init__() takes exactly one
+     * argument}.
      */
     private static PyObject objectInit(PyObject[] args, String[] kwNames, String qualified) {
-        if (args.length > 1 && !makesItsOwnValues(args[0].getType())) {
+        if (args.length > 1) {
             PyType kind = args[0].getType();
-            throw Slots.typeError(
-                    "%s.__init__() takes exactly one argument (the instance to initialize)",
-                    inheritsObjectInit(kind) ? kind.name() : PyType.OBJECT.name());
+            // `object_init`'s first branch: the class wrote an initializer of its own, so the complaint
+            // is about the call to `object.__init__` itself.
+            if (!inheritsObjectInit(kind)) {
+                throw Slots.typeError(
+                        "object.__init__() takes exactly one argument (the instance to initialize)");
+            }
+            // The second branch: no initializer of its own and no creator of its own either, so the
+            // complaint names the class whose arity the caller got wrong.
+            if (!makesItsOwnValues(kind)) {
+                throw Slots.typeError(
+                        "%s.__init__() takes exactly one argument (the instance to initialize)",
+                        kind.name());
+            }
         }
         return PyNone.INSTANCE;
     }
@@ -6414,7 +6459,12 @@ final class TypeDict {
     private static PyObject mroMember(PyObject[] args, String[] kwNames, String qualified) {
         PyType owner = (PyType) methodReceiver("mro", PyType.TYPE, args, kwNames);
         Arguments.none(qualified + "()", tail(args, kwNames), kwNames);
-        return PyList.of(owner.mro());
+        // `mro_implementation`, not `tp_mro`: while a custom `mro` is being asked for one the order is
+        // still NULL, and this is the call a custom `mro` reaches for to get the C3 answer.
+        PyType[] order = owner.filingOrder()
+                ? Classes.linearize(owner, PyTuple.of(owner.bases()))
+                : owner.mro();
+        return PyList.of(order);
     }
 
     /** {@code isinstance} without a hook: the walk of the order, asked of the class itself. */
@@ -7140,7 +7190,19 @@ final class TypeDict {
      */
     private static PyObject typeGetAttribute(PyObject[] args, String[] kwNames, String qualified) {
         PyType kind = wrapperReceiver("__getattribute__", args, kwNames);
-        return Slots.getAttr(kind, attributeName(args[1]));
+        String attribute = attributeName(args[1]);
+        // The generic half: a class whose metatype declares a hook delegates here, so this must not
+        // ask the hook again.
+        PyObject answer = kind.genericGetAttr(attribute);
+        if (answer == Slots.DECLINED) {
+            throw Slots.failedRead(
+                    kind,
+                    attribute,
+                    "type object '%s' has no attribute '%s'",
+                    kind.filedName(),
+                    attribute);
+        }
+        return answer;
     }
 
     /**

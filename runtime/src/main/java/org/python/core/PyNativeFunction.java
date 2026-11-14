@@ -478,6 +478,15 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     static final int METH_CLASS = 0x0010;
     static final int METH_STATIC = 0x0020;
 
+    /**
+     * {@code METH_METHOD}: the row asks for the class the read ran on as its second argument.
+     *
+     * <p>No body here reads that class — the C bodies that do look it up themselves — but the flag is
+     * still observable, because {@code method_get} refuses a read that names anything but a type in
+     * that place. {@code _io}'s eleven rows are the ones filed with it.
+     */
+    static final int METH_METHOD = 0x0200;
+
     /** A row filed twice over two names, which is not part of the calling convention read here. */
     private static final int METH_COEXIST = 0x0040;
 

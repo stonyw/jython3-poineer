@@ -68,8 +68,19 @@ public final class PyMethodDescriptor extends PyObject implements Descriptors.Pr
      * object by CPython's account, and this is the one place both are answered.
      */
     @Override
-    public PyObject asAttribute(PyObject obj, PyObject unused) {
-        return obj == null ? this : implementationOf(checked(obj));
+    public PyObject asAttribute(PyObject obj, PyObject owner) {
+        if (obj == null) {
+            return this;
+        }
+        PyObject receiver = checked(obj);
+        // `method_get` reads the class a `METH_METHOD` row was handed before it binds: the row needs
+        // one, so a read that names anything else is refused by name. Every other row ignores it.
+        if ((flags & PyNativeFunction.METH_METHOD) != 0 && !(owner instanceof PyType)) {
+            throw Slots.typeError(
+                    "descriptor '%s' needs a type, not '%s', as arg 2",
+                    name, owner.getType().filedName());
+        }
+        return implementationOf(receiver);
     }
 
     /**

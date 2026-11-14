@@ -116,7 +116,16 @@ final class PyIntSubclass extends PyInt {
     @Override
     public PyObject unaryOp(UnaryOp op) {
         PyObject answer = Specials.invoke(this, op.dunder());
-        return Slots.declined(answer) ? super.unaryOp(op) : answer;
+        if (Slots.declined(answer)) {
+            answer = super.unaryOp(op);
+        }
+        // `long___pos__`, `long___neg__` and `long___abs__` all build the answer with `_PyLong_Copy`,
+        // so a subclass gets a plain int back rather than itself — `+a` is not `a` for `class I(int)`.
+        if (answer == this
+                && (op == UnaryOp.POSITIVE || op == UnaryOp.NEGATIVE || op == UnaryOp.ABSOLUTE)) {
+            return PyInt.of(getValue());
+        }
+        return answer;
     }
 
     /**

@@ -112,7 +112,15 @@ final class PyComplexSubclass extends PyComplex {
     @Override
     public PyObject unaryOp(UnaryOp op) {
         PyObject answer = Specials.invoke(this, op.dunder());
-        return Slots.declined(answer) ? super.unaryOp(op) : answer;
+        if (Slots.declined(answer)) {
+            answer = super.unaryOp(op);
+        }
+        // `complex___pos__` builds its answer with `PyComplex_FromCComplex`, so `+a` of a subclass is a
+        // plain complex rather than `a` itself.
+        if (answer == this && op == UnaryOp.POSITIVE) {
+            return PyComplex.of(real(), imaginary());
+        }
+        return answer;
     }
 
     /** {@code self < other} and the rest: a method the class wrote, or the pair's own comparison. */

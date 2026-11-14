@@ -184,6 +184,12 @@ abstract class PyCallableWrapper extends PyObject implements Descriptors.Protoco
 
     @Override
     public String repr() {
-        return "<" + getType().name() + "(" + callable.repr() + ")>";
+        // `classmethod_repr` and `staticmethod_repr` name the descriptor family in the literal, not the
+        // class the value was built from: `repr(MyClassMethod(f))` is `<classmethod(...)>` too.
+        PyType kind = getType();
+        String family = kind.matches(PyType.CLASS_METHOD)
+                ? "classmethod"
+                : kind.matches(PyType.STATIC_METHOD) ? "staticmethod" : kind.name();
+        return "<" + family + "(" + callable.repr() + ")>";
     }
 }

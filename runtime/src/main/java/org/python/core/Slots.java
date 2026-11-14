@@ -77,6 +77,11 @@ public final class Slots {
      * {@code D.__floordiv__} rather than falling back to {@code C.__rfloordiv__}.
      */
     public static PyObject binary(BinaryOp op, PyObject left, PyObject right) {
+        return binary(op, left, right, op.symbol());
+    }
+
+    /** {@link #binary} with the spelling its refusal quotes, which differs for an augmented statement. */
+    private static PyObject binary(BinaryOp op, PyObject left, PyObject right, String symbol) {
         PyType leftType = left.getType();
         PyType rightType = right.getType();
         if (rightType != leftType
@@ -97,7 +102,7 @@ public final class Slots {
         }
         throw typeError(
                 "unsupported operand type(s) for %s: '%s' and '%s'",
-                op.symbol(), left.getType().filedName(), right.getType().filedName());
+                symbol, left.getType().filedName(), right.getType().filedName());
     }
 
     /**
@@ -156,6 +161,9 @@ public final class Slots {
             if (!declined(inPlace)) {
                 return inPlace;
             }
+            // An augmented statement that falls through to the binary slot quotes the augmented
+            // spelling in its refusal: `x **= 2` complains about `**=`, not `**`.
+            return binary(op, left, right, op.augmentedSymbol());
         }
         return binary(op, left, right);
     }
@@ -193,15 +201,14 @@ public final class Slots {
      * twice is a {@code TypeError}.
      *
      * <p>CPython asks the right operand first when its type is a proper subclass of the left's, because
-     * a subclass is the more specific answer to the question. That priority is only worth reproducing
-     * for a class Python wrote: a built-in type's comparison is a Java method rather than a looked-up
-     * method, and swapping it in front of {@code int}'s own answer would change {@code 1 == True} from
-     * the arithmetic CPython does to a method call it never makes.
+     * a subclass is the more specific answer to the question. That priority holds for the built-in
+     * types too, not only for classes Python wrote: {@code 1 == True} runs {@code bool}'s comparison
+     * first because {@code bool} is a proper subtype of {@code int}, and that comparison answers the
+     * arithmetic question all the same. A subclass that overrides nothing therefore sees no change.
      */
     public static PyObject compare(CompareOp cmp, PyObject left, PyObject right) {
         boolean reversedFirst = false;
-        if (right instanceof PyInstance
-                && right.getType() != left.getType()
+        if (right.getType() != left.getType()
                 && right.getType().matches(left.getType())) {
             PyObject result = right.richCompare(cmp.reflected(), left);
             if (!declined(result)) {

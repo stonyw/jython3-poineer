@@ -35,9 +35,12 @@ final class IoBases {
     private static final PyObject[] NO_ARGUMENTS = new PyObject[0];
 
     static {
-        IO_BASE.add("seek", IoBases::seek)
+        // Eleven of the rows below are CPython's `METH_METHOD` ones — `seek`, `truncate` and `fileno`
+        // here, the four of `_TextIOBase`, and four of `_BufferedIOBase` — which is what makes their
+        // `__get__` ask for a class rather than accept anything beside the receiver.
+        IO_BASE.addRevealingClass("seek", IoBases::seek)
                 .addNoArgument("tell", IoBases::tell)
-                .add("truncate", IoBases::truncate)
+                .addRevealingClass("truncate", IoBases::truncate)
                 .addNoArgument("flush", IoBases::flush)
                 .addNoArgument("close", IoBases::close)
                 .addNoArgument("seekable", self -> notClosed(self))
@@ -53,7 +56,7 @@ final class IoBases {
                 .addNoArgument(
                         "_checkWritable",
                         self -> checked(self, "writable", "File or stream is not writable."))
-                .add("fileno", (self, args, kwNames) -> fileno(args, kwNames))
+                .addRevealingClass("fileno", (self, args, kwNames) -> fileno(args, kwNames))
                 .addNoArgument("isatty", self -> notClosed(self))
                 .addNoArgument("__enter__", IoBases::enter)
                 .add("__exit__", (self, args, kwNames) -> exit(self, kwNames))
@@ -61,10 +64,11 @@ final class IoBases {
                 .add("readlines", IoBases::readlines)
                 .addOne("writelines", IoBases::writelines);
 
-        TEXT_IO_BASE.add("detach", (self, args, kwNames) -> detach(args, kwNames))
-                .add("read", (self, args, kwNames) -> unsupportedSize("read", args, kwNames))
-                .add("readline", (self, args, kwNames) -> unsupportedSize("readline", args, kwNames))
-                .add("write", IoBases::textWrite);
+        TEXT_IO_BASE.addRevealingClass("detach", (self, args, kwNames) -> detach(args, kwNames))
+                .addRevealingClass("read", (self, args, kwNames) -> unsupportedSize("read", args, kwNames))
+                .addRevealingClass(
+                        "readline", (self, args, kwNames) -> unsupportedSize("readline", args, kwNames))
+                .addRevealingClass("write", IoBases::textWrite);
 
         RAW_IO_BASE.add("read", IoBases::rawRead)
                 .addNoArgument("readall", self -> {
@@ -73,12 +77,13 @@ final class IoBases {
                 .add("readinto", (self, args, kwNames) -> rawUnsupported("_RawIOBase.readinto()", kwNames))
                 .add("write", (self, args, kwNames) -> rawUnsupported("_RawIOBase.write()", kwNames));
 
-        BUFFERED_IO_BASE.add("detach", (self, args, kwNames) -> detach(args, kwNames))
-                .add("read", (self, args, kwNames) -> unsupportedSize("read", args, kwNames))
-                .add("read1", (self, args, kwNames) -> unsupportedSize("read1", args, kwNames))
+        BUFFERED_IO_BASE.addRevealingClass("detach", (self, args, kwNames) -> detach(args, kwNames))
+                .addRevealingClass("read", (self, args, kwNames) -> unsupportedSize("read", args, kwNames))
+                .addRevealingClass(
+                        "read1", (self, args, kwNames) -> unsupportedSize("read1", args, kwNames))
                 .add("readinto", (self, args, kwNames) -> readInto("readinto", args, kwNames))
                 .add("readinto1", (self, args, kwNames) -> readInto("readinto1", args, kwNames))
-                .add("write", (self, args, kwNames) -> bufferedWrite(args, kwNames));
+                .addRevealingClass("write", (self, args, kwNames) -> bufferedWrite(args, kwNames));
     }
 
     /** Whether {@code type} is one of the four bases, and so made here. */

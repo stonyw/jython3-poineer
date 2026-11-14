@@ -459,6 +459,18 @@ final class Members {
     }
 
     /**
+     * A row CPython registers with {@code METH_METHOD}: it wants the class the read ran on.
+     *
+     * <p>Its body here needs nothing more than the receiver, but the flag still decides what
+     * {@code __get__} accepts, so it is filed with the descriptor the type's dictionary hands out.
+     */
+    Members addRevealingClass(String name, PyBoundMethod.Body body) {
+        add(name, body);
+        flags.put(name, PyNativeFunction.METH_METHOD);
+        return this;
+    }
+
+    /**
      * A field: one of the items underneath, reached by name and never written.
      *
      * <p>The declaration order is the item order, which is what makes {@code major} the first item of a

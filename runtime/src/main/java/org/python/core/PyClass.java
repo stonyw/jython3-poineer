@@ -238,14 +238,57 @@ public class PyClass extends PyType {
      * {@link PyType#classMember}, and it is why a {@code property} written in a metaclass answers for a
      * class that never mentions the name — and why a {@code __getattr__} written there answers for a name
      * nobody mentions at all, which is the last step here rather than the first.
+     *
+     * <p>A metatype that declares {@code __getattribute__} replaces this whole read, which is CPython's
+     * {@code slot_tp_getattr_hook} for types: the hook is called first and owns every name, and only an
+     * {@code AttributeError} from it lets the metatype's {@code __getattr__} be asked. The read that
+     * skips the hook — {@code type.__getattribute__}, and the half a hook delegates to — is
+     * {@link #genericGetAttr}.
      */
     @Override
     public PyObject getAttr(String attribute) {
+        PyObject hook = Specials.lookUp(getType(), "__getattribute__");
+        if (hook != null) {
+            PyObject name = PyStr.of(attribute);
+            try {
+                return Slots.call(
+                        Descriptors.get(hook, this, getType()), new PyObject[] {name}, PyTuple.EMPTY);
+            } catch (PyRaise raised) {
+                if (!raised.value().exceptionType().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                    throw raised;
+                }
+                PyObject fallback = Specials.invoke(this, "__getattr__", name);
+                if (fallback != Slots.DECLINED) {
+                    return fallback;
+                }
+                throw raised;
+            }
+        }
+        PyObject answered = genericGetAttr(attribute);
+        // With no hook, the metatype's `__getattr__` is still the fallback every missing name reaches,
+        // which is `slot_tp_getattr_hook`'s second half.
+        return answered == Slots.DECLINED
+                ? Specials.invoke(this, "__getattr__", PyStr.of(attribute))
+                : answered;
+    }
+
+    /**
+     * {@code type.__getattribute__(Point, 'as_text')}: the read with no hook in it.
+     *
+     * <p>This is what {@code type}'s own {@code __getattribute__} answers with, so the name a metaclass
+     * hands back to {@code super()} cannot come round to the hook again. A name that is nowhere is
+     * refused here rather than returned, and — unlike the ordinary read — no {@code __getattr__} is
+     * asked; the fallback belongs to the hook, not to the generic walk beneath it.
+     */
+    @Override
+    PyObject genericGetAttr(String attribute) {
         PyObject identity =
                 switch (attribute) {
                     case "__qualname__" -> qualName;
                     case "__bases__" -> bases;
-                    case "__mro__" -> PyTuple.of(mro());
+                    case "__mro__" -> filingOrder()
+                            ? PyNone.INSTANCE
+                            : PyTuple.of(mro());
                     case "__class__" -> type;
                     default -> null;
                 };
@@ -263,11 +306,9 @@ public class PyClass extends PyType {
             return member;
         }
         // The rest of the names a type answers for itself — `__name__`, `__base__` — are the built-in
-        // type's own, and a class has nothing to say about them.
-        PyObject answered = super.getAttr(attribute);
-        return answered == Slots.DECLINED
-                ? Specials.invoke(this, "__getattr__", PyStr.of(attribute))
-                : answered;
+        // type's own, and a class has nothing to say about them. A name nobody answers stays declined,
+        // which is what lets the complaining read and the optional read differ above this point.
+        return super.getAttr(attribute);
     }
 
     /**
