@@ -1325,6 +1325,12 @@ public class PyType extends PyObject {
     static final PyType GROUPBY_GROUP =
             builtin("_grouper").filedUnder("itertools._grouper");
 
+    /** One of the cursors {@code tee} hands out: the reference files it as {@code itertools._tee}. */
+    static final PyType TEE =
+            builtin("_tee")
+                    .filedUnder("itertools._tee")
+                    .documented("Iterator wrapped to make it copyable.");
+
     static final PyType ISLICE =
             builtin("islice")
                     .filedUnder("itertools.islice")

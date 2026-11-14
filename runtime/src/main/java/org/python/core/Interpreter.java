@@ -96,6 +96,15 @@ public final class Interpreter {
         } finally {
             if (!frame.isParked()) {
                 frame.finish();
+                // `_PyFrame_Clear` for a frame a generator owns: a body that has left the stack keeps
+                // neither its caller nor its names. The first is what makes `gi_frame.f_back` read None
+                // once the generator is exhausted — a suspended frame is unlinked by `park`, a finished
+                // one by this — and the second is what lets a generator's locals go when it returns or
+                // closes, so a weakref to one of them dies with the generator rather than with the GC.
+                if (frame.generator != null) {
+                    frame.setBack(null);
+                    frame.clearLocals();
+                }
             }
             EXECUTING.set(caller);
             Gil.exit();

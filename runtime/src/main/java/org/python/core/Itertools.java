@@ -8,11 +8,12 @@ import java.util.List;
  * {@code itertools}: the cursors the reference builds in {@code itertoolsmodule.c}, over the same iterable
  * protocol every other cursor here uses.
  *
- * <p>Only the ones whose whole state is a few fields are here. {@code tee}, {@code groupby},
- * {@code combinations} and {@code combinations_with_replacement} are not: they are nothing but a different
- * walk of the same protocol, and the plan files them under the same "missing C module" heading as the rest
- * of the absent surface. {@code permutations} and {@code product} arrived with the M6-a verification
- * slice, because {@code tokenize} enumerates the string-prefix permutations at import.
+ * <p>Only the ones whose whole state is a few fields are here. {@code groupby}, {@code combinations} and
+ * {@code combinations_with_replacement} are not: they are nothing but a different walk of the same
+ * protocol, and the plan files them under the same "missing C module" heading as the rest of the absent
+ * surface. {@code tee} arrived with the M6-a generator slice, because {@code test_generators}' doctests
+ * reach for it; {@code permutations} and {@code product} arrived with the M6-a verification slice,
+ * because {@code tokenize} enumerates the string-prefix permutations at import.
  *
  * <p>Each type is filed under {@code itertools.name} so that {@code type(count(1)).__name__} and
  * {@code __module__} answer as in the reference. {@code count} and {@code repeat} print their state, as
@@ -58,6 +59,10 @@ final class Itertools {
         module.set("islice", PyType.ISLICE);
         module.set("starmap", PyType.STAR_MAP);
         module.set("takewhile", PyType.TAKE_WHILE);
+        module.set(
+                "tee",
+                new PyNativeFunction("tee", Itertools::tee)
+                        .documented("Returns a tuple of n independent iterators."));
         module.set("zip_longest", PyType.ZIP_LONGEST);
         module.set("batched", PyType.BATCHED);
         module.set("pairwise", PyType.PAIRWISE);
@@ -1068,5 +1073,87 @@ final class Itertools {
         PyObject[] iterables = new PyObject[positional];
         System.arraycopy(args, 0, iterables, 0, positional);
         return new Product(iterables, repeat.bitLength() > 31 ? Integer.MAX_VALUE : repeat.intValue());
+    }
+
+    /**
+     * One cursor {@code tee} handed out: an index into the cache all of them share.
+     *
+     * <p>The reference has a cursor per call and a {@code teedataobject} behind them, and the two fields
+     * here are the same arrangement one level down — the shared object pulls the source only when a cursor
+     * asks for an index past what it has, so the source is walked once however many cursors read it.
+     */
+    static final class Tee extends Cursor {
+        private final TeeSource source;
+        private int index;
+
+        Tee(TeeSource source) {
+            super(PyType.TEE);
+            this.source = source;
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            PyObject item = source.at(index);
+            if (item != null) {
+                index++;
+            }
+            return item;
+        }
+    }
+
+    /**
+     * What the cursors of one {@code tee} call share: the source and everything already pulled from it.
+     *
+     * <p>The cache is not trimmed as the cursors pass an item, where the reference drops it once the
+     * slowest cursor has read it: keeping it is what makes an index into it enough, and the cost is
+     * bounded by how far ahead the fastest cursor runs, which is the same thing the reference's chain of
+     * {@code teedataobject}s holds while it waits.
+     */
+    static final class TeeSource {
+        private final PyIterator source;
+        private final List<PyObject> cache = new ArrayList<>();
+        private boolean exhausted;
+
+        TeeSource(PyIterator source) {
+            this.source = source;
+        }
+
+        /** The item at {@code index}, pulling the source forward until it is there or is known to end. */
+        PyObject at(int index) {
+            while (!exhausted && cache.size() <= index) {
+                PyObject item = source.nextOrNull();
+                if (item == null) {
+                    exhausted = true;
+                } else {
+                    cache.add(item);
+                }
+            }
+            return index < cache.size() ? cache.get(index) : null;
+        }
+    }
+
+    /** {@code tee(iterable, n=2, /)}: {@code n} cursors over one walk of {@code iterable}. */
+    static PyObject tee(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("itertools.tee()", kwNames);
+        Arguments.between("tee", args, kwNames, 1, 2);
+        int wanted = 2;
+        if (args.length > 1) {
+            BigInteger count = Numbers.asIndex(args[1]);
+            if (count.signum() < 0) {
+                throw Slots.valueError("n must be >= 0");
+            }
+            if (count.bitLength() > 31) {
+                // `PyMem_Calloc` of that many pointers is what the reference fails on; there is no
+                // sentence to copy, because it never reaches one.
+                throw Slots.memoryError();
+            }
+            wanted = count.intValue();
+        }
+        TeeSource shared = new TeeSource(Slots.iterator(args[0]));
+        PyObject[] cursors = new PyObject[wanted];
+        for (int i = 0; i < wanted; i++) {
+            cursors[i] = new Tee(shared);
+        }
+        return PyTuple.of(cursors);
     }
 }

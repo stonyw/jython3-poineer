@@ -76,21 +76,80 @@ public final class PyGenerator extends PyIterator {
         "gi_frame", "gi_code", "gi_running", "gi_suspended", "gi_yieldfrom"
     };
 
-    /** The table CPython's {@code gen_methods} is: three methods, and the argument counts they check. */
-    private static final Members MEMBERS = Members.of(PyType.GENERATOR)
-            .addOne("send", (self, argument) -> ((PyGenerator) self).send(argument))
-            .add(
-                    "throw",
-                    (self, args, kwNames) -> {
-                        // METH_FASTCALL with no keywords: the calling convention refuses a keyword before
-                        // the method sees the arguments, and the count check is the legacy one that names
-                        // the method bare and counts only what arrived positionally.
-                        Arguments.noKeywords(
-                                ((PyGenerator) self).kind.word + ".throw()", kwNames);
-                        Arguments.between("throw", args, kwNames, 1, 3);
-                        return ((PyGenerator) self).throwIn(args);
-                    })
-            .addNoArgument("close", self -> ((PyGenerator) self).close());
+    /**
+     * The table CPython's {@code gen_methods} and {@code gen_getsetlist} are.
+     *
+     * <p>The five getsets are filed here as well as being answered in {@link #getAttr}, because a table
+     * that a person can read is what {@code dir(generator)} and {@code type(g).gi_frame} are built from:
+     * {@code dir} of a generator lists {@code gi_code}, {@code gi_frame}, {@code gi_running},
+     * {@code gi_suspended} and {@code gi_yieldfrom} beside the three methods, and the class-side read is a
+     * descriptor with a getter and no setter, which is the refusal {@link #setAttr} already gives.
+     * {@code __next__} is {@code gen_iternext} under the name the protocol uses, and its sentence is the
+     * wrapper's own.
+     */
+    private static final Members MEMBERS =
+            getsets(Members.of(PyType.GENERATOR))
+                    .addOne("send", (self, argument) -> ((PyGenerator) self).send(argument))
+                    .add(
+                            "throw",
+                            (self, args, kwNames) -> {
+                                // METH_FASTCALL with no keywords: the calling convention refuses a keyword
+                                // before the method sees the arguments, and the count check is the legacy
+                                // one that names the method bare and counts only what arrived positionally.
+                                Arguments.noKeywords(
+                                        ((PyGenerator) self).kind.word + ".throw()", kwNames);
+                                Arguments.between("throw", args, kwNames, 1, 3);
+                                return ((PyGenerator) self).throwIn(args);
+                            })
+                    .addNoArgument("close", self -> ((PyGenerator) self).close())
+                    .addNoArgument(
+                            "__next__",
+                            "Implement next(self).",
+                            self -> {
+                                PyGenerator generator = (PyGenerator) self;
+                                PyObject yielded = generator.nextOrNull();
+                                if (yielded != null) {
+                                    return yielded;
+                                }
+                                // `gen_iternext` is `gen_send_ex` with the exception flag: the value a
+                                // returning body left behind goes into the StopIteration, as `next()` has.
+                                PyBaseException stop = generator.exhaustion();
+                                throw stop == null
+                                        ? PyRaise.raise(ExceptionTypes.STOP_ITERATION)
+                                        : PyRaise.reraise(stop);
+                            });
+
+    /** {@code gen_getsetlist}: five read-only names, four of them undocumented in the reference. */
+    private static Members getsets(Members table) {
+        return table
+                .addValue(
+                        "gi_frame",
+                        getset("gi_frame", null, self ->
+                                self.state == State.COMPLETED
+                                        ? PyNone.INSTANCE
+                                        : self.frame.frameObject()))
+                .addValue("gi_code", getset("gi_code", null, self -> (PyObject) self.frame.code()))
+                .addValue(
+                        "gi_running",
+                        getset("gi_running", null, self ->
+                                PyBool.of(self.state == State.EXECUTING)))
+                .addValue(
+                        "gi_suspended",
+                        getset("gi_suspended", null, self ->
+                                PyBool.of(self.isSuspended())))
+                .addValue(
+                        "gi_yieldfrom",
+                        getset(
+                                "gi_yieldfrom",
+                                "object being iterated by yield from, or None",
+                                PyGenerator::delegated));
+    }
+
+    private static PyGetSetDescriptor getset(
+            String name, String doc, java.util.function.Function<PyGenerator, PyObject> reader) {
+        return new PyGetSetDescriptor(
+                PyType.GENERATOR, name, doc, self -> reader.apply((PyGenerator) self), null);
+    }
 
     final Kind kind;
     final Frame frame;
