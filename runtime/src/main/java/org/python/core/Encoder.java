@@ -38,12 +38,12 @@ import java.util.Set;
 final class Encoder {
 
     /**
-     * The thirteen codec modules this runtime has, under the names {@code encodings} imports.
+     * The fourteen codec modules this runtime has, under the names {@code encodings} imports.
      *
      * <p>A name reaches one of them exactly as CPython's {@code encodings.search_function} decides it: the
      * {@code _Py_normalize_encoding} of Objects/unicodeobject.c:3605 first, then one step through the alias
      * table of {@code Lib/encodings/aliases.py} as {@code Lib/encodings/__init__.py:87} reads it. Only the
-     * aliases of these thirteen are copied, and they are copied verbatim, because an invented alias would answer
+     * aliases of these fourteen are copied, and they are copied verbatim, because an invented alias would answer
      * for a name the reference refuses — the way {@code u-t-f8} normalizes to {@code u_t_f8} and is no codec
      * at all, while {@code utf 8} and {@code UTF-8} and {@code utf-8} all normalize to {@code utf_8} and are.
      * {@code unicode_escape} has no alias at all, which is why {@code unicodeescape} is refused while
@@ -51,9 +51,10 @@ final class Encoder {
      */
     private static final Set<String> CODECS = Set.of(
             "ascii", "latin_1", "utf_8", "utf_8_sig", "utf_16", "utf_16_le", "utf_16_be",
-            "utf_32", "utf_32_le", "utf_32_be", "cp1252", "unicode_escape", "raw_unicode_escape");
+            "utf_32", "utf_32_le", "utf_32_be", "utf_7", "cp1252", "unicode_escape",
+            "raw_unicode_escape");
 
-    /** The lines of {@code aliases.py} whose target is one of the thirteen. */
+    /** The lines of {@code aliases.py} whose target is one of the fourteen. */
     private static final Map<String, String> ALIASES = Map.ofEntries(
             Map.entry("646", "ascii"),
             Map.entry("ansi_x3.4_1968", "ascii"),
@@ -81,6 +82,9 @@ final class Encoder {
             Map.entry("latin1", "latin_1"),
             Map.entry("u16", "utf_16"),
             Map.entry("utf16", "utf_16"),
+            Map.entry("u7", "utf_7"),
+            Map.entry("utf7", "utf_7"),
+            Map.entry("unicode_1_1_utf_7", "utf_7"),
             Map.entry("unicodebigunmarked", "utf_16_be"),
             Map.entry("utf_16be", "utf_16_be"),
             Map.entry("unicodelittleunmarked", "utf_16_le"),
@@ -356,7 +360,116 @@ final class Encoder {
 
     /** {@code s.encode(encoding, errors)} and {@code bytes(s, encoding, errors)}: the same call. */
     static PyBytes encode(String text, String encoding, String errors) {
+        if (codec(encoding).equals("utf_7")) {
+            // UTF-7 is the one codec here with a mode that outlives a character: a run of characters it
+            // cannot write directly is one shift sequence, so the per-character walk cannot express it.
+            return PyBytes.wrap(utf7(text));
+        }
         return PyBytes.wrap(writing(codecOf(encoding), text, errors));
+    }
+
+    /**
+     * {@code utf7_encode} (Objects/unicodeobject.c:{@code _PyUnicode_EncodeUTF7}): the direct sets and the
+     * modified-Base64 shift.
+     *
+     * <p>Three groups of characters are written as themselves: the alphanumerics and {@code '(),-./:?}, the
+     * optional set {@code !"#$%&*;<=>@[]^_`{|}}, and the four ASCII whitespace characters. {@code '+'} is
+     * never one of them outside a shift, where it is the two octets {@code +-}; inside a shift it is data
+     * like any other character. Every other character — {@code ~} and the other controls included — is
+     * written as its UTF-16BE code units in modified Base64, which is why {@code 'é+é'} is one shift
+     * ({@code +AOkAKwDp-}) rather than {@code +AOk-} followed by {@code +-}.
+     *
+     * <p>A shift ends at the first direct character. If that character is one the Base64 alphabet also
+     * holds, or is the {@code -} that would otherwise be read as the shift's own terminator, an explicit
+     * {@code -} is written first; otherwise the direct character itself ends the shift, which is why
+     * {@code 'é!'} is {@code +AOk!} and {@code 'éa'} is {@code +AOk-a}. A shift still open at the end of
+     * the text is closed with {@code -}.
+     */
+    private static byte[] utf7(String text) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        boolean shift = false;
+        int buffer = 0;
+        int bits = 0;
+        for (int unit = 0; unit < text.length(); ) {
+            int codePoint = text.codePointAt(unit);
+            unit += Character.charCount(codePoint);
+            if (shift && utf7Direct(codePoint)) {
+                // The shift has to hand over its padded last group before the direct character ends it.
+                if (bits > 0) {
+                    out.write(BASE64.charAt((buffer << (6 - bits)) & 0x3F));
+                    bits = 0;
+                }
+                if (utf7Base64(codePoint) || codePoint == '-') {
+                    out.write('-');
+                }
+                out.write(codePoint);
+                shift = false;
+                continue;
+            }
+            if (!shift) {
+                if (codePoint == '+') {
+                    out.write('+');
+                    out.write('-');
+                    continue;
+                }
+                if (utf7Direct(codePoint)) {
+                    out.write(codePoint);
+                    continue;
+                }
+                out.write('+');
+                shift = true;
+                buffer = 0;
+                bits = 0;
+            }
+            if (codePoint >= 0x10000) {
+                int pair = codePoint - 0x10000;
+                buffer = (buffer << 16) | (0xD800 | (pair >> 10));
+                bits += 16;
+                while (bits >= 6) {
+                    bits -= 6;
+                    out.write(BASE64.charAt((buffer >>> bits) & 0x3F));
+                }
+                codePoint = 0xDC00 | (pair & 0x3FF);
+            }
+            buffer = (buffer << 16) | codePoint;
+            bits += 16;
+            while (bits >= 6) {
+                bits -= 6;
+                out.write(BASE64.charAt((buffer >>> bits) & 0x3F));
+            }
+        }
+        if (shift) {
+            if (bits > 0) {
+                out.write(BASE64.charAt((buffer << (6 - bits)) & 0x3F));
+            }
+            out.write('-');
+        }
+        return out.toByteArray();
+    }
+
+    /** The modified-Base64 alphabet of RFC 2152, which is the standard one without its padding. */
+    private static final String BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    /** Whether UTF-7 writes a character as itself rather than inside a shift sequence. */
+    private static boolean utf7Direct(int codePoint) {
+        return (codePoint >= 'A' && codePoint <= 'Z')
+                || (codePoint >= 'a' && codePoint <= 'z')
+                || (codePoint >= '0' && codePoint <= '9')
+                || "'(),-./:?".indexOf(codePoint) >= 0
+                || "!\"#$%&*;<=>@[]^_`{|}".indexOf(codePoint) >= 0
+                || codePoint == ' '
+                || codePoint == '\t'
+                || codePoint == '\n'
+                || codePoint == '\r';
+    }
+
+    /** Whether a direct character would otherwise be swallowed by the shift sequence it follows. */
+    private static boolean utf7Base64(int codePoint) {
+        return (codePoint >= 'A' && codePoint <= 'Z')
+                || (codePoint >= 'a' && codePoint <= 'z')
+                || (codePoint >= '0' && codePoint <= '9')
+                || codePoint == '+'
+                || codePoint == '/';
     }
 
     /** {@code PyObject_ASCII}: the repr as the encoder's {@code backslashreplace} writes it, read back. */

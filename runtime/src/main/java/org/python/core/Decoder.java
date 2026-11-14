@@ -85,6 +85,7 @@ final class Decoder {
             case "utf_32" -> utf32(out, data, errors, stateful32(data));
             case "utf_32_le" -> utf32(out, data, errors, new Utf32(false, "utf-32-le", 0));
             case "utf_32_be" -> utf32(out, data, errors, new Utf32(true, "utf-32-be", 0));
+            case "utf_7" -> utf7(out, data, errors);
             case "cp1252" -> charmap(out, data, errors);
             case "unicode_escape" -> unicodeEscape(out, data, errors);
             case "raw_unicode_escape" -> rawUnicodeEscape(out, data, errors);
@@ -383,6 +384,158 @@ final class Decoder {
         return big
                 ? (first << 24) | (second << 16) | (third << 8) | fourth
                 : (fourth << 24) | (third << 16) | (second << 8) | first;
+    }
+
+    /**
+     * {@code utf7_decode}: direct octets, and the modified-Base64 shifts {@code +} opens.
+     *
+     * <p>Everything below {@code 0x80} is a character of its own except {@code +}; an octet from
+     * {@code 0x80} up is {@code unexpected special character} wherever it stands. A {@code +} followed by
+     * {@code -} is a literal {@code +}, a {@code +} at the very end of the input is nothing at all (the
+     * reference ignores it), and any other {@code +} opens a shift that {@link #utf7Shift} walks.
+     *
+     * <p>The three sentences a shift can end with are the reference's own. {@code partial character in shift
+     * sequence} is a leftover of six bits or more, {@code non-zero padding bits in shift sequence} a shorter
+     * leftover with a one in it, and {@code ill-formed sequence} a shift that ended before a single Base64
+     * octet — each range running from the {@code +} through the octet that ended the shift, which is why
+     * {@code b"+2A-"}'s complaint is {@code position 0-3} and not {@code 0-2}.
+     */
+    private static void utf7(StringBuilder out, byte[] data, String errors) {
+        String reported = "utf7";
+        int at = 0;
+        while (at < data.length) {
+            int octet = data[at] & 0xff;
+            if (octet != '+') {
+                if (octet < 0x80) {
+                    out.append((char) octet);
+                    at++;
+                    continue;
+                }
+                at = handled(errors, reported, data, out, at, at + 1, "unexpected special character");
+                continue;
+            }
+            if (at + 1 == data.length) {
+                return;
+            }
+            if ((data[at + 1] & 0xff) == '-') {
+                out.append('+');
+                at += 2;
+                continue;
+            }
+            at = utf7Shift(out, data, errors, at);
+        }
+    }
+
+    /**
+     * One shift sequence, from the {@code +} at {@code plus} to the octet that ends it.
+     *
+     * @return the position the walk resumes at, which is inside the shift only for a handler that forgave
+     *     it — a strict walk never returns from a refusal
+     */
+    private static int utf7Shift(StringBuilder out, byte[] data, String errors, int plus) {
+        String reported = "utf7";
+        int at = plus + 1;
+        int buffer = 0;
+        int bits = 0;
+        // A high surrogate is only flushed by a shift that ends inside its own input: the reference keeps
+        // one waiting for the low half, and an input that simply stops leaves it unterminated.
+        boolean pendingHigh = false;
+        while (at < data.length) {
+            int octet = data[at] & 0xff;
+            if (octet == '-') {
+                return utf7End(out, data, errors, plus, at, bits, buffer, reported);
+            }
+            int six = utf7Value(octet);
+            if (six >= 0) {
+                buffer = (buffer << 6) | six;
+                bits += 6;
+                at++;
+                while (bits >= 16) {
+                    bits -= 16;
+                    int unit = (buffer >>> bits) & 0xffff;
+                    out.append((char) unit);
+                    pendingHigh = unit >= 0xD800 && unit <= 0xDBFF;
+                }
+                continue;
+            }
+            if (bits == 0) {
+                return handled(
+                        errors, reported, data, out, plus, at + 1, "ill-formed sequence");
+            }
+            if (bits >= 6) {
+                return handled(
+                        errors, reported, data, out, plus, at + 1, "partial character in shift sequence");
+            }
+            if ((buffer & ((1 << bits) - 1)) != 0) {
+                return handled(
+                        errors,
+                        reported,
+                        data,
+                        out,
+                        plus,
+                        at + 1,
+                        "non-zero padding bits in shift sequence");
+            }
+            if (octet >= 0x80) {
+                return handled(
+                        errors, reported, data, out, at, at + 1, "unexpected special character");
+            }
+            // A clean shift and an ordinary octet: the octet is direct and ends the shift only by not
+            // being part of the Base64 alphabet.
+            return at;
+        }
+        if (bits >= 6 || (bits > 0 && (buffer & ((1 << bits) - 1)) != 0) || pendingHigh) {
+            return handled(
+                    errors, reported, data, out, plus, data.length, "unterminated shift sequence");
+        }
+        return data.length;
+    }
+
+    /** The two clean ways a shift can end: a {@code -} terminator, and the input running out. */
+    private static int utf7End(
+            StringBuilder out,
+            byte[] data,
+            String errors,
+            int plus,
+            int at,
+            int bits,
+            int buffer,
+            String reported) {
+        if (bits >= 6) {
+            return handled(
+                    errors, reported, data, out, plus, at + 1, "partial character in shift sequence");
+        }
+        if (bits > 0 && (buffer & ((1 << bits) - 1)) != 0) {
+            return handled(
+                    errors,
+                    reported,
+                    data,
+                    out,
+                    plus,
+                    at + 1,
+                    "non-zero padding bits in shift sequence");
+        }
+        return at + 1;
+    }
+
+    /** The modified-Base64 value of an octet, or -1 where the octet is not in the alphabet. */
+    private static int utf7Value(int octet) {
+        if (octet >= 'A' && octet <= 'Z') {
+            return octet - 'A';
+        }
+        if (octet >= 'a' && octet <= 'z') {
+            return octet - 'a' + 26;
+        }
+        if (octet >= '0' && octet <= '9') {
+            return octet - '0' + 52;
+        }
+        if (octet == '+') {
+            return 62;
+        }
+        if (octet == '/') {
+            return 63;
+        }
+        return -1;
     }
 
     /**

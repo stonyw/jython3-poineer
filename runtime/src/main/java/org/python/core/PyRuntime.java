@@ -47,7 +47,7 @@ public final class PyRuntime {
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "zlib", "array", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
-                "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings"};
+                "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -314,6 +314,7 @@ public final class PyRuntime {
         PyModule[] hashlibModules = HashlibModule.newModules();
         PyModule errnoModule = ErrnoModule.newModule();
         PyModule codecsModule = CodecsModule.newModule();
+        PyModule operatorModule = OperatorModule.newModule();
         PyModule mathModule = MathModule.newModule();
         PyModule timeModule = TimeModule.newModule();
         // The two modules `re` needs before any of its own Python code can run: the engine boundary
@@ -371,6 +372,7 @@ public final class PyRuntime {
         }
         modules.put(PyStr.interned("errno"), errnoModule);
         modules.put(PyStr.interned("_codecs"), codecsModule);
+        modules.put(PyStr.interned("_operator"), operatorModule);
         modules.put(PyStr.interned("math"), mathModule);
         modules.put(PyStr.interned("time"), timeModule);
         modules.put(PyStr.interned("_sre"), sreModule);

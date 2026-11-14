@@ -617,6 +617,15 @@ public final class PyBufferedReader extends PyIOStream {
      * Illegal seek} on the descriptor below. macOS files {@code SEEK_DATA} and {@code SEEK_HOLE} beside the
      * three the language names, and the row lets all five through to the seekable question — which, for a
      * pipe, is the last thing this row ever asks.
+     *
+     * <p>A relative seek is <em>not</em> forwarded as one. The descriptor's pointer is past every octet the
+     * store has already read ahead of, so {@code seek(0, 1)} after a {@code read(512)} would land a whole
+     * store away from where the caller is. The reference turns the pair into an absolute position —
+     * {@code raw.tell() - readahead() + offset} — and, when that position is one the store already holds,
+     * only moves {@code pos} instead of touching the descriptor at all: {@code seek(0, 1)} after
+     * {@code read(512)} leaves the descriptor at 8192 and answers 512. That is the path
+     * {@code gzip.GzipFile.tell()} takes (an {@code IOBase.tell()} that is really {@code seek(0, 1)}), so
+     * asking a gzip stream where it is no longer moves it.
      */
     private PyObject seek(PyObject[] args, String[] kwNames) {
         Arguments.noKeywords("BufferedReader.seek()", kwNames);
@@ -630,15 +639,26 @@ public final class PyBufferedReader extends PyIOStream {
         if (ask("seekable") != PyBool.TRUE) {
             throw Slots.unsupportedOperation("File or stream is not seekable.");
         }
-        Numbers.cLong(args[0]);
+        long offset = Numbers.cLong(args[0]);
         if (writable) {
             flushOutgoing();
         }
-        PyObject answer =
-                Slots.call(
-                        Slots.getAttr(descriptor, "seek"),
-                        new PyObject[] {args[0], PyInt.of(whence)},
-                        null);
+        if (whence == 1) {
+            long rawPosition = Numbers.cLong(ask("tell"));
+            long target = rawPosition - readahead() + offset;
+            if (readEnd >= 0 && target >= rawPosition - readahead() && target <= rawPosition) {
+                pos = (int) (readEnd - (rawPosition - target));
+                return PyInt.of(target);
+            }
+            PyObject answer = Slots.call(
+                    Slots.getAttr(descriptor, "seek"), new PyObject[] {PyInt.of(target)}, null);
+            reset();
+            return answer;
+        }
+        PyObject answer = Slots.call(
+                Slots.getAttr(descriptor, "seek"),
+                new PyObject[] {args[0], PyInt.of(whence)},
+                null);
         reset();
         return answer;
     }
