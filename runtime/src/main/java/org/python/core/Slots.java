@@ -750,7 +750,13 @@ public final class Slots {
      * suite reads these three sentences.
      */
     public static PyRaise unsupportedOperation(String format, Object... args) {
-        return PyRaise.raise(ExceptionTypes.UNSUPPORTED_OPERATION, text(format, args));
+        // It is an OSError subclass, so it has to be built as one: the plain exception object
+        // `raise(type, message)` makes carries none of the errno/filename fields, and reading them
+        // walks into a cast that fails.
+        return PyRaise.of(
+                PyOSError.create(
+                        ExceptionTypes.UNSUPPORTED_OPERATION,
+                        new PyObject[] {PyStr.of(text(format, args))}));
     }
 
     public static PyRaise keyError(PyObject missing) {

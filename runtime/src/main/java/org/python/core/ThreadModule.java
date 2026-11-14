@@ -254,14 +254,32 @@ final class ThreadModule {
     }
 
     /**
-     * {@code interrupt_main(signum=SIGINT, /)}: nothing to interrupt, so the signal is dropped.
+     * {@code interrupt_main(signum=SIGINT, /)}: delivers the signal to its registered handler.
      *
-     * <p>The reference schedules a {@code KeyboardInterrupt} in the main thread and returns before it
-     * arrives; with only that thread, returning is all there is to do until the interpreter checks
-     * for interrupts, which this runtime does not do.
+     * <p>The reference schedules the signal for the main thread and returns before it arrives; here
+     * the caller is the only thread, so the handler the {@code _signal} table holds is called at once.
+     * That is the same handler a program installed with {@code signal.signal}, including asyncio's —
+     * its handler cancels the main task, which is what makes an interrupted {@code asyncio.run()} end
+     * instead of waiting forever on a selector. With no handler installed, the signal's default
+     * action is taken, so {@code SIGINT} raises {@code KeyboardInterrupt} from this call.
      */
     private static PyObject interruptMain(PyObject[] args, String[] kwNames) {
         Arguments.between("interrupt_main", args, kwNames, 0, 1);
+        int signum =
+                args.length == 0 ? 2 : Numbers.asIndex(args[0]).intValue();
+        PyObject handler =
+                Slots.call(
+                        Slots.getAttr(PyRuntime.importModule("_signal"), "getsignal"),
+                        new PyObject[] {PyInt.of(signum)},
+                        null);
+        if (handler instanceof PyInt action) {
+            // SIG_DFL (0) is the signal's own action; SIG_IGN (1) drops it.
+            if (Numbers.asIndex(action).intValue() == 0) {
+                throw PyRaise.raise(ExceptionTypes.KEYBOARD_INTERRUPT);
+            }
+            return PyNone.INSTANCE;
+        }
+        Slots.call(handler, new PyObject[] {PyInt.of(signum), PyNone.INSTANCE}, null);
         return PyNone.INSTANCE;
     }
 

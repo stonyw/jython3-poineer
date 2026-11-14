@@ -540,7 +540,8 @@ class Jy3LauncherTest {
                 "19_buffer_protocol.py",
                 "20_asyncio_subset.py",
                 "21_defaultdict_binding.py",
-                "22_platform_surface.py");
+                "22_platform_surface.py",
+                "23_asyncio_io.py");
     }
 
     /**

@@ -1,7 +1,6 @@
 package org.python.core;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -264,8 +263,8 @@ final class Open {
     /**
      * The {@link PyFileIO} under the stream, opened the way the mode string asks.
      *
-     * <p>A read-only mode is a {@link FileInputStream}; everything else is a
-     * {@link RandomAccessFile}, because the writer has to position, extend and truncate. {@code w}
+     * <p>A read-only mode is a {@link RandomAccessFile} opened for reading; everything else is one
+     * opened for reading and writing, because the writer has to position, extend and truncate. {@code w}
      * truncates after opening, {@code a} leaves the length alone and lets every write seek to the end,
      * and {@code x} refuses a name that already exists before opening it. The descriptor number is
      * {@code -1}, because the JVM hands out no such number; the stream still answers {@code name},
@@ -280,7 +279,10 @@ final class Open {
         String resolved = PosixModule.absolute(path);
         try {
             if (parsed.reading && !parsed.updating) {
-                return new PyFileIO(path, new FileInputStream(resolved), -1, true);
+                // A RandomAccessFile even for reading: a FileInputStream cannot be positioned, and
+                // `BufferedReader.seek`/`tell` are part of what a `'rb'` stream answers.
+                RandomAccessFile reader = new RandomAccessFile(resolved, "r");
+                return new PyFileIO(path, reader, true, false, false, ioMode(parsed));
             }
             if (parsed.creating && new File(resolved).exists()) {
                 throw osFailure(ExceptionTypes.FILE_EXISTS_ERROR, 17, "File exists", path);

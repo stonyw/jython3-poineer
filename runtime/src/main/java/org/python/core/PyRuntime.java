@@ -1536,6 +1536,9 @@ public final class PyRuntime {
         namespace.set("safe_path", PyBool.FALSE);
         namespace.set("int_max_str_digits", PyInt.of(0));
         namespace.set("context_aware_warnings", PyInt.of(0));
+        // 3.14's `threading` reads this at import time; threads are refused rather than inherited, so
+        // the switch that would carry a context into them is off.
+        namespace.set("thread_inherit_context", PyInt.of(0));
         return namespace;
     }
 

@@ -558,7 +558,9 @@ public final class PyBufferedReader extends PyIOStream {
                 if (buffer.writable) {
                     buffer.flushOutgoing();
                 }
-                return buffer.ask("tell");
+                // The descriptor's pointer is past the octets the store has already read ahead of,
+                // so the position this layer reports is that pointer less the unread tail.
+                return PyInt.of(Numbers.cLong(buffer.ask("tell")) - buffer.readahead());
             })
             // BufferedReader's `flush` is `_io._Buffered.flush` filed as the simple one: CHECK_INITIALIZED
             // and then nothing but the descriptor's row — including the full stop it refuses a closed

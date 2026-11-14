@@ -88,6 +88,7 @@ final class SocketModule {
     private static final int EPIPE = 32;
     private static final int EAGAIN = 35;
     private static final int EINPROGRESS = 36;
+    private static final int EALREADY = 37;
     private static final int EPROTONOSUPPORT = 43;
     private static final int EAFNOSUPPORT = 47;
     private static final int EADDRINUSE = 48;
@@ -283,6 +284,68 @@ final class SocketModule {
         return fd;
     }
 
+    /**
+     * Whether {@code fd} is one of this module's numbers, for {@link SelectModule}.
+     *
+     * <p>The numbers are the socket layer's own, not the kernel's, so {@link Fds} does not know them
+     * and answers any number it does not know as always ready. A selector has to tell the two tables
+     * apart before deciding how to wait.
+     */
+    static boolean owns(int fd) {
+        return HANDLES.containsKey(fd);
+    }
+
+    /**
+     * The channel behind a socket descriptor, for {@link SelectModule} to wait on.
+     *
+     * <p>Null for a socket that has not made its channel yet — a datagram handle that was never bound
+     * or connected. Such a socket is never ready, which is what the reference says about it too.
+     */
+    static SelectableChannel channelFor(int fd) {
+        Handle found = HANDLES.get(fd);
+        if (found == null) {
+            return null;
+        }
+        if (found.server != null) {
+            return found.server;
+        }
+        if (found.stream != null) {
+            return found.stream;
+        }
+        return found.datagram;
+    }
+
+    /**
+     * Completes a connect the selector just reported, for {@link SelectModule}.
+     *
+     * <p>Java leaves a socket channel in its pending state until {@code finishConnect} is called, and
+     * the write that follows would fail with {@code NotYetConnectedException}. A failure here is kept
+     * on the handle as {@code SO_ERROR}, which is where the reference's selector loop reads the errno
+     * from; the channel is then dropped, so the socket reports itself closed rather than pretending.
+     */
+    static void settle(int fd) {
+        Handle found = HANDLES.get(fd);
+        if (found == null || found.stream == null || !found.stream.isConnectionPending()) {
+            return;
+        }
+        try {
+            found.stream.finishConnect();
+        } catch (IOException failure) {
+            found.option(SOL_SOCKET, SO_ERROR, connectErrno(failure));
+            discard(found, found.stream);
+        }
+    }
+
+    private static int connectErrno(IOException failure) {
+        if (failure instanceof ConnectException) {
+            return ECONNREFUSED;
+        }
+        if (failure instanceof NoRouteToHostException) {
+            return EHOSTUNREACH;
+        }
+        return EIO;
+    }
+
     private static PyObject info(PyObject[] args) {
         Arguments.exactly("socket.__init__", args, null, 4);
         Handle found = handle(slot(args[0]));
@@ -341,9 +404,7 @@ final class SocketModule {
                 }
                 ServerSocketChannel server = ServerSocketChannel.open(protocol(handle.family));
                 server.configureBlocking(false);
-                if (handle.option(SOL_SOCKET, SO_REUSEADDR) != 0) {
-                    server.setOption(StandardSocketOptions.SO_REUSEADDR, true);
-                }
+                reuseAddress(server, handle);
                 SocketAddress local = socketAddress(handle, address);
                 if (local instanceof UnixDomainSocketAddress unix) {
                     handle.unixPath = unix.getPath().toString();
@@ -356,11 +417,9 @@ final class SocketModule {
                 if (handle.datagram != null) {
                     throw osError(EINVAL, "Invalid argument");
                 }
-                DatagramChannel datagram = DatagramChannel.open(protocol(handle.family));
+                DatagramChannel datagram = openDatagram(handle);
                 datagram.configureBlocking(false);
-                if (handle.option(SOL_SOCKET, SO_REUSEADDR) != 0) {
-                    datagram.setOption(StandardSocketOptions.SO_REUSEADDR, true);
-                }
+                reuseAddress(datagram, handle);
                 datagram.bind(socketAddress(handle, address));
                 handle.datagram = datagram;
             }
@@ -410,7 +469,13 @@ final class SocketModule {
         try {
             if (limit == null) {
                 server.configureBlocking(true);
-                return server.accept();
+                try {
+                    return server.accept();
+                } finally {
+                    // Every channel stays non-blocking between calls, which is what lets select
+                    // register it; the blocking wait above is the one place this one is switched.
+                    server.configureBlocking(false);
+                }
             }
             server.configureBlocking(false);
             if (limit == 0.0) {
@@ -471,13 +536,25 @@ final class SocketModule {
             if (local != null) {
                 channel.bind(local);
             }
-            connectOne(channel, socketAddress(handle, address), limit);
+            connectOne(handle, channel, socketAddress(handle, address), limit);
         } catch (IOException e) {
             throw fault(e);
         }
     }
 
-    private static void connectOne(SocketChannel channel, SocketAddress address, Double limit) {
+    private static void discard(Handle handle, SocketChannel channel) {
+        if (handle.stream == channel) {
+            handle.stream = null;
+        }
+        try {
+            channel.close();
+        } catch (IOException ignored) {
+            // Nothing is left to be done about a channel being dropped.
+        }
+    }
+
+    private static void connectOne(
+            Handle handle, SocketChannel channel, SocketAddress address, Double limit) {
         try {
             if (limit == null) {
                 channel.configureBlocking(true);
@@ -489,14 +566,23 @@ final class SocketModule {
             if (channel.connect(address)) {
                 return;
             }
-            if (limit == 0.0) {
-                throw osError(EINPROGRESS, "Operation now in progress");
-            }
-            if (!readyConnected(channel, limit)) {
-                throw timedOut();
-            }
+        } catch (java.nio.channels.ConnectionPendingException pending) {
+            // A Java channel cannot start a second connect; the reference lets a program retry on
+            // the same socket, so the channel is dropped and the next call makes a fresh one.
+            discard(handle, channel);
+            throw osError(EALREADY, "Operation already in progress");
         } catch (IOException e) {
+            discard(handle, channel);
             throw fault(e);
+        }
+        if (limit == 0.0) {
+            // In flight, and the channel stays: the caller waits for write readiness and asks again,
+            // which is what `connect_ex` reported as EINPROGRESS does in the reference.
+            throw osError(EINPROGRESS, "Operation now in progress");
+        }
+        if (!readyConnected(channel, limit)) {
+            discard(handle, channel);
+            throw timedOut();
         }
     }
 
@@ -713,7 +799,12 @@ final class SocketModule {
         try {
             if (limit == null) {
                 channel.configureBlocking(true);
-                return channel.read(buffer);
+                try {
+                    return channel.read(buffer);
+                } finally {
+                    // Channels stay non-blocking between calls so that select can register them.
+                    channel.configureBlocking(false);
+                }
             }
             channel.configureBlocking(false);
             if (limit == 0.0) {
@@ -741,11 +832,15 @@ final class SocketModule {
         try {
             if (limit == null) {
                 channel.configureBlocking(true);
-                int count = channel.write(buffer);
-                if (count == 0 && buffer.hasRemaining()) {
-                    count = channel.write(buffer);
+                try {
+                    int count = channel.write(buffer);
+                    if (count == 0 && buffer.hasRemaining()) {
+                        count = channel.write(buffer);
+                    }
+                    return count;
+                } finally {
+                    channel.configureBlocking(false);
                 }
-                return count;
             }
             channel.configureBlocking(false);
             if (limit == 0.0) {
@@ -1394,14 +1489,51 @@ final class SocketModule {
 
     private static DatagramChannel datagram(Handle handle) {
         if (handle.datagram == null) {
+            handle.datagram = openDatagram(handle);
             try {
-                handle.datagram = DatagramChannel.open(protocol(handle.family));
                 handle.datagram.configureBlocking(false);
             } catch (IOException e) {
                 throw fault(e);
             }
         }
         return handle.datagram;
+    }
+
+    /**
+     * A datagram channel for the handle's family, or the refusal the reference makes for one the
+     * platform cannot provide.
+     *
+     * <p>The JDK on this platform has no {@code AF_UNIX} datagram channel, and says so with an
+     * {@link UnsupportedOperationException} rather than an {@link IOException}. That is the same fact
+     * the C library reports as {@code EAFNOSUPPORT}, so it is turned into the {@code OSError} a Python
+     * program and the test suite's {@code skip_unless_bind_unix_socket} already catch.
+     */
+    private static DatagramChannel openDatagram(Handle handle) {
+        try {
+            return DatagramChannel.open(protocol(handle.family));
+        } catch (UnsupportedOperationException refused) {
+            throw osError(EAFNOSUPPORT, "Protocol family not supported");
+        } catch (IOException e) {
+            throw fault(e);
+        }
+    }
+
+    /**
+     * Applies {@code SO_REUSEADDR} when the handle asked for it.
+     *
+     * <p>Some JDK channels refuse the option outright on this platform; the value is remembered on the
+     * handle either way, and {@code getsockopt} reads it back, so a refusal here only means the
+     * operating system will not be told.
+     */
+    private static void reuseAddress(java.nio.channels.NetworkChannel channel, Handle handle) {
+        if (handle.option(SOL_SOCKET, SO_REUSEADDR) == 0) {
+            return;
+        }
+        try {
+            channel.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+        } catch (UnsupportedOperationException | IOException refused) {
+            // Remembered on the handle; see above.
+        }
     }
 
     // --- errors ------------------------------------------------------------------------------
