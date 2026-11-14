@@ -162,7 +162,7 @@ public class PyModule extends PyObject {
         }
         PyObject shown = Slots.getAttr(module, "__dict__");
         if (!(shown instanceof PyDict entries)) {
-            throw Slots.typeError("%s.__dict__ is not a dictionary", module.getType().name());
+            throw Slots.typeError("<module>.__dict__ is not a dictionary");
         }
         java.util.List<String> names = new java.util.ArrayList<>();
         for (PyObject key : entries.keys()) {
@@ -256,6 +256,13 @@ public class PyModule extends PyObject {
         if (kind instanceof PyClass) {
             PyObject member = Specials.lookUp(kind, attribute);
             if (member != null && Descriptors.writes(member) && Descriptors.binds(member)) {
+                return Descriptors.get(member, this, kind);
+            }
+            // A class member that is not a descriptor still shadows the module's own `__dict__` window:
+            // `class M(ModuleType): __dict__ = 8` makes `getattr(M('m'), '__dict__')` the 8, exactly as
+            // `PyObject_GenericGetAttr` answers it, and `dir()` then refuses the module. The dictionary
+            // and the remaining class members keep their order for every other name.
+            if ("__dict__".equals(attribute) && member != null) {
                 return Descriptors.get(member, this, kind);
             }
         }

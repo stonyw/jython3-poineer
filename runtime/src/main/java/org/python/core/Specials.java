@@ -120,8 +120,8 @@ final class Specials {
      * descriptor taken from a built-in — {@code __neg__ = dict.copy}, {@code __eq__ = str.__eq__} — and a
      * classmethod are both members CPython reaches through {@code tp_descr_get} and then calls, so the
      * member is bound to this value first; a descriptor of the wrong kind of value refuses here with the
-     * sentence its built-in wrote. A member that only binds is declined, which keeps
-     * {@code __hash__ = None} saying "not callable" rather than "absent".
+     * sentence its built-in wrote. A member that is not a descriptor at all — {@code __repr__ = None} —
+     * is called as it stands, so the slot's complaint is "not callable" rather than "absent".
      */
     static PyObject invoke(PyObject self, String name, PyObject[] arguments, PyTuple kwNames) {
         PyObject declared = lookUp(self.getType(), name);
@@ -134,6 +134,12 @@ final class Specials {
         if (declared != null && Descriptors.binds(declared)) {
             return Slots.call(
                     Descriptors.get(declared, self, self.getType()), arguments, kwNames);
+        }
+        // A member that is not even a descriptor is still what the slot calls: `__repr__ = None`
+        // answers `'NoneType' object is not callable`, exactly as CPython's `slot_tp_repr` does, rather
+        // than letting the class's declaration vanish and the default display win.
+        if (declared != null) {
+            return Slots.call(declared, arguments, kwNames);
         }
         return Slots.DECLINED;
     }
@@ -166,6 +172,10 @@ final class Specials {
                 throw refused;
             }
             return Slots.call(bound, arguments, null);
+        }
+        if (declared != null) {
+            // The same clause as `invoke`: a found member that binds no descriptor is still called.
+            return Slots.call(declared, arguments, null);
         }
         return Slots.DECLINED;
     }

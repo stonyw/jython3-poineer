@@ -66,6 +66,16 @@ final class GcModule {
                                 + "--\n"
                                 + "\n"
                                 + "Run a garbage collection."));
+        module.set("is_tracked", PyNativeFunction.positional("is_tracked", args -> {
+            Arguments.exactly("is_tracked", args, null, 1);
+            return PyBool.of(tracked(args[0]));
+        }).documented(
+                "is_tracked($module, obj, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return true if the object is tracked by the garbage collector.\n"
+                        + "\n"
+                        + "Simple atomic objects will return false."));
         module.set("enable", PyNativeFunction.positional("enable", args -> {
             Arguments.none("enable()", args, null);
             enabled = true;
@@ -191,6 +201,48 @@ final class GcModule {
         Arguments.noKeywords("get_referents()", kwNames);
         throw Slots.notImplemented(
                 "gc.get_referents() cannot see the JVM heap; it is not implemented (M6-a)");
+    }
+
+    /**
+     * Whether a collector that follows references would have to look inside this value.
+     *
+     * <p>The reference answers this from the object's type, not from whether the collector happens to
+     * have seen the value yet: containers, instances of classes written in Python, exceptions, modules
+     * and the iterators that hold a reference to their source are all tracked; the atomic values and
+     * the plain iterators over an immutable sequence are not. A tuple is the one shape whose answer
+     * depends on its contents in practice — the empty tuple is a shared, untracked singleton — so it is
+     * the one value checked rather than its type.
+     */
+    private static boolean tracked(PyObject value) {
+        if (value instanceof PyTuple tuple) {
+            // A tuple is tracked while it is being built and may be untracked by a collection once
+            // every element is untracked — the reference's `untrack_tuples`. A non-empty tuple is the
+            // answer before that pass, an empty one is never tracked at all.
+            return tuple.size() > 0;
+        }
+        if (value instanceof PyInstance instance) {
+            // `object()` is the one instance whose type is not a GC type; every class Python wrote is.
+            return instance.getType() != PyType.OBJECT;
+        }
+        PyType kind = value.getType();
+        if (kind == PyType.RANGE_ITERATOR) {
+            // `range_iterator` holds nothing that could point back at the range.
+            return false;
+        }
+        return value instanceof PyList
+                || value instanceof PyDict
+                || value instanceof PySet
+                || value instanceof PyFrozenSet
+                || value instanceof PySlice
+                || value instanceof PyMemoryView
+                || value instanceof PyInstance
+                || value instanceof PyBaseException
+                || value instanceof PyModule
+                || value instanceof PyClass
+                || value instanceof PyFunction
+                || value instanceof PyBoundMethod
+                || value instanceof PyCell
+                || value instanceof PyIterator;
     }
 
     /** One generation's counters, as {@code get_stats} reports them. */

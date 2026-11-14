@@ -248,6 +248,9 @@ final class Classes {
             throw Slots.typeError(
                     "type.__new__() argument 1 must be str, not %s", args[0].getType().name());
         }
+        // `type_new_set_name`: the name has to be writable as UTF-8 before it is stored, and a name is
+        // a C string, so an embedded null cannot be part of one.
+        checkName(name.getValue());
         if (!(args[1] instanceof PyTuple declared)) {
             throw Slots.typeError(
                     "type.__new__() argument 2 must be tuple, not %s", args[1].getType().name());
@@ -258,6 +261,19 @@ final class Classes {
         if (namespace == null) {
             throw Slots.typeError(
                     "type.__new__() argument 3 must be dict, not %s", args[2].getType().name());
+        }
+        if (args[2].getType() != PyType.DICT) {
+            // `PyDict_Copy` is `PyDict_New` plus `dict_merge`, and a dict subclass that overrides
+            // `__iter__` — `collections.OrderedDict` does — makes `dict_merge` read `keys()` rather than
+            // the table, which is the only place the linked-list order shows: its own `copy()` hands back
+            // another OrderedDict, not the plain dict `type_new` keeps. So the keys are walked here.
+            PyDict copy = PyDict.empty();
+            PyObject keys = Slots.getAttr(args[2], "keys");
+            for (PyObject key :
+                    Constructors.materialise(Slots.call(keys, new PyObject[0], null))) {
+                copy.put(key, Slots.getItem(args[2], key));
+            }
+            namespace = copy;
         }
         // An empty base tuple means object, and is written back into __bases__ as such.
         PyTuple bases = declared.size() == 0 ? PyTuple.of(PyType.OBJECT) : declared;
@@ -529,6 +545,9 @@ final class Classes {
         // is what a class with no docstring ends with — leaves the field empty. Nothing writes it again, so
         // the table read off a class is cut from the text this build saw, whatever `__doc__` holds later.
         if (dict.get(docKey) instanceof PyStr stated) {
+            // `type_new_set_doc` stores the sentence as a C string, so it has to encode as UTF-8 before
+            // the class exists; a lone surrogate is refused with the encoding error, not stored.
+            checkUtf8(stated.getValue());
             kind.documented(stated.getValue());
         }
         // `type_new_set_mro`: the order is the metatype's `mro()` when that is not `type`'s, which is what
@@ -598,6 +617,15 @@ final class Classes {
         PyType base = kind.parent();
         PyObject slots = dict.get(PyStr.interned("__slots__"));
         Declared declared = collect(slots, kind.name());
+        // `type_new_slots_impl`: a base whose values grow behind the header — `int`, `str`, `bytes`,
+        // `tuple` carry their payload after the object — has nowhere to append a field offset, so any
+        // nonempty `__slots__` under one is refused, even the two storage names.
+        if (declared.dict() || declared.weak() || !declared.layout().isEmpty()) {
+            if (carriesItems(base)) {
+                throw Slots.typeError(
+                        "nonempty __slots__ not supported for subtype of '%s'", base.name());
+            }
+        }
         // `type_new_set_attrs`: the size grows by one pointer per declared field, and by nothing for the
         // two storages that live outside the value. A compiled-in root stands for `object`'s own 16.
         int baseSize = size(base);
@@ -1084,13 +1112,60 @@ final class Classes {
     }
 
     /**
+     * The compiled-in types whose values carry their payload after the header, so their instance size
+     * grows with the value's contents: {@code int}'s digits, a string's code points, the bytes of
+     * {@code bytes}, and a tuple's item pointers. {@code bytearray} is not one of them — its octets live
+     * in a separate buffer — which is why it may be extended with slots.
+     */
+    private static boolean carriesItems(PyType type) {
+        return type == PyType.INT
+                || type == PyType.STR
+                || type == PyType.BYTES
+                || type == PyType.TUPLE;
+    }
+
+    /** {@code type_set_name}: the surrogate check that runs before the null-character one. */
+    static void checkName(String name) {
+        checkUtf8(name);
+        if (name.indexOf('\0') >= 0) {
+            throw Slots.valueError("type name must not contain null characters");
+        }
+    }
+
+    /**
+     * The check {@code PyUnicode_AsUTF8} makes when a string is about to be stored as a C string: a lone
+     * surrogate has no UTF-8 encoding, and the error names the code point and why.
+     */
+    static void checkUtf8(String text) {
+        int bad = firstUnencodable(text);
+        if (bad >= 0) {
+            throw Slots.unicodeEncode("utf-8", text, bad, bad + 1, "surrogates not allowed");
+        }
+    }
+
+    /** The first code point of {@code text} that UTF-8 cannot write; -1 when the whole text encodes. */
+    private static int firstUnencodable(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (Character.isHighSurrogate(c)
+                    && i + 1 < text.length()
+                    && Character.isLowSurrogate(text.charAt(i + 1))) {
+                i++;
+            } else if (Character.isSurrogate(c)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * {@code best_base}: the one base whose storage every value of the new class has to fit.
      *
      * <p>The winner is the most derived solid base, and the answer is the <em>declared</em> base that
      * contributed it rather than the solid one — which is why {@code D.__bases__ = (C, list)} names
      * {@code list} in its error even though {@code list} is its own solid base.
      */
-    private static PyType bestBase(PyTuple bases) {
+    static PyType bestBase(PyTuple bases) {
         PyType winner = null;
         PyType base = null;
         for (int i = 0; i < bases.size(); i++) {

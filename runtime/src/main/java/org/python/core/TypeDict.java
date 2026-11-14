@@ -801,6 +801,12 @@ final class TypeDict {
             namespaceTable(into);
             return;
         }
+        if (owner == PyType.TRACEBACK) {
+            // `traceback` keeps its four names in the type dictionary and answers `dir(tb)` from
+            // `tb_dir`, which is why the answer is four names rather than the class's own walk.
+            into.put(PyStr.interned("__dir__"), PyTraceback.DIR);
+            return;
+        }
         if (owner == PyType.BUILTIN_FUNCTION) {
             functionTable(into);
             return;

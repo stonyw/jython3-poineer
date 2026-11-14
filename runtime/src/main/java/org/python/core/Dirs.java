@@ -85,17 +85,42 @@ final class Dirs {
     /** {@code object.__dir__}: the value's own dictionary, then the order of the class it calls itself. */
     static List<String> valueNames(PyObject target) {
         Set<String> names = new LinkedHashSet<>();
+        // `_dir_object` asks a module for the attribute itself and refuses anything but a dictionary:
+        // a class over `ModuleType` may file any value under `__dict__`, and the sentence names no type.
+        PyObject held = optionalAttribute(target, "__dict__");
+        if (target.getType().matches(PyType.MODULE) && !(held instanceof PyDict)) {
+            throw Slots.typeError("<module>.__dict__ is not a dictionary");
+        }
         // The merge only takes a real dictionary, which is why a class answers nothing of its own here:
         // `Thing.__dict__` is a window, and `object.__dir__(Thing)` is the metatype's names alone.
-        if (Slots.findAttr(target, "__dict__") instanceof PyDict held) {
-            collectKeys(names, held.keys());
+        if (held instanceof PyDict dictionary) {
+            collectKeys(names, dictionary.keys());
         }
         // The class is read, not taken from the value's type: `__class__` is a member a class may answer
-        // with a property, and CPython merges the class that answer names.
-        if (Slots.findAttr(target, "__class__") instanceof PyType declared) {
+        // with a property, and CPython merges the class that answer names. A `__class__` declared as a
+        // slot and left uninitialized refuses the read, which `PyObject_GetOptionalAttr` swallows: the
+        // merge is skipped rather than the walk failing, so `dir()` still answers.
+        if (optionalAttribute(target, "__class__") instanceof PyType declared) {
             mergeOrder(names, declared);
         }
         return new ArrayList<>(names);
+    }
+
+    /**
+     * {@code PyObject_GetOptionalAttr}: the read with an {@code AttributeError} turned into absence.
+     *
+     * <p>Only that one refusal is swallowed, exactly as the reference does — anything else a descriptor
+     * raises on the way out is the caller's to report.
+     */
+    private static PyObject optionalAttribute(PyObject target, String name) {
+        try {
+            return Slots.findAttr(target, name);
+        } catch (PyRaise refusal) {
+            if (!refusal.value().matches(ExceptionTypes.ATTRIBUTE_ERROR)) {
+                throw refusal;
+            }
+            return null;
+        }
     }
 
     /** {@code merge_class_dict}: one class's own dictionary, then the same for every class it descends. */

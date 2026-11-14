@@ -1081,6 +1081,12 @@ final class Builtins {
                 }
             }
         }
+        // `builtin_max` refuses the pair of a default and several positional arguments: the default
+        // only answers an empty iterable, and with several arguments there is no iterable to be empty.
+        if (hasFallback && positional > 1) {
+            throw Slots.typeError(
+                    "Cannot specify a default for %s() with multiple positional arguments", label);
+        }
         List<PyObject> items = new ArrayList<>();
         if (positional == 1) {
             // One argument is the iterable to look over, so `min(1)` is `iter(1)`'s complaint.
@@ -1162,10 +1168,130 @@ final class Builtins {
         PyObject total = positional > 1
                 ? args[1]
                 : keywordValue(kwNames, args, positional, "start", PyInt.ZERO);
+        // `builtin_sum` refuses a start that is a string family member before looking at the items:
+        // adding strings one at a time is quadratic, and the sentence points at `join`.
+        if (total instanceof PyStr) {
+            throw Slots.typeError("sum() can't sum strings [use ''.join(seq) instead]");
+        }
+        if (total instanceof PyBytes) {
+            throw Slots.typeError("sum() can't sum bytes [use b''.join(seq) instead]");
+        }
+        if (total instanceof PyByteArray) {
+            throw Slots.typeError(
+                    "sum() can't sum bytearray [use b''.join(seq) instead]");
+        }
+        // The float and complex fast paths are CPython's `CompensatedSum`: while the running total is
+        // an exact float (or complex) and the items are the numeric kinds that block absorbs, the sum
+        // stays in two doubles per component — Neumaier's compensation keeps the low bits of each
+        // addition — and a non-numeric item first materialises the compensated total and then goes
+        // through `+`. `sum([0.1] * 10)` is 1.0 because of the compensation, `sum([inf, inf])` stays
+        // inf because a non-finite compensation is dropped rather than added, and the complex block is
+        // what makes `sum([2+1j, 10E100j, 1j, -10E100j])` be 2+2j. Every other type still reaches `+`,
+        // so a custom `__add__` keeps its say.
+        Compensated floating = null;
+        Compensated real = null;
+        Compensated imaginary = null;
         for (PyObject item : Constructors.materialise(args[0])) {
+            if (floating == null && real == null) {
+                if (total.getType() == PyType.FLOAT) {
+                    floating = new Compensated(((PyFloat) total).getValue());
+                } else if (total.getType() == PyType.COMPLEX) {
+                    PyComplex start = (PyComplex) total;
+                    real = new Compensated(start.real());
+                    imaginary = new Compensated(start.imaginary());
+                }
+            }
+            if (floating != null) {
+                Double addend = asDouble(item);
+                if (addend != null) {
+                    floating.add(addend);
+                    continue;
+                }
+                // `PyLong_AsDouble`'s overflow and every non-float leave the block: the sum built so
+                // far becomes an object and the item is added to it by the ordinary protocol.
+                total = PyFloat.of(floating.value());
+                floating = null;
+            }
+            if (real != null) {
+                if (item.getType() == PyType.COMPLEX) {
+                    PyComplex addend = (PyComplex) item;
+                    real.add(addend.real());
+                    imaginary.add(addend.imaginary());
+                    continue;
+                }
+                Double addend = asDouble(item);
+                if (addend != null) {
+                    real.add(addend);
+                    continue;
+                }
+                total = PyComplex.of(real.value(), imaginary.value());
+                real = null;
+                imaginary = null;
+            }
             total = Slots.binary(BinaryOp.ADD, total, item);
         }
+        if (floating != null) {
+            return PyFloat.of(floating.value());
+        }
+        if (real != null) {
+            return PyComplex.of(real.value(), imaginary.value());
+        }
         return total;
+    }
+
+    /**
+     * CPython's {@code CompensatedSum}: a running sum in two doubles, Neumaier's algorithm, whose
+     * second double holds the low-order bits each addition would have rounded away.
+     */
+    private static final class Compensated {
+
+        private double high;
+
+        private double low;
+
+        Compensated(double high) {
+            this.high = high;
+        }
+
+        void add(double addend) {
+            double next = high + addend;
+            if (Math.abs(high) >= Math.abs(addend)) {
+                low += (high - next) + addend;
+            } else {
+                low += (addend - next) + high;
+            }
+            high = next;
+        }
+
+        /** {@code cs_to_double}: never let the compensation turn an infinite sum into a NaN. */
+        double value() {
+            if (low != 0.0 && Double.isFinite(low)) {
+                return high + low;
+            }
+            return high;
+        }
+    }
+
+    /**
+     * The double the compensated fast path may absorb an item as, or null when the item is not one it
+     * absorbs.
+     *
+     * <p>{@code PyLong_Check} admits a bool, an int subclass and anything compact, and
+     * {@code PyLong_AsDouble} fails — the fast path then ends — only for a value too large to be a
+     * double; an infinity here stands for that failure instead of being summed.
+     */
+    private static Double asDouble(PyObject item) {
+        if (item.getType() == PyType.FLOAT) {
+            return ((PyFloat) item).getValue();
+        }
+        if (item instanceof PyBool flag) {
+            return flag == PyBool.TRUE ? 1.0 : 0.0;
+        }
+        if (item instanceof PyInt integer) {
+            double value = integer.getValue().doubleValue();
+            return Double.isInfinite(value) ? null : value;
+        }
+        return null;
     }
 
     /**
@@ -1442,7 +1568,7 @@ final class Builtins {
     private static PyObject evaluate(PyObject[] args, String[] kwNames) {
         PyObject[] given = Arguments.fill("eval", args, kwNames, NAMESPACE_NAMES, NAMESPACE_DEFAULTS);
         Arguments.required("eval", NAMESPACE_NAMES, given, 0);
-        PyCode code = codeOf("eval", given[0], "<string>", true);
+        PyCode code = evaluatingCode(given[0]);
         PyDict globals;
         PyDict locals;
         if (given[1] == PyNone.INSTANCE) {
@@ -1625,6 +1751,27 @@ final class Builtins {
         return expression
                 ? PyRuntime.compileExpression(text, fileName)
                 : PyRuntime.compileSource(text, fileName);
+    }
+
+    /**
+     * The code {@code eval} runs: a code object as it is, or the source with the first line's leading
+     * spaces and tabs skipped.
+     *
+     * <p>That skip is {@code builtin_eval_impl}'s own, and it is why {@code eval(' 1+1')} answers while
+     * {@code compile(' 1+1', '<s>', 'eval')} refuses with {@code IndentationError}: only the very start
+     * of the buffer is forgiven, and only spaces and tabs — a leading newline or form feed stays the
+     * parser's business.
+     */
+    private static PyCode evaluatingCode(PyObject source) {
+        if (source instanceof PyCode code) {
+            return code;
+        }
+        String text = sourceText("eval", source);
+        int start = 0;
+        while (start < text.length() && (text.charAt(start) == ' ' || text.charAt(start) == '\t')) {
+            start++;
+        }
+        return PyRuntime.compileExpression(start == 0 ? text : text.substring(start), "<string>");
     }
 
     /** The text of a source argument: a string as it is, or bytes read as UTF-8. */

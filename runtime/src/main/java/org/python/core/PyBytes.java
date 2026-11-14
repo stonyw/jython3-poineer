@@ -1031,23 +1031,36 @@ public class PyBytes extends PyObject {
 
     /** {@code separator.join(iterable)}: a run for every item, and nothing else. */
     static PyObject joined(PyObject self, PyObject parts) {
-        byte[] separator = octets(self);
-        if (parts.iterator() == Slots.DECLINED) {
-            throw Slots.typeError("can only join an iterable");
+        // The separator is exported for as long as the iterable is walked, as `bytearray_join` holds
+        // `self_bytes` across the loop; an iterable that resizes the bytearray meanwhile gets the
+        // buffer error rather than a result built from a separator that moved under it.
+        PyByteArray exported = self instanceof PyByteArray array ? array : null;
+        if (exported != null) {
+            exported.beginExport();
         }
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        PyIterator iterator = Slots.iterator(parts);
-        for (int at = 0; ; at++) {
-            PyObject item = iterator.nextOrNull();
-            if (item == null) {
-                break;
+        try {
+            byte[] separator = octets(self);
+            if (parts.iterator() == Slots.DECLINED) {
+                throw Slots.typeError("can only join an iterable");
             }
-            if (at > 0) {
-                out.writeBytes(separator);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            PyIterator iterator = Slots.iterator(parts);
+            for (int at = 0; ; at++) {
+                PyObject item = iterator.nextOrNull();
+                if (item == null) {
+                    break;
+                }
+                if (at > 0) {
+                    out.writeBytes(separator);
+                }
+                out.writeBytes(segment(item, at));
             }
-            out.writeBytes(segment(item, at));
+            return answer(self, out.toByteArray());
+        } finally {
+            if (exported != null) {
+                exported.endExport();
+            }
         }
-        return answer(self, out.toByteArray());
     }
 
     /** An item of {@code join}'s iterable, refused with the position it was reached at. */

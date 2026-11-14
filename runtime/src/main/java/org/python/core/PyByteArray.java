@@ -28,6 +28,9 @@ public class PyByteArray extends PyObject {
     /** The capacity of the allocation behind {@link #value}, which is what {@code __sizeof__} reports. */
     private int allocated;
 
+    /** Buffer exports outstanding; a run with any cannot move, see {@link #resize}. */
+    private int exports;
+
     PyByteArray(PyType kind, byte[] value, int allocated) {
         super(kind);
         this.value = value;
@@ -59,6 +62,16 @@ public class PyByteArray extends PyObject {
         return value;
     }
 
+    /** Export a view of the run for as long as a reader holds it; {@link #resize} then refuses. */
+    void beginExport() {
+        exports++;
+    }
+
+    /** Give the export back, after which the run may move again. */
+    void endExport() {
+        exports--;
+    }
+
     int size() {
         return value.length;
     }
@@ -84,6 +97,13 @@ public class PyByteArray extends PyObject {
      * sequence of appends reproducible rather than incidental.
      */
     private void resize(int requested) {
+        if (exports > 0) {
+            // A buffer handed out still points into this run: CPython's `bytes_resize` refuses rather
+            // than move the array out from under it, and `bytearray_join` does exactly this — the
+            // separator is exported while the iterable is walked, so an iterable that clears the
+            // bytearray mid-join reports this instead of reading a stale separator.
+            throw Slots.bufferError("Existing exports of data: object cannot be re-sized");
+        }
         int size = value.length;
         if (requested == size) {
             return;

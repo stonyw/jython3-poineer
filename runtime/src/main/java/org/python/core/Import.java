@@ -81,6 +81,18 @@ final class Import {
     static PyObject importName(
             PyObject nameValue, PyObject globals, PyObject fromlist, PyObject levelValue) {
         String requested = stringName(nameValue);
+        if (requested.indexOf('\0') >= 0) {
+            // A NUL cannot name a path, and CPython's finders answer the attempt as a module that is
+            // simply not there; letting the character reach a file name would make the JVM refuse it
+            // before any import machinery sees it. The message reprs the name, so the NUL is escaped.
+            throw PyRaise.of((PyBaseException) Slots.call(
+                    ExceptionTypes.MODULE_NOT_FOUND_ERROR,
+                    new PyObject[] {
+                        PyStr.of("No module named " + PyStr.of(requested).repr()),
+                        PyStr.of(requested)
+                    },
+                    PyBoundMethod.keywordTuple(new String[] {"name"})));
+        }
         int level = levelOf(levelValue);
         String base = "";
         if (level > 0) {
@@ -165,6 +177,32 @@ final class Import {
         if (spec != null && spec != PyNone.INSTANCE) {
             PyObject parent = Slots.findAttr(spec, "parent");
             return parent instanceof PyStr text ? text.getValue() : "";
+        }
+        // Neither package source is there, so the name-and-path fallback below runs; CPython says so
+        // with an ImportWarning before it does, which is how a relative import from a module with
+        // neither `__package__` nor `__spec__` is diagnosable. The warning is filtered out by
+        // default, so it never changes the answer unless a caller is recording warnings.
+        try {
+            PyObject warnings = PyRuntime.importModule("warnings");
+            Slots.call(
+                    Slots.getAttr(warnings, "warn"),
+                    new PyObject[] {
+                        PyStr.of(
+                                "can't resolve package from __spec__ or __package__,"
+                                        + " falling back on __name__ and __path__"),
+                        ExceptionTypes.IMPORT_WARNING
+                    },
+                    null);
+        } catch (PyRaise unwarnable) {
+            // The reference's C warning path imports `warnings` on demand too, so a run whose
+            // `sys.path` has no stdlib cannot deliver this one either — the import itself fails
+            // before any filter could be consulted. Nothing else is swallowed.
+            PyObject missing = Slots.findAttr(unwarnable.value(), "name");
+            if (unwarnable.value().getType() != ExceptionTypes.MODULE_NOT_FOUND_ERROR
+                    || !(missing instanceof PyStr text)
+                    || !text.getValue().equals("warnings")) {
+                throw unwarnable;
+            }
         }
         PyObject moduleName = namespace.get(PyStr.interned("__name__"));
         if (moduleName == null) {

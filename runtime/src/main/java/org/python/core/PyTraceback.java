@@ -28,7 +28,7 @@ package org.python.core;
 public final class PyTraceback extends PyObject {
 
     /** The four names CPython's {@code tb_dir} answers, which is all of {@code dir(tb)}. */
-    private static final PyNativeFunction DIR =
+    static final PyNativeFunction DIR =
             PyNativeFunction.positional(
                     "__dir__",
                     args ->

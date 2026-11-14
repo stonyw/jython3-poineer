@@ -78,8 +78,12 @@ public class SourceRefused extends RuntimeException {
         if (type == ExceptionTypes.VALUE_ERROR
                 || type == ExceptionTypes.TYPE_ERROR
                 || lineno == ABSENT) {
-            return PyRaise.of(
-                    new PyBaseException(type, new PyObject[] {PyStr.of(sentence)}));
+            PyBaseException failure =
+                    new PyBaseException(type, new PyObject[] {PyStr.of(sentence)});
+            // `msg` is a field CPython fills on every SyntaxError, position or not; a refusal without
+            // one — a NUL in the source — still answers `e.msg`.
+            failure.writeMemberField("msg", PyStr.of(sentence));
+            return PyRaise.of(failure);
         }
         PyObject[] info = {
             fileName == null ? PyNone.INSTANCE : PyStr.of(fileName),

@@ -518,6 +518,22 @@ public final class Cpython314Compiler {
             int flags,
             int optimize,
             int featureVersion) {
+        // A NUL cannot cross argv, and CPython refuses the source before parsing it at all: the
+        // refusal is a SyntaxError with no position, so it is built here rather than handed to a
+        // process that would fail to start. Bytes sources take the base-64 route and keep the
+        // reference's own answer.
+        if ("s".equals(payloadKind) && payload.indexOf('\0') >= 0) {
+            throw new CompilationRefused(
+                    "SyntaxError: source code string cannot contain null bytes",
+                    "SyntaxError",
+                    "source code string cannot contain null bytes",
+                    null,
+                    SourceRefused.ABSENT,
+                    SourceRefused.ABSENT,
+                    null,
+                    SourceRefused.ABSENT,
+                    SourceRefused.ABSENT);
+        }
         return MarshalReader.readCode(
                 run(payloadKind, payload, fileName, codeKind, flags, optimize, featureVersion), 0);
     }

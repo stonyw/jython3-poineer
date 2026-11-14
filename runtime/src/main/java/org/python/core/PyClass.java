@@ -92,7 +92,7 @@ public class PyClass extends PyType {
             PyDict namespace,
             String qualName,
             PyType metatype) {
-        super(name, bases.size() == 0 ? PyType.OBJECT : (PyType) bases.at(0));
+        super(name, storageBase(bases));
         this.type = metatype;
         this.bases = bases;
         this.namespace = namespace;
@@ -105,6 +105,22 @@ public class PyClass extends PyType {
                 }
             }
         }
+    }
+
+    /**
+     * The base whose storage this class's values occupy: {@code tp_base}, which is {@code best_base}'s
+     * winner and not always {@code __bases__[0]}.
+     *
+     * <p>{@code type('C', (B, int), {})} over a plain {@code B} has {@code int} for its base: a class
+     * that introduces no layout of its own — which a plain Python class with a managed dictionary does
+     * not — lets a later base supply the storage, and modes and identity reads follow {@code tp_base}.
+     * An empty tuple is {@code object}, the default {@code type_new} writes first.
+     */
+    private static PyType storageBase(PyTuple bases) {
+        if (bases.size() == 0) {
+            return PyType.OBJECT;
+        }
+        return Classes.bestBase(bases);
     }
 
     /**
@@ -415,6 +431,7 @@ public class PyClass extends PyType {
             throw Slots.typeError(
                     "can only assign string to %s.%s, not '%s'", name(), attribute, value.getType().name());
         }
+        Classes.checkUtf8(name.getValue());
         if (name.getValue().indexOf('\0') >= 0) {
             throw Slots.valueError("type name must not contain null characters");
         }
