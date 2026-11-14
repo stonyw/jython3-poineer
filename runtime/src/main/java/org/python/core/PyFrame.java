@@ -61,7 +61,7 @@ public final class PyFrame extends PyObject {
             case "f_lineno" -> frame.line() < 0 ? PyNone.INSTANCE : PyInt.of(frame.line());
             case "f_lasti" -> PyInt.of(frame.lasti());
             case "f_generator" ->
-                    frame.generator == null ? PyNone.INSTANCE : frame.generator;
+                    frame.generator == null ? PyNone.INSTANCE : frame.generator.visible();
             case "f_trace" -> trace;
             case "f_trace_lines" -> PyBool.of(traceLines);
             case "f_trace_opcodes" -> PyBool.of(traceOpcodes);

@@ -145,6 +145,19 @@ public final class PyRuntime {
     private static PyObject asyncgenFinalizer = PyNone.INSTANCE;
 
     /**
+     * What {@code sys.get_coroutine_origin_tracking_depth} answers and {@code
+     * sys.set_coroutine_origin_tracking_depth} replaces.
+     *
+     * <p>{@code asyncio.base_events._set_coroutine_origin_tracking} saves this around
+     * {@code run_forever} and restores it afterwards, so an event loop in debug mode can attribute a
+     * coroutine to the instruction that created it. This runtime's coroutine values do not carry a
+     * {@code cr_origin} — a coroutine here is a frame this runtime steps, with no creation site
+     * recorded — so the number is stored and handed back and nothing reads it. The milestone notes
+     * record the gap rather than pretend an origin was captured.
+     */
+    private static int coroutineOriginTrackingDepth;
+
+    /**
      * The compiler an imported source file goes through, installed by the layer that owns one.
      *
      * <p>The design rule that keeps {@code runtime} below {@code front} lives here: a finder can find
@@ -1898,6 +1911,36 @@ public final class PyRuntime {
                         + "This limit prevents infinite recursion from causing an overflow of the C\n"
                         + "stack and crashing Python.  The highest possible limit is platform-\n"
                         + "dependent."));
+        // `asyncio.base_events` reads this pair around `run_forever`; the value is bookkeeping here for
+        // the reason the field comment gives.
+        sys.set("get_coroutine_origin_tracking_depth", noArguments(
+                "get_coroutine_origin_tracking_depth",
+                () -> PyInt.of(coroutineOriginTrackingDepth),
+                "get_coroutine_origin_tracking_depth($module, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the current coroutine origin tracking depth,\n"
+                        + "the argument of set_coroutine_origin_tracking_depth()."));
+        sys.set("set_coroutine_origin_tracking_depth", new PyNativeFunction(
+                        "set_coroutine_origin_tracking_depth",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne(
+                                    "set_coroutine_origin_tracking_depth", args, kwNames);
+                            BigInteger asked = Numbers.asIndex(args[0]);
+                            if (asked.bitLength() > 31) {
+                                throw Slots.overflowError(
+                                        "Python int too large to convert to C int");
+                            }
+                            coroutineOriginTrackingDepth = asked.intValue();
+                            return PyNone.INSTANCE;
+                        })
+                .documented("set_coroutine_origin_tracking_depth($module, depth, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Set the current coroutine origin tracking depth.\n"
+                        + "\n"
+                        + "Has no effect other than storing the depth: coroutine objects in this\n"
+                        + "runtime do not carry cr_origin."));
         // `asyncio.base_events` saves this pair around `run_forever` and restores it afterwards, and
         // `asyncio.runners` reads it to know whether the hooks it wants to install are already its own.
         // The pair is stored and handed back; neither hook is ever called, because an async generator in

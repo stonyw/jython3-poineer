@@ -41,6 +41,9 @@ public final class PyCoroutine extends PyObject {
     PyCoroutine(Frame frame) {
         super(PyType.COROUTINE);
         this.engine = new PyGenerator(frame, PyGenerator.Kind.COROUTINE);
+        // The frame belongs to this coroutine, so `frame.f_generator` has to name this value and not
+        // the engine inside it: the cr_* names live here.
+        engine.ownedBy(this);
     }
 
     // --- driving -------------------------------------------------------------------------

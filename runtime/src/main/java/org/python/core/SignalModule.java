@@ -34,6 +34,27 @@ final class SignalModule {
     /** The POSIX number; {@code subprocess.kill} names it, and it is only read, never delivered. */
     private static final int SIGKILL = 9;
 
+    /** macOS's {@code NSIG}: the size of the signal table, one past the highest valid number. */
+    private static final int NSIG = 32;
+
+    /**
+     * macOS's signal numbers, one per name.
+     *
+     * <p>{@code signal.py} builds {@code signal.Signals} out of every upper-case name this module
+     * defines, so the whole table has to be present and not just the numbers the runtime itself
+     * names. They are read, never delivered.
+     */
+    private static final Object[][] SIGNALS = {
+        {"SIGHUP", 1}, {"SIGINT", 2}, {"SIGQUIT", 3}, {"SIGILL", 4},
+        {"SIGTRAP", 5}, {"SIGABRT", 6}, {"SIGEMT", 7}, {"SIGFPE", 8},
+        {"SIGKILL", 9}, {"SIGBUS", 10}, {"SIGSEGV", 11}, {"SIGSYS", 12},
+        {"SIGPIPE", 13}, {"SIGALRM", 14}, {"SIGTERM", 15}, {"SIGURG", 16},
+        {"SIGSTOP", 17}, {"SIGTSTP", 18}, {"SIGCONT", 19}, {"SIGCHLD", 20},
+        {"SIGTTIN", 21}, {"SIGTTOU", 22}, {"SIGIO", 23}, {"SIGXCPU", 24},
+        {"SIGXFSZ", 25}, {"SIGVTALRM", 26}, {"SIGPROF", 27}, {"SIGWINCH", 28},
+        {"SIGINFO", 29}, {"SIGUSR1", 30}, {"SIGUSR2", 31},
+    };
+
     private SignalModule() {
     }
 
@@ -45,6 +66,23 @@ final class SignalModule {
         module.set("SIG_IGN", PyInt.of(SIG_IGN));
         module.set("SIGINT", PyInt.of(SIGINT));
         module.set("SIGKILL", PyInt.of(SIGKILL));
+        for (Object[] signal : SIGNALS) {
+            module.set((String) signal[0], PyInt.of((Integer) signal[1]));
+        }
+        // NSIG is the number of entries in the platform's signal table, and the reference's own value
+        // here is macOS's 32. A signal number past it is out of range in the reference too; this
+        // runtime does not deliver signals, so the number is only ever read.
+        module.set("NSIG", PyInt.of(NSIG));
+        // `signal.valid_signals` wraps each of these numbers in the `Signals` enum, so the answer is
+        // the whole table the platform has, which here is 1 through NSIG-1.
+        module.set("valid_signals", PyNativeFunction.positional("valid_signals", args -> {
+            Arguments.none("valid_signals", args, null);
+            PyObject[] numbers = new PyObject[NSIG - 1];
+            for (int n = 1; n < NSIG; n++) {
+                numbers[n - 1] = PyInt.of(n);
+            }
+            return PySet.of(numbers);
+        }));
 
         // One table for this module: keyed by signal number, holding the handler last installed.
         PyDict handlers = PyDict.empty();
@@ -66,6 +104,21 @@ final class SignalModule {
             PyObject previous = handlers.get(PyInt.of(number));
             handlers.put(PyInt.of(number), handler);
             return previous == null ? PyInt.of(SIG_DFL) : previous;
+        }));
+        // The descriptor a signal handler would write a byte to. There is no delivery to wake anyone
+        // from here (see the class comment), so the number is kept for the caller that saved it and
+        // handed back on the next call, exactly as the reference's save-and-restore pattern expects;
+        // nothing is ever written to it.
+        int[] wakeupFd = {-1};
+        module.set("set_wakeup_fd", PyNativeFunction.positional("set_wakeup_fd", args -> {
+            Arguments.between("set_wakeup_fd", args, null, 1, 2);
+            BigInteger fd = Numbers.asIndex(args[0]);
+            if (fd.bitLength() > 31 || fd.intValue() < -1) {
+                throw Slots.valueError("invalid fd");
+            }
+            int previous = wakeupFd[0];
+            wakeupFd[0] = fd.intValue();
+            return PyInt.of(previous);
         }));
         return module;
     }

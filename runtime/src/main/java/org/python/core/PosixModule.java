@@ -270,6 +270,56 @@ final class PosixModule {
                     Arguments.exactlyOne("dup", args, kwNames);
                     return PyInt.of(Fds.dup(Numbers.asIndex(args[0]).intValue()));
                 }));
+        module.set("get_blocking", function(
+                "get_blocking",
+                "get_blocking($module, fd, /)\n--\n\n"
+                        + "Get the blocking mode of the file descriptor.\n\n"
+                        + "Return False if the O_NONBLOCK flag is set, True if the flag is cleared.",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("get_blocking", args, kwNames);
+                    return PyBool.of(Fds.blocking(Numbers.asIndex(args[0]).intValue()));
+                }));
+        module.set("fstat", function(
+                "fstat",
+                "fstat($module, fd, /)\n--\n\n"
+                        + "Perform a stat system call on the given file descriptor.\n\n"
+                        + "Like stat(), but for an open file descriptor.\n"
+                        + "Equivalent to os.stat(fd).",
+                (args, kwNames) -> {
+                    Arguments.exactlyOne("fstat", args, kwNames);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    long size = Fds.size(fd);
+                    // A descriptor in this table is a pipe or the null device; there is no file behind
+                    // one, so the mode names which, and every other field is the empty value.
+                    // 0o020000 (character device) or 0o010000 (FIFO), with 0o666.
+                    long mode = (Fds.isDevnull(fd) ? 8192 : 4096) | 438;
+                    return PyStatResult.of(
+                            new PyObject[] {
+                                PyInt.of(mode),
+                                PyInt.of(0),
+                                PyInt.of(0),
+                                PyInt.of(1),
+                                PyInt.of(0),
+                                PyInt.of(0),
+                                PyInt.of(size),
+                                PyFloat.of(0.0),
+                                PyFloat.of(0.0),
+                                PyFloat.of(0.0),
+                            },
+                            0, 0, 0, 0, 0);
+                }));
+        module.set("set_blocking", function(
+                "set_blocking",
+                "set_blocking($module, fd, blocking, /)\n--\n\n"
+                        + "Set the blocking mode of the file descriptor.\n\n"
+                        + "Set the O_NONBLOCK flag if blocking is False,\n"
+                        + "otherwise clear the O_NONBLOCK flag.",
+                (args, kwNames) -> {
+                    Arguments.exactly("set_blocking", args, kwNames, 2);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    Fds.setBlocking(fd, Slots.truth(args[1]));
+                    return PyNone.INSTANCE;
+                }));
         module.set("waitpid", function(
                 "waitpid",
                 "waitpid($module, pid, options, /)\n--\n\n"

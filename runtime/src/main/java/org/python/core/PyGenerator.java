@@ -118,6 +118,26 @@ public final class PyGenerator extends PyIterator {
     PyObject qualName;
 
     /**
+     * The coroutine value this engine drives, when one does.
+     *
+     * <p>A generator is its own engine, so {@code f_generator} answers it. A coroutine is a
+     * {@link PyCoroutine} holding an engine, and CPython's {@code frame.f_generator} names that
+     * coroutine rather than the engine inside it; without this, {@code f_generator} answered a value
+     * whose type is {@code coroutine} but which has no {@code cr_*} names at all.
+     */
+    private PyObject owner;
+
+    /** Name the value {@code f_generator} should answer instead of this engine. */
+    void ownedBy(PyObject value) {
+        this.owner = value;
+    }
+
+    /** The value {@code f_generator} answers: the owning coroutine, or this generator itself. */
+    PyObject visible() {
+        return owner == null ? this : owner;
+    }
+
+    /**
      * Take over a frame an ordinary call has just parked, as {@code RETURN_GENERATOR} does.
      *
      * <p>CPython copies the call's frame into the generator, because the original lives on a stack it is

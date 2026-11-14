@@ -47,6 +47,8 @@ final class Fds {
         final boolean writable;
         final boolean devnull;
         int references = 1;
+        /** Whether a read with nothing buffered waits for a writer, as {@code set_blocking(fd, True)} says. */
+        volatile boolean blocking = true;
 
         Slot(Pipe pipe, boolean writable, boolean devnull) {
             this.pipe = pipe;
@@ -147,7 +149,7 @@ final class Fds {
         }
         Pipe pipe = slot.pipe;
         synchronized (pipe) {
-            while (pipe.length == 0 && !pipe.writerClosed && !pipe.readerClosed) {
+            while (slot.blocking && pipe.length == 0 && !pipe.writerClosed && !pipe.readerClosed) {
                 try {
                     pipe.wait();
                 } catch (InterruptedException interrupted) {
@@ -253,6 +255,30 @@ final class Fds {
     static boolean isDevnull(int fd) {
         Slot slot = peek(fd);
         return slot != null && slot.devnull;
+    }
+
+    /**
+     * {@code os.get_blocking(fd)}: the flag {@link #setBlocking} last wrote, true until it is changed.
+     *
+     * <p>Only the descriptors this table hands out have the flag. A socket's number belongs to the
+     * socket layer, which has its own blocking mode; asking here about one is an unknown descriptor,
+     * the same answer a closed fd gets.
+     */
+    static boolean blocking(int fd) {
+        return slot(fd).blocking;
+    }
+
+    /** {@code os.set_blocking(fd, blocking)}: whether a read with nothing buffered waits. */
+    static void setBlocking(int fd, boolean blocking) {
+        slot(fd).blocking = blocking;
+    }
+
+    /** The bytes buffered in the pipe a descriptor names, which is what {@code fstat} reports. */
+    static long size(int fd) {
+        Slot slot = slot(fd);
+        synchronized (slot.pipe) {
+            return slot.pipe.length;
+        }
     }
 
     // ---- the adapter {@code io.open(fd)} needs ---------------------------------------------
