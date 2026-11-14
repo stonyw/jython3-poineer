@@ -414,7 +414,18 @@ public abstract class PyObject {
 
     @Override
     public final boolean equals(Object other) {
-        return other instanceof PyObject o && eq(o);
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof PyObject o)) {
+            return false;
+        }
+        // A Java map asks the key it is probing (`this`) whether it equals the key it holds (`o`).
+        // CPython's dict does the opposite: `PyObject_RichCompareBool(startkey, key, Py_EQ)` asks the
+        // *stored* key first and only reflects onto the probing key when the stored one declines. That
+        // order is observable — a stored key whose `__eq__` deletes a class attribute has to run it on a
+        // lookup that then misses — so the comparison is handed over with the stored key on the left.
+        return Slots.compareTrue(CompareOp.EQ, o, this);
     }
 
     /** The int form of {@link #hash()}, for use as a Java key. */

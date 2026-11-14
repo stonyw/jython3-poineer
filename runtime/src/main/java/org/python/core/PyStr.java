@@ -105,10 +105,23 @@ public class PyStr extends PyObject {
     /** {@code s[i]} for a code-point index, and {@code s[a:b:c]} for a slice. */
     @Override
     public PyObject getItem(PyObject key) {
+        return textItem(this, key);
+    }
+
+    /**
+     * The {@code str} slot itself.
+     *
+     * <p>{@code str.__getitem__} is a wrapper descriptor whose {@code d_wrapped} is the C function
+     * {@code str} installed, so calling it on a subclass runs the string layout rather than asking the
+     * subclass's own {@code __getitem__} again — which is what keeps {@code str.__getitem__(self, key)}
+     * inside an override from recursing. {@link #getItem} is the virtual half and reaches this one
+     * through the subtype's decline.
+     */
+    static PyObject textItem(PyStr text, PyObject key) {
         if (Slices.isSlice(key)) {
-            return PyStr.of(select(Slices.of((PySlice) key, codePoints)));
+            return PyStr.of(text.select(Slices.of((PySlice) key, text.codePoints)));
         }
-        return characterAt(index(key));
+        return text.characterAt(text.index(key));
     }
 
     /** {@code needle in haystack}, which is a substring test and not an element test. */

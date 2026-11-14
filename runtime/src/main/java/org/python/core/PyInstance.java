@@ -122,6 +122,12 @@ public class PyInstance extends PyObject {
     static void writeDict(PyObject self, PyObject value) {
         PyDict replacement;
         if (value == null) {
+            // An exception's dictionary cannot be deleted at all, whichever class in the MRO filed the
+            // descriptor that reached this method: `class E2(Base, Exception)` inherits `Base`'s
+            // `__dict__` row first and CPython still refuses.
+            if (self.getType().matches(ExceptionTypes.BASE_EXCEPTION)) {
+                throw Slots.typeError("cannot delete __dict__");
+            }
             replacement = PyDict.empty();
         } else if (value instanceof PyDict dict) {
             replacement = dict;

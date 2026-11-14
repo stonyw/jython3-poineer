@@ -1042,6 +1042,18 @@ public class PyBaseException extends PyObject {
     }
 
     /**
+     * The pointer half of {@code subtype_setdict}, for the descriptor a class beside the exception family
+     * files: {@code class E2(Base, Exception)} reaches {@code Base.__dict__['__dict__']} before {@code
+     * BaseException}'s own getset, and that setter hands the dictionary here rather than to
+     * {@link #replaceDict}, whose deletion refusal it does not know about — the refusal is in
+     * {@link PyInstance#writeDict}.
+     */
+    @Override
+    void replaceAttributeStore(PyDict store) {
+        dictionary = store;
+    }
+
+    /**
      * {@code e.__dict__ = {...}}, which {@code BaseException}'s getset answers with and {@code del} reaches
      * with nothing handed over.
      *

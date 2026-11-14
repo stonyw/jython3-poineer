@@ -2727,7 +2727,10 @@ final class TypeDict {
         table.wrapper("__mod__", MOD_DOC, TypeDict::modulo);
         table.wrapper("__rmod__", RMOD_DOC, TypeDict::reflectedMod);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
-        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper(
+                "__getitem__",
+                GETITEM_DOC,
+                args -> PyStr.textItem((PyStr) args[0], args[1]));
         table.wrapper("__add__", ADD_DOC, TypeDict::joined);
         table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
         table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);
@@ -2823,7 +2826,12 @@ final class TypeDict {
                         ? subclass.baseIterator()
                         : args[0].iterator());
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());
-        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper(
+                "__getitem__",
+                GETITEM_DOC,
+                args -> args[0] instanceof PyTupleSubclass subclass
+                        ? subclass.baseItem(args[1])
+                        : args[0].getItem(args[1]));
         table.wrapper("__add__", ADD_DOC, TypeDict::joined);
         table.wrapper("__mul__", MUL_DOC, TypeDict::repeated);
         table.wrapper("__rmul__", RMUL_DOC, TypeDict::repeated);

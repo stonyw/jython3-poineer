@@ -348,6 +348,10 @@ final class Classes {
                 // `traceback.StackSummary` is `class StackSummary(list)`, so a list subclass has to be a
                 // Python object with a list beside it — the same split `PyDictInstance` makes.
                 || base == PyType.LIST
+                // `super` is a struct of three fields and a dictionary sits beside it without changing
+                // them, so `class mysuper(super)` — which `test_descr.test_supers` writes to test that a
+                // proxy can be moved by calling `__init__` on it again — is the same shape.
+                || base == PyType.SUPER
                 || base == PyType.INT
                 || base == PyType.STR
                 || base == PyType.TUPLE
@@ -1675,6 +1679,12 @@ final class Classes {
         }
         if (kind.matches(PyType.DICT)) {
             return new PyDictInstance(kind);
+        }
+        // `super.__new__` is `PyType_GenericNew`: it allocates the struct for the class it was called
+        // on and leaves all three fields empty, which is what makes `class mysuper(super)` a proxy whose
+        // `__init__` is free to fill it in.
+        if (kind.matches(PyType.SUPER)) {
+            return PySuper.emptyOf(kind);
         }
         // `list.__new__` allocates the subtype it was handed, which for a Python class is an instance
         // dictionary beside an empty list; `list.__init__` then fills that list from the argument.

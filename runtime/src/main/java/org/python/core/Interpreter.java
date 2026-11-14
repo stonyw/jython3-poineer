@@ -1111,6 +1111,19 @@ public final class Interpreter {
                     PyTraceback.logFrame(frame, raised.value());
                 }
                 unwind(frame, raised);
+            } catch (StackOverflowError overflow) {
+                // CPython counts C recursion, so a slot wrapper that ends up calling itself — `Foo.__repr__
+                // = Foo.__str__` makes `str()` and `repr()` trade places until the limit — fails at the
+                // call instruction with an ordinary `RecursionError`, and the `try` that surrounds the call
+                // catches it. The JVM's overflow arrives as an Error instead; raising it here, where the
+                // loop still knows which instruction failed, lets this frame's own handler table route it
+                // exactly as CPython's does, instead of losing the frame's handlers to the boundary above.
+                PyRaise raised = PyRaise.raise(
+                        ExceptionTypes.RECURSION_ERROR, "maximum recursion depth exceeded");
+                if (logsFrame) {
+                    PyTraceback.logFrame(frame, raised.value());
+                }
+                unwind(frame, raised);
             }
         }
         throw Slots.runtimeError(

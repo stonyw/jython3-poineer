@@ -121,6 +121,19 @@ final class PyTupleSubclass extends PyTuple {
         return super.iterator();
     }
 
+    /**
+     * {@code tuple.__getitem__(value, key)} called by name: the items, never the class's own
+     * {@code __getitem__}.
+     *
+     * <p>The same split as {@link #baseIterator}, for the same reason: the inherited wrapper runs the
+     * {@code sq_item} body over the tuple layout without looking the name up again, so a class whose
+     * {@code __getitem__} calls {@code tuple.__getitem__(self, x)} — which is what {@code test_slices}
+     * writes — reads the items instead of calling itself until the stack runs out.
+     */
+    PyObject baseItem(PyObject key) {
+        return super.getItem(key);
+    }
+
     // --- equality ------------------------------------------------------------------------
 
     @Override

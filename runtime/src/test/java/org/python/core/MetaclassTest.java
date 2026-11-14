@@ -230,10 +230,13 @@ class MetaclassTest {
      *
      * <p>{@code int}, {@code str}, {@code complex}, {@code float}, {@code bytes}, {@code bytearray},
      * {@code set} and {@code frozenset} are the fourth kind of base: a value whose storage is a fixed
-     * run of fields, so a subclass is that value with a dictionary beside it. Every other built-in is
-     * a Java class with slots no dictionary can stand in for, so the refusal is this runtime's own and
-     * is named as a deviation. It is a {@code NotImplementedError} rather than a {@code TypeError}
-     * because nothing about the program is wrong — only about what this runtime has built so far.
+     * run of fields, so a subclass is that value with a dictionary beside it. {@code super} is the
+     * fifth: CPython lets {@code class mysuper(super)} stand, and {@code super} values whose class is
+     * that subclass are built by {@code PyType.SUPER}'s own constructor rather than by this runtime.
+     * Every other built-in is a Java class with slots no dictionary can stand in for, so the refusal
+     * is this runtime's own and is named as a deviation. It is a {@code NotImplementedError} rather
+     * than a {@code TypeError} because nothing about the program is wrong — only about what this
+     * runtime has built so far.
      */
     @Test
     void theImmutableValuesAreDerivableAndTheOtherBuiltInsAreNot() {
@@ -246,9 +249,7 @@ class MetaclassTest {
         assertThat(type("MySet", new PyType[] {PyType.SET}).getType()).isSameAs(PyType.TYPE);
         assertThat(type("MyFrozenSet", new PyType[] {PyType.FROZENSET}).getType())
                 .isSameAs(PyType.TYPE);
-        refuses(
-                "NotImplementedError: subclassing 'super' is not implemented",
-                () -> type("MySuper", new PyType[] {PyType.SUPER}));
+        assertThat(type("MySuper", new PyType[] {PyType.SUPER}).getType()).isSameAs(PyType.TYPE);
 
         assertThat(type("Exceptionish", new PyType[] {ExceptionTypes.TYPE_ERROR})
                         .getType())

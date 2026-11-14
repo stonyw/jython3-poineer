@@ -33,7 +33,15 @@ public final class PySuper extends PyObject implements Descriptors.Protocol {
 
     /** {@code super(C)}: the class is known, the value is not, and so no order can be walked. */
     static PySuper withoutValue(PyObject type) {
-        return new PySuper(asType(type), null, null);
+        return new PySuper(PyType.SUPER, asType(type), null, null);
+    }
+
+    /**
+     * {@code super_new} for a Python class written over {@code super}: the same three empty fields, with
+     * the subclass as the type so {@code __init__}, {@code __class__} and the walk all read from it.
+     */
+    static PySuper emptyOf(PyType kind) {
+        return new PySuper(kind, null, null, null);
     }
 
     /**
@@ -44,7 +52,7 @@ public final class PySuper extends PyObject implements Descriptors.Protocol {
      * it allocated. {@code super.__new__(super, int, 3)} is that same empty proxy.
      */
     static PySuper empty() {
-        return new PySuper(null, null, null);
+        return new PySuper(PyType.SUPER, null, null, null);
     }
 
     /**
@@ -62,9 +70,9 @@ public final class PySuper extends PyObject implements Descriptors.Protocol {
     static PySuper of(PyObject type, PyObject obj) {
         PyType kind = asType(type);
         if (obj == PyNone.INSTANCE) {
-            return new PySuper(kind, null, null);
+            return new PySuper(PyType.SUPER, kind, null, null);
         }
-        return new PySuper(kind, obj, superCheck(kind, obj));
+        return new PySuper(PyType.SUPER, kind, obj, superCheck(kind, obj));
     }
 
     /** {@code supercheck}: the class whose order the proxy is allowed to walk past {@code kind}. */
@@ -147,8 +155,8 @@ public final class PySuper extends PyObject implements Descriptors.Protocol {
     private PyObject obj;
     private PyType startType;
 
-    private PySuper(PyType thisClass, PyObject obj, PyType startType) {
-        super(PyType.SUPER);
+    private PySuper(PyType kind, PyType thisClass, PyObject obj, PyType startType) {
+        super(kind);
         this.thisClass = thisClass;
         this.obj = obj;
         this.startType = startType;
@@ -184,7 +192,13 @@ public final class PySuper extends PyObject implements Descriptors.Protocol {
         if (target == null || obj != null || thisClass == null) {
             return this;
         }
-        return of(thisClass, target);
+        // `super_get` builds the bound proxy by calling `Py_TYPE(self)`, so a proxy written over a
+        // subclass comes back as that subclass — which is what `test_supers` reads back off
+        // `s.__class__.__name__` — and a plain `super` keeps the cheaper direct construction.
+        if (getType() == PyType.SUPER) {
+            return of(thisClass, target);
+        }
+        return Slots.call(getType(), new PyObject[] {thisClass, target}, PyTuple.EMPTY);
     }
 
     /** {@code __thisclass__}: the class to start at, or {@code None} while the proxy has no class either. */
