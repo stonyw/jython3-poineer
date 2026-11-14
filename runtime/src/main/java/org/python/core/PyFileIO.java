@@ -98,6 +98,16 @@ public final class PyFileIO extends PyIOStream {
         this(name, null, null, file, -1, true, readable, writable, appending, mode);
     }
 
+    /**
+     * {@code io.open(fd, 'r+b')} over a real file: the handle already belongs to the descriptor table,
+     * so the position is shared with every other read and write on that number.
+     */
+    static PyFileIO forDescriptor(String name, int fd, boolean closefd,
+            boolean readable, boolean writable, boolean appending, String mode) {
+        return new PyFileIO(name, null, null, Fds.file(fd), fd, closefd,
+                readable, writable, appending, mode);
+    }
+
     private PyFileIO(
             String name,
             InputStream source,
@@ -302,7 +312,12 @@ public final class PyFileIO extends PyIOStream {
         if (closefd) {
             try {
                 if (file != null) {
-                    file.close();
+                    if (fd >= 0) {
+                        // The number belongs to the descriptor table; dropping it closes the handle too.
+                        Fds.closeQuietly(fd);
+                    } else {
+                        file.close();
+                    }
                 } else if (out != null) {
                     out.close();
                 } else {

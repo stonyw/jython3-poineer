@@ -1541,6 +1541,19 @@ public class PyType extends PyObject {
                     .documented("stat_result\n--\n\nResult of os.stat().");
 
     /**
+     * {@code os.DirEntry}: one name {@code os.scandir} handed out.
+     *
+     * <p>It is filed under {@code posix} because that is where {@code os.DirEntry} is imported from, and
+     * declared without a constructor because only the cursor makes one.
+     */
+    static final PyType DIR_ENTRY =
+            builtin("DirEntry").withoutNew().filedUnder("posix.DirEntry");
+
+    /** {@code type(os.scandir(path))}: the cursor the {@code scandir} call answers with. */
+    static final PyType SCANDIR_ITERATOR =
+            builtin("ScandirIterator").withoutNew().filedUnder("posix.ScandirIterator");
+
+    /**
      * {@code os.terminal_size}: the {@code (columns, lines)} pair a terminal reports, and the value
      * {@code shutil.get_terminal_size} answers with.
      *

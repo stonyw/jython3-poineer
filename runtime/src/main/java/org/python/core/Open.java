@@ -29,9 +29,8 @@ import java.io.RandomAccessFile;
  * {@code +}, in text or binary. The caller's spelling is what a text stream reports as {@code mode},
  * while a binary stream reports the flags {@code FileIO} derived from them — {@code w+b} reads back
  * {@code 'rb+'}, {@code a+b} {@code 'ab+'}, {@code xb} {@code 'xb'} — because that is the string the
- * reference files. A descriptor number, a bytes path and an opener are still refused by name; the
- * reference opens all of those, and the deviation is recorded in {@code PLAN-progress.md} rather than
- * half-built here.
+ * reference files. A bytes path is read as UTF-8, which is the file system's own spelling on this
+ * platform; an opener is called for the descriptor it answers, which is how {@code tempfile} uses one.
  */
 final class Open {
 
@@ -65,13 +64,14 @@ final class Open {
 
         PyObject file = values[0];
         String path = null;
-        boolean bytesPath = false;
         boolean descriptorNumber = false;
         boolean numeric = false;
         if (file instanceof PyStr text) {
             path = text.getValue();
-        } else if (file instanceof PyBytes) {
-            bytesPath = true;
+        } else if (file instanceof PyBytes bytes) {
+            // A bytes name is the file system's own spelling; this runtime names files through a
+            // String, so the bytes are read as UTF-8 and no second encoding step happens.
+            path = new String(bytes.getValue(), java.nio.charset.StandardCharsets.UTF_8);
         } else if (Numbers.isNumber(file)) {
             numeric = true;
             descriptorNumber = file instanceof PyInt || file instanceof PyBool;
@@ -101,14 +101,14 @@ final class Open {
         if (descriptorNumber) {
             return descriptorStream(file, parsed, buffering, closefd);
         }
-        if (bytesPath) {
-            throw Slots.notImplemented("open() with a bytes path");
-        }
         if (!closefd) {
             throw Slots.valueError("Cannot use closefd=False with file name");
         }
         if (opener != null && opener != PyNone.INSTANCE) {
-            checkOpener(opener, path);
+            // `tempfile` hands over an opener that answers a descriptor it has already made, so the
+            // stream is that number rather than a second open of the same name.
+            return descriptorStream(
+                    PyInt.of(descriptorFromOpener(opener, path, parsed)), parsed, buffering, closefd);
         }
 
         String ioMode = ioMode(parsed);
@@ -147,6 +147,11 @@ final class Open {
             throw Slots.notImplemented("open() on a file descriptor in text mode");
         }
         if (parsed.readable() && parsed.writable()) {
+            if (Fds.isFile(fd)) {
+                // A real file answers both halves of the traffic; the handle stays the descriptor's.
+                return PyFileIO.forDescriptor(
+                        Integer.toString(fd), fd, closefd, true, true, false, "rb+");
+            }
             throw Slots.notImplemented(
                     "open() on a file descriptor for reading and writing at once");
         }
@@ -242,22 +247,33 @@ final class Open {
     }
 
     /**
-     * Calls {@code opener(name, flags)} the way {@code _io} does, as far as its two refusals go.
+     * Calls {@code opener(name, flags)} the way {@code _io} does, and answers the descriptor.
      *
-     * <p>The descriptor it would return cannot be opened here, so a well-formed answer ends in a
-     * named refusal after the two checks that are observable: a non-callable is
-     * {@code 'int' object is not callable} and a non-integer is {@code expected integer from opener}.
+     * <p>The flags are the ones the mode calls for; {@code tempfile} is the caller that matters, and its
+     * opener ignores them because it has already made the number. A non-callable is
+     * {@code 'int' object is not callable} and a non-integer answer is {@code expected integer from
+     * opener}, both before any file is touched.
      */
-    private static void checkOpener(PyObject opener, String path) {
+    private static int descriptorFromOpener(PyObject opener, String path, Mode parsed) {
         if (!Slots.isCallable(opener)) {
             throw Slots.typeError("'%s' object is not callable", Slots.argumentName(opener));
         }
+        int flags = parsed.readable() && parsed.writable() ? 2 : parsed.writable() ? 1 : 0;
+        if (parsed.creating) {
+            flags |= 0x200;
+        }
+        if (parsed.writing) {
+            flags |= 0x400;
+        }
+        if (parsed.appending) {
+            flags |= 0x8;
+        }
         PyObject answer = Slots.call(
-                opener, new PyObject[] {PyStr.of(path), PyInt.of(0)}, null);
+                opener, new PyObject[] {PyStr.of(path), PyInt.of(flags)}, null);
         if (!(answer instanceof PyInt) && !(answer instanceof PyBool)) {
             throw Slots.typeError("expected integer from opener");
         }
-        throw Slots.notImplemented("open() with an opener");
+        return Numbers.asIndex(answer).intValue();
     }
 
     /**

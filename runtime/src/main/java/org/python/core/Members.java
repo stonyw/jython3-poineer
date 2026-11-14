@@ -204,7 +204,11 @@ final class Members {
             Map.entry(PyType.CONTEXT_TOKEN, PyContextToken.class),
             // `random.py` is `class Random(_random.Random)` and asks `super().seed(a)` before any
             // generator exists, so the table has to be reachable through the type alone.
-            Map.entry(PyType.RANDOM, RandomModule.Random.class));
+            Map.entry(PyType.RANDOM, RandomModule.Random.class),
+            // `os.walk` asks a DirEntry for its methods before a cursor has handed one out, and
+            // `os.scandir` is itself a name `os` takes from `posix`.
+            Map.entry(PyType.DIR_ENTRY, Scandir.class),
+            Map.entry(PyType.SCANDIR_ITERATOR, Scandir.class));
 
     private final PyType owner;
 

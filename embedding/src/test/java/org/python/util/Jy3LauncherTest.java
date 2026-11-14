@@ -552,7 +552,8 @@ class Jy3LauncherTest {
                 "25_decimal.py",
                 "26_array_pickle_buffer.py",
                 "27_warnings_filters.py",
-                "28_warnings_command_line.py");
+                "28_warnings_command_line.py",
+                "29_scandir.py");
     }
 
     /**

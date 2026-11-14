@@ -208,10 +208,15 @@ final class PosixModule {
         // support sets from the HAVE_* strings in it. None are built here, so every set comes out empty —
         // the calls that take a file descriptor are named below so the import itself can finish.
         module.set("_have_functions", PyTuple.of());
-        module.set("scandir", unimplemented("scandir"));
+        module.set("DirEntry", PyType.DIR_ENTRY);
+        module.set("scandir", function(
+                "scandir",
+                "scandir($module, path=None)\n--\n\n"
+                        + "Return an iterator of DirEntry objects for given path.",
+                Scandir::scandir));
 
         // The descriptor calls `subprocess` reaches for. There is no kernel table here, so the numbers
-        // come from Fds and the only path `open` can name is the null device.
+        // come from Fds: a pipe end, the null device, or a real file the `open` call made.
         module.set("open", function(
                 "open",
                 "open($module, path, flags, mode=511, *, dir_fd=None)\n--\n\n"
@@ -225,10 +230,34 @@ final class PosixModule {
                     if (values[3] != null && values[3] != PyNone.INSTANCE) {
                         throw Slots.notImplemented("open() with dir_fd");
                     }
-                    if (!"/dev/null".equals(path.text())) {
-                        throw Slots.notImplemented("open() on anything but os.devnull");
+                    if ("/dev/null".equals(path.text())) {
+                        return PyInt.of(Fds.devnull());
                     }
-                    return PyInt.of(Fds.devnull());
+                    int flags = Numbers.asIndex(values[1]).intValue();
+                    int access = flags & 3;
+                    boolean write = access == 1 || access == 2;
+                    boolean read = access == 0 || access == 2;
+                    boolean create = (flags & 0x200) != 0;
+                    boolean exclusive = (flags & 0x800) != 0;
+                    boolean truncate = (flags & 0x400) != 0;
+                    boolean append = (flags & 0x8) != 0;
+                    Path target = resolve(path.text());
+                    boolean existed = Files.exists(target);
+                    int fd;
+                    try {
+                        fd = Fds.open(target, read, write, append, create, exclusive, truncate);
+                    } catch (IOException error) {
+                        throw failure(error, path);
+                    }
+                    if (create && !existed) {
+                        try {
+                            Files.setPosixFilePermissions(
+                                    target, permissions(Numbers.asIndex(values[2]).intValue() & 0x1FF));
+                        } catch (IOException | UnsupportedOperationException ignored) {
+                            // A file system without permissions still has the file; the mode is advisory.
+                        }
+                    }
+                    return PyInt.of(fd);
                 }));
         module.set("pipe", function(
                 "pipe",
@@ -289,6 +318,10 @@ final class PosixModule {
                 (args, kwNames) -> {
                     Arguments.exactlyOne("fstat", args, kwNames);
                     int fd = Numbers.asIndex(args[0]).intValue();
+                    if (Fds.isFile(fd)) {
+                        // The descriptor names a real file, so the numbers come from the file itself.
+                        return statPath(new FsPath(Fds.path(fd).toString(), false), true);
+                    }
                     long size = Fds.size(fd);
                     // A descriptor in this table is a pipe or the null device; there is no file behind
                     // one, so the mode names which, and every other field is the empty value.
@@ -700,7 +733,11 @@ final class PosixModule {
         PyObject[] values = Arguments.parameters(
                 function, args, kwNames, PATH_AND_FOLLOW, PATH_AND_FOLLOW_DEFAULTS, 1);
         FsPath path = fsPath(values[0], function);
-        boolean follows = follow && Slots.truth(values[1]);
+        return statPath(path, follow && Slots.truth(values[1]));
+    }
+
+    /** {@code stat} over a path this module already spelled, which is also what a {@code DirEntry} asks. */
+    static PyObject statPath(FsPath path, boolean follows) {
         Path target;
         try {
             target = resolve(path.text());
@@ -798,7 +835,7 @@ final class PosixModule {
         return perms;
     }
 
-    private static Path resolve(String path) {
+    static Path resolve(String path) {
         return cwd.resolve(path);
     }
 
@@ -850,7 +887,7 @@ final class PosixModule {
         return environ;
     }
 
-    private static FsPath fsPath(PyObject value, String function) {
+    static FsPath fsPath(PyObject value, String function) {
         if (value instanceof PyStr text) {
             return new FsPath(text.getValue(), false);
         }
@@ -863,7 +900,7 @@ final class PosixModule {
                 function, value.getType().name());
     }
 
-    private static PyRaise failure(Exception error, FsPath path) {
+    static PyRaise failure(Exception error, FsPath path) {
         int number = errno(error);
         return PyRaise.of(PyOSError.create(
                 ExceptionTypes.OS_ERROR,
@@ -940,6 +977,6 @@ final class PosixModule {
     }
 
     /** A path as the caller spelled it, and whether it was spelled in bytes. */
-    private record FsPath(String text, boolean bytes) {
+    record FsPath(String text, boolean bytes) {
     }
 }

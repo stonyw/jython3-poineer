@@ -46,14 +46,33 @@ final class Fds {
         final Pipe pipe;
         final boolean writable;
         final boolean devnull;
+        /** A real file behind this descriptor, or null for a pipe end and the null device. */
+        final java.io.RandomAccessFile file;
+        /** Where that file was opened, so {@code fstat} can answer with the file's own numbers. */
+        final java.nio.file.Path path;
+        /** Whether every write seeks to the end first, which is what {@code O_APPEND} asks for. */
+        final boolean appending;
         int references = 1;
         /** Whether a read with nothing buffered waits for a writer, as {@code set_blocking(fd, True)} says. */
         volatile boolean blocking = true;
 
         Slot(Pipe pipe, boolean writable, boolean devnull) {
+            this(pipe, writable, devnull, null, null, false);
+        }
+
+        Slot(java.io.RandomAccessFile file, java.nio.file.Path path,
+                boolean writable, boolean appending) {
+            this(null, writable, false, file, path, appending);
+        }
+
+        private Slot(Pipe pipe, boolean writable, boolean devnull,
+                java.io.RandomAccessFile file, java.nio.file.Path path, boolean appending) {
             this.pipe = pipe;
             this.writable = writable;
             this.devnull = devnull;
+            this.file = file;
+            this.path = path;
+            this.appending = appending;
         }
     }
 
@@ -75,6 +94,46 @@ final class Fds {
     /** {@code open("/dev/null", O_RDWR)}: a descriptor every read answers end-of-file and every write eats. */
     static synchronized int devnull() {
         return allocate(new Slot(null, false, true));
+    }
+
+    /**
+     * {@code open(2)} on a real file: a descriptor over a random-access handle.
+     *
+     * <p>The handle is what keeps {@code seek} and {@code tell} meaningful to whoever wraps this number,
+     * because the position lives in the handle rather than in this table. O_APPEND is the one flag the
+     * handle cannot take, so it is remembered on the slot and every write seeks to the end first.
+     */
+    static synchronized int open(java.nio.file.Path path, boolean read, boolean write,
+            boolean append, boolean create, boolean exclusive, boolean truncate) throws IOException {
+        if (exclusive && java.nio.file.Files.exists(path)) {
+            throw new java.nio.file.FileAlreadyExistsException(path.toString());
+        }
+        if (create && !java.nio.file.Files.exists(path)) {
+            java.nio.file.Files.createFile(path);
+        }
+        boolean writable = write || append;
+        java.io.RandomAccessFile file =
+                new java.io.RandomAccessFile(path.toFile(), writable ? "rw" : "r");
+        if (truncate && writable) {
+            file.setLength(0);
+        }
+        return allocate(new Slot(file, path, writable, append));
+    }
+
+    /** Whether the number names a real file rather than a pipe end or the null device. */
+    static boolean isFile(int fd) {
+        Slot slot = peek(fd);
+        return slot != null && slot.file != null;
+    }
+
+    /** The handle a real-file descriptor names, which is what {@code io.open(fd, 'r+b')} wraps. */
+    static java.io.RandomAccessFile file(int fd) {
+        return slot(fd).file;
+    }
+
+    /** Where a real-file descriptor was opened. */
+    static java.nio.file.Path path(int fd) {
+        return slot(fd).path;
     }
 
     /** {@code dup(2)}: another descriptor naming the same pipe end, which the parent may close alone. */
@@ -105,6 +164,15 @@ final class Fds {
             }
         }
         if (slot.devnull) {
+            return;
+        }
+        if (slot.file != null) {
+            try {
+                slot.file.close();
+            } catch (IOException ignored) {
+                // Closing a descriptor that is already gone is what close(2) reports as EBADF, but the
+                // table has already dropped the number, so nothing here can be retried.
+            }
             return;
         }
         Pipe pipe = slot.pipe;
@@ -141,6 +209,20 @@ final class Fds {
      */
     static byte[] read(int fd, int length) {
         Slot slot = slot(fd);
+        if (slot.file != null) {
+            synchronized (slot) {
+                byte[] bytes = new byte[Math.max(length, 0)];
+                try {
+                    int count = slot.file.read(bytes);
+                    if (count <= 0) {
+                        return new byte[0];
+                    }
+                    return count == bytes.length ? bytes : Arrays.copyOf(bytes, count);
+                } catch (IOException error) {
+                    throw ioFailure();
+                }
+            }
+        }
         if (slot.devnull) {
             return new byte[0];
         }
@@ -171,6 +253,22 @@ final class Fds {
     /** {@code write(2)}: appends to the pipe, or eats the bytes when this is the null device. */
     static int write(int fd, byte[] bytes) {
         Slot slot = slot(fd);
+        if (slot.file != null) {
+            if (!slot.writable) {
+                throw badFd(fd);
+            }
+            synchronized (slot) {
+                try {
+                    if (slot.appending) {
+                        slot.file.seek(slot.file.length());
+                    }
+                    slot.file.write(bytes);
+                    return bytes.length;
+                } catch (IOException error) {
+                    throw ioFailure();
+                }
+            }
+        }
         if (slot.devnull) {
             return bytes.length;
         }
@@ -210,6 +308,9 @@ final class Fds {
         if (slot.devnull) {
             return true;
         }
+        if (slot.file != null) {
+            return true;
+        }
         if (slot.writable) {
             return false;
         }
@@ -225,6 +326,9 @@ final class Fds {
         if (slot == null || slot.devnull) {
             return true;
         }
+        if (slot.file != null) {
+            return slot.writable;
+        }
         if (!slot.writable) {
             return false;
         }
@@ -238,6 +342,9 @@ final class Fds {
     static int available(int fd) {
         Slot slot = peek(fd);
         if (slot == null || slot.devnull) {
+            return 0;
+        }
+        if (slot.file != null) {
             return 0;
         }
         Pipe pipe = slot.pipe;
@@ -276,6 +383,15 @@ final class Fds {
     /** The bytes buffered in the pipe a descriptor names, which is what {@code fstat} reports. */
     static long size(int fd) {
         Slot slot = slot(fd);
+        if (slot.file != null) {
+            synchronized (slot) {
+                try {
+                    return slot.file.length();
+                } catch (IOException error) {
+                    throw ioFailure();
+                }
+            }
+        }
         synchronized (slot.pipe) {
             return slot.pipe.length;
         }
@@ -373,6 +489,13 @@ final class Fds {
         return PyRaise.of(PyOSError.create(
                 ExceptionTypes.OS_ERROR,
                 new PyObject[] {PyInt.of(9), PyStr.of("Bad file descriptor")}));
+    }
+
+    /** The errno a failing read or write on a real file reports: EIO, the one Java leaves unspoken. */
+    private static PyRaise ioFailure() {
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.OS_ERROR,
+                new PyObject[] {PyInt.of(5), PyStr.of("Input/output error")}));
     }
 
     private static void append(Pipe pipe, byte[] bytes) {
