@@ -51,9 +51,14 @@ final class PyBytesIO extends PyIOStream {
 
     /** {@code BytesIO(initial_bytes=b'')}, whose one argument may be any bytes-like object. */
     static PyObject create(PyObject[] args, String[] kwNames) {
+        return create(PyType.BYTES_IO, args, kwNames);
+    }
+
+    /** The same {@code BytesIO} with a class written over it as its type. */
+    static PyObject create(PyType kind, PyObject[] args, String[] kwNames) {
         PyObject[] given = Arguments.unpackKeywords(
-                "BytesIO", args, kwNames, new String[] {"initial_bytes"}, 0, 1);
-        PyBytesIO stream = new PyBytesIO(PyType.BYTES_IO);
+                kind.name(), args, kwNames, new String[] {"initial_bytes"}, 0, 1);
+        PyBytesIO stream = new PyBytesIO(kind);
         if (given[0] != null) {
             byte[] initial = octetsOf(given[0]);
             stream.data = initial.clone();

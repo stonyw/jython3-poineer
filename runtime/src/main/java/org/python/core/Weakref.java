@@ -71,7 +71,11 @@ final class Weakref {
                 || value instanceof PyModule
                 || value instanceof PyMemoryView
                 || value instanceof PyGenerator
-                || value instanceof PyIOStream;
+                || value instanceof PyIOStream
+                // Every `_io` type carries a weak list in the reference — the four abstract bases too —
+                // which is what lets `gzip.GzipFile`, whose base is `io.BufferedIOBase`, be the target
+                // of the `weakref` `_WriteBufferStream` takes of it.
+                || value instanceof IoBases.Value;
     }
 
     /** The rows, in the order {@code _weakref.__dict__} lists them in the reference. */

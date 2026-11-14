@@ -6113,7 +6113,17 @@ final class TypeDict {
                     // the object it refers to and its callback, so `object.__init__` has nothing to refuse.
                     || owner == PyType.WEAK_REFERENCE
                     // A subclass of `GenericAlias` inherits `ga_new`, which took both arguments too.
-                    || owner == PyType.GENERIC_ALIAS) {
+                    || owner == PyType.GENERIC_ALIAS
+                    // The `_io` family builds its value in the creator this runtime hands the class
+                    // (`Classes.allocate`), so `super().__init__(raw)` in a subclass reaches
+                    // `object.__init__` with the arguments already consumed — `tarfile`'s
+                    // `ExFileObject.__init__` and `_apple_support`'s `SystemLog.__init__` both do it.
+                    || owner == PyStream.TYPE
+                    || owner == PyType.BYTES_IO
+                    || owner == PyType.FILE_IO
+                    || owner == PyType.BUFFERED_READER
+                    || owner == PyType.BUFFERED_WRITER
+                    || owner == PyType.BUFFERED_RANDOM) {
                 return true;
             }
         }

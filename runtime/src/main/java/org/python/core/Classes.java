@@ -406,7 +406,17 @@ final class Classes {
                 || base == PyType.LOCAL
                 // `doctest.py` is `class _SpoofOut(StringIO)`, a Python class that keeps a `write` and
                 // two `getvalue`s of its own over the buffer's rows, so the same rule applies to it.
-                || base == PyType.STRING_IO;
+                || base == PyType.STRING_IO
+                // The `_io` family carries `Py_TPFLAGS_BASETYPE` in the reference: `_apple_support` is
+                // `class SystemLog(TextIOWrapper)`, `tarfile` is `class ExFileObject(BufferedReader)`, and
+                // the C types read their raw layer through `self->buffer`/`self->raw`, which a subclass's
+                // override is reached by. The value classes below keep that one read path.
+                || base == PyStream.TYPE
+                || base == PyType.BYTES_IO
+                || base == PyType.FILE_IO
+                || base == PyType.BUFFERED_READER
+                || base == PyType.BUFFERED_WRITER
+                || base == PyType.BUFFERED_RANDOM;
     }
 
     /**
@@ -1478,6 +1488,26 @@ final class Classes {
         // through. `doctest._SpoofOut` is the class that needs this.
         if (kind.matches(PyType.STRING_IO)) {
             return PyStringIO.create(kind, args, names);
+        }
+        // The concrete `_io` types keep `Py_TPFLAGS_BASETYPE` in the reference, and the concrete branch
+        // has to come before the ABC one below: every stream is also an `IOBase`, but only these five
+        // have a value the runtime can build for a subclass.
+        if (kind.matches(PyType.BYTES_IO)) {
+            return PyBytesIO.create(kind, args, names);
+        }
+        if (kind.matches(PyType.FILE_IO)) {
+            return Open.fileIo(kind, args, names);
+        }
+        if (kind.matches(PyType.BUFFERED_READER)
+                || kind.matches(PyType.BUFFERED_WRITER)
+                || kind.matches(PyType.BUFFERED_RANDOM)) {
+            return PyBufferedReader.construct(kind, args, names);
+        }
+        // `TextIOWrapper` builds nothing in `tp_new`: its `__init__` is the row `textIOWrapperTable`
+        // files, so the cleared stream here is filled by the subclass's `__init__` — the reference's own
+        // when the class writes none, `SystemLog.__init__` when it does.
+        if (kind.matches(PyStream.TYPE)) {
+            return PyStream.textWrapper(kind);
         }
         // A class written over one of the four `_io` bases inherits the base's value: an instance
         // dictionary and the rows the base files. The concrete streams stay the Java values `_io` names;

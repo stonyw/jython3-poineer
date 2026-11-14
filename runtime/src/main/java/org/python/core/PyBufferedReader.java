@@ -46,7 +46,7 @@ public final class PyBufferedReader extends PyIOStream {
     private static final String SEEK = "seek of closed file";
     private static final String TRUNCATE = "truncate of closed file";
 
-    private final PyFileIO descriptor;
+    private final PyObject descriptor;
 
     /** {@code self->buffer}, with {@code self->pos} into it and {@code self->read_end} at its far edge. */
     private final byte[] store = new byte[BUFFER_SIZE];
@@ -72,7 +72,7 @@ public final class PyBufferedReader extends PyIOStream {
         this(raw, PyType.BUFFERED_READER, true, false);
     }
 
-    PyBufferedReader(PyFileIO raw, PyType type, boolean readable, boolean writable) {
+    PyBufferedReader(PyObject raw, PyType type, boolean readable, boolean writable) {
         super(type);
         this.descriptor = raw;
         this.readable = readable;
@@ -80,15 +80,36 @@ public final class PyBufferedReader extends PyIOStream {
     }
 
     /**
+     * A class written over {@code BufferedReader}, {@code BufferedWriter} or {@code BufferedRandom}
+     * makes the same layer over whatever raw object it was handed: the reference reads the raw through
+     * {@code self->raw}, so a Python raw (a {@code RawIOBase} subclass, {@code tarfile}'s
+     * {@code _FileInFile}) is as good as a descriptor.
+     */
+    static PyBufferedReader construct(PyType kind, PyObject[] args, String[] kwNames) {
+        PyObject[] values = Arguments.unpackKeywords(
+                kind.name(), args, kwNames, new String[] {"raw", "buffer_size"}, 1, 2);
+        boolean writable = kind.matches(PyType.BUFFERED_WRITER)
+                || kind.matches(PyType.BUFFERED_RANDOM);
+        boolean readable = kind.matches(PyType.BUFFERED_READER)
+                || kind.matches(PyType.BUFFERED_RANDOM);
+        return new PyBufferedReader(values[0], kind, readable, writable);
+    }
+
+    /**
      * The descriptor, whether or not it is still held: what {@code sys.stdin} caches as its own answer to
      * being closed, exactly as {@code _textiowrapper_set_buffer} caches the one this layer reports.
      */
-    PyFileIO descriptor() {
+    PyObject descriptor() {
         return descriptor;
     }
 
+    /** The same answer when the raw layer is a descriptor this runtime can read directly. */
+    PyFileIO fileDescriptor() {
+        return descriptor instanceof PyFileIO file ? file : null;
+    }
+
     /** The descriptor, or the refusal that says there no longer is one. */
-    private PyFileIO held() {
+    private PyObject held() {
         if (detached) {
             throw Slots.valueError(DETACHED);
         }
@@ -159,7 +180,74 @@ public final class PyBufferedReader extends PyIOStream {
         }
         byte[] octets = outgoing.toByteArray();
         outgoing.reset();
-        descriptor.writeOctets(octets);
+        emit(octets);
+    }
+
+    /**
+     * One read of the raw layer, which is {@code PyObject_CallMethod(self->raw, "read", "n")} whenever
+     * the raw is not a descriptor this runtime owns. A Python raw ({@code _FileInFile}) answers the row
+     * itself, so the call has to go through the object, not through a Java field.
+     */
+    private byte[] fetch(long wanted) {
+        PyObject source = held();
+        if (source instanceof PyFileIO file) {
+            return file.octets(wanted);
+        }
+        if (!declaresRead(source)) {
+            // A raw that only answers `readinto`, which is the row the C buffer actually asks of its
+            // descriptor: `rawiobase_readinto` in the reference is what `_FileInFile` inherits, and a
+            // raw written that way has no `read` of its own to call.
+            long ask = Math.min(wanted, Integer.MAX_VALUE - 8);
+            PyByteArray into = PyByteArray.wrap(new byte[(int) ask]);
+            PyObject count = Slots.call(
+                    Slots.getAttr(source, "readinto"), new PyObject[] {into}, null);
+            if (!(count instanceof PyInt given)) {
+                throw Slots.typeError(
+                        "readinto() should return int, not %s", Slots.argumentName(count));
+            }
+            long size = given.getValue().longValue();
+            if (size < 0 || size > into.size()) {
+                throw Slots.typeError("readinto() returned invalid length");
+            }
+            return Arrays.copyOf(into.raw(), (int) size);
+        }
+        PyObject answer = Slots.call(
+                Slots.getAttr(source, "read"), new PyObject[] {PyInt.of(wanted)}, null);
+        if (!(answer instanceof PyBytes octets)) {
+            throw Slots.typeError(
+                    "read() should return bytes, not %s", Slots.argumentName(answer));
+        }
+        return octets.getValue();
+    }
+
+    /** Whether {@code source} itself answers {@code read}, rather than inheriting the abstract refusal. */
+    private static boolean declaresRead(PyObject source) {
+        for (PyType owner : source.getType().mro()) {
+            if (owner == PyType.RAW_IO_BASE || owner == PyType.IO_BASE || owner == PyType.OBJECT) {
+                return false;
+            }
+            if (Specials.declared(owner, "read") != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The write half of {@link #fetch}: {@code self->raw.write} has to take every octet it was given. */
+    private void emit(byte[] octets) {
+        if (octets.length == 0) {
+            return;
+        }
+        PyObject target = held();
+        if (target instanceof PyFileIO file) {
+            file.writeOctets(octets);
+            return;
+        }
+        PyObject answer = Slots.call(
+                Slots.getAttr(target, "write"), new PyObject[] {PyBytes.of(octets)}, null);
+        if (!(answer instanceof PyInt written) || written.getValue().longValue() != octets.length) {
+            throw Slots.osError("raw write() returned invalid length");
+        }
     }
 
     /**
@@ -173,7 +261,7 @@ public final class PyBufferedReader extends PyIOStream {
     private int fill() {
         drain();
         int start = readEnd < 0 ? 0 : readEnd;
-        byte[] chunk = held().octets(BUFFER_SIZE - start);
+        byte[] chunk = fetch(BUFFER_SIZE - start);
         if (chunk.length == 0) {
             return 0;
         }
@@ -251,7 +339,7 @@ public final class PyBufferedReader extends PyIOStream {
         long remaining = wanted - answer.size();
         reset();
         while (remaining > 0 && (remaining & ~(long) (BUFFER_SIZE - 1)) != 0) {
-            byte[] chunk = held().octets(remaining & ~(long) (BUFFER_SIZE - 1));
+            byte[] chunk = fetch(remaining & ~(long) (BUFFER_SIZE - 1));
             if (chunk.length == 0) {
                 return answer.toByteArray();
             }
@@ -291,7 +379,7 @@ public final class PyBufferedReader extends PyIOStream {
             return PyBytes.of(take(Math.min(have, limit)));
         }
         reset();
-        return PyBytes.of(held().octets(limit));
+        return PyBytes.of(fetch(limit));
     }
 
     /** {@code buffer.peek(n)}: the whole store, which the count never limits. */
@@ -445,7 +533,7 @@ public final class PyBufferedReader extends PyIOStream {
         if (outgoing.size() + octets.length >= BUFFER_SIZE) {
             flushOutgoing();
             if (octets.length >= BUFFER_SIZE) {
-                descriptor.writeOctets(octets);
+                emit(octets);
                 return PyInt.of(octets.length);
             }
         }

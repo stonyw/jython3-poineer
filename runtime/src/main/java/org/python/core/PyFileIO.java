@@ -88,7 +88,12 @@ public final class PyFileIO extends PyIOStream {
     private final String mode;
 
     PyFileIO(String name, InputStream source, int fd, boolean closefd) {
-        this(name, source, null, null, fd, closefd, true, false, false, "rb");
+        this(PyType.FILE_IO, name, source, null, null, fd, closefd, true, false, false, "rb");
+    }
+
+    /** The same descriptor with a class written over {@code FileIO} as its type. */
+    PyFileIO(PyType kind, String name, InputStream source, int fd, boolean closefd) {
+        this(kind, name, source, null, null, fd, closefd, true, false, false, "rb");
     }
 
     /**
@@ -96,7 +101,12 @@ public final class PyFileIO extends PyIOStream {
      * pipe, where the write half is a Java stream rather than a file.
      */
     PyFileIO(String name, OutputStream sink, int fd, boolean closefd) {
-        this(name, null, sink, null, fd, closefd, false, true, false, "wb");
+        this(PyType.FILE_IO, name, null, sink, null, fd, closefd, false, true, false, "wb");
+    }
+
+    /** The same descriptor with a class written over {@code FileIO} as its type. */
+    PyFileIO(PyType kind, String name, OutputStream sink, int fd, boolean closefd) {
+        this(kind, name, null, sink, null, fd, closefd, false, true, false, "wb");
     }
 
     PyFileIO(
@@ -106,7 +116,19 @@ public final class PyFileIO extends PyIOStream {
             boolean writable,
             boolean appending,
             String mode) {
-        this(name, null, null, file, -1, true, readable, writable, appending, mode);
+        this(PyType.FILE_IO, name, null, null, file, -1, true, readable, writable, appending, mode);
+    }
+
+    /** The same descriptor with a class written over {@code FileIO} as its type. */
+    PyFileIO(
+            PyType kind,
+            String name,
+            RandomAccessFile file,
+            boolean readable,
+            boolean writable,
+            boolean appending,
+            String mode) {
+        this(kind, name, null, null, file, -1, true, readable, writable, appending, mode);
     }
 
     /**
@@ -115,11 +137,19 @@ public final class PyFileIO extends PyIOStream {
      */
     static PyFileIO forDescriptor(String name, int fd, boolean closefd,
             boolean readable, boolean writable, boolean appending, String mode) {
-        return new PyFileIO(name, null, null, Fds.file(fd), fd, closefd,
+        return new PyFileIO(PyType.FILE_IO, name, null, null, Fds.file(fd), fd, closefd,
+                readable, writable, appending, mode);
+    }
+
+    /** The same descriptor with a class written over {@code FileIO} as its type. */
+    static PyFileIO forDescriptor(PyType kind, String name, int fd, boolean closefd,
+            boolean readable, boolean writable, boolean appending, String mode) {
+        return new PyFileIO(kind, name, null, null, Fds.file(fd), fd, closefd,
                 readable, writable, appending, mode);
     }
 
     private PyFileIO(
+            PyType kind,
             String name,
             InputStream source,
             OutputStream sink,
@@ -130,7 +160,7 @@ public final class PyFileIO extends PyIOStream {
             boolean writable,
             boolean appending,
             String mode) {
-        super(PyType.FILE_IO);
+        super(kind);
         this.in = source;
         this.out = sink;
         this.file = file;

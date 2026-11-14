@@ -274,6 +274,16 @@ final class Constructors {
         if (type == PyType.BYTES_IO) {
             return PyBytesIO.create(args, keywordNames);
         }
+        // The `_io` types a person can also name directly: `io.BufferedReader(raw)` is a layer over a raw
+        // object, and `io.FileIO(path)` is the descriptor `open(path, 'rb')` would have made.
+        if (type == PyType.FILE_IO) {
+            return Open.fileIo(PyType.FILE_IO, args, keywordNames);
+        }
+        if (type == PyType.BUFFERED_READER
+                || type == PyType.BUFFERED_WRITER
+                || type == PyType.BUFFERED_RANDOM) {
+            return PyBufferedReader.construct(type, args, keywordNames);
+        }
         if (type == PyType.WEAK_REFERENCE) {
             return Weakref.newRef(args, keywordNames);
         }

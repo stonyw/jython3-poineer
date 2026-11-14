@@ -129,6 +129,71 @@ final class Open {
     }
 
     /**
+     * {@code FileIO(file, mode='r', closefd=True, opener=None)} whose type is a class written over
+     * {@code FileIO}: the same descriptor {@code open()} would make, under the subclass's identity.
+     *
+     * <p>The reference's {@code FileIO} works in {@code tp_new} and has no Python-level initialiser to
+     * repeat, so everything the constructor decides is decided here.
+     */
+    static PyFileIO fileIo(PyType kind, PyObject[] args, String[] kwNames) {
+        PyObject[] values = Arguments.unpackKeywords(
+                "FileIO", args, kwNames, new String[] {"file", "mode", "closefd", "opener"}, 1, 4);
+        String mode = values[1] == null ? "r" : modeText(values[1]);
+        boolean closefd = values[2] == null || Slots.truth(values[2]);
+        PyObject opener = values[3];
+
+        PyObject file = values[0];
+        String path = null;
+        boolean descriptorNumber = false;
+        boolean numeric = false;
+        if (file instanceof PyStr text) {
+            path = text.getValue();
+        } else if (file instanceof PyBytes bytes) {
+            path = new String(bytes.getValue(), java.nio.charset.StandardCharsets.UTF_8);
+        } else if (Numbers.isNumber(file)) {
+            numeric = true;
+            descriptorNumber = file instanceof PyInt || file instanceof PyBool;
+        } else {
+            throw pathTypeError(file);
+        }
+
+        Mode parsed = parseMode(mode);
+        if (parsed.count() == 0) {
+            throw Slots.valueError(
+                    "Must have exactly one of create/read/write/append mode and at most one plus");
+        }
+        if (parsed.text) {
+            // `FileIO` is the raw layer: its mode parser has no `t` and no text at all.
+            throw invalidMode(mode);
+        }
+        if (numeric && !descriptorNumber) {
+            throw pathTypeError(file);
+        }
+        if (descriptorNumber) {
+            if (file instanceof PyBool) {
+                PyRuntime.warn("bool is used as a file descriptor", "RuntimeWarning");
+            }
+            int fd = Numbers.asIndex(file).intValue();
+            if (!Fds.known(fd)) {
+                throw PyRaise.of(PyOSError.create(
+                        ExceptionTypes.OS_ERROR,
+                        new PyObject[] {PyInt.of(9), PyStr.of("Bad file descriptor")}));
+            }
+            return PyFileIO.forDescriptor(kind, Integer.toString(fd), fd, closefd,
+                    parsed.readable(), parsed.writable(), parsed.appending, ioMode(parsed));
+        }
+        if (!closefd) {
+            throw Slots.valueError("Cannot use closefd=False with file name");
+        }
+        if (opener != null && opener != PyNone.INSTANCE) {
+            return PyFileIO.forDescriptor(
+                    kind, path, descriptorFromOpener(opener, path, parsed), closefd,
+                    parsed.readable(), parsed.writable(), parsed.appending, ioMode(parsed));
+        }
+        return descriptor(path, parsed, ioMode(parsed), kind);
+    }
+
+    /**
      * {@code io.open(fd, mode)}: the descriptor is one this runtime handed out, so the stream is the
      * in-memory pipe end rather than a file.
      *
@@ -306,6 +371,11 @@ final class Open {
      * {@code mode} and {@code closefd} as a {@code FileIO} does.
      */
     private static PyFileIO descriptor(String path, Mode parsed, String ioMode) {
+        return descriptor(path, parsed, ioMode, PyType.FILE_IO);
+    }
+
+    /** The same file with a class written over {@code FileIO} as its type. */
+    private static PyFileIO descriptor(String path, Mode parsed, String ioMode, PyType kind) {
         if (path.indexOf('\0') >= 0) {
             throw Slots.valueError("embedded null byte");
         }
@@ -317,7 +387,7 @@ final class Open {
                 // A RandomAccessFile even for reading: a FileInputStream cannot be positioned, and
                 // `BufferedReader.seek`/`tell` are part of what a `'rb'` stream answers.
                 RandomAccessFile reader = new RandomAccessFile(resolved, "r");
-                return new PyFileIO(path, reader, true, false, false, ioMode(parsed));
+                return new PyFileIO(kind, path, reader, true, false, false, ioMode(parsed));
             }
             if (parsed.creating && new File(resolved).exists()) {
                 throw osFailure(ExceptionTypes.FILE_EXISTS_ERROR, 17, "File exists", path);
@@ -331,7 +401,7 @@ final class Open {
                 file.seek(file.length());
             }
             return new PyFileIO(
-                    path, file, parsed.readable(), parsed.writable(), parsed.appending, ioMode);
+                    kind, path, file, parsed.readable(), parsed.writable(), parsed.appending, ioMode);
         } catch (FileNotFoundException failure) {
             throw failureOf(failure, path);
         } catch (IOException failure) {

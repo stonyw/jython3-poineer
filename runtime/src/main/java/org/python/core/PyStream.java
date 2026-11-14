@@ -267,9 +267,22 @@ public final class PyStream extends PyIterator {
         return stream;
     }
 
+    /**
+     * The cleared stream a class written over {@code TextIOWrapper} allocates in {@code tp_new}: its
+     * {@code __init__} is the same {@code initializeTextStream} the type itself files, so the buffer,
+     * encoding and flags all arrive through that one row.
+     */
+    static PyStream textWrapper(PyType kind) {
+        return new PyStream(kind);
+    }
+
     /** The cleared stream {@code tp_new} allocates: no buffer, no encoding of its own, no name. */
     private PyStream() {
-        super(TYPE);
+        this(TYPE);
+    }
+
+    private PyStream(PyType kind) {
+        super(kind);
         this.name = null;
         this.out = null;
         this.fd = 0;
@@ -301,7 +314,7 @@ public final class PyStream extends PyIterator {
         this.buffer = reading;
         // `_textiowrapper_detect_buffer_attributes` caches the descriptor as the answer to `closed`, and
         // keeps answering from the cache after the buffer has been detached from it.
-        this.raw = reading.descriptor();
+        this.raw = reading.fileDescriptor();
         this.errors = errors;
         this.lineBuffered = false;
         this.fd = fd;
@@ -330,7 +343,7 @@ public final class PyStream extends PyIterator {
         this.name = name;
         this.out = null;
         this.buffer = buffer;
-        this.raw = buffer.descriptor();
+        this.raw = buffer.fileDescriptor();
         this.encoding = encoding;
         this.codec = Encoder.codec(encoding);
         this.errors = errors;
@@ -635,7 +648,7 @@ public final class PyStream extends PyIterator {
         // `_textiowrapper_detect_buffer_attributes` caches the descriptor only for the three buffered
         // types, and only when the layer below that buffer is exactly a FileIO.
         if (buffer instanceof PyBufferedReader reader) {
-            raw = reader.descriptor();
+            raw = reader.fileDescriptor();
         }
         seekableLayer = Slots.truth(askBuffer("seekable", new PyObject[0]));
         hasRead1 = hasAttribute(buffer, "read1");
@@ -1518,6 +1531,15 @@ public final class PyStream extends PyIterator {
 
     @Override
     public PyObject getAttr(String attribute) {
+        // `_io` answers every row through `_PyType_Lookup`, so a class written over `TextIOWrapper`
+        // shadows a method of the type; the switch below is the data descriptors, which win over any
+        // name a subclass writes, and the two methods it answers itself are asked of the type first.
+        if (getType() instanceof PyClass && (attribute.equals("__enter__") || attribute.equals("__exit__"))) {
+            PyObject member = Specials.lookUp(getType(), attribute);
+            if (member != null) {
+                return Descriptors.get(member, this, getType());
+            }
+        }
         return switch (attribute) {
             // The five rows that ask only of the stream itself, whatever the layer below it says.
             // `encoding` is a `T_OBJECT` member, so it answers whatever the field holds — `None` after an
@@ -1582,7 +1604,16 @@ public final class PyStream extends PyIterator {
                 // are asked before the dictionary; everything else — mode, and any name a program wrote —
                 // comes out of the dictionary before the type is asked.
                 PyObject held = dictionary.get(PyStr.interned(attribute));
-                yield held == null ? Members.find(this, attribute) : held;
+                if (held != null) {
+                    yield held;
+                }
+                if (getType() instanceof PyClass) {
+                    PyObject member = Specials.lookUp(getType(), attribute);
+                    if (member != null) {
+                        yield Descriptors.get(member, this, getType());
+                    }
+                }
+                yield Members.find(this, attribute);
             }
         };
     }

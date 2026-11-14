@@ -555,7 +555,8 @@ class Jy3LauncherTest {
                 "28_warnings_command_line.py",
                 "29_scandir.py",
                 "30_os_fds_stat.py",
-                "31_subprocess_process.py");
+                "31_subprocess_process.py",
+                "32_io_subclass.py");
     }
 
     /**

@@ -427,6 +427,16 @@ final class IoBases {
                     return value;
                 }
             }
+            // A class written over a base keeps the rows of its own body: `RawIOBase` files a `readable`
+            // that answers False, and `class Raw(RawIOBase): def readable(self): return True` must reach
+            // the program's row through every path that asks the raw layer (`TextIOWrapper.read` asks its
+            // buffer, and a buffer asks its raw). `_PyType_Lookup` puts the class first; so does this.
+            if (getType() instanceof PyClass) {
+                PyObject member = Specials.lookUp(getType(), attribute);
+                if (member != null) {
+                    return Descriptors.get(member, this, getType());
+                }
+            }
             return Members.find(this, attribute);
         }
 
