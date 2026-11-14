@@ -106,9 +106,9 @@ final class PosixSubprocessModule {
         }
 
         ProcessBuilder builder = new ProcessBuilder(executable(argv, executableList));
-        if (cwd != null) {
-            builder.directory(new File(cwd));
-        }
+        // No cwd means "inherit": the reference inherits the process's directory, which here is the
+        // one chdir moved rather than the JVM's.
+        builder.directory(new File(cwd != null ? cwd : PosixModule.workingDirectory()));
         if (environment != null) {
             builder.environment().clear();
             builder.environment().putAll(environment);

@@ -188,6 +188,17 @@ final class PosixModule {
     private static Path cwd =
             Path.of(System.getProperty("user.dir", ".")).toAbsolutePath();
 
+    /**
+     * Where the runtime believes it is, for a child process that would inherit it.
+     *
+     * <p>{@code chdir} moves this path rather than the JVM's, so a child started without an explicit
+     * {@code cwd} still has to be told: in the reference it would inherit the moved directory from the
+     * process itself.
+     */
+    static String workingDirectory() {
+        return cwd.toString();
+    }
+
     /** The source {@code urandom} draws from; a fresh {@link SecureRandom} seeds itself on first use. */
     private static final SecureRandom RANDOM = new SecureRandom();
 

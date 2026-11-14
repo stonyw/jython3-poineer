@@ -1,6 +1,8 @@
 package org.python.util;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -154,6 +156,7 @@ public final class jy3 {
         List<String> xOptions = new ArrayList<>();
         boolean devMode = false;
         boolean quiet = false;
+        boolean interactive = false;
         boolean dontWriteBytecode = false;
         boolean noSite = false;
         int optimize = 0;
@@ -291,6 +294,11 @@ public final class jy3 {
                     quiet = true;
                     at++;
                 }
+                case "-i" -> {
+                    // Run the program, then read whatever is left on standard input and run that too.
+                    interactive = true;
+                    at++;
+                }
                 case "-B" -> {
                     // No `.pyc` is ever written, so the flag asks for what already holds.
                     dontWriteBytecode = true;
@@ -346,13 +354,24 @@ public final class jy3 {
             // to quote it, because no file named <string> exists to read. CPython registers the same
             // text in linecache, for the same reason.
             TracebackReport.registerSource(compiled, command);
-            return execute(compiled, null);
+            int status = execute(compiled, null);
+            return interactive ? interact(optimize, status) : status;
         }
         if (stdin) {
             start(importPath(""));
             PyRuntime.setArgv("-", operands);
-            return execute(Cpython314Compiler.compileUnit(
+            int status = execute(Cpython314Compiler.compileUnit(
                     readStdin(), "<stdin>", "exec", 0, optimize, -1), "<stdin>");
+            return interactive ? interact(optimize, status) : status;
+        }
+        if (interactive && operands.isEmpty() && System.console() == null) {
+            // With `-i` and no program named, standard input is the program and the pipe ends the
+            // interactive part as soon as it is consumed, which is what the reference does.
+            start(importPath(""));
+            PyRuntime.setArgv("-", operands);
+            int status = execute(Cpython314Compiler.compileUnit(
+                    readStdin(), "<stdin>", "exec", 0, optimize, -1), "<stdin>");
+            return interact(optimize, status);
         }
         if (operands.isEmpty()) {
             return notImplemented(
@@ -385,7 +404,46 @@ public final class jy3 {
         PyRuntime.setArgv(operands.get(0), operands.subList(1, operands.size()));
         start(importPath(scriptDirectory(script)));
         Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(script, optimize);
-        return execute(compiled.code(), compiled.fileName());
+        int status = execute(compiled.code(), compiled.fileName());
+        return interactive ? interact(optimize, status) : status;
+    }
+
+    /**
+     * {@code -i}: after the program, run what is left on standard input a line at a time.
+     *
+     * <p>A terminal would want the reference's prompt, line editor and multiline blocks; that front
+     * end belongs to a later milestone and is left alone. A pipe is honoured: each remaining line is
+     * compiled in {@code single} mode, which prints an expression's value through
+     * {@code sys.displayhook} exactly as the prompt would, and an error is reported where it happened
+     * and the loop goes on — the difference between running a program and being in one.
+     */
+    private static int interact(int optimize, int status) {
+        if (System.console() != null) {
+            return status;
+        }
+        BufferedReader reader =
+                new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        while (true) {
+            String line;
+            try {
+                line = reader.readLine();
+            } catch (IOException unreadable) {
+                return status;
+            }
+            if (line == null) {
+                return status;
+            }
+            if (line.isBlank()) {
+                continue;
+            }
+            try {
+                PyCode code = Cpython314Compiler.compileUnit(
+                        line + "\n", "<stdin>", "single", 0, optimize, -1);
+                PyRuntime.execMain(code, "<stdin>");
+            } catch (PyRaise raised) {
+                TracebackReport.print(raised.value());
+            }
+        }
     }
 
     /** Bring the runtime up with this process's import path, and install the compiler it needs. */

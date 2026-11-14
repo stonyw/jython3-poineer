@@ -142,6 +142,28 @@ final class WarningsModule {
         return Slots.getAttr(pyWarnings, name);
     }
 
+    /**
+     * Whether the machinery is up. A compile-time warning may arrive before anything has imported
+     * {@code warnings} — the reference's C warning path imports it on demand — so the caller asks.
+     */
+    static boolean installed() {
+        return contextVar != null;
+    }
+
+    /**
+     * Issue one warning at an explicit position, the way the C {@code PyErr_WarnExplicitObject} does
+     * for a warning the parser raised while compiling.
+     */
+    static void issueWarningExplicit(String message, PyObject category, String filename, int lineno) {
+        if (contextVar == null) {
+            // The machinery is not installed yet, so there is no caller that could have asked for it.
+            return;
+        }
+        warnExplicit(
+                new PyObject[] {PyStr.of(message), category, PyStr.of(filename), PyInt.of(lineno)},
+                new String[0]);
+    }
+
     /** The C {@code warn_explicit}, ported statement for statement. */
     private static PyObject warnExplicit(PyObject[] args, String[] keywordNames) {
         PyObject[] values = Arguments.unpackKeywords(

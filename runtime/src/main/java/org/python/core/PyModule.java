@@ -429,30 +429,58 @@ public class PyModule extends PyObject {
     }
 
     /**
-     * {@code repr(module)}, which reads {@code __name__} out of the dictionary rather than the name
-     * the module was made with: a program may rename it or delete the entry, and the reference's
-     * catch-all repr follows those writes. A name that is not a string is shown as it reprs, and a
-     * module with no name at all is the reference's {@code '?'}.
+     * {@code repr(module)}, which is {@code importlib._bootstrap._module_repr} written out.
+     *
+     * <p>A module that carries a {@code __spec__} answers from the spec alone — its {@code name}, then
+     * its {@code origin}, and whether that origin is a location decides between {@code from '...'} and
+     * the parenthesized form. Only a module without a spec falls back to its own {@code __name__},
+     * {@code __file__} and {@code __loader__}. Every name goes through {@code repr}, so a name that is
+     * not a string is shown as it reprs, and no name at all is the reference's {@code '?'}.
      */
     @Override
     public String repr() {
+        PyObject spec = dictionary.get(PyStr.interned("__spec__"));
+        if (spec != null && spec != PyNone.INSTANCE && spec != PyBool.FALSE) {
+            return reprFromSpec(spec);
+        }
         PyObject shown = dictionary.get(PyStr.interned("__name__"));
         if (shown == null) {
-            return "<module '?'>";
+            shown = PyStr.of("?");
         }
-        if (shown instanceof PyStr text) {
-            PyObject spec = dictionary.get(PyStr.interned("__spec__"));
-            if (spec instanceof PyModuleSpec moduleSpec
-                    && Slots.getAttr(moduleSpec, "loader") instanceof PyNamespaceLoader) {
+        PyObject filename = dictionary.get(PyStr.interned("__file__"));
+        if (filename != null) {
+            return "<module " + Slots.repr(shown) + " from " + Slots.repr(filename) + ">";
+        }
+        PyObject loader = dictionary.get(PyStr.interned("__loader__"));
+        if (loader == null || loader == PyNone.INSTANCE) {
+            return "<module " + Slots.repr(shown) + ">";
+        }
+        return "<module " + Slots.repr(shown) + " (" + Slots.repr(loader) + ")>";
+    }
+
+    /** {@code _module_repr_from_spec}: the spec is the only source, including its own name. */
+    private static String reprFromSpec(PyObject spec) {
+        PyObject specName = Slots.getAttr(spec, "name");
+        PyObject name = specName == PyNone.INSTANCE ? PyStr.of("?") : specName;
+        PyObject origin = Slots.getAttr(spec, "origin");
+        PyObject loader = Slots.getAttr(spec, "loader");
+        if (origin == PyNone.INSTANCE) {
+            if (loader == PyNone.INSTANCE) {
+                return "<module " + Slots.repr(name) + ">";
+            }
+            if (loader instanceof PyNamespaceLoader) {
                 // A namespace package names the portions it merged rather than a file it came from.
-                PyObject locations = Slots.getAttr(moduleSpec, "submodule_search_locations");
+                PyObject locations = Slots.getAttr(spec, "submodule_search_locations");
                 PyObject portions =
                         locations instanceof PyNamespacePath path ? path.portions() : locations;
-                return "<module '" + text.getValue() + "' (namespace) from "
+                return "<module " + Slots.repr(name) + " (namespace) from "
                         + Slots.repr(portions) + ">";
             }
-            return "<module '" + text.getValue() + "'>";
+            return "<module " + Slots.repr(name) + " (" + Slots.repr(loader) + ")>";
         }
-        return "<module " + Slots.repr(shown) + ">";
+        if (Slots.truth(Slots.getAttr(spec, "has_location"))) {
+            return "<module " + Slots.repr(name) + " from " + Slots.repr(origin) + ">";
+        }
+        return "<module " + Slots.repr(specName) + " (" + Slots.str(origin) + ")>";
     }
 }

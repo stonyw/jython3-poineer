@@ -654,6 +654,42 @@ public final class PyRuntime {
     }
 
     /**
+     * Replay one compile-time warning at the position the reference parser reported.
+     *
+     * <p>Stage A compiles in another process, so a {@code SyntaxWarning} the parser raises arrives with
+     * the compile request rather than from a frame here; the compiler hands it back through this door
+     * and the runtime issues it where {@code compile()} was called, which is what the reference's
+     * {@code PyErr_WarnExplicitObject} does. A category this runtime does not have is dropped rather
+     * than invented.
+     */
+    public static void issueCompileWarning(
+            String filename, int lineno, String category, String message) {
+        // The reference's warning path imports `warnings` on demand; a compile that raises the first
+        // warning of a run therefore has to do the same, before a filter list exists to consult.
+        if (!WarningsModule.installed() && !ensuringWarnings) {
+            ensuringWarnings = true;
+            try {
+                importModule("warnings");
+            } catch (PyRaise absent) {
+                return;
+            } finally {
+                ensuringWarnings = false;
+            }
+        }
+        if (!WarningsModule.installed()) {
+            return;
+        }
+        PyObject type = builtins().get(PyStr.interned(category));
+        if (type == null) {
+            return;
+        }
+        WarningsModule.issueWarningExplicit(message, type, filename, lineno);
+    }
+
+    /** Guards the on-demand import of {@code warnings} against a compile it would itself start. */
+    private static boolean ensuringWarnings;
+
+    /**
      * {@code _PyEval_GetBuiltin} for one of the names CPython writes as {@code &_Py_ID(name)}.
      *
      * <p>Read at the call rather than held from here, which is what lets a program rebind {@code iter} and

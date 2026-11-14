@@ -7,11 +7,14 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.python.core.PyCode;
+import org.python.core.PyRuntime;
 import org.python.core.SourceCompiler;
 import org.python.core.SourceRefused;
 
@@ -66,6 +69,7 @@ public final class Cpython314Compiler {
             import os
             import sys
             import traceback
+            import warnings
 
             if sys.version_info[:2] != (3, 14):
                 sys.stderr.write(
@@ -167,11 +171,33 @@ public final class Cpython314Compiler {
                     options["_feature_version"] = feature_version
                 if code_kind.startswith("ast-"):
                     options["flags"] = flags | ast.PyCF_ONLY_AST
-                    result = compile(source, file_name, code_kind[4:], **options)
+                    inside = code_kind[4:]
                 else:
                     if flags:
                         options["flags"] = flags
-                    result = compile(source, file_name, code_kind, **options)
+                    inside = code_kind
+                # The parser raises `SyntaxWarning` itself, so a successful compile can carry warnings
+                # the same way it carries bytes.  `catch_warnings(record=True)` keeps every filter the
+                # process was started with -- an ignored warning stays ignored -- and collects what
+                # would have been printed, which is what the runtime replays where compile() was
+                # called.
+                with warnings.catch_warnings(record=True) as raised:
+                    result = compile(source, file_name, inside, **options)
+                if raised:
+                    sys.stderr.write("JY3-WARNINGS\\n")
+                    for warning in raised:
+                        sys.stderr.write("%s\\t%s\\t%s\\t%s\\n" % (
+                            base64.b64encode(
+                                str(warning.filename).encode("utf-8", "surrogatepass")
+                            ).decode("ascii"),
+                            warning.lineno,
+                            base64.b64encode(
+                                warning.category.__name__.encode("ascii")
+                            ).decode("ascii"),
+                            base64.b64encode(
+                                str(warning.message).encode("utf-8", "surrogatepass")
+                            ).decode("ascii")))
+                    sys.stderr.write("JY3-WARNINGS-END\\n")
                 if isinstance(result, ast.AST):
                     sys.stdout.buffer.write(write(result).encode("utf-8", "surrogatepass"))
                 else:
@@ -505,12 +531,20 @@ public final class Cpython314Compiler {
      * longer than {@link #CACHEABLE_PAYLOAD} is left out: a script is compiled once anyway, and the
      * key would hold a second copy of it.
      */
-    private static final Map<String, byte[]> ANSWERED = new LinkedHashMap<>(64, 0.75f, true) {
+    private static final Map<String, Answer> ANSWERED = new LinkedHashMap<>(64, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<String, Answer> eldest) {
             return size() > 512;
         }
     };
+
+    /** A code answer and the warnings its compile raised, which are replayed on every cache hit. */
+    private record Answer(byte[] bytes, List<CompiledWarning> warnings) {
+    }
+
+    /** One warning the reference parser raised, at the position it reported. */
+    private record CompiledWarning(String filename, int lineno, String category, String message) {
+    }
 
     private static final int CACHEABLE_PAYLOAD = 8192;
 
@@ -567,9 +601,10 @@ public final class Cpython314Compiler {
                     ? answerKey(payloadKind, payload, fileName, codeKind, flags, optimize, featureVersion)
                     : null;
             if (key != null) {
-                byte[] remembered = ANSWERED.get(key);
+                Answer remembered = ANSWERED.get(key);
                 if (remembered != null) {
-                    return remembered;
+                    replay(remembered.warnings());
+                    return remembered.bytes();
                 }
                 String refusal = REFUSED.get(key);
                 if (refusal != null) {
@@ -585,8 +620,12 @@ public final class Cpython314Compiler {
             }
             int status = waitFor(process);
             if (status == 0) {
+                // A warning is part of the answer: the reference raises it while compiling, at the
+                // position the parser reported, so this is where it is replayed.
+                List<CompiledWarning> warnings = warningsIn(read(diagnostics));
+                replay(warnings);
                 if (key != null) {
-                    ANSWERED.put(key, out);
+                    ANSWERED.put(key, new Answer(out, warnings));
                 }
                 return out;
             }
@@ -657,6 +696,57 @@ public final class Cpython314Compiler {
             return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
         } catch (IOException e) {
             return "the reference compiler gave no explanation (exit status unread: " + e.getMessage() + ")";
+        }
+    }
+
+    /** The markers the driver writes around the warnings a successful compile raised. */
+    private static final String WARNINGS_MARKER = "JY3-WARNINGS\n";
+    private static final String WARNINGS_END = "JY3-WARNINGS-END\n";
+
+    /**
+     * Read the warnings block the driver wrote beside a successful compile.
+     *
+     * <p>Each line is base64(filename), lineno, base64(category name), base64(message); the base64 is
+     * the reference's own {@code surrogatepass} bytes, so a warning about odd source text survives the
+     * trip. A line that does not parse is dropped rather than fabricating a warning.
+     */
+    private static List<CompiledWarning> warningsIn(String diagnostics) {
+        int start = diagnostics.indexOf(WARNINGS_MARKER);
+        if (start < 0) {
+            return List.of();
+        }
+        int end = diagnostics.indexOf(WARNINGS_END, start + WARNINGS_MARKER.length());
+        String body = diagnostics.substring(
+                start + WARNINGS_MARKER.length(),
+                end < 0 ? diagnostics.length() : end);
+        List<CompiledWarning> warnings = new ArrayList<>();
+        for (String line : body.split("\n", -1)) {
+            String[] fields = line.split("\t", -1);
+            if (fields.length != 4) {
+                continue;
+            }
+            try {
+                warnings.add(new CompiledWarning(
+                        decoded(fields[0]),
+                        Integer.parseInt(fields[1]),
+                        decoded(fields[2]),
+                        decoded(fields[3])));
+            } catch (RuntimeException malformed) {
+                // Not a warning line; the code answer is unaffected.
+            }
+        }
+        return warnings;
+    }
+
+    private static String decoded(String field) {
+        return new String(Base64.getDecoder().decode(field), StandardCharsets.UTF_8);
+    }
+
+    /** Hand each warning to the runtime, which issues it where {@code compile()} was called. */
+    private static void replay(List<CompiledWarning> warnings) {
+        for (CompiledWarning warning : warnings) {
+            PyRuntime.issueCompileWarning(
+                    warning.filename(), warning.lineno(), warning.category(), warning.message());
         }
     }
 
