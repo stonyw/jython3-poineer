@@ -334,6 +334,9 @@ public final class PyRuntime {
         PyModule collectionsModule = CollectionsModule.newModule();
         // The collector's control surface, which `test_generators` and `test_descr` import first.
         PyModule gcModule = GcModule.newModule();
+        // The byte format `test_exceptions` asks for by name and `importlib` reaches for when it
+        // caches code.
+        PyModule marshalModule = MarshalModule.newModule();
         // The probes `test_class` imports at module scope and the ones `test.support` reaches for by
         // name, and none of the rest of the reference's internal C API: see `InternalCapiModule` for
         // why each absent name is absent.
@@ -384,6 +387,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("posix"), posixModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
         modules.put(PyStr.interned("gc"), gcModule);
+        modules.put(PyStr.interned("marshal"), marshalModule);
         modules.put(PyStr.interned("_testinternalcapi"), internalCapiModule);
         // `_imp.create_builtin` answers from a table of its own rather than from `sys.modules`, so a
         // program that evicts a name — `import_fresh_module` does exactly that with
@@ -1897,6 +1901,7 @@ public final class PyRuntime {
                         PyStr.of("posix"),
                         PyStr.of("_collections"),
                         PyStr.of("gc"),
+                        PyStr.of("marshal"),
                         PyStr.of("atexit"),
                         PyStr.of("_imp"),
                         PyStr.of("_random"),
@@ -1912,6 +1917,12 @@ public final class PyRuntime {
         // `bdb.py` reads `sys.monitoring.events` at module scope and registers itself as a tool when the
         // attribute exists, so a debugger cannot be imported without it.
         sys.set("monitoring", Monitoring.newModule());
+        // `test.support.catch_unraisable_exception` saves and replaces this hook, so the name has to
+        // exist and be the same object under both spellings, as the reference has it. Where an
+        // unraisable exception is reported from is a fact about finalization: see `Unraisable`.
+        PyObject unraisableHook = Unraisable.defaultHook();
+        sys.set("unraisablehook", unraisableHook);
+        sys.set("__unraisablehook__", unraisableHook);
         // `subprocess` audits every spawn before it forks. This runtime installs no hooks, so the call
         // is the no-op the reference performs when none are installed — but the name has to exist.
         sys.set("audit", new PyNativeFunction(

@@ -164,10 +164,10 @@ final class AtexitModule {
             try {
                 Slots.call(callback.function(), callback.args(), callback.kwNames());
             } catch (PyRaise raised) {
-                PyRuntime.stderr()
-                        .writeText("Exception ignored in atexit callback "
-                                + callback.function().repr() + ":\n");
-                TracebackReport.print(raised.value());
+                Unraisable.report(
+                        null,
+                        "Exception ignored in atexit callback " + callback.function().repr(),
+                        raised.value());
             }
         }
     }
