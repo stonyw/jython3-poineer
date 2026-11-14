@@ -195,14 +195,21 @@ public final class PyList extends PyObject {
 
     @Override
     public String repr() {
-        StringBuilder out = new StringBuilder("[");
-        for (int i = 0; i < items.size(); i++) {
-            if (i > 0) {
-                out.append(", ");
-            }
-            out.append(items.get(i).repr());
+        if (enteringRepr(this)) {
+            return "[...]";
         }
-        return out.append(']').toString();
+        try {
+            StringBuilder out = new StringBuilder("[");
+            for (int i = 0; i < items.size(); i++) {
+                if (i > 0) {
+                    out.append(", ");
+                }
+                out.append(items.get(i).repr());
+            }
+            return out.append(']').toString();
+        } finally {
+            leavingRepr(this);
+        }
     }
 
     // --- slot helpers --------------------------------------------------------------------

@@ -245,16 +245,23 @@ public final class PyDict extends PyObject {
     /** Mutable, therefore unhashable; {@link #hashCode()} inherits the same refusal. */
     @Override
     public String repr() {
-        StringBuilder out = new StringBuilder("{");
-        boolean first = true;
-        for (Map.Entry<PyObject, PyObject> entry : items.entrySet()) {
-            if (!first) {
-                out.append(", ");
-            }
-            first = false;
-            out.append(entry.getKey().repr()).append(": ").append(entry.getValue().repr());
+        if (enteringRepr(this)) {
+            return "{...}";
         }
-        return out.append('}').toString();
+        try {
+            StringBuilder out = new StringBuilder("{");
+            boolean first = true;
+            for (Map.Entry<PyObject, PyObject> entry : items.entrySet()) {
+                if (!first) {
+                    out.append(", ");
+                }
+                first = false;
+                out.append(entry.getKey().repr()).append(": ").append(entry.getValue().repr());
+            }
+            return out.append('}').toString();
+        } finally {
+            leavingRepr(this);
+        }
     }
 
     // --- iteration -----------------------------------------------------------------------

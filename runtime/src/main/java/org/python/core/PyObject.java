@@ -1,5 +1,9 @@
 package org.python.core;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
+
 /**
  * Root of the Jython3 object model, and the place every Python slot is declared.
  *
@@ -443,6 +447,28 @@ public abstract class PyObject {
     /** Python {@code repr()}. */
     public String repr() {
         return "<" + type.name() + " object at " + System.identityHashCode(this) + ">";
+    }
+
+    /**
+     * The containers whose {@code repr} is running on this thread: CPython's {@code Py_ReprEnter} /
+     * {@code Py_ReprLeave} pair, which is one set per thread state.
+     *
+     * <p>A list can hold itself, and {@code repr} has to answer {@code '[[...]]'} rather than walk the
+     * cycle until the stack ends. CPython keeps the identity of every container whose display is being
+     * built; a container met again inside its own display is written as {@code [...]} or {@code {...}}.
+     * Java's identity is what the entry has to be keyed on, since two equal lists are two displays.
+     */
+    private static final ThreadLocal<Set<PyObject>> REPR_STACK =
+            ThreadLocal.withInitial(() -> Collections.newSetFromMap(new IdentityHashMap<>()));
+
+    /** {@code Py_ReprEnter}: whether this value is already being displayed further up this thread. */
+    static boolean enteringRepr(PyObject value) {
+        return !REPR_STACK.get().add(value);
+    }
+
+    /** {@code Py_ReprLeave}: the display of this value is finished. */
+    static void leavingRepr(PyObject value) {
+        REPR_STACK.get().remove(value);
     }
 
     @Override

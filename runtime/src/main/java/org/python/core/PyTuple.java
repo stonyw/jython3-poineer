@@ -208,16 +208,23 @@ public class PyTuple extends PyObject {
 
     @Override
     public String repr() {
-        StringBuilder out = new StringBuilder("(");
-        for (int i = 0; i < items.length; i++) {
-            if (i > 0) {
-                out.append(", ");
+        if (enteringRepr(this)) {
+            return "(...)";
+        }
+        try {
+            StringBuilder out = new StringBuilder("(");
+            for (int i = 0; i < items.length; i++) {
+                if (i > 0) {
+                    out.append(", ");
+                }
+                out.append(items[i].repr());
             }
-            out.append(items[i].repr());
+            if (items.length == 1) {
+                out.append(',');
+            }
+            return out.append(')').toString();
+        } finally {
+            leavingRepr(this);
         }
-        if (items.length == 1) {
-            out.append(',');
-        }
-        return out.append(')').toString();
     }
 }
