@@ -932,3 +932,44 @@
 **九、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m59s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
 
 **十、提交**：58a「tuple／str／bytes 乘以 1 返回自身」、58b「tuple contains 走 RichCompareBool」与 PLAN 双文件。
+
+---
+
+## M5 切片 59 明细：`str`／`bytes`／`bytearray` 查找换用 fastsearch（2026-11-16）
+
+**一、修前症状**：`test_str` 全量卡在第 2 例 `StrTest.test_adaptive_find`——该用例明说“朴素算法会极慢”，N 到 1,000,000、haystack 为 4N 字符；本运行时 `find`／`count` 走 `String.indexOf` 一族，O(n·m)。修前只跑了 1 例。
+
+**二、算法移植**：新建 [FastSearch.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/FastSearch.java)，按 3.14.10 `Objects/stringlib/fastsearch.h`（830 行）逐函数移植，派发顺序照抄参考：
+
+| 路径 | 触发条件 | 参考函数 |
+|---|---|---|
+| 单字符 | `m <= 1` | `find_char`／`rfind_char`／`count_char` |
+| Bloom + 压缩 Boyer–Moore | `n < 2500 \|\| (m < 100 && n < 30000) \|\| m < 6` | `default_find` |
+| 两路 | `(m >> 2) * 3 < (n >> 2)` | `_two_way_find`／`_two_way_count` |
+| 自适应 | 其余 | `adaptive_find`（`hits > m / 4 && w - i > 2000` 切两路） |
+| 反向 | `rfind`／`rindex` | `default_rfind` |
+
+`Prework` 对应 `_preprocess`（`lexSearch` 取较大临界分解、`factorize`、周期判定与 `gap`、`uint8` shift 表；Java 用 `int[]` 存 0..255）；`twoWayCount` 用 `index += result + m` 做非重叠推进；`count` 的 `maxcount` 与 `-1` 语义照参考；周期分支用 `direct`／`restart` 两个布尔模拟 C 的 `goto no_shift`／`goto periodicwindowloop`。
+
+**三、语义边界**：`str` 的搜索域仍是 UTF-16 单元（与旧 `String.indexOf` 相同），命中后再按码点回算；因此孤立代理项可匹配代理对的一半，与 CPython 的码点搜索不同，属沿用旧语义，已在文件头具名。`start`／`end` 的夹取与空模式规则（`to < from || from > codePoints`）未动。
+
+**四、接线**：[PyStr.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyStr.java) 的 `contains`／`occurrences`／`first`／`divide`／`replaced`／`pieces`／`edges`、[PyBytes.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyBytes.java) 的 `first`／`occurrences` 全改走 `FastSearch`；`bytearray` 采用 `PyBytes` 方法，自动覆盖；`startswith`／`endswith` 由复制窗口改为 `edgeMatches` 的 O(m) 直接比较；`bytes.replace`／`split` 经 `first` 一并换掉。首次接线漏了空 needle（`'' in text` 全 False），语料抓出后由 `contains` 的 `text.value.isEmpty() ||` 补上。
+
+**五、发现并修正的既有缺陷**：`str.rpartition` 未命中旧实现返回 `(value, '', '')`，参考返回 `('', '', value)`；`bytes.rpartition` 本已正确。按参考修正，语料中 9 个用例因此变化，单独记录。
+
+**六、语料对拍**：[corpus.py](file:///tmp/m5_59/corpus.py) 输出 23,540 行：8 个 `str` 文本（含 `'a'*10000 + 'b'`）× 14 个 needle（空、`'a'*5000`、`'a'*10000+'b'`、astral、孤立代理项）× 16 组 `start`／`end`（None、0、正负、越界、`5,2`、`2,2`、`0,0`）× `find`／`rfind`／`count`／`startswith`／`endswith`，另加 `index`／`rindex` 文案、`partition`／`rpartition`、`split`／`rsplit`、`replace`、`in`，`bytes`／`bytearray` 同套。`corpus_ref.txt` vs `corpus_after.txt` **逐字节相同（0 diff）**；vs `corpus_before.txt` 只有 9 例 rpartition 未命中。
+
+**七、修前修后**：
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `test_str` | 卡在第 2 例 `test_adaptive_find`（1 例） | **139 ran／105 ok／15 fail／12 err／7 skip**，`SUCCESSES 108`；`test_adaptive_find` 单跑 0.165 s |
+| `test_bytes` | 整模块导入失败（`ByteArrayTest` 类体 `_testlimitedcapi`，0 例） | **325／251／36／25／13**，`SUCCESSES 263` |
+
+3.14 无 `test_bytearray` 模块，bytearray 用例在 `test_bytes` 的 `ByteArrayTest` 内；整模块运行用 [run_bytes.py](file:///tmp/m5_59/run_bytes.py) 预置 `_testlimitedcapi` 桩（三个 sequence 操作的纯 Python 实现）。余下失败逐条确认与查找无关：`test_str` 是 replace 身份、`getnewargs`、`ascii`／`conversion`／`repr`、子类化等；`test_bytes` 是 `BufferError` 未抛、memoryview、子类构造器、`%c` 文案、`replace` 未命中返回自身（`checkequal` 对子类断言 `assertIsNot`）等既有缺口。
+
+**八、计时对照**：最坏形状 `haystack = 'ab'*n`、`needle = 'ab'*(n//2) + 'c'`（仅末字符失配）。旧路径等价（Java `String.indexOf`）n=12,500／25,000／50,000／100,000／200,000 → 0.0121／0.0486／0.1913／0.7678／3.0735 s（每翻倍 ×4）；新实现 0.0002–0.0010 s，n=200,000 时约 7,700×。另：n=10^5 周期串（`a^2n b^n a^2n`，needle `a^n bba`）与 10^6 随机串的 `str`／`bytes` `find`／`count`／`rfind` 全部 ≤0.0050 s；短 needle 走 `default_find` 0.0000–0.0006 s。输入规模未改小。
+
+**九、回归十二套**（最终二进制）：`test_pyexpat` 86／47／14／87／17（`ok -32` 为 subTest 记账，`SUCCESSES` 47）、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／30／34（连跑三次 42／30／34、41／29／34、42／30／34：同一组线程化 TLS 用例在 ok／fail／err 间摆动，fail+err 70–72，基线 71 为其中一样本）、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1——无一项越出基线。
+
+**十、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m30s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。提交：59a「str/bytes/bytearray 查找换用 fastsearch 的两路算法」（代码）、59b（PLAN 双文件）。

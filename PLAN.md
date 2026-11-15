@@ -514,6 +514,43 @@ tuple／str／bytes 的数值可以靠抄 CPython 的 C 结构常数“算”出
 
 **八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m59s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
 
+### 3.16 M5 切片 59：`str`／`bytes`／`bytearray` 查找换用参考的 fastsearch
+
+**动机**：切片 58 的断点——`test_str` 全量卡在第 2 例 `test_adaptive_find`（N 到 1,000,000、haystack 为 4N 字符），根因是 `find`／`count` 走 `String.indexOf` 一族的朴素 O(n·m) 匹配。本片按 3.14.10 的 `Objects/stringlib/fastsearch.h`（830 行）逐函数移植，不自行发明算法。
+
+**一、算法与派发边界**（新建 [FastSearch.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/FastSearch.java)，照抄参考的判定顺序）：
+
+| 路径 | 触发条件 | 参考函数 |
+|---|---|---|
+| 单字符 | `m <= 1` | `find_char`／`rfind_char`／`count_char` |
+| Bloom + 压缩 Boyer–Moore | `n < 2500 \|\| (m < 100 && n < 30000) \|\| m < 6` | `default_find`（64 位掩码、`TABLE_SIZE=64`、`MAX_SHIFT=255`） |
+| 两路（two-way） | `(m >> 2) * 3 < (n >> 2)`，即 needle 相对够短 | `_two_way_find`／`_two_way_count`（Crochemore–Perrin 临界分解，周期／非周期两支扫描） |
+| 自适应 | 其余 | `adaptive_find`（先 `default_find`，`hits > m / 4 && w - i > 2000` 时切 two-way） |
+| 反向 | `rfind`／`rindex` | `default_rfind`（参考的反向搜索不走 two-way） |
+
+`Prework` 对应 `_preprocess`：`lexSearch` 取较大临界分解、`factorize` 求周期、周期判定与 `gap`、`uint8` shift 表（Java 用 `int[]` 存 0..255，避免符号）；`twoWayCount` 按 `index += result + m` 做非重叠推进；`count` 的 `maxcount` 与 `-1`（不可能）语义照参考。
+
+**二、语义不变**：`str` 仍以 UTF-16 单元为搜索域（与旧 `String.indexOf` 一致），命中位置再按码点回算，因此孤立代理项仍可匹配代理对的一半——与 CPython 的码点搜索不同，属沿用旧语义，已在 `FastSearch` 文件头具名。`start`／`end` 的夹取（`Sequences.searchFrom`／`searchStop`）与空模式规则（`to < from || from > codePoints`）一律不动。
+
+**三、接线**：[PyStr.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyStr.java) 的 `contains`／`occurrences`／`first`／`divide`／`replaced`／`pieces`／`edges` 与 [PyBytes.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyBytes.java) 的 `first`／`occurrences` 全部改走 `FastSearch`；`bytearray` 采用 `PyBytes` 的方法，一并覆盖。`startswith`／`endswith` 由「复制窗口再比较」改为 O(m) 直接比较（`edgeMatches`）。`bytes.replace`／`split` 经 `first` 自动换到新算法。
+
+**四、语料对拍**：[corpus.py](file:///tmp/m5_59/corpus.py) 共 23,540 行输出——8 个 `str` 文本（含 `'a'*10000 + 'b'`）× 14 个 needle（含空、`'a'*5000`、astral、孤立代理项）× 16 组 `start`／`end`（含负值、越界、`start > end`）× `find`／`rfind`／`count`／`startswith`／`endswith`，另加 `index`／`rindex` 文案、`partition`／`rpartition`、`split`／`rsplit`、`replace`、`in`，`bytes`／`bytearray` 同套。替换后与参考 3.14.10 **逐字节相同（0 diff）**；与替换前仅 9 个用例不同——**`str.rpartition` 未命中**旧实现返回 `(value, '', '')`，参考是 `('', '', value)`（`bytes` 本已正确），按参考修正并单独说明。
+
+**五、修前修后**：
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `test_str` | 卡在第 2 例 `test_adaptive_find`（只跑 1 例） | **139／105／15／12／7**（`SUCCESSES 108`），`test_adaptive_find` 单跑 **0.165 s** |
+| `test_bytes` | 整模块导入失败（`ByteArrayTest` 类体的 `_testlimitedcapi`，0 例） | **325／251／36／25／13**（`SUCCESSES 263`，带 `_testlimitedcapi` 桩运行） |
+
+3.14 已无 `test_bytearray` 模块，bytearray 用例在 `test_bytes` 的 `ByteArrayTest` 内。`test_str` 余下的 15 fail／12 err 与查找无关（`replace` 身份、`getnewargs`、`ascii`／`conversion`／`repr`、子类化等既有缺口）；`test_bytes` 的 36 fail／25 err 逐条确认同属既有缺口（`BufferError` 未抛、`memoryview`、子类构造器、`%c` 文案、`replace` 未命中返回自身等）。
+
+**六、计时对照**：最坏形状 `haystack = 'ab'*n`、`needle = 'ab'*(n//2) + 'c'`（仅末字符失配，朴素算法真二次）。旧路径等价（Java `String.indexOf`）n=12,500／25,000／50,000／100,000／200,000 为 **0.0121／0.0486／0.1913／0.7678／3.0735 s**（每翻倍 ×4）；新实现同一组输入 **0.0002–0.0010 s**，n=200,000 时约 7,700×。n=10^5 周期串与 10^6 随机串的 `find`／`count`／`rfind` 全部 ≤0.0050 s。输入未缩小。
+
+**七、回归十二套**（最终二进制）：`test_pyexpat` 86／47／14／87／17（`ok` 为负是 subTest 记账，`SUCCESSES` 47）、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／30／34（同一组线程化 TLS 抖动：连跑三次得 42／30／34、41／29／34、42／30／34，fail+err 在 70–72 间摆，基线记录的 71 是其中一样本）、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1——**无一项越出基线**。
+
+**八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m30s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；
