@@ -45,7 +45,7 @@ public final class PyRuntime {
     private static final String[] BUILTIN_MODULE_NAMES =
             {"builtins", "sys", "_ast", "_datetime", "_socket", "_io", "_tokenize", "_opcode", "_signal",
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
-                "_struct", "binascii", "zlib", "array", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
+                "_struct", "binascii", "zlib", "array", "mmap", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
                 "_csv", "_stat"};
@@ -866,6 +866,11 @@ public final class PyRuntime {
         // imported while `sys` is still being assembled.
         if (name.equals("array")) {
             return keep(ArrayModule.newModule(), name);
+        }
+        // `mmap` is built on first import as well: its class is a type this runtime installs, and the
+        // constants are read from the C header once rather than held in an interpreter.
+        if (name.equals("mmap")) {
+            return keep(MmapModule.newModule(), name);
         }
         // `_warnings` is built on first import for the same reason plus one of its own: its default
         // filters are `re` patterns, and `re` is Python that cannot be imported at startup.

@@ -173,15 +173,16 @@ final class PySrePattern extends PyObject {
                 return new String(raw.getValue(), StandardCharsets.ISO_8859_1);
             }
             // A bytes pattern asks the subject for a buffer, so every exporter is a subject:
-            // bytearray, array and memoryview included.
+            // bytearray, array, memoryview and mmap included.
             if (value instanceof PyByteArray || value instanceof PyArray
-                    || value instanceof PyMemoryView) {
+                    || value instanceof PyMemoryView || value instanceof PyMmap) {
                 return new String(PyMemoryView.bufferOctets(value), StandardCharsets.ISO_8859_1);
             }
         } else if (value instanceof PyStr text) {
             return text.getValue();
         } else if (value instanceof PyBytes || value instanceof PyByteArray
-                || value instanceof PyArray || value instanceof PyMemoryView) {
+                || value instanceof PyArray || value instanceof PyMemoryView
+                || value instanceof PyMmap) {
             throw Slots.typeError("cannot use a string pattern on a bytes-like object");
         }
         throw Slots.typeError("expected string or bytes-like object, got '%s'",

@@ -1394,6 +1394,9 @@ public final class PyMemoryView extends PyObject {
         if (value instanceof PyArray array) {
             return array.rawBytes();
         }
+        if (value instanceof PyMmap map) {
+            return map.octets();
+        }
         if (value instanceof PyMemoryView view) {
             view.check();
             return view.octets();

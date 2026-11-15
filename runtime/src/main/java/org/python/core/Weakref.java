@@ -70,6 +70,7 @@ final class Weakref {
                 || value instanceof PyFrozenSet
                 || value instanceof PyModule
                 || value instanceof PyMemoryView
+                || value instanceof PyMmap
                 || value instanceof PyGenerator
                 || value instanceof PyIOStream
                 // Every `_io` type carries a weak list in the reference — the four abstract bases too —

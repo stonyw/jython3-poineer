@@ -341,6 +341,15 @@ public class PyType extends PyObject {
     public static final PyType MEMORYVIEW = builtin("memoryview").documented(MEMORYVIEW_DOC);
 
     /**
+     * {@code mmap.mmap}: a window onto a file's octets, reachable only through the {@code mmap} module.
+     *
+     * <p>Like {@code array.array} the name is dotted — the module is {@code mmap} and the class is
+     * {@code mmap.mmap} — so the sentence is filed here and the class is spelled under the module.
+     */
+    public static final PyType MMAP =
+            builtin("mmap").documented(MmapDocs.TYPE_DOC).filedUnder("mmap.mmap");
+
+    /**
      * {@code type(iter(memoryview(b"ab")))}: the cursor {@code memory_iter} hands out.
      *
      * <p>{@code Objects/memoryobject.c} declares it beside the view it walks and files no method table on

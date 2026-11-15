@@ -879,6 +879,10 @@ final class TypeDict {
             memoryviewTable(into);
             return;
         }
+        if (owner == PyType.MMAP) {
+            mmapTable(into);
+            return;
+        }
         if (owner == PyType.MEMORY_ITERATOR) {
             memoryIteratorTable(into);
             return;
@@ -2261,6 +2265,64 @@ final class TypeDict {
         table.value("__doc__", docValue(owner));
         table.value("__hash__", PyNone.INSTANCE);
     }
+
+    /**
+     * {@code mmap.mmap}'s dictionary: the window's slots, its one attribute, and the methods a person
+     * calls.
+     *
+     * <p>The members live in {@link PyMmap} rather than in a {@link Members} table because every one of
+     * them is a Python-level method of the C type; what the type needs is the descriptor, and
+     * {@code method} files that. {@code resize} is filed even though it always answers
+     * {@code SystemError} here, because the reference on macOS does the same.
+     */
+    private static void mmapTable(PyDict into) {
+        PyType owner = PyType.MMAP;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::mmapNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__len__", LEN_DOC, args -> args[0].length());
+        table.wrapper("__getitem__", GETITEM_DOC, args -> args[0].getItem(args[1]));
+        table.wrapper("__setitem__", SETITEM_DOC, args -> args[0].setItem(args[1], args[2]));
+        table.wrapper("__delitem__", DELITEM_DOC, args -> args[0].delItem(args[1]));
+        table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        table.method("__enter__", null, PyMmap::enter, METH_NOARGS);
+        table.method("__exit__", null, PyMmap::exit);
+        table.method("read", null, (args, kwNames, qualified) -> PyMmap.read(args, kwNames));
+        table.method("read_byte", null, (args, kwNames, qualified) -> PyMmap.readByte(args, kwNames));
+        table.method("readline", null, (args, kwNames, qualified) -> PyMmap.readline(args, kwNames));
+        table.method("write", null, (args, kwNames, qualified) -> PyMmap.write(args, kwNames));
+        table.method("write_byte", null, (args, kwNames, qualified) -> PyMmap.writeByte(args, kwNames));
+        table.method("seek", null, (args, kwNames, qualified) -> PyMmap.seek(args, kwNames));
+        table.method("tell", null, (args, kwNames, qualified) -> PyMmap.tell(args, kwNames));
+        table.method("size", null, (args, kwNames, qualified) -> PyMmap.size(args, kwNames));
+        table.method("resize", null, (args, kwNames, qualified) -> PyMmap.resize(args, kwNames));
+        table.method("flush", null, (args, kwNames, qualified) -> PyMmap.flush(args, kwNames));
+        table.method("close", null, (args, kwNames, qualified) -> PyMmap.close(args, kwNames));
+        table.method("find", null, (args, kwNames, qualified) -> PyMmap.find(args, kwNames));
+        table.method("rfind", null, (args, kwNames, qualified) -> PyMmap.rfind(args, kwNames));
+        table.method("move", null, (args, kwNames, qualified) -> PyMmap.move(args, kwNames));
+        table.method("madvise", null, (args, kwNames, qualified) -> PyMmap.madvise(args, kwNames));
+        table.method("seekable", null, (args, kwNames, qualified) -> PyMmap.seekable(args, kwNames));
+        table.getset(
+                "closed",
+                MMAP_CLOSED_DOC,
+                self -> PyBool.of(((PyMmap) self).isClosed()),
+                null);
+        table.value("__doc__", docValue(owner));
+    }
+
+    /**
+     * {@code mmap.mmap.__new__(cls, fileno, length, ...)}: {@code mmap_new} with the class taken out.
+     *
+     * <p>The keyword tail is handed on untouched — {@code trackfd} only ever arrives that way — and what
+     * is left is {@link PyMmap}'s constructor.
+     */
+    private static PyObject mmapNew(PyObject[] args, String[] kwNames, String qualified) {
+        PyType kind = declaredClass(PyType.MMAP, args, kwNames);
+        return PyMmap.subclass(kind, Arrays.copyOfRange(args, 1, args.length), kwNames);
+    }
+
+    private static final String MMAP_CLOSED_DOC = "True if the file is currently closed";
 
     /** The twelve {@code PyGetSetDef} sentences, one for each field of the buffer header. */
     private static final String MEMORYVIEW_OBJ_DOC = "The underlying object of the memoryview.";
@@ -6229,6 +6291,9 @@ final class TypeDict {
                     // `array_new` consumes both arguments, so a class under `array.array` reaches
                     // `object.__init__` with nothing left for it to complain about.
                     || owner == PyType.ARRAY
+                    // `mmap_new` consumes its six positional arguments and one keyword, so a class under
+                    // `mmap.mmap` reaches `object.__init__` with nothing left to refuse.
+                    || owner == PyType.MMAP
                     // A subclass of `SimpleNamespace` has already read its one positional argument in
                     // `namespace_init`, so `object.__init__` is not the slot that complains about it.
                     || owner == PyType.NAMESPACE

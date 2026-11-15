@@ -359,6 +359,54 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m21s**。
 
+### 3.12 M5 切片 55：`PyList` 变异用例崩溃定性与 `mmap`（2026-11-16）
+
+**A. 会崩 JVM 的 `PyList.replace`（先做的小件，提交 `aa837ef`）**
+
+修前：`test_xml_etree`／`test_xml_etree_c` 各排除了 5 个在 `__index__` 里改列表的切片变异用例（`test_subscr_with_clear`、`test_subscr_with_delete`、`test_ass_subscr_with_mutating_slice`、`test_ass_subscr_with_mutating_iterable_value`、`test_find_with_mutating`），运行时报告里只能标注「既有缺陷」。
+
+**定性**：不是 hs_err／SIGSEGV／OutOfMemory／JNI 崩，也不是 `StackOverflowError` 未转 `RecursionError`；是 `java.lang.IndexOutOfBoundsException` 从 Java 边界漏出，启动器把它当进程致命错误打印后终止。**根因**是切片边界解析与长度快照的次序：旧代码先读 `size`，再把三个边界交给 `__index__`，而 `__index__` 可以合法地 `clear()`／`del e[:]` 把列表改小，随后按旧长度读写就越界。
+
+**修法**：`Slices.of(PySlice, IntSupplier)` 先把三个边界全部解析成 int、再读长度（`PyList`／`Sequences` 的切片路径统一走它）；`PyList.remove`／`index`／`count` 每步重读 `size` 与元素，比较先走 identity 快路径再 `Slots.compareTrue`，不再持有长度快照。
+
+**结果**：5 个用例全过、不再排除。`test_xml_etree` 228 ran／206 ok／12 fail／14 err／7 skip → **233／200／12／14／7**；`test_xml_etree_c` 246／206／12／14／25 → **251／200／12／14／25**；`test_pyexpat` 不变（86 ran／47 ok／14 fail／87 err／17 skip，fail、err 含 subTest 条目故大于 ran）。
+
+**B. `mmap`**
+
+**修前实测**：`import mmap` → `ModuleNotFoundError: No module named 'mmap'`；`test.test_mmap` 在导入期失败，0 个用例。
+
+**盘点（JVM 有 `FileChannel.map`／`MappedByteBuffer`，能供上大部分方法面）**：
+
+| 面 | 判定 | 依据 |
+|---|---|---|
+| `ACCESS_READ`／`WRITE`／`COPY`／`DEFAULT` | 能做 | READ→`MapMode.READ_ONLY`、WRITE→`READ_WRITE`、COPY→`PRIVATE`（fd 只读且要写时退化为堆上副本，关时丢弃）、DEFAULT→按 `flags`／`prot` 取；显式 access 与 flags 并给的拒绝文本与参考同句 |
+| 匿名映射（`fileno=-1`） | 能做 | READ 用「零页」表示（不分配，`test_find_does_not_access_beyond_buffer` 才不必真花 2049×67MB），其余用堆 `ByteBuffer.allocate` |
+| 构造校验 | 能做 | 空文件 `cannot mmap an empty file`、`mmap length is greater than file size`、`mmap offset is greater than file size`、offset 页对齐 `EINVAL`、只读 fd 要写 → `PermissionError 13`、负 length／offset 的 `OverflowError`，全部与 macOS 参考同字 |
+| 方法面 | 能做 | `read`／`read_byte`／`readline`／`write`／`write_byte`／`seek`／`tell`／`size`（答文件大小，long）／`find`／`rfind`（含 start／end）／`move`（memmove 语义）／`flush`（区段校验与 `EINVAL`）／`madvise`（参数校验后 no-op）／`close`／`closed`／`seekable` |
+| 切片与序列协议 | 能做 | `m[a:b]`、带 step、负索引、越界、`m[a:b] = b'…'` 的 `IndexError: mmap slice assignment is wrong size`、`len`、`iter`、`del` 无条件 TypeError |
+| 上下文管理 | 能做 | `with mmap.mmap(...) as m:` 的 `__enter__`／`__exit__`；关闭后每个操作报 `ValueError: mmap closed or invalid` |
+| buffer 导出 | 部分做 | `PyMemoryView.bufferOctets` 认 `PyMmap`，故 `re.search(b'…', m)` 等按 bytes-like 读；完整 `memoryview(m)` 导出未做 |
+| `resize` | 与参考同 | macOS 参考本身抛 `SystemError: mmap: resizing not available--no mremap()`，这里同样；负值、只读、COPY、`trackfd=False` 的三句拒绝均照参考 |
+| 大于 2GiB 的映射 | 做不到（具名） | `MappedByteBuffer` 是 int 寻址，`length` 或整文件大于 `Integer.MAX_VALUE` 报 `OverflowError: mmap length is too large`；`test_around_2GB`／`test_around_4GB` 属此列（正常 regrtest 下因 `largefile` 资源未启用而 skip） |
+| `trackfd=False` | 部分做 | 记录开关并让 `size()` 报 `EBADF`、`resize` 拒（同参考），但不复刻 fd 复制／关闭语义 |
+| pickle／`__getstate__`／`__sizeof__`、Windows `tagname` | 不做（具名） | 参考的 pickle 走 `__reduce__` 重建临时文件，本切片不做；`__sizeof__` 只有 Windows 测试用 |
+
+**落地**：[PyMmap.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyMmap.java)（映射、游标、全部方法体、切片与迭代器、repr）、[PyMmapSubclass.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyMmapSubclass.java)（`class M(mmap.mmap)` 的字典委托）、[MmapModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/MmapModule.java)（macOS 的 `ACCESS_*`／`MAP_*`／`PROT_*`／`PAGESIZE=16384`／`MADV_*`、`mmap` 类型与 `error is OSError`）、[MmapDocs.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/MmapDocs.java)（类型正文照参考原文）；挂接点：`PyType.MMAP`、`TypeDict.mmapTable`、`Constructors`／`Classes` 两条造类路径、`PyRuntime` 的内建模块表、`PyMemoryView.bufferOctets`、`Weakref.isWeakrefable`、`PySrePattern` 的 bytes subject 判定。
+
+**本切片收尾修掉的六个实现问题**：`__enter__`／`__exit__` 原先按 slot wrapper 登记，`with` 调用时被数成「expected 1 argument, got 0」（18 条错），改为普通方法行（`METH_NOARGS` 与变参）；`size()` 原先把 `long` 截成 `int`（`test_large_filesize` 的 `6442450944` 读成 `-2147483648`），改为交 long；`_sre` 的 bytes subject 原先不认 `PyMmap`，补一支；`flush()` 的默认长度原写成「`mapLength - offset`」，而参考是整幅映射（故 `flush(1)` 在任何非空映射上都是 `flush values out of range`），且 READ／COPY 在 `msync` 之前直接答 `None`、不再做页对齐检查；`resize` 的两道拒绝次序按参考改为先 `trackfd=False`（`ValueError`）后只读／COPY（`TypeError`）；`readline` 在 3.14 已不接受任何参数（`mmap.readline() takes no arguments (1 given)`），原实现还收 `size`。
+
+**第七条是参数转换与有效性检查的次序**（`test_mmap_closed_by_int_scenarios` 抓到 `NullPointerException`）：取值的 `__index__` 可以合法地 `close()` 映射，所以每个方法在参数转换之后都要重新 `open()`。参考的精确次序用探针逐条量过：取单项是「有效性 → 键类型 → 转换 → 越界（`IndexError` 优先）→ 有效性」；取切片是「有效性 → 解包（step 0 优先）→ 有效性」；赋单项是「只读 → 键类型 → 值类型 → 两次转换 → 值域 0..255 → 有效性 → 越界」；赋切片是「只读 → bytes-like → 解包（step 0 优先）→ 有效性 → 长度」；`move` 是「转换 → 有效性 → 只读 → 越界」（原实现漏了只读拒绝）。另有一处**具名偏差**：`m.flush(0, X())` 里 `X.__index__` 关闭映射时，参考 3.14 在已 `munmap` 的地址上调用 `msync` 并答 `OSError: [Errno 12] Cannot allocate memory`（参考自身的 use-after-munmap 漏洞，其 gh-103987 测试未覆盖 `flush`）；本实现答 `ValueError: mmap closed or invalid`，不复刻这个未定义行为。
+
+**验证**：
+
+- `import mmap` 修前 `ModuleNotFoundError` → 修后成功（`mmap.mmap`、`PAGESIZE`／`ALLOCATIONGRANULARITY` 均为 16384、`mmap.error is OSError`、类型正文与参考同文）。
+- `test_mmap` 修前 **0（导入期失败）** → 修后 **53 ran／40 ok／0 fail／2 err／11 skip**。2 个 err 即上表「大于 2GiB」两条（`test_around_2GB`／`test_around_4GB`），其余全绿。
+- 语料（[corpus.py](file:///tmp/m5_55/corpus.py)）：真文件写入、切片读（含 step／负／越界）、`find`／`rfind`、`move`、`flush` 后另一次打开读到、`ACCESS_COPY` 不落盘、关闭后 7 种操作、匿名映射、`resize`、空文件、常量与 repr——**与参考 3.14.10 逐字节相同**。
+- 边界探针（[edge.py](file:///tmp/m5_55/edge.py)、[edge2.py](file:///tmp/m5_55/edge2.py)、[edge3.py](file:///tmp/m5_55/edge3.py)）：匿名 `size()` 的 `EBADF`、三种映射的 `flush()` 默认长度与 `flush(None)` 的整数转换拒绝、`flush(0, None)` 的整幅语义、`resize` 在只读／COPY／`trackfd=False`／负值下的四种回答、`read(None)` 与 `find(…, None)` 的默认、`readline` 的零参数签名、各方法的无关键字拒绝、构造器关键字与 7 个位置参数的 `takes at most 6`——**与参考逐字相同**。
+- 关闭与序号次序探针（[order.py](file:///tmp/m5_55/order.py)、[order2.py](file:///tmp/m5_55/order2.py)、[order3.py](file:///tmp/m5_55/order3.py)、[order4.py](file:///tmp/m5_55/order4.py)）：四种 access 下「`__index__` 关闭映射」分别作用在键、value、start、stop、step、`find` 的 start／end、`write_byte` 的值、`move` 的 count、`seek`／`flush`／`resize`／`madvise` 的参数上，共 100 余条；除上文具名的 `flush(0, X())` 一条外，**与参考逐字相同**（含只读拒绝的优先级与 `del` 的三句 TypeError）。
+- 回归：`test_pyexpat` 86 ran／47 ok／14 fail／87 err／17 skip、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／29／35（与基线 102／41／30／34 的差异是该套已知的 SNI race 例在 ok↔fail↔skip 间摆动，总量 207 不变）。
+- **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m57s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS）。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

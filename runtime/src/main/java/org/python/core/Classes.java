@@ -390,6 +390,8 @@ final class Classes {
                 // `array.array` is a mutable run as well, and its values keep a class dictionary
                 // beside the same octets; `array_new` does all the work, so the class adds only names.
                 || base == PyType.ARRAY
+                // `mmap.mmap` likewise: `mmap_new` consumes every argument and the class adds only names.
+                || base == PyType.MMAP
                 // `set` and `frozenset` are the two hash tables a program writes classes under — an
                 // `enum` mixin, a domain object that is also a set — and both keep their table in the
                 // subclass the same way.
@@ -1715,6 +1717,12 @@ final class Classes {
         if (kind.matches(PyType.ARRAY)) {
             int given = Arguments.positional(args, names);
             return PyArray.subclass(kind, Arrays.copyOfRange(args, 0, given), names);
+        }
+        // `mmap_new` does the same for a class written over `mmap.mmap`: the arguments build the window
+        // and `mmap.mmap.__init__` is `object.__init__`, so nothing is left for an initialiser. The
+        // keyword tail is kept, because `trackfd` can only arrive that way.
+        if (kind.matches(PyType.MMAP)) {
+            return PyMmap.subclass(kind, args, names);
         }
         // `set.__new__` likewise allocates an empty table; `set_init` fills it afterwards, naming the
         // class the value was made as in its refusals.

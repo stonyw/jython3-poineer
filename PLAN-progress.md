@@ -737,3 +737,41 @@
 **八、回归**（与切片 53 基线逐项比）：`test_socket` 749／197／9／24／519（基线 749／198／8／24／519）、`test_ssl` 207／102／42／29／34（基线 207／102／41／30／34，fail+err 总量 71 不变）、`test_io` 675／511／84／60／20（基线 675／512／83／60／20）、`test_csv` 134／129／1／0／4（基线 134／130／0／0／4，`test_lazy_import` 单跑通过）、`test_tarfile` 768／411／23／1／333（完全一致）、`test_stat` 22／20／0／0／2（完全一致）、`test_os` 385／168／13／12／192（基线 385／169／13／11／192）。每套各摆动 1 例（ok↔fail 或 fail↔err），未触碰这些模块代码，属环境相关用例。
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m21s**（26 个任务）。
+
+## M5 切片 55 明细：`PyList` 变异用例崩溃定性与 `mmap`（2026-11-16）
+
+**一、会崩 JVM 的 `PyList.replace`（修前实测）**：`test_xml_etree`／`test_xml_etree_c` 各排除了 5 个在 `__index__` 里改列表的切片变异用例（`test_subscr_with_clear`、`test_subscr_with_delete`、`test_ass_subscr_with_mutating_slice`、`test_ass_subscr_with_mutating_iterable_value`、`test_find_with_mutating`），slice 54 的回归只能把它们排除在外。
+
+**二、定性**：不是 hs_err／SIGSEGV／OutOfMemory／JNI 崩，也不是 `StackOverflowError` 未转 `RecursionError`；是 `java.lang.IndexOutOfBoundsException` 从 Java 边界漏出，启动器把它当进程致命错误打印后终止。根因是**切片边界解析与长度快照的次序**：旧代码先读 `size`，再把三个边界交给 `__index__`，而 `__index__` 可以合法地 `clear()`／`del e[:]` 把列表改小，随后按旧长度读写就越界。
+
+**三、修法**：`Slices.of(PySlice, IntSupplier)` 先把三个边界全部解析成 int、再读长度（`PyList`／`Sequences` 的切片路径统一走它）；`PyList.remove`／`index`／`count` 每步重读 `size` 与元素，比较先走 identity 快路径再 `Slots.compareTrue`，不再持有长度快照。5 个用例全过、不再排除：`test_xml_etree` 228／206／12／14／7 → **233／200／12／14／7**，`test_xml_etree_c` 246／206／12／14／25 → **251／200／12／14／25**，`test_pyexpat` 不变（86／47／14／87／17）。提交 `aa837ef`。
+
+**四、`mmap` 修前**：`import mmap` → `ModuleNotFoundError: No module named 'mmap'`；`test.test_mmap` 在导入期失败，0 用例。
+
+**五、盘点结论**（逐面表见 [PLAN.md](file:///Users/stony/qoder/jython3-poineer/PLAN.md) §3.12）：
+
+- **能做**：四种 access（READ→`READ_ONLY`、WRITE→`READ_WRITE`、COPY→`PRIVATE`、DEFAULT→按 `flags`／`prot`；只读 fd 要 COPY 时退化为堆副本、关时丢弃）；匿名映射（只读用零页表示、可写用堆 `ByteBuffer`）；构造侧空文件／越界／页对齐／权限／负值的全部错误文本；`read`／`read_byte`／`readline`／`write`／`write_byte`／`seek`／`tell`／`size`（文件大小，long）／`find`／`rfind`／`move`／`flush`／`madvise`／`close`／`closed`／`seekable`；切片读（含 step／负／越界）与切片赋值、`len`、`iter`、`del` 无条件 TypeError；`with` 上下文；关闭后统一 `ValueError: mmap closed or invalid`；`PyMemoryView.bufferOctets` 供应 bytes-like 读取（`re.search(b'…', m)` 因此可用）。
+- **与参考同**：`resize` 在 macOS 参考本身就抛 `SystemError: mmap: resizing not available--no mremap()`，这里同样；负值、只读、COPY、`trackfd=False` 三句拒绝照参考。
+- **做不到／不做（具名）**：大于 2GiB 的映射（`MappedByteBuffer` 是 int 寻址，报 `OverflowError: mmap length is too large`；`test_around_2GB`／`test_around_4GB` 属此列，正常 regrtest 因 `largefile` 资源未启用而 skip）、真 `resize`、`memoryview(m)` 完整导出、pickle／`__getstate__`／`__sizeof__`、Windows `tagname`、`trackfd=False` 的 fd 复制语义。
+
+**六、实现分层**：[PyMmap.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyMmap.java)（映射、游标、全部方法体、切片与迭代器、repr、子类构造）、[PyMmapSubclass.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyMmapSubclass.java)（`class M(mmap.mmap)` 的字典委托）、[MmapModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/MmapModule.java)（macOS 的 `ACCESS_*`／`MAP_*`／`PROT_*`／`PAGESIZE=16384`／`MADV_*`、`mmap` 类型与 `error is OSError`）、[MmapDocs.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/MmapDocs.java)（类型正文照参考原文）。挂接点：`PyType.MMAP`、`TypeDict.mmapTable`、`Constructors`／`Classes` 两条造类路径、`PyRuntime` 的 `BUILTIN_MODULE_NAMES` 与 `builtinModule`、`PyMemoryView.bufferOctets`、`Weakref.isWeakrefable`、`PySrePattern` 的 bytes subject 判定。
+
+**七、收尾修掉的六个实现问题**：`__enter__`／`__exit__` 原先按 slot wrapper 登记，`with` 调用时被数成 `expected 1 argument, got 0`（18 条错），改为普通方法行（`METH_NOARGS` 与变参）；`size()` 原先把 `long` 截成 `int`（`test_large_filesize` 的 `6442450944` 读成 `-2147483648`），改为交 long；`_sre` 的 bytes subject 原先不认 `PyMmap`，补一支；`flush()` 默认长度原写成「`mapLength - offset`」，参考是整幅映射（`flush(1)` 因此必然 `flush values out of range`），且 READ／COPY 在 `msync` 前直接答 `None`；`resize` 先 `trackfd=False`（`ValueError`）后只读／COPY（`TypeError`）；`readline` 在 3.14 已不收任何参数（原实现还收 `size`）。
+
+**七之二、参数转换后的有效性次序**：`test_mmap_closed_by_int_scenarios` 上出现 `NullPointerException: "this.heap" is null`——`__index__` 可以合法 `close()` 映射，而 `getItem`／`setItem` 只在转换前 `open()`。用 [order.py](file:///tmp/m5_55/order.py)…[order4.py](file:///tmp/m5_55/order4.py) 量出参考的精确次序并逐条对齐：取单项「有效性 → 键类型 → 转换 → 越界（`IndexError` 优先）→ 有效性」；取切片「有效性 → 解包（step 0 优先）→ 有效性」；赋单项「只读 → 键类型 → 值类型 → 转换 → 值域 → 有效性 → 越界」；赋切片「只读 → bytes-like → 解包（step 0 优先）→ 有效性 → 长度」；`move`「转换 → 有效性 → 只读 → 越界」（原实现漏了只读拒绝）。**具名偏差一条**：`m.flush(0, X())` 中 `X` 关闭映射时，参考 3.14 在已 `munmap` 的地址上 `msync` 并答 `OSError: [Errno 12] Cannot allocate memory`（参考自身 use-after-munmap 漏洞，gh-103987 的测试未覆盖 `flush`）；本实现答 `ValueError: mmap closed or invalid`，不复刻未定义行为。
+
+**八、测试修前修后**：
+
+| 套件 | 修前 | 修后 |
+| --- | --- | --- |
+| `import mmap` | `ModuleNotFoundError: No module named 'mmap'` | 成功（`PAGESIZE`／`ALLOCATIONGRANULARITY` 均 16384、`mmap.error is OSError`） |
+| `test_mmap` | 0（导入期失败） | **53 ran／40 ok／0 fail／2 err／11 skip** |
+
+2 个 err 即 `LargeMmapTests.test_around_2GB`／`test_around_4GB`（`length=0` → 整文件 >2GiB），属上表具名限制；其余全绿，含 `test_basic`／`test_repr`／`test_context_manager`／`test_access_default`／`test_length_0_large_offset`／`test_large_filesize`。
+
+**九、语料对拍**（[corpus.py](file:///tmp/m5_55/corpus.py)）：真文件写入、切片读（含 step／负／越界）、`find`／`rfind`、`move`、`flush` 后另一次打开读到、`ACCESS_COPY` 不落盘、关闭后 7 种操作、匿名映射、`resize`、空文件、常量与 repr——**与参考 3.14.10 逐字节相同**。另加三组边界探针（[edge.py](file:///tmp/m5_55/edge.py)、[edge2.py](file:///tmp/m5_55/edge2.py)、[edge3.py](file:///tmp/m5_55/edge3.py)）：匿名 `size()` 的 `EBADF`、`flush()` 默认长度／`flush(None)`／`flush(0, None)`、`resize` 的四种回答、`read(None)` 与 `find(…, None)`、`readline` 零参数、各方法无关键字、构造器关键字与 7 位置参数的 `takes at most 6`——**逐字相同**。四组「`__index__` 关闭映射」次序探针（[order.py](file:///tmp/m5_55/order.py)…[order4.py](file:///tmp/m5_55/order4.py)，共 100 余条，覆盖四种 access 与全部参数位）除 `flush(0, X())` 一条具名偏差外**逐字相同**。
+
+**十、回归**（与切片 54 基线逐项比）：`test_pyexpat` 86／47／14／87／17（一致）、`test_xml_etree` 233／200／12／14／7（多跑 5 个变异用例）、`test_xml_etree_c` 251／200／12／14／25（同上；`BadElementTest.test_deeply_nested_deepcopy` 在两次运行间会因 JVM 栈深度摆动多出 1 个 fail，重跑即回到 12，属既有环境噪声）、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／29／35（该套已知 SNI race 在 ok↔fail↔skip 间摆动，总量 207 不变）。
+
+**十一、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m57s**（26 个任务；`:harness:check` 12 例 smoke 全 PASS，surprises 0）。
+

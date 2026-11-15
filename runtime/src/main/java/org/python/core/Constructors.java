@@ -81,6 +81,9 @@ final class Constructors {
         if (type == PyType.ARRAY) {
             return PyArray.called(type, args, keywordNames);
         }
+        if (type == PyType.MMAP) {
+            return PyMmap.called(type, args, keywordNames);
+        }
         if (type == PyType.MEMORYVIEW) {
             return memoryview(args, keywordNames);
         }
