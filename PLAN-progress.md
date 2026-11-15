@@ -648,3 +648,29 @@
 **七、回归**：`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349、`test_fstring` 95／95／0／0／0，逐项与基线一致。
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m13s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。
+
+## M5 切片 52 明细：`_stat`／`stat` 模块面（2026-11-15）
+
+**一、现状实测（修前）**：`import _stat` → `ModuleNotFoundError: No module named '_stat'`；`import stat` 成功，但走纯 Python 回落——`stat.py` 末尾 `try: from _stat import *` 捕到 ImportError。由此 `stat` 常量与参考差 **4 处**：缺 `SF_SUPPORTED`(0x9f0000)、缺 `SF_SYNTHETIC`(0xc0000000)、`SF_SETTABLE`=0xffff0000（参考 0x3fff0000）、`S_IFWHT`=0（参考 0o160000）；`filemode` 是 Python 版。参考 `_stat` 导出 **66 个 int 常量 + 13 个内建函数**（`S_IMODE`、`S_IFMT`、10 个 `S_IS*`、`filemode`）；`stat.S_IFMT is _stat.S_IFMT`、`stat.filemode is _stat.filemode` 为真；`SF_RESTRICTED` 只由 `stat.py` 提供。
+
+**二、修前 `test_stat`**：**22／ok 8／fail 0／err 0／skip 14**，其中 **11 例** reason 为 `need _stat extension`（`c_stat` 为 None，`TestFilemodeCStat` 整类被 skip）；参考同机为 22／20／0／0／2（仅 2 个 Win32 skip）。
+
+**三、实现**：[StatModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/StatModule.java) 新建 `_stat`，值全部按 macOS 参考实测：
+
+- 周期常量：`S_IFMT` 掩码 **0o170000**、`S_IFWHT` **0o160000**（不是 Linux 的 0o170000+0）、`S_IFDOOR`／`S_IFPORT` 为 0（平台无此类型）。
+- `SF_SETTABLE` **0x3fff0000**、补 `SF_SUPPORTED` **0x009f0000**、`SF_SYNTHETIC` **0xc0000000**；`UF_*` 10 个、权限位 19 个、`ST_*` 10 个逐一对参考。
+- 13 个内建函数用 `PyNativeFunction`；mode 参数按 C **unsigned short** 转换：负数 `OverflowError: can't convert negative value to unsigned int`、`>0xFFFF` `OverflowError: mode out of range`、非整数 `TypeError: '<type>' object cannot be interpreted as an integer`。
+- `S_IS*` 判定 `(mode & 0o170000) == 类型位`，0／只有权限位一律 False；`S_ISDOOR`／`S_ISPORT` 恒 False（先校验参数）；`S_ISWHT(0o160000)` True。
+- `filemode` 类型字符 `l/s/-/b/d/c/p/w` + `?` 兜底，`s/S`、`t/T` 与 C 表一致。
+
+注册点：[PyRuntime.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyRuntime.java) 的 `BUILTIN_MODULE_NAMES` 加 `_stat`、第 334 行构造、第 397 行 `modules.put`。
+
+**四、修后 `test_stat`**：**22／ok 16／fail 0／err 0／skip 6**。11 个 `need _stat extension` 全部消失；剩余 6 skip = 2 个 Win32（参考同样 skip）+ 2 个 `os.mkfifo not available` + 2 个 `Requires functional symlink implementation`，后两者是 `os.mkfifo`／`os.symlink` 未实现（posix 面，不属本切片）。
+
+**五、常量表比对**：`dir(stat)` 里 **77 个 int 常量**与参考逐一同值，**0 条不一致**；12 个函数名（`S_IFMT`／`S_IMODE`／10 个 `S_IS*`）两侧同为非 int，名单一致。
+
+**六、语料对拍**（`/tmp/m5_52/corpus.py`，输出 `ref_corpus.txt`／`our_corpus.txt`）：7 个真实路径（目录、普通文件、符号链接、FIFO、socket、`/dev/null` 字符设备、`/dev/disk0` 块设备）的真实 `st_mode`；人工边界 0、各类型位单独、权限位单独、类型位｜权限位、`s/S`／`t/T`；`filemode` 在 `range(0, 0x10000, 0o777)` 全表；6 类非法参数 × 5 个入口的异常类型与文本。**199 行逐字节相同**（`diff` 无输出）。
+
+**七、回归**：`test_socket` 749／198／8／24／519、`test_ssl` 207／102／42／29／34（101／35↔102／34 是该套已知波动，旧输出 `final_ssl3`／`final_ssl4` 各居一边）、`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349，均与基线一致。`test_os` 385／154／14／14／203，与任务书基线 385／140／13／19／213 有漂移；**把 `_stat` 从 `sys.modules` 屏蔽为 None 复跑结果完全相同**，证明漂移与本切片无关（落在 `os.mkdir` mode 与 `os.stat` 的 fd-PathLike 两处旧账：`MakedirTests.test_mode` 493≠365、`PathTConverterTests.test_path_t_converter(name='stat')`）。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。

@@ -48,7 +48,7 @@ public final class PyRuntime {
                 "_struct", "binascii", "zlib", "array", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
-                "_csv"};
+                "_csv", "_stat"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -328,6 +328,10 @@ public final class PyRuntime {
         // The filesystem and environment calls `os` re-exports, and the one container `collections`
         // cannot import without: `contextlib` imports `deque` from there at module scope.
         PyModule posixModule = PosixModule.newModule();
+        // The C half of `stat`: the constants `stat.py` falls back on, whose macOS values differ from
+        // the Python ones, and `filemode`, which the fallback spells in Python. `stat.py` imports it
+        // last with `from _stat import *`, so these values win when the module exists.
+        PyModule statModule = StatModule.newModule();
         // `csv.py` imports `_csv` at module scope, and `csv` is imported by `test_csv` and by much of
         // the tooling the tests reach for.
         PyModule csvModule = CsvModule.newModule();
@@ -390,6 +394,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_contextvars"), contextvarsModule);
         modules.put(PyStr.interned("contextvars"), contextvarsWrapper);
         modules.put(PyStr.interned("posix"), posixModule);
+        modules.put(PyStr.interned("_stat"), statModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
         modules.put(PyStr.interned("gc"), gcModule);
         modules.put(PyStr.interned("marshal"), marshalModule);
