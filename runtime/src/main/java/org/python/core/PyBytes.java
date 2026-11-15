@@ -120,6 +120,9 @@ public class PyBytes extends PyObject {
             // `bytes_concat` does not decline: it tries to read the right operand as a buffer and, when
             // that fails, says which of the two it could not concat — `[] + b'ab'` is the list's own
             // complaint about a bytes, while `b'ab' + []` is this one about a list.
+            if (other instanceof PyMemoryView view) {
+                return PyBytes.wrap(concat(value, PyMemoryView.bufferOctets(view)));
+            }
             if (!(other instanceof PyBytes || other instanceof PyByteArray)) {
                 throw Slots.typeError(
                         "can't concat %s to %s", other.getType().name(), getType().name());

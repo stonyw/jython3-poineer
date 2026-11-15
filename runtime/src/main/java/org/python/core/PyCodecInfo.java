@@ -49,10 +49,15 @@ final class PyCodecInfo extends PyTuple {
     }
 
     /** The value {@code _codecs.lookup} builds for one of the codecs this runtime knows. */
-    static PyCodecInfo of(PyObject encode, PyObject decode, PyObject name) {
+    static PyCodecInfo of(
+            PyObject encode,
+            PyObject decode,
+            PyObject incrementalEncoder,
+            PyObject incrementalDecoder,
+            PyObject name) {
         return new PyCodecInfo(
                 new PyObject[] {encode, decode, PyNone.INSTANCE, PyNone.INSTANCE},
-                PyNone.INSTANCE, PyNone.INSTANCE, name);
+                incrementalEncoder, incrementalDecoder, name);
     }
 
     /** {@code codecs.CodecInfo(encode, decode, streamreader=None, ..., name=None)}. */

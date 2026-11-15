@@ -209,7 +209,10 @@ final class CodecsModule {
             return PyTuple.of(PyStr.of(Decoder.decode(data, canonical, errors)),
                     PyInt.of(data.length));
         });
-        return PyCodecInfo.of(encode, decode, PyStr.of(display));
+        return PyCodecInfo.of(
+                encode, decode,
+                Incremental.encoder(canonical), Incremental.decoder(canonical),
+                PyStr.of(display));
     }
 
     /** A search function may answer with a {@code CodecInfo} or with the items one is built from. */
@@ -252,8 +255,11 @@ final class CodecsModule {
                     Arguments.between(canonical + "_decode", args, null, 1, 3);
                     String errors = args.length > 1 ? Numbers.asText(args[1]) : "strict";
                     byte[] data = octets(args[0]);
-                    return PyTuple.of(PyStr.of(Decoder.decode(data, canonical, errors)),
-                            PyInt.of(data.length));
+                    boolean last = args.length >= 3 && Slots.truth(args[2]);
+                    int complete = last ? data.length : Incremental.complete(canonical, data);
+                    return PyTuple.of(PyStr.of(Decoder.decode(
+                                    java.util.Arrays.copyOf(data, complete), canonical, errors)),
+                            PyInt.of(complete));
                 }));
     }
 
@@ -264,9 +270,12 @@ final class CodecsModule {
                     Arguments.between(canonical + "_ex_decode", args, null, 2, 4);
                     String errors = Numbers.asText(args[1]);
                     byte[] data = octets(args[0]);
+                    boolean last = args.length >= 4 && Slots.truth(args[3]);
+                    int complete = last ? data.length : Incremental.complete(canonical, data);
                     int order = canonical.equals("utf_16") ? utf16Order(data) : utf32Order(data);
-                    return PyTuple.of(PyStr.of(Decoder.decode(data, canonical, errors)),
-                            PyInt.of(data.length), PyInt.of(order));
+                    return PyTuple.of(PyStr.of(Decoder.decode(
+                                    java.util.Arrays.copyOf(data, complete), canonical, errors)),
+                            PyInt.of(complete), PyInt.of(order));
                 }));
     }
 
