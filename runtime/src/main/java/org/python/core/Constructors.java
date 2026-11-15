@@ -437,17 +437,24 @@ final class Constructors {
      * {@code method} object does whatever its {@code __func__} is.
      */
     private static PyObject method(PyObject[] args, String[] kwNames) {
-        PyObject[] values = Arguments.parameters("method", args, kwNames,
-                new String[] {"function", "instance"},
-                new PyObject[] {null, null}, 2);
-        if (values[1] == PyNone.INSTANCE) {
-            return values[0];
+        // `method_new` counts positions only, and says so before it looks at either value: the two
+        // names of the clinic signature are not keywords it accepts. `None` as the instance is the
+        // next refusal rather than "give the function back", which was Python 2's reading.
+        Arguments.noKeywords("method()", kwNames);
+        if (args.length != 2) {
+            throw Slots.typeError("method expected 2 arguments, got %d", args.length);
         }
-        if (values[0] instanceof PyFunction function) {
-            return new PyBoundMethod(values[1], function);
+        if (!Slots.isCallable(args[0])) {
+            throw Slots.typeError("first argument must be callable");
         }
-        PyObject callable = values[0];
-        return new PyBoundMethod(values[1], callable, (self, callArgs, callNames) -> {
+        if (args[1] == PyNone.INSTANCE) {
+            throw Slots.typeError("instance must not be None");
+        }
+        if (args[0] instanceof PyFunction function) {
+            return new PyBoundMethod(args[1], function);
+        }
+        PyObject callable = args[0];
+        return new PyBoundMethod(args[1], callable, (self, callArgs, callNames) -> {
             PyObject[] withSelf = new PyObject[callArgs.length + 1];
             withSelf[0] = self;
             System.arraycopy(callArgs, 0, withSelf, 1, callArgs.length);
@@ -887,6 +894,12 @@ final class Constructors {
      * {@code float('1e400')} is positive infinity in Python too.
      */
     private static Double decodeFloat(String literal) {
+        // CPython hands the string to the C parser as a NUL-terminated buffer, so an embedded NUL is
+        // refused before any digit is read. Java's parseDouble reads `5\0` as 5.0, which is why the
+        // check is here rather than left to it.
+        if (literal.indexOf('\0') >= 0) {
+            return null;
+        }
         String text = digitNormalised(literal);
         if (text.isEmpty()) {
             return null;

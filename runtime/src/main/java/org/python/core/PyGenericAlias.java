@@ -444,6 +444,13 @@ public final class PyGenericAlias extends PyObject {
         if (value instanceof PyGenericAlias) {
             return value.repr();
         }
+        // A union carries `__origin__` and `__args__` as well as `__qualname__`, and CPython's
+        // `_Py_typing_type_repr` sends anything with that pair to the plain `repr` before it ever reads
+        // the name — which is what makes `list[int | str]` print `int | str` rather than
+        // `typing.Union`. The union is the only such value of this family, so it is named directly.
+        if (value instanceof PyUnionType) {
+            return value.repr();
+        }
         PyObject qualified = Slots.findAttr(value, "__qualname__");
         if (qualified == null) {
             return value.repr();

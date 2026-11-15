@@ -43,6 +43,14 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
     private PyObject doc = PyNone.INSTANCE;
     private PyObject module;
     private PyObject[] defaults = new PyObject[0];
+    /**
+     * Whether {@code __defaults__} was ever filled.
+     *
+     * <p>CPython keeps {@code func_defaults} as a pointer: absent is {@code None} and an empty tuple is
+     * {@code ()}, and the two read differently even though neither binds anything. The binding table
+     * here is the same empty array for both, so the distinction is kept beside it.
+     */
+    private boolean defaultsGiven;
     private PyDict kwDefaults;
     private PyCell[] closure = new PyCell[0];
     private PyDict attributes;
@@ -164,6 +172,7 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
         }
         if (defaults instanceof PyTuple items) {
             function.defaults = items.getArray();
+            function.defaultsGiven = true;
         }
         function.closure = cells;
         if (keywordDefaults instanceof PyDict map) {
@@ -222,7 +231,10 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
      */
     void setAttribute(int flag, PyObject value) {
         switch (flag) {
-            case DEFAULTS -> defaults = tupleItems(value, "defaults");
+            case DEFAULTS -> {
+                defaults = tupleItems(value, "defaults");
+                defaultsGiven = true;
+            }
             case KW_DEFAULTS -> kwDefaults = mapping(value, "kwdefaults");
             case CLOSURE -> closure = cells(value);
             case ANNOTATE -> {
@@ -579,7 +591,7 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__doc__" -> doc;
             case "__module__" -> module == null ? PyNone.INSTANCE : module;
             case "__code__" -> (PyObject) code;
-            case "__defaults__" -> PyTuple.of(defaults);
+            case "__defaults__" -> defaultsGiven ? PyTuple.of(defaults) : PyNone.INSTANCE;
             case "__kwdefaults__" -> kwDefaults == null ? PyNone.INSTANCE : kwDefaults;
             case "__closure__" -> closure.length == 0
                     ? PyNone.INSTANCE

@@ -623,7 +623,7 @@ public class PyInstance extends PyObject {
      * @return the iterator, or null when there is no {@code __next__} to drive
      */
     PyIterator declaredIterator() {
-        return Specials.function(type, "__next__") == null ? null : new Walking();
+        return Specials.defines(type, "__next__") ? new Walking() : null;
     }
 
     /** {@code iter(self)}, driven by the {@code __next__} this class declares. */

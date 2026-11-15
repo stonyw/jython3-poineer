@@ -973,7 +973,10 @@ final class Builtins {
         Arguments.noKeywords("iter()", kwNames);
         Arguments.between("iter", args, kwNames, 1, 2);
         if (args.length == 1) {
-            return Slots.iterator(args[0]);
+            // CPython's builtin is `PyObject_GetIter`, which hands back what `__iter__` answered — the
+            // very object itself when it is already an iterator — so the value is kept rather than
+            // wrapped in the runtime's own driver.
+            return Slots.getIter(args[0]);
         }
         if (!Slots.isCallable(args[0])) {
             throw Slots.typeError("iter(v, w): v must be callable");
