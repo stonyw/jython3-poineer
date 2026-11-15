@@ -290,6 +290,9 @@ final class Constructors {
                 || type == PyType.BUFFERED_RANDOM) {
             return PyBufferedReader.construct(type, args, keywordNames);
         }
+        if (type == PyType.BUFFERED_RW_PAIR) {
+            return PyBufferedRWPair.construct(type, args, keywordNames);
+        }
         if (type == PyType.WEAK_REFERENCE) {
             return Weakref.newRef(args, keywordNames);
         }

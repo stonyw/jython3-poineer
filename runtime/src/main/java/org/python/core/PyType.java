@@ -879,14 +879,13 @@ public class PyType extends PyObject {
     /**
      * {@code _io.BufferedRWPair}: a reader and a writer over one stream.
      *
-     * <p>Nothing here builds one; the name is filed so {@code _io}'s dictionary is complete and so a
-     * program that names the class reads its sentence.
+     * <p>The two halves are independent objects rather than one descriptor: the type is built by
+     * {@link PyBufferedRWPair}, whose rows delegate each direction to its own half.
      */
     public static final PyType BUFFERED_RW_PAIR =
             declare("BufferedRWPair", BUFFERED_IO_BASE)
                     .filedUnder("_io.BufferedRWPair")
-                    .documented(BUFFERED_RW_PAIR_DOC)
-                    .withoutNew();
+                    .documented(BUFFERED_RW_PAIR_DOC);
 
     /**
      * {@code _io._BytesIOBuffer}: the object {@code BytesIO.getbuffer()} answers with.

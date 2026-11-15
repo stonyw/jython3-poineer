@@ -166,6 +166,7 @@ final class Members {
             Map.entry(PyType.BUFFERED_READER, PyBufferedReader.class),
             Map.entry(PyType.BUFFERED_WRITER, PyBufferedReader.class),
             Map.entry(PyType.BUFFERED_RANDOM, PyBufferedReader.class),
+            Map.entry(PyType.BUFFERED_RW_PAIR, PyBufferedRWPair.class),
             Map.entry(PyType.FILE_IO, PyFileIO.class),
             // The four abstract bases under `_io` file their rows in one class, because they are one
             // family of stubs: `_IOBase.seek` and `_BufferedIOBase.read` are askable through the type

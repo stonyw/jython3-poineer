@@ -109,7 +109,7 @@ public final class PyBufferedReader extends PyIOStream {
      * itself — {@code buffer size must be strictly positive} for zero and every negative number — while a
      * number too wide for a {@code ssize_t} is the converter's own {@code OverflowError}.
      */
-    private static int bufferSizeValue(PyObject value) {
+    static int bufferSizeValue(PyObject value) {
         if (value == null) {
             return DEFAULT_BUFFER_SIZE;
         }
@@ -237,6 +237,7 @@ public final class PyBufferedReader extends PyIOStream {
 
     /** {@code _bufferedreader_reset_buf}, which is the third state of the store rather than an empty one. */
     private void reset() {
+        pos = 0;
         readEnd = -1;
     }
 
@@ -601,6 +602,101 @@ public final class PyBufferedReader extends PyIOStream {
         return PyBytes.of(fetched == null ? new byte[0] : fetched);
     }
 
+    /**
+     * {@code buffer.readinto(target)}: the store, then fills of the descriptor, poured into the caller's
+     * buffer. {@code readinto1} stops after the store and at most one read of the descriptor.
+     *
+     * <p>The target is any writable buffer — a {@code bytearray}, a writable {@code memoryview}, an
+     * {@code array.array} — and the answer is the number of octets written, {@code None} when a
+     * non-blocking descriptor would block before giving any, and 0 at the end of the descriptor. The
+     * cursors move exactly as they do for {@code read}, which is what keeps {@code tell} and {@code seek}
+     * correct after a fill through a view.
+     */
+    private PyObject readIntoRow(boolean single, PyObject[] args, String[] kwNames) {
+        String name = single ? "readinto1" : "readinto";
+        Arguments.noKeywords("BufferedReader." + name + "()", kwNames);
+        Arguments.exactlyOne("BufferedReader." + name + "()", args, kwNames);
+        WritableBuffer target = WritableBuffer.of(args[0]);
+        if (target == null) {
+            throw Slots.typeError(
+                    "%s() argument must be read-write bytes-like object, not %s",
+                    name, Slots.argumentName(args[0]));
+        }
+        requireReadable(name);
+        held();
+        checkClosed(READ);
+        int length = target.length();
+        if (length == 0) {
+            return PyInt.of(0);
+        }
+        int total = 0;
+        long have = readahead();
+        if (have > 0) {
+            int given = (int) Math.min(have, length);
+            target.write(0, take(given), given);
+            total += given;
+            if (readahead() == 0) {
+                reset();
+            }
+        }
+        if (single) {
+            int remaining = length - total;
+            if (remaining > 0) {
+                if (length > bufferSize) {
+                    // A request wider than the store is read straight into the caller's span rather than
+                    // through the store — one read of the descriptor either way, but of the whole
+                    // remainder rather than of one block.
+                    byte[] chunk = fetch(remaining);
+                    if (chunk == null) {
+                        return total == 0 ? PyNone.INSTANCE : PyInt.of(total);
+                    }
+                    int given = Math.min(chunk.length, remaining);
+                    target.write(total, chunk, given);
+                    total += given;
+                } else if (total == 0) {
+                    // A dry store within one block wide: one fill, then copy what it brought.
+                    int got = fill();
+                    if (got < 0) {
+                        return PyNone.INSTANCE;
+                    }
+                    if (got > 0) {
+                        int given = Math.min(got, length);
+                        target.write(0, take(given), given);
+                        total += given;
+                        if (readahead() == 0) {
+                            reset();
+                        }
+                    }
+                }
+            }
+            return PyInt.of(total);
+        }
+        boolean wouldBlock = false;
+        while (total < length) {
+            if (readahead() == 0) {
+                reset();
+            }
+            int got = fill();
+            if (got < 0) {
+                wouldBlock = true;
+                break;
+            }
+            if (got == 0) {
+                break;
+            }
+            int given = Math.min(got, length - total);
+            target.write(total, take(given), given);
+            total += given;
+            if (readahead() == 0) {
+                reset();
+            }
+        }
+        if (total == 0 && wouldBlock) {
+            return PyNone.INSTANCE;
+        }
+        return PyInt.of(total);
+    }
+
     /** {@code buffer.peek(n)}: the whole store, which the count never limits. */
     private PyObject peek() {
         requireReadable("peek");
@@ -878,20 +974,12 @@ public final class PyBufferedReader extends PyIOStream {
             .add("readline", (self, args, kwNames) ->
                     ((PyBufferedReader) self).readlineRow(args, kwNames))
             .add("readlines", (self, args, kwNames) -> ((PyIOStream) self).readLines(args, kwNames))
-            // The two fill rows of this layer: the buffer protocol they ask for is later M3 work, so what
-            // is filed here is the refusal the converter makes before any body has run.
-            .add("readinto", (self, args, kwNames) -> {
-                Arguments.exactlyOne("BufferedReader.readinto()", args, kwNames);
-                throw Slots.typeError(
-                        "readinto() argument must be read-write bytes-like object, not %s",
-                        Slots.argumentName(args[0]));
-            })
-            .add("readinto1", (self, args, kwNames) -> {
-                Arguments.exactlyOne("BufferedReader.readinto1()", args, kwNames);
-                throw Slots.typeError(
-                        "readinto1() argument must be read-write bytes-like object, not %s",
-                        Slots.argumentName(args[0]));
-            })
+            // The two fill rows of this layer: the buffer protocol they ask for is the common writable
+            // view, so a bytearray, a writable memoryview and an array.array all answer.
+            .add("readinto", (self, args, kwNames) ->
+                    ((PyBufferedReader) self).readIntoRow(false, args, kwNames))
+            .add("readinto1", (self, args, kwNames) ->
+                    ((PyBufferedReader) self).readIntoRow(true, args, kwNames))
             // The rows above file a write of their own; the three types this class can wear differ only in
             // which direction their bodies let through, so the refusals and the work share one table.
             .add("write", (self, args, kwNames) -> {

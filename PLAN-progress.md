@@ -360,3 +360,41 @@
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
 
 **具名偏差**：① `buffer_size` 超出 int 范围时截到 `Integer.MAX_VALUE-8` 且立即分配（参考惰性分配、按 `ssize_t` 接受）；② descriptor 分支读写同开的 `FileIO` 仍直接返 raw、忽略 `buffering`（既有偏差，本片未动）；③ `io.BufferedReader` 包 `CMockRawIO`（无 `read`／`readinto` 的 raw）时 `read()` 仍 `NotImplementedError`——既有断点，与本片无关，`test_io` 的 141 err 里已含。
+
+## M5 切片 44 明细：`_io.BufferedRWPair` 与 `readinto`／`readinto1` 的缓冲形态（2026-11-15）
+
+**背景**：切片 41 分簇表余下的两个中档簇，合计 39 例——`_io.BufferedRWPair`（22 例，`cannot create '_io.BufferedRWPair' instances`，类整个缺）与 `readinto`／`readinto1`（17 例，`readinto() argument 2 must be …`，只收 `bytearray`）。
+
+**参考取证（3.14.10 探针钉死）**：
+- `BufferedRWPair(reader, writer, buffer_size=DEFAULT_BUFFER_SIZE)`，**不收关键字**（`BufferedRWPair() takes no keyword arguments`）；少于 2 参 `expected at least 2 arguments, got N`，多于 3 参 `expected at most 3`。
+- 构造时 reader 不可读 → `UnsupportedOperation: File or stream is not readable.`；writer 不可写 → `... not writable.`；`buffer_size=0` → `ValueError: buffer size must be strictly positive`。
+- **参考把 reader 包进一个 `BufferedReader`**：`pair.peek(3)` 对 `_io.BytesIO`（无 `peek`）返回整个 store（`b'abcdef'`），对自定义 raw reader 返回 `b''` 而非 reader 自己的 `peek` 标记——说明不是转发 `reader.peek`，而是 `BufferedReader(reader).peek`。
+- `closed` 就是 `writer.closed`（reader 关、writer 开 → False）；`seekable()` False；`seek`／`tell`／`truncate`／`detach` 抛 `UnsupportedOperation("seek"/…/…)`；`close` 先 reader 后 writer，两边都失败时抛 reader 错且 `__context__` 为 writer 错，幂等。
+- `tp.__new__(tp)` 返回空壳（参数忽略，`read` 抛 `ValueError`）；直接调用 `BufferedRWPair()` 则按 `__init__` 的 2–3 参校验报错。
+- `readinto1` 取数（raw 桩记录每次 `readinto` 的尺寸）：先拷 store；剩余 > 0 时，请求宽于 store（`length > buffer_size`）就**越过 store 直接读一次**到调用方余下跨度（`buffer=4`、`readinto1(8)` 只见一次 `readinto(8)`）；请求不宽于 store 且 store 干时 `fill` 一次（`buffer=10`、`readinto1(5)` 见 `readinto(10)`）；store 有货且请求不宽时不再读。would-block 时 `total == 0` 返 `None`，否则返已写数。
+- 目标 buffer 错误句：`BufferedReader.readinto` → `readinto() argument must be read-write bytes-like object, not X`；`_BufferedIOBase` mixin 同（无 `1`）；`FileIO.readinto` → `argument 1 must be ...`；溢出 → `ValueError: read() returned too much data: %d bytes requested, %d returned`（`readinto1` 也是 `read()`）。
+
+**落地**：
+1. 新建 `PyBufferedRWPair`：2–3 位置参数（`Arguments` 校验）→ 问两侧 `readable`／`writable` → **把 reader 包进只读 `PyBufferedReader`** → 缓存两侧布尔。读侧 `read`／`read1`／`peek`／`readline`／`readlines`／`readinto`／`readinto1` 转发 reader，写侧 `write`／`writelines`／`flush` 转发 writer；`closed` 取 `writer.closed`；`close` 两阶段 + `__context__` + 幂等；`seek`／`tell`／`truncate`／`detach` 按参考拒绝。
+2. 新增 `__new__` 行返回空壳（`kind` 不是 `PyType`／不是 `BUFFERED_RW_PAIR` 子类时用 `object.__new__` 的原文拒绝）；`construct` 不再把 0 参当空壳，直接调用按 `__init__` 校验。
+3. 接线：`PyType.BUFFERED_RW_PAIR` 去掉 `withoutNew`；`Constructors.instantiate`、`Classes.allocate`、`Classes.canDeriveFrom`、`Members.VALUE_CLASSES` 各加一条。
+4. 新建包内 `WritableBuffer`：识别 `PyByteArray`／非只读 `PyMemoryView`／`PyArray`，长度按字节，提供带 offset 的 `write(offset, source, count)`；`PyBufferedReader.readIntoRow`、`_BufferedIOBase` 的 `readinto`／`readinto1` mixin、`PyFileIO.readinto` 三处共用。只读视图与不可写对象按参考原文报错。
+5. `PyBufferedReader.readIntoRow`：`readinto` 先拷 store、再循环 `fill`；`readinto1` 按上述三种取数；`reset()` 同时清 `pos` 与 `readEnd`（原来只清后者，`readinto` 后 `readahead()` 为负、`take` 抛 `IllegalArgumentException`）。
+
+**修前修后**：`675／431／111／141／20` → **`675／471／113／84／20`**（+40 ok；fail 的 +2 是析构时序抖动，`test_destructor` 一族；err −57 含本片 39 例与共享根因的连带用例）。
+
+**两个簇的 39 例去向（全部转 ok，未新增 fail）**：
+- `BufferedRWPair` 22 例：C 族 `CBufferedRWPairTest` 21 例（`test_constructor*`、`test_readable`／`writable`／`seekable`／`isatty`／`fileno`、`test_close*`、`test_reader_writer_close_error_on_close`、`test_read`／`read1`／`peek`／`readlines`／`readinto`、`test_write`／`writelines`／`flush`、`test_weakref_clearing`、`test_uninitialized`）+ `PyBufferedRWPairTest` 的构造例；整族（C/Py 各 21，共 42 例）现全绿。
+- `readinto`／`readinto1` 17 例：`CBufferedReaderTest`／`PyBufferedReaderTest`／`CBufferedRandomTest`／`PyBufferedRandomTest` 的 `test_readinto`、`test_readinto1`、`test_readinto_array`、`test_readinto1_array`，加 `CBufferedRWPairTest.test_readinto`／`PyBufferedRWPairTest.test_readinto`，共 19 例全绿。
+
+**语料对拍** `/tmp/slice44_corpus.py`（参考 3.14.10 与本运行时输出 **逐字节 IDENTICAL**）：
+- `BufferedRWPair` 独立 reader／writer 与同一对象两种构造：`readable`／`writable`／`seekable`、`read`／`read1`／`peek`、`write`＋`flush` 后 `getvalue`、`closed` 前后、`close` 两次幂等；
+- 构造错误三种（无参、`buffer_size=0`、5 参）与 `__new__` 空壳的 `read(0)`；
+- `readinto` 四种目标（`bytearray`、可写 `memoryview`、只读 `memoryview` 报错、`array`）的返回值、内容与 `tell`；`readinto("nope")` 的错误句；`tell`／`peek`／`seek` 在 `readinto(memoryview)` 之后的位置；
+- `readinto1` 的 raw 桩记录：`buffer=4` 连续三次 `readinto1(4)` 的调用尺寸与返回值、`readinto1(8)` 直读一次、store 有货时不再读、would-block 返 `None` 或部分值。
+
+**回归**：`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349、`test_fstring` 95／95、`test_generators` 59／52／4／2／1，与切片 43 基线一致（子进程类用例需 `PYTHONPATH` 指向参考 stdlib，否则 `test_lazy_import`／`test_syntax_warning_*_in_file` 会因 launcher 无 stdlib 路径而假红）；`test_subprocess` 的 `test_call`／`test_check_output`／`test_communicate` 族无新退。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+
+**具名偏差**：`BufferedRWPair` 的写侧直接转发 writer，未像参考那样包一层 `BufferedWriter`——`write`／`flush`／`closed` 的可观察结果相同（flush 后 raw 内容一致、`closed` 跟随 writer），差别只在参考会推迟到 flush 才落盘。

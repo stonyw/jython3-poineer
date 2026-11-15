@@ -226,14 +226,16 @@ public final class PyFileIO extends PyIOStream {
     }
 
     /**
-     * {@code raw.readinto(bytearray)}: one read, poured into the buffer the caller gave.
+     * {@code raw.readinto(target)}: one read, poured into the buffer the caller gave.
      *
-     * <p>The buffer is converted before the descriptor is looked at, which is the order clinic uses;
-     * {@code None} is the non-blocking would-block answer, as it is for {@code read}.
+     * <p>The target is any writable buffer — a {@code bytearray}, a writable {@code memoryview}, an
+     * {@code array.array} — and it is converted before the descriptor is looked at, which is the order
+     * clinic uses; {@code None} is the non-blocking would-block answer, as it is for {@code read}.
      */
     private PyObject readinto(PyObject[] args, String[] kwNames) {
         Arguments.onlyPositional("readinto", args, kwNames, 1);
-        if (!(args[0] instanceof PyByteArray buffer)) {
+        WritableBuffer target = WritableBuffer.of(args[0]);
+        if (target == null) {
             throw Slots.typeError(
                     "readinto() argument 1 must be read-write bytes-like object, not %s",
                     Slots.argumentName(args[0]));
@@ -242,11 +244,11 @@ public final class PyFileIO extends PyIOStream {
         if (!readable) {
             throw Slots.unsupportedOperation("File not open for reading");
         }
-        byte[] octets = octets(buffer.size());
+        byte[] octets = octets(target.length());
         if (octets == null) {
             return PyNone.INSTANCE;
         }
-        System.arraycopy(octets, 0, buffer.raw(), 0, octets.length);
+        target.write(0, octets, octets.length);
         return PyInt.of(octets.length);
     }
 

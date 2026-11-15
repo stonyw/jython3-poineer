@@ -445,7 +445,8 @@ final class Classes {
                 || base == PyType.FILE_IO
                 || base == PyType.BUFFERED_READER
                 || base == PyType.BUFFERED_WRITER
-                || base == PyType.BUFFERED_RANDOM;
+                || base == PyType.BUFFERED_RANDOM
+                || base == PyType.BUFFERED_RW_PAIR;
     }
 
     /**
@@ -1653,6 +1654,9 @@ final class Classes {
                 || kind.matches(PyType.BUFFERED_WRITER)
                 || kind.matches(PyType.BUFFERED_RANDOM)) {
             return PyBufferedReader.construct(kind, args, names);
+        }
+        if (kind.matches(PyType.BUFFERED_RW_PAIR)) {
+            return PyBufferedRWPair.construct(kind, args, names);
         }
         // `TextIOWrapper` builds nothing in `tp_new`: its `__init__` is the row `textIOWrapperTable`
         // files, so the cleared stream here is filled by the subclass's `__init__` — the reference's own

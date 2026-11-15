@@ -81,8 +81,8 @@ final class IoBases {
                 .addRevealingClass("read", (self, args, kwNames) -> unsupportedSize("read", args, kwNames))
                 .addRevealingClass(
                         "read1", (self, args, kwNames) -> unsupportedSize("read1", args, kwNames))
-                .add("readinto", (self, args, kwNames) -> readInto("readinto", args, kwNames))
-                .add("readinto1", (self, args, kwNames) -> readInto("readinto1", args, kwNames))
+                .add("readinto", (self, args, kwNames) -> readInto(self, "readinto", args, kwNames))
+                .add("readinto1", (self, args, kwNames) -> readInto(self, "readinto1", args, kwNames))
                 .addRevealingClass("write", (self, args, kwNames) -> bufferedWrite(args, kwNames));
     }
 
@@ -376,7 +376,15 @@ final class IoBases {
         throw PyRaise.raise(ExceptionTypes.NOT_IMPLEMENTED_ERROR);
     }
 
-    private static PyObject readInto(String name, PyObject[] args, String[] kwNames) {
+    /**
+     * The mixin body of {@code _BufferedIOBase.readinto} / {@code readinto1}: one call of
+     * {@code self.read(n)} (or {@code read1(n)}), poured into the caller's writable buffer.
+     *
+     * <p>A subclass that defines only {@code read} inherits this, which is why the body asks the value
+     * rather than touching any store: the length asked for is the buffer's length in octets, and a read
+     * that answers more than that is the reference's {@code ValueError}.
+     */
+    private static PyObject readInto(PyObject self, String name, PyObject[] args, String[] kwNames) {
         String qualified = "_BufferedIOBase." + name;
         if (kwNames != null && kwNames.length > 0) {
             throw Slots.typeError("%s() takes no keyword arguments", qualified);
@@ -385,9 +393,28 @@ final class IoBases {
             throw Slots.typeError(
                     "%s() takes exactly one argument (%d given)", qualified, args.length);
         }
-        throw Slots.typeError(
-                "%s() argument must be read-write bytes-like object, not %s",
-                name, args[0].getType().name());
+        WritableBuffer target = WritableBuffer.of(args[0]);
+        if (target == null) {
+            throw Slots.typeError(
+                    "%s() argument must be read-write bytes-like object, not %s",
+                    name, Slots.argumentName(args[0]));
+        }
+        int length = target.length();
+        PyObject data = Slots.call(
+                Slots.getAttr(self, name.equals("readinto1") ? "read1" : "read"),
+                new PyObject[] {PyInt.of(length)},
+                null);
+        if (!(data instanceof PyBytes bytes)) {
+            throw Slots.typeError("read() should return bytes, not %s", Slots.argumentName(data));
+        }
+        byte[] source = bytes.getValue();
+        if (source.length > length) {
+            throw Slots.valueError(
+                    "read() returned too much data: %d bytes requested, %d returned",
+                    length, source.length);
+        }
+        target.write(0, source, source.length);
+        return PyInt.of(source.length);
     }
 
     private static boolean isClosed(PyObject self) {
