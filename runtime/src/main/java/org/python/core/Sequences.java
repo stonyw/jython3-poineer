@@ -145,7 +145,7 @@ final class Sequences {
     static int countOf(PyObject[] items, PyObject target, int from, int to) {
         int found = 0;
         for (int i = from; i < to; i++) {
-            if (items[i].eq(target)) {
+            if (items[i] == target || Slots.compareTrue(CompareOp.EQ, items[i], target)) {
                 found++;
             }
         }
@@ -155,12 +155,15 @@ final class Sequences {
     /**
      * The first index of {@code target} in {@code items[from..to)}, or -1.
      *
-     * Comparison is by {@code ==}, as CPython's sequence search does it, so a tuple containing a
-     * {@code 1} is found by {@code index(True)}.
+     * <p>Comparison is by {@code ==}, as CPython's {@code PyObject_RichCompareBool} answers it: an
+     * identical object matches without asking {@code __eq__} at all, and otherwise the stored item is
+     * asked first and the target second — a target's own {@code __eq__} therefore runs when the item
+     * declines, which is what makes {@code [E()].remove(Z())} call {@code Z.__eq__}. A tuple containing
+     * a {@code 1} is likewise found by {@code index(True)}.
      */
     static int indexOf(PyObject[] items, PyObject target, int from, int to) {
         for (int i = from; i < to; i++) {
-            if (items[i].eq(target)) {
+            if (items[i] == target || Slots.compareTrue(CompareOp.EQ, items[i], target)) {
                 return i;
             }
         }

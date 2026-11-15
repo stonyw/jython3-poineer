@@ -1,6 +1,7 @@
 package org.python.core;
 
 import java.math.BigInteger;
+import java.util.function.IntSupplier;
 
 /**
  * Index and slice arithmetic, shared by every sequence.
@@ -132,13 +133,33 @@ final class Slices {
 
     /** {@code slice.indices(length)}, as CPython resolves it. */
     static Range of(PySlice slice, int length) {
-        long step = bound(slice.step(), 1, length, false);
+        return of(slice, () -> length);
+    }
+
+    /**
+     * The same, with the length read only after every bound has been resolved.
+     *
+     * <p>{@code __index__} is arbitrary code and may change a mutable sequence — {@code l[slice(X())]}
+     * where {@code X.__index__} empties {@code l}. CPython unpacks the slice first and reads
+     * {@code Py_SIZE} afterwards, so the length is asked here after the three bounds, never before.
+     */
+    static Range of(PySlice slice, IntSupplier lengthOf) {
+        BigInteger rawStep = indexOf(slice.step());
+        BigInteger rawStart = indexOf(slice.start());
+        BigInteger rawStop = indexOf(slice.stop());
+        int length = lengthOf.getAsInt();
+
+        boolean backwards = rawStep != null && rawStep.signum() < 0;
+        long step = rawStep == null ? 1 : clamped(rawStep, length, false);
         if (step == 0) {
             throw Slots.valueError("slice step cannot be zero");
         }
-        boolean backwards = step < 0;
-        long start = bound(slice.start(), backwards ? Long.MAX_VALUE : 0L, length, backwards);
-        long stop = bound(slice.stop(), backwards ? Long.MIN_VALUE : Long.MAX_VALUE, length, backwards);
+        long start = rawStart == null
+                ? (backwards ? Long.MAX_VALUE : 0L)
+                : clamped(rawStart, length, backwards);
+        long stop = rawStop == null
+                ? (backwards ? Long.MIN_VALUE : Long.MAX_VALUE)
+                : clamped(rawStop, length, backwards);
         // CPython leaves these defaults in place and lets the folding below turn them into the real
         // bounds: MAX_VALUE >= length becomes length-1 when going backwards, and MIN_VALUE + length
         // stays negative so it lands on the -1 that means "run to and including index 0".
@@ -170,15 +191,16 @@ final class Slices {
     }
 
     /**
-     * One bound of a slice: {@code None} becomes {@code whenNone}, a number is checked, and anything
-     * too far outside the sequence keeps its sign but saturates — which is what makes
-     * {@code a[2**100:]} an empty slice instead of an error.
+     * One bound of a slice: {@code None} becomes {@code null} here and the caller supplies its default,
+     * a number is resolved now, and anything too far outside the sequence keeps its sign but saturates —
+     * which is what makes {@code a[2**100:]} an empty slice instead of an error.
      */
-    private static long bound(PyObject value, long whenNone, int length, boolean backwards) {
-        if (value == PyNone.INSTANCE) {
-            return whenNone;
-        }
-        BigInteger index = Numbers.sliceIndex(value);
+    private static BigInteger indexOf(PyObject value) {
+        return value == PyNone.INSTANCE ? null : Numbers.sliceIndex(value);
+    }
+
+    /** Where one resolved bound lands on a sequence of {@code length}, as {@code PySlice_Unpack} clamps it. */
+    private static long clamped(BigInteger index, int length, boolean backwards) {
         if (index.signum() < 0) {
             return index.compareTo(BigInteger.valueOf(-(long) length - 1)) < 0
                     ? Integer.MIN_VALUE

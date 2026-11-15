@@ -81,7 +81,10 @@ public final class PyList extends PyObject {
     @Override
     public PyObject getItem(PyObject key) {
         if (Slices.isSlice(key)) {
-            return gathered(Sequences.gather(elements(), Slices.of((PySlice) key, items.size())));
+            // The range is resolved first: an `__index__` may change this very list, and CPython
+            // measures the list only afterwards — the copy below must be the post-mutation one.
+            Slices.Range range = Slices.of((PySlice) key, items::size);
+            return gathered(Sequences.gather(elements(), range));
         }
         return items.get(
                 Slices.index(key, items.size(), "list", "list index out of range"));
@@ -246,9 +249,10 @@ public final class PyList extends PyObject {
 
     /** {@code l[a:b] = value} and {@code l[a:b:c] = value}, and the same two in deletion form. */
     private void assign(PySlice key, PyObject value) {
-        // The replacement is materialised before the list is touched, so `l[::-1] = l` reverses.
+        // The replacement is materialised before the list is touched, so `l[::-1] = l` reverses;
+        // the length, though, is read only after the slice's own `__index__` calls have run.
         PyObject[] replacement = value == null ? null : materialise(value);
-        Slices.Range range = Slices.of(key, items.size());
+        Slices.Range range = Slices.of(key, items::size);
         if (value == null) {
             if (range.step() == 1) {
                 items.subList(range.start(), range.start() + range.count()).clear();
@@ -293,10 +297,13 @@ public final class PyList extends PyObject {
         if (value instanceof PyList list) {
             return list.elements();
         }
-        if (!Slots.isIterable(value)) {
+        // `__iter__` runs arbitrary code, so it is asked once here and the answer is drained; asking
+        // `isIterable` first would call it a second time and duplicate its side effects.
+        PyIterator iterator = Slots.iteratorOrNull(value);
+        if (iterator == null) {
             throw Slots.typeError("must assign iterable to extended slice");
         }
-        return drain(Slots.iterator(value));
+        return drain(iterator);
     }
 
     private static PyObject[] drain(PyIterator iterator) {
@@ -490,12 +497,21 @@ public final class PyList extends PyObject {
             })
             .addOne("remove", (self, item) -> {
                 PyList list = (PyList) self;
-                int found = Sequences.indexOf(list.elements(), item, 0, list.size());
-                if (found < 0) {
-                    throw Slots.valueError("list.remove(x): x not in list");
+                // CPython's list_remove reads Py_SIZE and ob_item[i] again on every step, because
+                // `__eq__` is arbitrary code that may shrink this very list. Iterating a snapshot
+                // would leave a stale bound behind and could reach an index that no longer exists.
+                for (int i = 0; i < list.items.size(); i++) {
+                    PyObject candidate = list.items.get(i);
+                    if (candidate == item || Slots.compareTrue(CompareOp.EQ, candidate, item)) {
+                        // The comparison may have shortened the list; CPython deletes through
+                        // list_ass_slice, whose clamp removes nothing once `i` is past the end.
+                        if (i < list.items.size()) {
+                            list.items.remove(i);
+                        }
+                        return PyNone.INSTANCE;
+                    }
                 }
-                list.items.remove(found);
-                return PyNone.INSTANCE;
+                throw Slots.valueError("list.remove(x): x not in list");
             })
             .addNoArgument("reverse", self -> {
                 Collections.reverse(((PyList) self).items);
