@@ -70,7 +70,22 @@ final class PyFrozenSetSubclass extends PyFrozenSet {
 
     @Override
     public String repr() {
-        return SubclassValue.repr(this, this::named);
+        return SubclassValue.repr(this, this::guarded);
+    }
+
+    /**
+     * The base repr's own text under CPython's {@code Py_ReprEnter}, as in {@link PySetSubclass}: an
+     * element that reaches this value again sees {@code X(...)} instead of recursing.
+     */
+    private String guarded() {
+        if (enteringRepr(this)) {
+            return getType().name() + "(...)";
+        }
+        try {
+            return named();
+        } finally {
+            leavingRepr(this);
+        }
     }
 
     @Override

@@ -1,7 +1,7 @@
 package org.python.core;
 
 import java.util.ArrayList;
-import java.util.Iterator;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -22,7 +22,16 @@ import java.util.Set;
  */
 public class PySet extends PyObject {
 
-    final Set<PyObject> items;
+    /**
+     * The table, which a destructive method replaces rather than edits when user callbacks run.
+     *
+     * <p>{@code __hash__} and {@code __eq__} are arbitrary code. A method that removed entries from
+     * this table while such a callback ran could re-enter {@code HashMap.removeNode} after the
+     * callback had emptied the table, which the JDK's tree rebalancing does not survive. So the
+     * destructive methods build their answer in a private table, unreachable from Python, and store
+     * it here at the end; the callbacks may then change the old table as much as they like.
+     */
+    Set<PyObject> items;
 
     PySet(Set<PyObject> items, PyType type) {
         super(type);
@@ -145,13 +154,33 @@ public class PySet extends PyObject {
     /** Equality is content, both ways round a {@code set} and a {@code frozenset}. */
     @Override
     public boolean eq(PyObject other) {
-        return other instanceof PySet set && items.equals(set.items);
+        if (!(other instanceof PySet set) || set.items.size() != items.size()) {
+            return false;
+        }
+        // `contains` runs a user `__hash__` and `__eq__`, so the walk is over a snapshot and the
+        // probe is a private copy that a callback cannot reach.
+        Set<PyObject> probe = copyOf(set.items);
+        for (PyObject element : elements()) {
+            if (!probe.contains(element)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Mutable, therefore unhashable; {@link #hashCode()} inherits the same refusal. */
     @Override
     public String repr() {
-        return items.isEmpty() ? "set()" : "{" + contents() + "}";
+        // CPython's `Py_ReprEnter`: a set reached again through an element's `__repr__` answers
+        // `set(...)` instead of recursing, matching the `[...]` a list gives.
+        if (enteringRepr(this)) {
+            return getType().name() + "(...)";
+        }
+        try {
+            return items.isEmpty() ? "set()" : "{" + contents() + "}";
+        } finally {
+            leavingRepr(this);
+        }
     }
 
     /** Whether values of this kind change in place; a frozenset's are the only ones that do not. */
@@ -172,12 +201,43 @@ public class PySet extends PyObject {
             // CPython's fast path for itself, which is also the only way this is safe to write.
             return this;
         }
-        PyIterator iterator = Slots.iterator(other);
-        PyObject element;
-        while ((element = iterator.nextOrNull()) != null) {
-            add(element);
+        // Built in a private table and stored at the end: `insert` hashes, and a `__hash__` or
+        // `__eq__` that changes this set must not re-enter the table it is being written to.
+        LinkedHashSet<PyObject> grown = copyOf(items);
+        PyObject[] direct = tableWalk(other);
+        if (direct != null) {
+            // CPython walks a set's or an exact dict's storage directly, so a comparison that
+            // empties the argument mid-walk is not an iterator invalidation — it is ignored.
+            for (PyObject element : direct) {
+                insert(grown, element);
+            }
+        } else {
+            PyIterator iterator = Slots.iterator(other);
+            PyObject element;
+            while ((element = iterator.nextOrNull()) != null) {
+                insert(grown, element);
+            }
         }
+        items = grown;
         return this;
+    }
+
+    /**
+     * The elements a set operation should walk without the iterator protocol, or null.
+     *
+     * <p>CPython's {@code set_update_internal} copies from a set's or an exact dict's table with
+     * {@code set_next}/{@code PyDict_Next}: those calls do not check for concurrent modification, so
+     * a {@code __hash__} or {@code __eq__} that empties the argument does not turn into a
+     * {@code RuntimeError} the way a Python iterator would.
+     */
+    private static PyObject[] tableWalk(PyObject other) {
+        if (other instanceof PySet set) {
+            return set.elements();
+        }
+        if (other.getClass() == PyDict.class) {
+            return ((PyDict) other).keys();
+        }
+        return null;
     }
 
     /**
@@ -201,37 +261,54 @@ public class PySet extends PyObject {
     /** {@code s.difference_update(other)}: everything the other side holds, thrown away. */
     PySet differenceUpdate(PyObject other) {
         if (other == this) {
-            items.clear();
+            items = new LinkedHashSet<>();
             return this;
         }
         // The other side is filed into a set first, which is where the set's own message comes from
-        // even for a value that only ever gets thrown away.
-        for (PyObject element : collected(other).items) {
-            items.remove(element);
+        // even for a value that only ever gets thrown away. The answer is built in a private table:
+        // both `contains` and `add` run user code, which may empty this set at any moment.
+        PySet gone = collected(other);
+        LinkedHashSet<PyObject> kept = new LinkedHashSet<>();
+        for (PyObject element : elements()) {
+            if (!gone.items.contains(element)) {
+                kept.add(element);
+            }
         }
+        items = kept;
         return this;
     }
 
     /** {@code s.intersection_update(other)}: only what the other side holds is kept. */
     PySet intersectionUpdate(PyObject other) {
-        PySet kept = intersection(other);
-        items.clear();
-        items.addAll(kept.items);
+        // `intersection` answers in a private table already, so nothing has to be rebuilt here.
+        items = intersection(other).items;
         return this;
     }
 
     /** {@code s.symmetric_difference_update(other)}: keep what differs, on either side. */
     PySet symmetricDifferenceUpdate(PyObject other) {
         if (other == this) {
-            items.clear();
+            items = new LinkedHashSet<>();
             return this;
         }
-        // Materialised as a set first, so a repeated value cancels once rather than twice.
-        for (PyObject element : collected(other).items) {
-            if (!items.remove(element)) {
-                items.add(element);
+        // Materialised as a set first, so a repeated value cancels once rather than twice; the
+        // answer is built in a private table and stored at the end, for the reason `items` records.
+        PySet gone = collected(other);
+        LinkedHashSet<PyObject> result = new LinkedHashSet<>();
+        for (PyObject element : elements()) {
+            if (!gone.items.contains(element)) {
+                result.add(element);
             }
         }
+        // The second pass asks whether this set holds each of the other side's values; the probe
+        // is a private copy because `contains` is user code that may change this set.
+        Set<PyObject> present = copyOf(items);
+        for (PyObject element : gone.elements()) {
+            if (!present.contains(element)) {
+                result.add(element);
+            }
+        }
+        items = result;
         return this;
     }
 
@@ -239,22 +316,25 @@ public class PySet extends PyObject {
     private PySet intersection(PyObject other) {
         PySet out = emptyLike();
         if (other == this) {
-            out.items.addAll(items);
-            return out;
+            return detached();
         }
         if (other instanceof PySet set) {
-            for (PyObject element : items) {
-                if (set.items.contains(element)) {
+            // `contains` is user code; probing a private copy keeps a callback from re-entering the
+            // table it is being read from.
+            Set<PyObject> probe = copyOf(set.items);
+            for (PyObject element : elements()) {
+                if (probe.contains(element)) {
                     out.items.add(element);
                 }
             }
             return out;
         }
         PyIterator iterator = Slots.iterator(other);
+        Set<PyObject> probe = copyOf(items);
         PyObject element;
         while ((element = iterator.nextOrNull()) != null && out.items.size() < items.size()) {
             // Looked up, not filed away: CPython hashes with its plain refusal here.
-            if (items.contains(element)) {
+            if (probe.contains(element)) {
                 out.add(element);
             }
         }
@@ -266,8 +346,10 @@ public class PySet extends PyObject {
         if (items.size() > other.items.size()) {
             return false;
         }
-        for (PyObject element : items) {
-            if (!other.items.contains(element)) {
+        // `contains` is user code, so the walk is over a snapshot and the probe is a private copy.
+        Set<PyObject> probe = copyOf(other.items);
+        for (PyObject element : elements()) {
+            if (!probe.contains(element)) {
                 return false;
             }
         }
@@ -290,9 +372,10 @@ public class PySet extends PyObject {
             return PyBool.of(set.subsetOf(this));
         }
         PyIterator iterator = Slots.iterator(other);
+        Set<PyObject> probe = copyOf(items);
         PyObject element;
         while ((element = iterator.nextOrNull()) != null) {
-            if (!holds(items, element)) {
+            if (!holds(probe, element)) {
                 return PyBool.FALSE;
             }
         }
@@ -308,9 +391,10 @@ public class PySet extends PyObject {
             return PyBool.of(!overlaps(set));
         }
         PyIterator iterator = Slots.iterator(other);
+        Set<PyObject> probe = copyOf(items);
         PyObject element;
         while ((element = iterator.nextOrNull()) != null) {
-            if (holds(items, element)) {
+            if (holds(probe, element)) {
                 return PyBool.FALSE;
             }
         }
@@ -324,8 +408,11 @@ public class PySet extends PyObject {
     private boolean overlaps(PySet other) {
         PySet shorter = items.size() <= other.items.size() ? this : other;
         PySet longer = shorter == this ? other : this;
-        for (PyObject element : shorter.items) {
-            if (longer.items.contains(element)) {
+        // The lookup is user code, so the walk is over a snapshot of the shorter side and the
+        // probe is a private copy of the longer one.
+        Set<PyObject> probe = copyOf(longer.items);
+        for (PyObject element : shorter.elements()) {
+            if (probe.contains(element)) {
                 return true;
             }
         }
@@ -344,8 +431,13 @@ public class PySet extends PyObject {
 
     /** The receiver's values, in a fresh value of the same kind: what every operator answers with. */
     private PySet detached() {
+        // Filing the elements again does ask `__hash__`, but the walk is over a snapshot, so a
+        // `__hash__` that changes the receiver cannot break the Java iterator underneath it the
+        // way a live `addAll(items)` did.
         PySet out = emptyLike();
-        out.items.addAll(items);
+        for (PyObject element : elements()) {
+            out.items.add(element);
+        }
         return out;
     }
 
@@ -381,10 +473,26 @@ public class PySet extends PyObject {
         return items.toArray(new PyObject[0]);
     }
 
+    /**
+     * A private copy of a table, which no Python callback can reach.
+     *
+     * <p>Filing the keys again does ask {@code __hash__}, but the keys come from a snapshot, so a
+     * callback that empties the original table cannot break the copy being built.
+     */
+    private static LinkedHashSet<PyObject> copyOf(Set<PyObject> source) {
+        LinkedHashSet<PyObject> copy = new LinkedHashSet<>();
+        for (PyObject element : source.toArray(new PyObject[0])) {
+            copy.add(element);
+        }
+        return copy;
+    }
+
     /** The joined elements, for a {@code repr} of either kind of set. */
     String contents() {
         List<String> shown = new ArrayList<>(items.size());
-        for (PyObject element : items) {
+        // CPython's set_repr walks a copy, so an element whose `__repr__` changes the set still
+        // shows the contents the repr started with — and no Java iterator sees the change.
+        for (PyObject element : elements()) {
             shown.add(element.repr());
         }
         return String.join(", ", shown);
@@ -502,7 +610,7 @@ public class PySet extends PyObject {
 
     /** What the second look finds, which equality decides rather than the hash that was tried. */
     private static boolean shares(Set<PyObject> target, PyObject element) {
-        for (PyObject held : target) {
+        for (PyObject held : target.toArray(new PyObject[0])) {
             if (element.equals(held)) {
                 return true;
             }
@@ -512,10 +620,11 @@ public class PySet extends PyObject {
 
     /** The second look's removal, which cannot ask the key for a hash any more than the look can. */
     private static boolean throwOut(Set<PyObject> target, PyObject element) {
-        Iterator<PyObject> walk = target.iterator();
-        while (walk.hasNext()) {
-            if (element.equals(walk.next())) {
-                walk.remove();
+        // `equals` is user code and may change the set, so the candidates are read from a snapshot
+        // and the removal itself is by hash rather than through a live Java iterator.
+        for (PyObject held : target.toArray(new PyObject[0])) {
+            if (element.equals(held)) {
+                target.remove(held);
                 return true;
             }
         }

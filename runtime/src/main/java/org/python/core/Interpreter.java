@@ -1,5 +1,7 @@
 package org.python.core;
 
+import java.util.ArrayDeque;
+
 /**
  * The interpreter: a dispatch loop over a {@link Frame}, and nothing else.
  *
@@ -37,6 +39,60 @@ public final class Interpreter {
     private static final String[] SPECIAL_METHODS = {
         "__enter__", "__exit__", "__aenter__", "__aexit__"
     };
+
+    /**
+     * The last Python sites where a Java exception crossed an instruction, newest first.
+     *
+     * <p>An exception the runtime did not mean to raise is not a {@link PyRaise}, so the only trace of
+     * where it happened is the Java stack, which names runtime internals rather than the Python line the
+     * program was on. This thread-local keeps a short ring of the {@code File "...", line N, in NAME} a
+     * failed instruction was compiled from, and {@code jy3} prints it beside the internal-error line.
+     * Runtime code that catches a Java exception it expected also leaves entries behind, which is why the
+     * ring is read from the newest end: whatever escaped is the last thing recorded.
+     */
+    private static final ThreadLocal<ArrayDeque<String>> LEAK_SITES =
+            ThreadLocal.withInitial(ArrayDeque::new);
+
+    private static final int LEAK_SITES_KEPT = 16;
+
+    /** Remember where a Java exception left an instruction, for the launcher's internal-error report. */
+    private static void rememberLeak(Frame frame, int index, RuntimeException leaked) {
+        CodeInstructions code = frame.code().instructions();
+        int line = code.lineAtLasti(code.lastiAt(index));
+        String site =
+                "  File \""
+                        + frame.code().fileName()
+                        + "\", line "
+                        + (line < 0 ? "?" : Integer.toString(line))
+                        + ", in "
+                        + frame.code().qualName()
+                        + " ("
+                        + leaked.getClass().getName()
+                        + ")";
+        ArrayDeque<String> sites = LEAK_SITES.get();
+        if (sites.size() == LEAK_SITES_KEPT) {
+            sites.removeLast();
+        }
+        sites.addFirst(site);
+    }
+
+    /**
+     * The recorded sites, newest first, or {@code null} where no Java exception has crossed this thread.
+     *
+     * <p>Called only on the path that is already failing, so it costs nothing while a program runs.
+     */
+    public static String leakTrace() {
+        ArrayDeque<String> sites = LEAK_SITES.get();
+        if (sites.isEmpty()) {
+            return null;
+        }
+        StringBuilder report = new StringBuilder();
+        for (String site : sites) {
+            report.append(site).append('\n');
+        }
+        return report.toString();
+    }
+
 
     private Interpreter() {
     }
@@ -1140,6 +1196,12 @@ public final class Interpreter {
                     PyTraceback.logFrame(frame, raised.value());
                 }
                 unwind(frame, raised);
+            } catch (RuntimeException leaked) {
+                // A Java exception the instruction did not intend to raise. Remember the Python line it
+                // crossed — the Java stack names only internals — and let it travel unchanged: turning it
+                // into a Python exception here would hide a runtime bug behind an ordinary error.
+                rememberLeak(frame, index, leaked);
+                throw leaked;
             }
         }
         throw Slots.runtimeError(

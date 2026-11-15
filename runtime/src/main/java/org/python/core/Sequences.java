@@ -1,6 +1,8 @@
 package org.python.core;
 
 import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.Comparator;
 
 /**
  * The parts of the sequence protocol that every sequence implements the same way.
@@ -137,7 +139,7 @@ final class Sequences {
         return Numbers.repeat(times);
     }
 
-    private static PyObject ordered(CompareOp cmp, int signal) {
+    static PyObject ordered(CompareOp cmp, int signal) {
         return PyObject.ordered(cmp, signal);
     }
 
@@ -226,5 +228,62 @@ final class Sequences {
                     : Math.max(low, high + value.intValue());
         }
         return value.compareTo(BigInteger.valueOf(high)) > 0 ? high : value.intValue();
+    }
+
+    /**
+     * Sort {@code values} by {@code comparator} the way CPython's timsort would, even when the
+     * comparator is inconsistent.
+     *
+     * <p>{@link Arrays#sort} is stable and fast, but it validates its comparator and throws
+     * {@code IllegalArgumentException: Comparison method violates its general contract!} when the
+     * order it observes is not transitive. A Python comparison is arbitrary user code and CPython's
+     * timsort makes no such check: it produces some permutation and reports nothing. That message
+     * would otherwise surface as an internal error, so a rejected sort is redone with a merge sort
+     * that never inspects consistency — stable, and always terminating.
+     */
+    static <T> void tolerantSort(T[] values, Comparator<T> comparator) {
+        T[] backup = values.clone();
+        try {
+            Arrays.sort(values, comparator);
+        } catch (IllegalArgumentException broken) {
+            if (!"Comparison method violates its general contract!".equals(broken.getMessage())) {
+                throw broken;
+            }
+            System.arraycopy(backup, 0, values, 0, values.length);
+            stableMergeSort(values, comparator);
+        }
+    }
+
+    /** A bottom-up merge sort over a snapshot, so an inconsistent comparison cannot corrupt a run. */
+    private static <T> void stableMergeSort(T[] values, Comparator<T> comparator) {
+        int length = values.length;
+        T[] source = values.clone();
+        T[] target = values;
+        for (int width = 1; width < length; width *= 2) {
+            for (int lo = 0; lo < length; lo += 2 * width) {
+                int mid = Math.min(lo + width, length);
+                int hi = Math.min(lo + 2 * width, length);
+                merge(source, target, lo, mid, hi, comparator);
+            }
+            T[] swap = source;
+            source = target;
+            target = swap;
+        }
+        if (source != values) {
+            System.arraycopy(source, 0, values, 0, length);
+        }
+    }
+
+    /** Merge {@code source[lo..mid)} and {@code source[mid..hi)} into {@code target[lo..hi)}. */
+    private static <T> void merge(
+            T[] source, T[] target, int lo, int mid, int hi, Comparator<T> comparator) {
+        int left = lo;
+        int right = mid;
+        for (int at = lo; at < hi; at++) {
+            // Take from the right only when it is strictly smaller, so equal keys keep their order.
+            boolean fromRight = left >= mid
+                    || (right < hi && comparator.compare(source[right], source[left]) < 0);
+            target[at] = fromRight ? source[right++] : source[left++];
+        }
     }
 }

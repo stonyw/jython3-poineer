@@ -1324,9 +1324,9 @@ final class Builtins {
         for (int i = 0; i < items.size(); i++) {
             keys[i] = keyed(key, items.get(i));
         }
-        List<Integer> order = new ArrayList<>(items.size());
-        for (int i = 0; i < items.size(); i++) {
-            order.add(i);
+        Integer[] order = new Integer[items.size()];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
         }
         // Equal keys keep their original order in both directions, which a plain
         // comparator.reversed() would flip along with the comparison.
@@ -1340,7 +1340,9 @@ final class Builtins {
             }
             return Integer.compare(left, right);
         };
-        order.sort(byKey);
+        // A user comparison is arbitrary code and need not be transitive; CPython's timsort then
+        // still answers with some permutation, where Arrays.sort would throw an IAE.
+        Sequences.tolerantSort(order, byKey);
         List<PyObject> out = new ArrayList<>(items.size());
         for (int index : order) {
             out.add(items.get(index));

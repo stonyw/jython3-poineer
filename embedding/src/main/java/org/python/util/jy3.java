@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import org.python.core.ExceptionTypes;
+import org.python.core.Interpreter;
 import org.python.core.PyBaseException;
 import org.python.core.PyBool;
 import org.python.core.PyCode;
@@ -122,6 +123,10 @@ public final class jy3 {
             status = INTERNAL_CRASH;
         } catch (RuntimeException | StackOverflowError bug) {
             write(PROGRAM + ": internal error: " + bug.getClass().getName() + ": " + bug.getMessage() + "\n");
+            String sites = Interpreter.leakTrace();
+            if (sites != null) {
+                write(sites);
+            }
             bug.printStackTrace();
             status = INTERNAL_CRASH;
         }

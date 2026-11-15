@@ -572,17 +572,24 @@ public final class PyDict extends PyObject {
                         // keeps two names for the same list.
                         PyObject value = args.length > 1 ? args[1] : PyNone.INSTANCE;
                         // A subclass answers an instance of itself, made by calling the class the way
-                        // `dict_fromkeys` does; the entries then go straight into that instance's
-                        // storage, because CPython's `PyDict_SetItem` never asks `__setitem__`.
+                        // `dict_fromkeys` does. Only for the exact `dict` type does CPython write into
+                        // the storage with `PyDict_SetItem`; for any subclass — even one whose instance
+                        // really is a dict — it uses `PyObject_SetItem`, so an overridden `__setitem__`
+                        // runs, and a `__new__` that answered a UserDict or an int answers its own
+                        // message.
                         PyObject made =
                                 kind == PyType.DICT
                                         ? null
                                         : Slots.call(kind, new PyObject[0], null);
-                        PyDict dict = made == null ? empty() : PyDict.bodyOf(made);
+                        PyDict dict = made == null ? empty() : null;
                         PyIterator keys = Slots.iterator(args[0]);
                         PyObject key;
                         while ((key = keys.nextOrNull()) != null) {
-                            dict.put(key, value);
+                            if (dict == null) {
+                                Slots.setItem(made, key, value);
+                            } else {
+                                dict.put(key, value);
+                            }
                         }
                         return made == null ? dict : made;
                     })

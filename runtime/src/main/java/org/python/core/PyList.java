@@ -2,6 +2,7 @@ package org.python.core;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
@@ -21,19 +22,82 @@ import java.util.List;
  */
 public final class PyList extends PyObject {
 
-    private final ArrayList<PyObject> items;
+    /**
+     * The element storage, which counts the structural changes a sort must notice.
+     *
+     * <p>{@code list.sort} empties the list while keys and comparisons run, and CPython reports
+     * {@code list modified during sort} when the storage was replaced or grown meanwhile. The JVM has no
+     * {@code ob_item} pointer to compare, so the storage counts the changes itself;
+     * {@link #clear()} of an already empty list is not one, which is what makes a key or comparison that
+     * calls {@code clear()} harmless in the reference too.
+     */
+    static final class Items extends ArrayList<PyObject> {
+        int mutations;
 
-    private PyList(ArrayList<PyObject> items) {
+        Items() {}
+
+        Items(Collection<PyObject> initial) {
+            super(initial);
+        }
+
+        @Override
+        public boolean add(PyObject item) {
+            mutations++;
+            return super.add(item);
+        }
+
+        @Override
+        public void add(int index, PyObject item) {
+            mutations++;
+            super.add(index, item);
+        }
+
+        @Override
+        public boolean addAll(Collection<? extends PyObject> values) {
+            mutations++;
+            return super.addAll(values);
+        }
+
+        @Override
+        public boolean addAll(int index, Collection<? extends PyObject> values) {
+            mutations++;
+            return super.addAll(index, values);
+        }
+
+        @Override
+        public PyObject remove(int index) {
+            mutations++;
+            return super.remove(index);
+        }
+
+        @Override
+        public boolean remove(Object item) {
+            mutations++;
+            return super.remove(item);
+        }
+
+        @Override
+        public void clear() {
+            if (!isEmpty()) {
+                mutations++;
+            }
+            super.clear();
+        }
+    }
+
+    private final Items items;
+
+    private PyList(Items items) {
         super(PyType.LIST);
         this.items = items;
     }
 
     public static PyList empty() {
-        return new PyList(new ArrayList<>());
+        return new PyList(new Items());
     }
 
     public static PyList of(PyObject... items) {
-        return new PyList(new ArrayList<>(List.of(items)));
+        return new PyList(new Items(List.of(items)));
     }
 
     /**
@@ -112,8 +176,13 @@ public final class PyList extends PyObject {
 
     @Override
     public PyObject contains(PyObject item) {
-        for (PyObject candidate : items) {
-            if (candidate.eq(item)) {
+        // CPython's list_contains asks Py_SIZE and PyList_GET_ITEM again on every step, because
+        // `__eq__` is arbitrary code that may grow or shrink this very list. RichCompareBool's
+        // identity fast path comes first, so an object that is `==` to itself by identity never
+        // reaches a user `__eq__` at all.
+        for (int i = 0; i < items.size(); i++) {
+            PyObject candidate = items.get(i);
+            if (candidate == item || Slots.compareTrue(CompareOp.EQ, candidate, item)) {
                 return PyBool.TRUE;
             }
         }
@@ -169,12 +238,40 @@ public final class PyList extends PyObject {
      * Element-wise order with length as the tie-break, as for a {@code tuple}, and declined rather than
      * answered for anything that is not a list — {@code [1].__eq__((1,))} is {@code NotImplemented}, and the
      * {@code ==} operator falls back on identity.
+     *
+     * <p>CPython's {@code list_richcompare} re-reads both lengths and both items on every step and
+     * decides {@code ==} by the lengths <em>after</em> the loop: a comparison that empties both lists
+     * ends with {@code i} past both lengths, which makes them equal. That is the fix for the segfault
+     * in bpo-38588, and it is why this cannot go through {@link Sequences#compare} on snapshots.
      */
     @Override
     public PyObject richCompare(CompareOp cmp, PyObject other) {
-        return other instanceof PyList list
-                ? Sequences.compare(cmp, elements(), list.elements())
-                : PyNotImplemented.INSTANCE;
+        if (!(other instanceof PyList list)) {
+            return PyNotImplemented.INSTANCE;
+        }
+        int i = 0;
+        while (i < items.size() && i < list.items.size()) {
+            PyObject left = items.get(i);
+            PyObject right = list.items.get(i);
+            // RichCompareBool's identity fast path, then the full protocol; user code may rewrite
+            // either list, so the next turn measures both again.
+            if (left == right || Slots.compareTrue(CompareOp.EQ, left, right)) {
+                i++;
+            } else {
+                break;
+            }
+        }
+        boolean withinBoth = i < items.size() && i < list.items.size();
+        if (withinBoth) {
+            // The pair that differed is still there, so the answer is that comparison — for == it
+            // is simply false and for != simply true.
+            return cmp == CompareOp.EQ
+                    ? PyBool.FALSE
+                    : cmp == CompareOp.NE
+                            ? PyBool.TRUE
+                            : Slots.compare(cmp, items.get(i), list.items.get(i));
+        }
+        return Sequences.ordered(cmp, Integer.compare(items.size(), list.items.size()));
     }
 
     @Override
@@ -185,15 +282,21 @@ public final class PyList extends PyObject {
     /** Mutable, therefore unhashable; {@link #hashCode()} inherits the same refusal. */
     @Override
     public boolean eq(PyObject other) {
-        if (!(other instanceof PyList list) || list.items.size() != items.size()) {
+        if (!(other instanceof PyList list)) {
             return false;
         }
-        for (int i = 0; i < items.size(); i++) {
-            if (!items.get(i).eq(list.items.get(i))) {
+        // CPython's list_richcompare re-reads both sizes and both items on every step, because a
+        // user `__eq__` may change either list. Comparing stale lengths would walk off the end.
+        int i = 0;
+        while (i < items.size() && i < list.items.size()) {
+            PyObject left = items.get(i);
+            PyObject right = list.items.get(i);
+            if (!(left == right || Slots.compareTrue(CompareOp.EQ, left, right))) {
                 return false;
             }
+            i++;
         }
-        return true;
+        return items.size() == list.items.size();
     }
 
     @Override
@@ -229,7 +332,7 @@ public final class PyList extends PyObject {
     }
 
     private static PyList gathered(PyObject[] elements) {
-        return new PyList(new ArrayList<>(Arrays.asList(elements)));
+        return new PyList(new Items(Arrays.asList(elements)));
     }
 
     /**
@@ -394,22 +497,47 @@ public final class PyList extends PyObject {
      * list exactly as it found it when a key function or a comparison fails. The second property is
      * free here because the order is computed over a separate array and only written back once the
      * whole of it is known.
+     *
+     * <p>CPython empties the list for the duration of the sort — a key function or a comparison that
+     * looks at the list sees {@code []} — and remembers the original storage. If a callback touches
+     * that storage, the sort reports {@code list modified during sort}; if a callback raises, the
+     * original contents are put back before the exception leaves. {@link Items#mutations} is the
+     * Java stand-in for comparing CPython's {@code ob_item} pointer.
      */
     private void sort(PyObject keyFunction, PyObject reverse) {
         boolean backwards = Slots.truth(reverse);
         PyObject[] before = elements();
         Ordered[] order = new Ordered[before.length];
-        for (int i = 0; i < before.length; i++) {
-            PyObject key = keyFunction == null || keyFunction == PyNone.INSTANCE
-                    ? before[i]
-                    : Slots.call(keyFunction, new PyObject[] {before[i]}, null);
-            order[i] = new Ordered(before[i], key);
-        }
-        Arrays.sort(order, (left, right) -> versus(left.key(), right.key(), backwards));
         items.clear();
+        int stamp = items.mutations;
+        try {
+            for (int i = 0; i < before.length; i++) {
+                PyObject key = keyFunction == null || keyFunction == PyNone.INSTANCE
+                        ? before[i]
+                        : Slots.call(keyFunction, new PyObject[] {before[i]}, null);
+                order[i] = new Ordered(before[i], key);
+            }
+            if (items.mutations != stamp) {
+                throw Slots.valueError("list modified during sort");
+            }
+            Sequences.tolerantSort(
+                    order, (left, right) -> versus(left.key(), right.key(), backwards));
+            if (items.mutations != stamp) {
+                throw Slots.valueError("list modified during sort");
+            }
+        } catch (RuntimeException failed) {
+            restore(before);
+            throw failed;
+        }
         for (Ordered entry : order) {
             items.add(entry.element());
         }
+    }
+
+    /** Put {@code original} back after a sort whose callbacks changed or abandoned the list. */
+    private void restore(PyObject[] original) {
+        items.clear();
+        items.addAll(Arrays.asList(original));
     }
 
     /**

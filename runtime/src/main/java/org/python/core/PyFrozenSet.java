@@ -73,7 +73,14 @@ public class PyFrozenSet extends PySet {
     /** {@code frozenset({1, 2})}, and {@code frozenset()} with nothing in it. */
     @Override
     public String repr() {
-        return items.isEmpty() ? "frozenset()" : "frozenset({" + contents() + "})";
+        if (enteringRepr(this)) {
+            return getType().name() + "(...)";
+        }
+        try {
+            return items.isEmpty() ? "frozenset()" : "frozenset({" + contents() + "})";
+        } finally {
+            leavingRepr(this);
+        }
     }
 
     /**

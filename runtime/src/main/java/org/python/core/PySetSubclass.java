@@ -73,7 +73,24 @@ final class PySetSubclass extends PySet {
     /** {@code X({1, 2})}, {@code X()} when empty: a class-defined {@code __repr__} wins first. */
     @Override
     public String repr() {
-        return SubclassValue.repr(this, this::named);
+        return SubclassValue.repr(this, this::guarded);
+    }
+
+    /**
+     * The base repr's own text, with CPython's {@code Py_ReprEnter} around it: an element whose
+     * {@code __repr__} reaches this set again sees {@code X(...)} rather than recursing. The guard
+     * belongs here and not around the class's {@code __repr__}, which is the slot CPython replaces
+     * and which therefore never enters the guard.
+     */
+    private String guarded() {
+        if (enteringRepr(this)) {
+            return getType().name() + "(...)";
+        }
+        try {
+            return named();
+        } finally {
+            leavingRepr(this);
+        }
     }
 
     /** {@code str(self)} follows {@code repr} unless the class wrote a {@code __str__}. */
