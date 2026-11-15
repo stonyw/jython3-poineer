@@ -82,6 +82,7 @@ public final class PyMemoryView extends PyObject {
 
     /** Set when this view is the one holding the array's export count, so {@code release} gives it back. */
     private boolean ownsArrayExport;
+    private boolean ownsByteArrayExport;
 
     /** The views {@code __buffer__} exported from this one and that are still alive. */
     private final List<PyMemoryView> exports = new ArrayList<>();
@@ -121,7 +122,7 @@ public final class PyMemoryView extends PyObject {
             return view.copied();
         }
         if (value instanceof PyByteArray run) {
-            return basic(run, run.size(), false);
+            return exported(run);
         }
         if (value instanceof PyArray array) {
             return exported(array);
@@ -154,7 +155,7 @@ public final class PyMemoryView extends PyObject {
             return basic(octets, octets.size(), true);
         }
         if (value instanceof PyByteArray run) {
-            return basic(run, run.size(), false);
+            return exported(run);
         }
         if (value instanceof PyArray array) {
             return exported(array);
@@ -193,9 +194,17 @@ public final class PyMemoryView extends PyObject {
         return view;
     }
 
+    /** The basic view a bytearray exports: writable, one octet per element, counted on the run. */
+    private static PyMemoryView exported(PyByteArray run) {
+        run.beginExport();
+        PyMemoryView view = basic(run, run.size(), false);
+        view.ownsByteArrayExport = true;
+        return view;
+    }
+
     /** An independent header over the same run, with the same format and shape. */
     private PyMemoryView copied() {
-        return new PyMemoryView(
+        PyMemoryView copy = new PyMemoryView(
                 exporter,
                 obj,
                 offset,
@@ -204,6 +213,11 @@ public final class PyMemoryView extends PyObject {
                 shape.clone(),
                 strides.clone(),
                 readonly);
+        // The reference counts this as another export of the header it was taken from, so releasing
+        // the parent while the copy lives is refused, and the bytearray's own export is only given
+        // back once the parent is released.
+        exports.add(copy);
+        return copy;
     }
 
     /**
@@ -447,6 +461,10 @@ public final class PyMemoryView extends PyObject {
         if (ownsArrayExport) {
             ((PyArray) exporter).releaseBuffer();
             ownsArrayExport = false;
+        }
+        if (ownsByteArrayExport) {
+            ((PyByteArray) exporter).endExport();
+            ownsByteArrayExport = false;
         }
         released = true;
     }

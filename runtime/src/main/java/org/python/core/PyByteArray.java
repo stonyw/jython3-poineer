@@ -97,16 +97,19 @@ public class PyByteArray extends PyObject {
      * sequence of appends reproducible rather than incidental.
      */
     private void resize(int requested) {
+        int size = value.length;
+        if (requested == size) {
+            // A write that keeps the length writes in place: CPython's `bytearray_setslice_linear`
+            // and `_PyByteArray_Extend` never reach `bytes_resize` for those, so a live export does
+            // not stop them. `b''.clear()` and `b.resize(len(b))` land here too.
+            return;
+        }
         if (exports > 0) {
             // A buffer handed out still points into this run: CPython's `bytes_resize` refuses rather
             // than move the array out from under it, and `bytearray_join` does exactly this — the
             // separator is exported while the iterable is walked, so an iterable that clears the
             // bytearray mid-join reports this instead of reading a stale separator.
             throw Slots.bufferError("Existing exports of data: object cannot be re-sized");
-        }
-        int size = value.length;
-        if (requested == size) {
-            return;
         }
         int capacity = allocated;
         if ((long) requested + 1 <= capacity) {
