@@ -83,6 +83,11 @@ final class SequenceIterators {
             .addNoArgument("__length_hint__", LENGTH_HINT_DOC, self -> ((Cursor) self).hint())
             .addNoArgument("__reduce__", REDUCE_DOC, self -> ((Cursor) self).reduce());
 
+    /** {@code dequereviter_methods}: the same two rows over the cursor that walks from the right. */
+    private static final Members DEQUE_BACK = Members.of(PyType.DEQUE_REVERSE_ITERATOR)
+            .addNoArgument("__length_hint__", LENGTH_HINT_DOC, self -> ((Cursor) self).hint())
+            .addNoArgument("__reduce__", REDUCE_DOC, self -> ((Cursor) self).reduce());
+
     private SequenceIterators() {
     }
 
@@ -106,18 +111,41 @@ final class SequenceIterators {
 
     /** {@code deque_iter}: one index into a deque that is read as it stands at every step. */
     static PyIterator deque(PyDeque source) {
-        return new DequeCursor(source);
+        return new DequeCursor(source, 0);
+    }
+
+    /** {@code _deque_iterator(deque, index)}: the cursor a pickle hands the index to. */
+    static PyIterator dequeAt(PyDeque source, int at) {
+        return new DequeCursor(source, at);
+    }
+
+    /** {@code deque.__reversed__}: the same index, counting from the right end. */
+    static PyIterator dequeBackwards(PyDeque source) {
+        return new DequeBackward(source, 0);
+    }
+
+    /** {@code _deque_reverse_iterator(deque, consumed)}: the cursor a pickle hands the count to. */
+    static PyIterator dequeBackwardsAt(PyDeque source, int consumed) {
+        return new DequeBackward(source, consumed);
     }
 
     /** {@code dequeiterobject}: an index into a deque, which keeps the deque after the index runs out. */
     private static final class DequeCursor extends Cursor {
 
-        DequeCursor(PyDeque source) {
+        /** {@code it_state}: the deque's structural count when this cursor was made. */
+        private final long state;
+
+        DequeCursor(PyDeque source, int at) {
             super(PyType.DEQUE_ITERATOR, source);
+            this.at = at;
+            this.state = source.state;
         }
 
         @Override
         public PyObject nextOrNull() {
+            if (((PyDeque) source).state != state) {
+                throw Slots.runtimeError("deque mutated during iteration");
+            }
             if (at < size()) {
                 return item(at++);
             }
@@ -136,12 +164,71 @@ final class SequenceIterators {
          */
         @Override
         PyObject reduce() {
-            return PyTuple.of(getType(), PyTuple.of(source), PyInt.of(at));
+            return PyTuple.of(getType(), PyTuple.of(source, PyInt.of(at)));
         }
 
         @Override
         void stepTo(PyObject state) {
             // dequeiter_methods files no `__setstate__`; the name is never reachable.
+        }
+
+        @Override
+        boolean live() {
+            return true;
+        }
+
+        @Override
+        int size() {
+            return ((PyDeque) source).size();
+        }
+
+        @Override
+        PyObject item(int index) {
+            return ((PyDeque) source).at(index);
+        }
+    }
+
+    /**
+     * {@code dequereviterobject}: the number of items already handed out, counted from the right.
+     *
+     * <p>{@code it_index} is a distance rather than a position, which is why its {@code __reduce__} and
+     * constructor agree on the count consumed and the item is read at {@code len - 1 - at}.
+     */
+    private static final class DequeBackward extends Cursor {
+
+        /** {@code it_state}: the deque's structural count when this cursor was made. */
+        private final long state;
+
+        DequeBackward(PyDeque source, int consumed) {
+            super(PyType.DEQUE_REVERSE_ITERATOR, source);
+            this.at = consumed;
+            this.state = source.state;
+        }
+
+        @Override
+        public PyObject nextOrNull() {
+            if (((PyDeque) source).state != state) {
+                throw Slots.runtimeError("deque mutated during iteration");
+            }
+            if (at < size()) {
+                return item(size() - 1 - at++);
+            }
+            return null;
+        }
+
+        @Override
+        PyObject hint() {
+            return PyInt.of(Math.max(0, size() - at));
+        }
+
+        @Override
+        PyObject reduce() {
+            return PyTuple.of(getType(), PyTuple.of(source, PyInt.of(at)));
+        }
+
+        @Override
+        void stepTo(PyObject state) {
+            // dequereviter_methods files no `__setstate__`; the name is never reachable.
         }
 
         @Override

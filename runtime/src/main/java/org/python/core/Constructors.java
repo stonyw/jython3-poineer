@@ -116,6 +116,9 @@ final class Constructors {
         if (type == PyType.DEQUE) {
             return PyDeque.called(args, kwNames);
         }
+        if (type == PyType.DEQUE_ITERATOR || type == PyType.DEQUE_REVERSE_ITERATOR) {
+            return dequeCursor(type, args);
+        }
         if (type == PyType.RANGE) {
             return ranging(args, keywordNames);
         }
@@ -1667,5 +1670,32 @@ final class Constructors {
                         "%s() got an unexpected keyword argument '%s'", qualified, keyword);
             }
         }
+    }
+
+    /**
+     * {@code _deque_iterator(deque, index)} and its reverse twin.
+     *
+     * <p>{@code dequeiter_new} and {@code dequereviter_new} read the deque first and a
+     * {@code Py_ssize_t} second, clip it into {@code [0, len]} and ignore keywords entirely — the
+     * cursor's state is the only thing either type accepts, and it is positional.
+     */
+    private static PyObject dequeCursor(PyType type, PyObject[] args) {
+        if (args.length < 1) {
+            throw Slots.typeError("function takes at least 1 argument (0 given)");
+        }
+        if (args.length > 2) {
+            throw Slots.typeError(
+                    "function takes at most 2 arguments (%d given)", args.length);
+        }
+        if (!(args[0] instanceof PyDeque deque)) {
+            throw Slots.typeError(
+                    "argument 1 must be collections.deque, not %s",
+                    args[0].getType().filedName());
+        }
+        long offset = args.length > 1 ? Numbers.size(args[1]) : 0;
+        int at = (int) (offset < 0 ? 0 : Math.min(offset, deque.size()));
+        return type == PyType.DEQUE_REVERSE_ITERATOR
+                ? SequenceIterators.dequeBackwardsAt(deque, at)
+                : SequenceIterators.dequeAt(deque, at);
     }
 }

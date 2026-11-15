@@ -1104,7 +1104,11 @@ public class PyType extends PyObject {
      * one cursor whose {@code __reduce__} names the type itself rather than {@code iter}.
      */
     static final PyType DEQUE_ITERATOR =
-            builtin("_deque_iterator").withoutNew().filedUnder("collections._deque_iterator");
+            builtin("_deque_iterator").filedUnder("collections._deque_iterator");
+
+    /** {@code type(reversed(deque()))}: the cursor that walks the same list from its right end. */
+    static final PyType DEQUE_REVERSE_ITERATOR =
+            builtin("_deque_reverse_iterator").filedUnder("collections._deque_reverse_iterator");
 
     /** The cursor of a string with a code point at or above 128 in it. */
     static final PyType STR_ITERATOR = builtin("str_iterator").withoutNew();

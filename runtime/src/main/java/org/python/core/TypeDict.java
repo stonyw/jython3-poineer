@@ -7713,7 +7713,7 @@ final class TypeDict {
      * and the slots that were filled, which is what a plain instance with no attributes contributes as
      * {@code None}.
      */
-    private static PyObject stateOf(PyObject value) {
+    static PyObject stateOf(PyObject value) {
         PyObject getstate = Specials.member(value.getType(), "__getstate__");
         if (getstate != null && getstate != objectGetstateRow()) {
             return Slots.call(Slots.getAttr(value, "__getstate__"), new PyObject[0], null);

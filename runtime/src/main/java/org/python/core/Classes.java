@@ -397,6 +397,9 @@ final class Classes {
                 // subclass the same way.
                 || base == PyType.SET
                 || base == PyType.FROZENSET
+                // `deque` keeps its element list in the same subclass the class dictionary sits beside;
+                // `test_deque` writes `class X(deque)` with `__init__`, `__iter__` and `__slots__`.
+                || base == PyType.DEQUE
                 // A module's state is the dictionary it owns, which is exactly what a class Python
                 // writes can keep beside it: `types.ModuleType` is a base the reference's own tests
                 // (and `runpy`) rely on, and `PyModule` reads class members when its type is a class.
@@ -1728,6 +1731,11 @@ final class Classes {
         // class the value was made as in its refusals.
         if (kind.matches(PyType.SET)) {
             return new PySetSubclass(new LinkedHashSet<>(), kind);
+        }
+        // `deque.__new__` allocates an empty, unbounded deque; `deque.__init__` fills it and sets the
+        // bound afterwards, in the receiver's own name.
+        if (kind.matches(PyType.DEQUE)) {
+            return new PyDequeSubclass(kind, -1);
         }
         // `frozenset.__new__` reads its one argument into the value it makes — there is no initialiser to
         // fill it afterwards — so the argument is consumed here, in the receiver's own name.

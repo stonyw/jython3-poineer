@@ -1,145 +1,201 @@
 package org.python.core;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * {@code collections.deque}: a sequence that grows and shrinks at both ends.
+ * Python's {@code collections.deque}: a doubly-ended queue with an optional bound.
  *
- * <p>The storage here is an {@link ArrayList}, so {@code appendleft} and {@code popleft} move the tail
- * rather than being the constant-time operations the reference's block ring makes them. What is kept is
- * the semantics a program can observe: the {@code maxlen} bound drops from the opposite end when it is
- * exceeded, iteration walks the current contents, and the type is unhashable.
+ * <p>The storage is an {@link ArrayList} here, so an operation at the left end moves every element. That
+ * is a performance difference from CPython's blocks and nothing else: every answer this class gives is
+ * meant to be the one the reference gives, including the words of its refusals and which end loses an
+ * element when a bounded deque overflows.
  *
- * <p>Named gaps, all of them denied methods rather than wrong ones: no {@code insert}, {@code index} or
- * {@code __reduce__}, and {@code iter(d)} answers with the tuple cursor's type rather than a cursor of
- * its own. {@code collections} uses the three that matter — {@code append}, {@code pop} and
- * {@code __len__} — and {@code ExitStack} is built on exactly those.
+ * <p>A deque counts its structural changes in {@link #state}. The iterators, {@code count}, {@code index},
+ * {@code remove} and {@code in} all snapshot that count and refuse when it moved, which is CPython's
+ * {@code deque mutated during iteration} and is visible precisely because a value being compared is
+ * allowed to mutate the deque it lives in.
  */
-public final class PyDeque extends PyObject {
+public class PyDeque extends PyObject {
 
-    private static final String APPEND_DOC = "Add an element to the right side of the deque.";
-    private static final String APPENDLEFT_DOC = "Add an element to the left side of the deque.";
-    private static final String CLEAR_DOC = "Remove all elements from the deque.";
-    private static final String COPY_DOC = "Return a shallow copy of a deque.";
-    private static final String COUNT_DOC =
-            "Return number of occurrences of value.";
-    private static final String EXTEND_DOC =
-            "Extend the right side of the deque with elements from the iterable.";
-    private static final String EXTENDLEFT_DOC =
-            "Extend the left side of the deque with elements from the iterable.";
-    private static final String POP_DOC = "Remove and return the rightmost element.";
-    private static final String POPLEFT_DOC = "Remove and return the leftmost element.";
-    private static final String REMOVE_DOC =
-            "Remove the first occurrence of value.";
-    private static final String REVERSE_DOC = "Reverse *IN PLACE*.";
-    private static final String ROTATE_DOC =
-            "Rotate the deque n steps to the right (default 1).";
+    /** The element storage, oldest first. */
+    final List<PyObject> items = new ArrayList<>();
+
+    /** The bound, or -1 when unbounded; {@code maxlen} shows as {@code None} in the unbounded case. */
+    private long maxlen = -1;
+
+    /**
+     * How many structural changes this deque has made.
+     *
+     * <p>Every append, pop, insert, delete, clear, extend item and effective rotate moves it; a
+     * replacement through {@code d[i] = x} and {@code reverse} do not, which is exactly CPython's set.
+     * The iterators and the searches compare a snapshot against this before each step.
+     */
+    long state;
 
     private static final String[] PARAMETERS = {"iterable", "maxlen"};
 
+    private static final String INIT_DOC =
+            "Initialize self.  See help(type(self)) for accurate signature.";
+    private static final String INSERT_DOC =
+            "Insert x into the deque at position i.";
+    private static final String INDEX_DOC =
+            "Return first index of value.\n\nRaises ValueError if the value is not present.";
+    private static final String ROTATE_DOC =
+            "Rotate the deque n steps to the right (default n=1).  If n is negative, rotates left.";
+    private static final String REVERSED_DOC =
+            "Return a reverse iterator over the deque.";
+    private static final String REDUCE_DOC =
+            "Return state information for pickling.";
+    private static final String COPY_DOC =
+            "Return a shallow copy of a deque.";
+
     private static final Members METHODS = Members.of(PyType.DEQUE)
-            .addField("maxlen", "maximum size of a deque or None if unbounded",
-                    self -> {
-                        int maxlen = ((PyDeque) self).maxlen;
-                        return maxlen < 0 ? PyNone.INSTANCE : PyInt.of(maxlen);
+            .addValue("maxlen", new PyGetSetDescriptor(
+                    PyType.DEQUE, "maxlen",
+                    "maximum size of a deque or None if unbounded",
+                    self -> ((PyDeque) self).maxlenValue(), null))
+            .addOne("append", "Add an element to the right side of the deque.",
+                    (self, item) -> ((PyDeque) self).appendRight(item))
+            .addOne("appendleft", "Add an element to the left side of the deque.",
+                    (self, item) -> ((PyDeque) self).appendLeft(item))
+            .addOne("extend", "Extend the right side of the deque with elements from the iterable.",
+                    (self, iterable) -> {
+                        ((PyDeque) self).extendRight(iterable);
+                        return PyNone.INSTANCE;
                     })
-            .addOne("append", APPEND_DOC, (self, item) -> ((PyDeque) self).addLast(item))
-            .addOne("appendleft", APPENDLEFT_DOC, (self, item) -> ((PyDeque) self).addFirst(item))
-            .addNoArgument("clear", CLEAR_DOC, self -> {
-                ((PyDeque) self).items.clear();
-                return PyNone.INSTANCE;
-            })
+            .addOne("extendleft", "Extend the left side of the deque with elements from the iterable.",
+                    (self, iterable) -> {
+                        ((PyDeque) self).extendLeft(iterable);
+                        return PyNone.INSTANCE;
+                    })
+            .addNoArgument("pop", "Remove and return the rightmost element.",
+                    self -> ((PyDeque) self).removeLast())
+            .addNoArgument("popleft", "Remove and return the leftmost element.",
+                    self -> ((PyDeque) self).removeFirst())
+            .add("insert", INSERT_DOC, PyDeque::insertMethod)
+            .addOne("remove", "Remove the first occurrence of value.",
+                    (self, value) -> ((PyDeque) self).removeValue(value))
+            .addNoArgument("clear", "Remove all elements from the deque.",
+                    self -> ((PyDeque) self).clearItems())
             .addNoArgument("copy", COPY_DOC, self -> ((PyDeque) self).copied())
-            .addOne("count", COUNT_DOC, (self, value) -> PyInt.of(((PyDeque) self).countOf(value)))
-            .addOne("extend", EXTEND_DOC, (self, iterable) -> ((PyDeque) self).extendRight(iterable))
-            .addOne("extendleft", EXTENDLEFT_DOC,
-                    (self, iterable) -> ((PyDeque) self).extendLeft(iterable))
-            .addNoArgument("pop", POP_DOC, self -> ((PyDeque) self).removeLast())
-            .addNoArgument("popleft", POPLEFT_DOC, self -> ((PyDeque) self).removeFirst())
-            .addOne("remove", REMOVE_DOC, (self, value) -> ((PyDeque) self).removeValue(value))
-            .addNoArgument("reverse", REVERSE_DOC, self -> {
-                java.util.Collections.reverse(((PyDeque) self).items);
-                return PyNone.INSTANCE;
-            })
-            .addOne("rotate", ROTATE_DOC, (self, steps) ->
-                    ((PyDeque) self).rotate(Numbers.asIndex(steps).intValueExact()))
+            .addOne("count", "Return number of occurrences of value.",
+                    (self, value) -> ((PyDeque) self).countOccurrences(value))
+            .add("index", INDEX_DOC, PyDeque::indexMethod)
+            .addNoArgument("reverse", "Reverse *IN PLACE*.",
+                    self -> ((PyDeque) self).reverseItems())
+            .add("rotate", ROTATE_DOC, PyDeque::rotateMethod)
+            .add("__init__", INIT_DOC, PyDeque::initializeMethod)
+            .addNoArgument("__reversed__", REVERSED_DOC,
+                    self -> SequenceIterators.dequeBackwards((PyDeque) self))
+            .addNoArgument("__copy__", COPY_DOC, self -> ((PyDeque) self).copied())
+            .addNoArgument("__reduce__", REDUCE_DOC, PyDeque::reduced)
             .addValue("__doc__", PyType.DEQUE.getAttr("__doc__"));
 
-    private final List<PyObject> items = new ArrayList<>();
+    /** An empty, unbounded deque of the base type. */
+    PyDeque() {
+        this(-1, PyType.DEQUE);
+    }
 
-    /** The bound on the length, or a negative number for an unbounded deque. */
-    private final int maxlen;
-
-    private PyDeque(int maxlen) {
-        super(PyType.DEQUE);
+    PyDeque(long maxlen, PyType kind) {
+        super(kind);
         this.maxlen = maxlen;
     }
 
-    /**
-     * {@code deque(iterable, maxlen)}: the call {@link Constructors#instantiate} sends here.
-     *
-     * <p>{@code maxlen} is read before the iterable is drained, because the reference refuses a negative
-     * bound whether or not there is anything to put in it.
-     */
+    /** {@code deque(iterable[, maxlen])}: the constructor CPython reaches through {@code tp_new}. */
     static PyObject called(PyObject[] args, PyTuple keywordNames) {
-        String[] names = new String[keywordNames == null ? 0 : keywordNames.size()];
-        for (int i = 0; i < names.length; i++) {
-            names[i] = Numbers.asText(keywordNames.at(i));
-        }
+        PyDeque result = new PyDeque();
+        result.initialize(args, PyBoundMethod.keywordNames(keywordNames));
+        return result;
+    }
+
+    /** A fresh deque of the same class and bound, used by {@code copy}, {@code +} and {@code *}. */
+    PyDeque likeThis() {
+        return getType() == PyType.DEQUE
+                ? new PyDeque(maxlen, PyType.DEQUE)
+                : new PyDequeSubclass(getType(), maxlen);
+    }
+
+    // ---------------------------------------------------------------- construction
+
+    /**
+     * {@code deque.__init__}: a bound read before anything is thrown away.
+     *
+     * <p>CPython reads and converts both arguments first, then replaces the bound, then clears, then
+     * extends. A bad {@code maxlen} therefore leaves an existing deque untouched, and a re-run with the
+     * bound left out resets the deque to unbounded rather than keeping the old one.
+     */
+    private static PyObject initializeMethod(PyObject self, PyObject[] args, String[] kwNames) {
+        ((PyDeque) self).initialize(args, kwNames);
+        return PyNone.INSTANCE;
+    }
+
+    void initialize(PyObject[] args, String[] kwNames) {
         PyObject[] values = Arguments.parameters(
-                "deque", args, names, PARAMETERS,
-                new PyObject[] {null, PyNone.INSTANCE}, 0);
-        int bound = -1;
-        if (values[1] != PyNone.INSTANCE) {
-            bound = Numbers.asIndex(values[1]).intValueExact();
+                "deque", args, kwNames, PARAMETERS, new PyObject[] {null, null}, 0);
+        long bound = -1;
+        if (values[1] != null && values[1] != PyNone.INSTANCE) {
+            bound = Numbers.asSsizeT(values[1]);
             if (bound < 0) {
                 throw Slots.valueError("maxlen must be non-negative");
             }
         }
-        PyDeque result = new PyDeque(bound);
+        maxlen = bound;
+        if (!items.isEmpty()) {
+            items.clear();
+            state++;
+        }
         if (values[0] != null) {
-            result.extendRight(values[0]);
+            extendRight(values[0]);
         }
-        return result;
     }
 
-    private PyObject copied() {
-        PyDeque copy = new PyDeque(maxlen);
-        copy.items.addAll(items);
-        return copy;
-    }
+    // ---------------------------------------------------------------- method bodies
 
-    // --- storage -------------------------------------------------------------------------------------
-
-    private PyObject addLast(PyObject item) {
-        if (maxlen == 0) {
-            return PyNone.INSTANCE;
-        }
-        items.add(item);
-        discardOverflow();
+    private PyObject appendRight(PyObject item) {
+        addLast(item);
         return PyNone.INSTANCE;
     }
 
-    private PyObject addFirst(PyObject item) {
-        if (maxlen == 0) {
-            return PyNone.INSTANCE;
-        }
-        items.add(0, item);
-        discardOverflow();
+    private PyObject appendLeft(PyObject item) {
+        addFirst(item);
         return PyNone.INSTANCE;
     }
 
-    private void discardOverflow() {
-        if (maxlen > 0 && items.size() > maxlen) {
-            items.remove(0);
-        }
+    private static PyObject insertMethod(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("deque.insert", kwNames);
+        Arguments.exactly("insert", args, kwNames, 2);
+        ((PyDeque) self).insertAt(Numbers.size(args[0]), args[1]);
+        return PyNone.INSTANCE;
+    }
+
+    private static PyObject indexMethod(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("deque.index", kwNames);
+        Arguments.between("index", args, kwNames, 1, 3);
+        PyDeque deque = (PyDeque) self;
+        BigInteger startBound = Sequences.bound(args.length > 1 ? args[1] : null);
+        BigInteger stopBound = Sequences.bound(args.length > 2 ? args[2] : null);
+        int size = deque.items.size();
+        int start = Sequences.folded(startBound, size, 0);
+        int stop = Sequences.folded(stopBound, size, Integer.MAX_VALUE);
+        return PyInt.of(deque.indexOf(args[0], start, stop));
+    }
+
+    private static PyObject rotateMethod(PyObject self, PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("deque.rotate", kwNames);
+        Arguments.atMost("rotate", args, kwNames, 1);
+        long steps = args.length == 0 ? 1 : Numbers.size(args[0]);
+        ((PyDeque) self).rotate(steps);
+        return PyNone.INSTANCE;
     }
 
     private PyObject removeLast() {
         if (items.isEmpty()) {
             throw Slots.indexError("pop from an empty deque");
         }
+        state++;
         return items.remove(items.size() - 1);
     }
 
@@ -147,83 +203,265 @@ public final class PyDeque extends PyObject {
         if (items.isEmpty()) {
             throw Slots.indexError("pop from an empty deque");
         }
+        state++;
         return items.remove(0);
     }
 
     private PyObject removeValue(PyObject value) {
+        long expected = state;
         for (int i = 0; i < items.size(); i++) {
-            if (items.get(i).eq(value)) {
-                return items.remove(i);
+            boolean match = Slots.compareTrue(CompareOp.EQ, items.get(i), value);
+            if (state != expected) {
+                throw Slots.indexError("deque mutated during iteration");
+            }
+            if (match) {
+                state++;
+                items.remove(i);
+                return PyNone.INSTANCE;
             }
         }
         throw Slots.valueError("deque.remove(x): x not in deque");
     }
 
-    private int countOf(PyObject value) {
-        int found = 0;
-        for (PyObject candidate : items) {
-            if (candidate.eq(value)) {
-                found++;
-            }
+    private PyObject clearItems() {
+        if (!items.isEmpty()) {
+            items.clear();
+            state++;
         }
-        return found;
+        return PyNone.INSTANCE;
     }
 
-    private PyObject extendRight(PyObject iterable) {
-        if (iterable instanceof PyDeque other) {
-            for (PyObject item : new ArrayList<>(other.items)) {
+    private PyObject copied() {
+        PyDeque result = likeThis();
+        result.items.addAll(items);
+        return result;
+    }
+
+    private PyObject countOccurrences(PyObject value) {
+        long expected = state;
+        int count = 0;
+        for (int i = 0; i < items.size(); i++) {
+            if (Slots.compareTrue(CompareOp.EQ, items.get(i), value)) {
+                count++;
+            }
+            if (state != expected) {
+                throw Slots.runtimeError("deque mutated during iteration");
+            }
+        }
+        return PyInt.of(count);
+    }
+
+    private PyObject reverseItems() {
+        Collections.reverse(items);
+        return PyNone.INSTANCE;
+    }
+
+    private int indexOf(PyObject value, int start, int stop) {
+        long expected = state;
+        int size = items.size();
+        for (int i = 0; i < size; i++) {
+            // CPython compares every element, including those before `start`, so an __eq__
+            // that mutates the deque is caught wherever it sits.
+            if (Slots.compareTrue(CompareOp.EQ, items.get(i), value) && i >= start && i < stop) {
+                return i;
+            }
+            if (state != expected) {
+                throw Slots.runtimeError("deque mutated during iteration");
+            }
+        }
+        throw Slots.valueError("deque.index(x): x not in deque");
+    }
+
+    private void insertAt(long index, PyObject value) {
+        if (maxlen >= 0 && items.size() >= maxlen) {
+            throw Slots.indexError("deque already at its maximum size");
+        }
+        int position = index < 0
+                ? (int) Math.max(0, items.size() + index)
+                : (int) Math.min(index, items.size());
+        items.add(position, value);
+        state++;
+    }
+
+    /** {@code deque.rotate(n)}: a count that divides out to nothing leaves the state alone. */
+    private void rotate(long steps) {
+        if (steps == 0 || items.isEmpty()) {
+            return;
+        }
+        steps %= items.size();
+        if (steps == 0) {
+            return;
+        }
+        state++;
+        Collections.rotate(items, (int) steps);
+    }
+
+    // ---------------------------------------------------------------- storage primitives
+
+    void addLast(PyObject item) {
+        if (maxlen == 0) {
+            return;
+        }
+        items.add(item);
+        state++;
+        trimRight();
+    }
+
+    void addFirst(PyObject item) {
+        if (maxlen == 0) {
+            return;
+        }
+        items.add(0, item);
+        state++;
+        trimLeft();
+    }
+
+    private void trimRight() {
+        while (maxlen >= 0 && items.size() > maxlen) {
+            items.remove(0);
+        }
+    }
+
+    private void trimLeft() {
+        while (maxlen >= 0 && items.size() > maxlen) {
+            items.remove(items.size() - 1);
+        }
+    }
+
+    void extendRight(PyObject iterable) {
+        if (iterable == this) {
+            for (PyObject item : new ArrayList<>(items)) {
                 addLast(item);
             }
-            return PyNone.INSTANCE;
+            return;
         }
         PyIterator iterator = Slots.iterator(iterable);
         PyObject item;
         while ((item = iterator.nextOrNull()) != null) {
             addLast(item);
         }
-        return PyNone.INSTANCE;
     }
 
-    private PyObject extendLeft(PyObject iterable) {
+    void extendLeft(PyObject iterable) {
+        if (iterable == this) {
+            for (PyObject item : new ArrayList<>(items)) {
+                addFirst(item);
+            }
+            return;
+        }
         PyIterator iterator = Slots.iterator(iterable);
         PyObject item;
         while ((item = iterator.nextOrNull()) != null) {
             addFirst(item);
         }
-        return PyNone.INSTANCE;
     }
 
-    private PyObject rotate(int steps) {
+    private PyObject repeated(long times) {
+        PyDeque result = likeThis();
+        if (times <= 0 || items.isEmpty()) {
+            return result;
+        }
         int size = items.size();
-        if (size == 0) {
-            return PyNone.INSTANCE;
+        BigInteger copies = BigInteger.valueOf(size).multiply(BigInteger.valueOf(times));
+        BigInteger total = maxlen >= 0
+                ? copies.min(BigInteger.valueOf(maxlen))
+                : copies;
+        if (maxlen < 0 && total.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
+            throw Slots.memoryError();
         }
-        int shift = Math.floorMod(steps, size);
-        if (shift == 0) {
-            return PyNone.INSTANCE;
+        BigInteger start = copies.subtract(total);
+        int count = total.intValue();
+        BigInteger stride = BigInteger.valueOf(size);
+        for (int i = 0; i < count; i++) {
+            result.items.add(items.get(start.add(BigInteger.valueOf(i)).mod(stride).intValue()));
         }
-        for (int i = 0; i < shift; i++) {
-            addFirst(removeLast());
-        }
-        return PyNone.INSTANCE;
+        return result;
     }
 
-    // --- slots ---------------------------------------------------------------------------------------
+    private void multipliedInPlace(long times) {
+        if (times <= 0) {
+            if (!items.isEmpty()) {
+                items.clear();
+                state++;
+            }
+            return;
+        }
+        if (times == 1 || items.isEmpty()) {
+            return;
+        }
+        int size = items.size();
+        BigInteger copies = BigInteger.valueOf(size).multiply(BigInteger.valueOf(times));
+        BigInteger total = maxlen >= 0 ? copies.min(BigInteger.valueOf(maxlen)) : copies;
+        if (maxlen < 0 && total.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
+            throw Slots.memoryError();
+        }
+        BigInteger start = copies.subtract(total);
+        int count = total.intValue();
+        BigInteger stride = BigInteger.valueOf(size);
+        List<PyObject> original = new ArrayList<>(items);
+        items.clear();
+        for (int i = 0; i < count; i++) {
+            items.add(original.get(start.add(BigInteger.valueOf(i)).mod(stride).intValue()));
+        }
+        state++;
+    }
+
+    private PyObject added(PyObject other) {
+        if (!(other instanceof PyDeque right)) {
+            throw Slots.typeError(
+                    "can only concatenate deque (not \"%s\") to deque", other.getType().name());
+        }
+        PyDeque result = likeThis();
+        result.items.addAll(items);
+        for (PyObject item : right.items) {
+            result.addLast(item);
+        }
+        return result;
+    }
+
+    // ---------------------------------------------------------------- reduction
+
+    private static PyObject reduced(PyObject self) {
+        PyDeque deque = (PyDeque) self;
+        PyObject arguments = deque.maxlen < 0
+                ? PyTuple.EMPTY
+                : PyTuple.of(PyTuple.EMPTY, PyInt.of(deque.maxlen));
+        return PyTuple.of(
+                self.getType(),
+                arguments,
+                TypeDict.stateOf(self),
+                Slots.getIter(self));
+    }
+
+    // ---------------------------------------------------------------- object protocol
 
     @Override
     public PyObject getAttr(String name) {
+        if (name.equals("maxlen")) {
+            return maxlenValue();
+        }
         return Members.find(this, name);
     }
 
     @Override
     public PyObject setAttr(String name, PyObject value) {
-        throw Slots.attributeError("'%s' object has no attribute '%s' and no __dict__ for setting"
-                + " new attributes", getType().filedName(), name);
+        GenericAttributes.write(this, name, value);
+        return PyNone.INSTANCE;
     }
 
     @Override
     public PyObject delAttr(String name) {
-        return setAttr(name, null);
+        GenericAttributes.delete(this, name);
+        return PyNone.INSTANCE;
+    }
+
+    private PyObject maxlenValue() {
+        return maxlen < 0 ? PyNone.INSTANCE : PyInt.of(maxlen);
+    }
+
+    @Override
+    public long hash() {
+        throw Slots.typeError("unhashable type: '%s'", getType().filedName());
     }
 
     @Override
@@ -232,85 +470,148 @@ public final class PyDeque extends PyObject {
     }
 
     @Override
+    public PyObject truth() {
+        return PyBool.of(!items.isEmpty());
+    }
+
+    @Override
     public PyObject getItem(PyObject key) {
-        if (Slices.isSlice(key)) {
-            throw Slots.typeError("sequence index must be integer, not 'slice'");
+        if (!Numbers.isIndex(key)) {
+            throw Slots.typeError(
+                    "sequence index must be integer, not '%s'", key.getType().filedName());
         }
-        return items.get(Slices.index(key, items::size, "deque", "deque index out of range"));
+        return items.get(Numbers.wrapIndex(key, Numbers.asIndex(key), items.size(),
+                "deque index out of range"));
     }
 
     @Override
     public PyObject setItem(PyObject key, PyObject value) {
-        if (Slices.isSlice(key)) {
-            throw Slots.typeError("sequence index must be integer, not 'slice'");
-        }
-        items.set(Slices.index(key, items::size, "deque", "deque index out of range"), value);
+        items.set(checkedIndex(key), value);
         return PyNone.INSTANCE;
     }
 
     @Override
     public PyObject delItem(PyObject key) {
-        if (Slices.isSlice(key)) {
-            throw Slots.typeError("sequence index must be integer, not 'slice'");
-        }
-        items.remove(Slices.index(key, items::size, "deque", "deque index out of range"));
+        items.remove(checkedIndex(key));
+        state++;
         return PyNone.INSTANCE;
     }
 
-    @Override
-    public PyObject contains(PyObject item) {
-        return PyBool.of(countOf(item) > 0);
+    /**
+     * {@code deque_ass_item}'s index: {@code PyNumber_AsSsize_t(key, PyExc_OverflowError)}, folded
+     * and bounds-checked. Unlike {@link #getItem}, a width overflow here is an {@code OverflowError}
+     * with the "index-sized" sentence, which is what {@link Numbers#repeat} writes.
+     */
+    private int checkedIndex(PyObject key) {
+        long index = Numbers.repeat(key);
+        if (index < 0) {
+            index += items.size();
+        }
+        if (index < 0 || index >= items.size()) {
+            throw Slots.indexError("deque index out of range");
+        }
+        return (int) index;
     }
 
     @Override
-    public PyObject iterator() {
+    public PyObject contains(PyObject value) {
+        long expected = state;
+        for (int i = 0; i < items.size(); i++) {
+            if (Slots.compareTrue(CompareOp.EQ, items.get(i), value)) {
+                return PyBool.TRUE;
+            }
+            if (state != expected) {
+                throw Slots.runtimeError("deque mutated during iteration");
+            }
+        }
+        return PyBool.FALSE;
+    }
+
+    @Override
+    public PyIterator iterator() {
         return SequenceIterators.deque(this);
     }
 
-    /** What the cursor reads at every step: the deque as it stands. */
+    /** How many elements this deque holds, for the iterators and the constructors. */
     int size() {
         return items.size();
     }
 
+    /** The element at a position already known to be in range. */
     PyObject at(int index) {
         return items.get(index);
     }
 
     @Override
-    public PyObject richCompare(CompareOp cmp, PyObject other) {
-        if (cmp != CompareOp.EQ && cmp != CompareOp.NE || !(other instanceof PyDeque deque)) {
+    public PyObject binaryOp(BinaryOp op, PyObject other) {
+        if (op == BinaryOp.ADD) {
+            return added(other);
+        }
+        if (op == BinaryOp.MUL) {
+            return repeated(Sequences.multiplier(other));
+        }
+        return PyNotImplemented.INSTANCE;
+    }
+
+    @Override
+    public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        return op == BinaryOp.MUL ? repeated(Sequences.multiplier(other))
+                : PyNotImplemented.INSTANCE;
+    }
+
+    @Override
+    public PyObject inplaceOp(BinaryOp op, PyObject other) {
+        if (op == BinaryOp.ADD) {
+            extendRight(other);
+            return this;
+        }
+        if (op == BinaryOp.MUL) {
+            multipliedInPlace(Numbers.repeat(other));
+            return this;
+        }
+        return PyNotImplemented.INSTANCE;
+    }
+
+    @Override
+    public PyObject richCompare(CompareOp op, PyObject other) {
+        if (!(other instanceof PyDeque deque)) {
             return PyNotImplemented.INSTANCE;
         }
-        return Sequences.compare(cmp, items.toArray(new PyObject[0]),
+        return Sequences.compare(op, items.toArray(new PyObject[0]),
                 deque.items.toArray(new PyObject[0]));
     }
 
     @Override
     public boolean eq(PyObject other) {
-        if (!(other instanceof PyDeque deque) || deque.items.size() != items.size()) {
-            return false;
-        }
-        for (int i = 0; i < items.size(); i++) {
-            if (!items.get(i).eq(deque.items.get(i))) {
-                return false;
-            }
-        }
-        return true;
+        return other instanceof PyDeque deque && items.equals(deque.items);
     }
 
     @Override
     public String repr() {
-        StringBuilder out = new StringBuilder("deque([");
+        if (enteringRepr(this)) {
+            return "[...]";
+        }
+        try {
+            return named();
+        } finally {
+            leavingRepr(this);
+        }
+    }
+
+    /** The repr text without CPython's re-entry guard, which the caller owns. */
+    String named() {
+        StringBuilder text = new StringBuilder(getType().name()).append("([");
         for (int i = 0; i < items.size(); i++) {
             if (i > 0) {
-                out.append(", ");
+                text.append(", ");
             }
-            out.append(items.get(i).repr());
+            text.append(Slots.repr(items.get(i)));
         }
-        out.append(']');
+        text.append(']');
         if (maxlen >= 0) {
-            out.append(", maxlen=").append(maxlen);
+            text.append(", maxlen=").append(maxlen);
         }
-        return out.append(')').toString();
+        return text.append(')').toString();
     }
+
 }

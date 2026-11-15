@@ -25,6 +25,10 @@ final class CollectionsModule {
         PyModule module = new PyModule("_collections");
         PyRuntime.markBuiltIn(module, "_collections");
         module.set("deque", PyType.DEQUE);
+        // `collections` imports this name to register it with `collections.abc`, and `pickle` finds
+        // the cursor through `collections._deque_iterator`; the reverse cursor is not re-exported.
+        module.set("_deque_iterator", PyType.DEQUE_ITERATOR);
+        module.set("_deque_reverse_iterator", PyType.DEQUE_REVERSE_ITERATOR);
         module.set("defaultdict", defaultDictType());
         return module;
     }
