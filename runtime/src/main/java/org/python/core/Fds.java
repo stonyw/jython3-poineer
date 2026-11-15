@@ -37,13 +37,43 @@ final class Fds {
      */
     private static final Slot[] STANDARDS = {new Slot(0), new Slot(1), new Slot(2)};
 
-    /** One pipe: a byte queue and the state of its two ends. */
+    /**
+     * How much a pipe holds: 64 KiB, the capacity of a kernel pipe on the reference platform.
+     *
+     * <p>The queue used to grow without limit, which made a non-blocking write over a pipe that nobody
+     * was reading succeed forever. A bound is what makes "the pipe is full" a state the descriptor can
+     * report, and it is the same state the reference reports with {@code EAGAIN}.
+     */
+    static final int PIPE_CAPACITY = 64 * 1024;
+
+    /**
+     * {@code PIPE_BUF}: the largest write a pipe accepts atomically.
+     *
+     * <p>A write of this size or less never lands partially: either all of it fits and is queued, or —
+     * when the descriptor is non-blocking — none of it is, and the write reports that it would block.
+     */
+    static final int PIPE_BUF = 4096;
+
+    /** One pipe: a byte queue of {@link #PIPE_CAPACITY} octets and the state of its two ends. */
     private static final class Pipe {
-        private byte[] buffer = new byte[8192];
+        private final byte[] buffer = new byte[PIPE_CAPACITY];
         private int start;
         private int length;
         private boolean writerClosed;
         private boolean readerClosed;
+    }
+
+    /**
+     * What a descriptor-backed Java stream reports when {@link #read} came back with {@code null}.
+     *
+     * <p>{@link java.io.InputStream} has no third answer between "these bytes" and "end of file", so a
+     * would-block read leaves through this carrier and the {@code _io} layer above turns it back into the
+     * {@code None} the reference returns.
+     */
+    static final class WouldBlock extends IOException {
+        WouldBlock() {
+            super("Resource temporarily unavailable");
+        }
     }
 
     /**
@@ -261,7 +291,6 @@ final class Fds {
                 pipe.writerClosed = true;
             } else {
                 pipe.readerClosed = true;
-                pipe.buffer = new byte[0];
                 pipe.start = 0;
                 pipe.length = 0;
             }
@@ -281,11 +310,12 @@ final class Fds {
     // ---- reads and writes ------------------------------------------------------------------
 
     /**
-     * {@code read(2)}: up to {@code length} bytes, empty at end-of-file.
+     * {@code read(2)}: up to {@code length} bytes, empty at end-of-file, {@code null} would-block.
      *
-     * <p>A read on an open pipe with nothing buffered waits, because that is what a blocking descriptor
-     * does. {@code subprocess} only reads after {@code select} said the end is ready, so the wait is
-     * never the one the communication loop sits in.
+     * <p>A read on an open blocking pipe with nothing buffered waits, because that is what such a
+     * descriptor does. A non-blocking one answers {@code null} instead — the {@code None} the raw
+     * {@code _io} layer reports — while an empty blocking pipe whose writer has closed is end-of-file
+     * and stays an empty array.
      */
     static byte[] read(int fd, int length) {
         Slot slot = slot(fd);
@@ -348,6 +378,11 @@ final class Fds {
                         break;
                     }
                 }
+                if (pipe.length == 0 && !pipe.writerClosed && !pipe.readerClosed) {
+                    // Nothing to give and the writer is still there: only a non-blocking descriptor
+                    // reaches this row without having waited, and its answer is would-block.
+                    return null;
+                }
                 int count = Math.min(Math.max(length, 0), pipe.length);
                 byte[] bytes = new byte[count];
                 for (int i = 0; i < count; i++) {
@@ -362,7 +397,15 @@ final class Fds {
         }
     }
 
-    /** {@code write(2)}: appends to the pipe, or eats the bytes when this is the null device. */
+    /**
+     * {@code write(2)}: appends what the pipe can hold, or eats the bytes on the null device.
+     *
+     * <p>A blocking pipe waits until every octet is queued, which is why the interpreter lock is given
+     * up around the monitor exactly as {@link #read} does. A non-blocking one takes what fits and
+     * answers how many those were; zero means the write would have blocked. A write of
+     * {@link #PIPE_BUF} octets or fewer is all-or-nothing, so a pipe without room for the whole of it
+     * reports zero instead of a partial count.
+     */
     static int write(int fd, byte[] bytes) {
         Slot slot = slot(fd);
         if (slot.standard >= 0) {
@@ -404,16 +447,60 @@ final class Fds {
             throw badFd(fd);
         }
         Pipe pipe = slot.pipe;
-        synchronized (pipe) {
-            if (pipe.readerClosed) {
-                throw PyRaise.of(PyOSError.create(
-                        ExceptionTypes.BROKEN_PIPE_ERROR,
-                        new PyObject[] {PyInt.of(32), PyStr.of("Broken pipe")}));
+        int holds = Gil.suspend();
+        try {
+            synchronized (pipe) {
+                if (pipe.readerClosed) {
+                    throw brokenPipe();
+                }
+                if (!slot.blocking) {
+                    int room = pipe.buffer.length - pipe.length;
+                    if (bytes.length <= PIPE_BUF && room < bytes.length) {
+                        return 0;
+                    }
+                    int count = Math.min(room, bytes.length);
+                    append(pipe, bytes, 0, count);
+                    if (count > 0) {
+                        pipe.notifyAll();
+                    }
+                    return count;
+                }
+                int written = 0;
+                while (written < bytes.length) {
+                    if (pipe.readerClosed) {
+                        if (written == 0) {
+                            throw brokenPipe();
+                        }
+                        break;
+                    }
+                    int room = pipe.buffer.length - pipe.length;
+                    if (room > 0) {
+                        int count = Math.min(room, bytes.length - written);
+                        append(pipe, bytes, written, count);
+                        written += count;
+                        pipe.notifyAll();
+                    }
+                    if (written < bytes.length) {
+                        try {
+                            pipe.wait();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+                return written;
             }
-            append(pipe, bytes);
-            pipe.notifyAll();
+        } finally {
+            Gil.resume(holds);
         }
-        return bytes.length;
+    }
+
+    /** {@code EPIPE}, which a write to a pipe whose reader has gone reports. */
+    private static PyRaise brokenPipe() {
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.BROKEN_PIPE_ERROR,
+                new PyObject[] {PyInt.of(32), PyStr.of("Broken pipe")}));
     }
 
     /** {@link #write(int, byte[])} for a pumping thread, which has nobody to raise to. */
@@ -455,14 +542,24 @@ final class Fds {
      * {@code EPIPE}, and that is exactly what the kernel reports through {@code POLLERR} — a descriptor
      * that cannot make progress is "ready", not "busy". Saying false here deadlocks {@code
      * subprocess.Popen.communicate}, which waits for the write end to become ready and never gets to the
-     * write that would raise the {@code BrokenPipeError} it hides.
+     * write that would raise the {@code BrokenPipeError} it hides. A full pipe, on the other hand, is
+     * busy until its reader takes something, which is what makes a bounded queue visible to {@code
+     * select}.
      */
     static boolean writable(int fd) {
         Slot slot = peek(fd);
         if (slot == null || slot.devnull) {
             return true;
         }
-        return slot.writable;
+        if (slot.pipe == null) {
+            return slot.writable;
+        }
+        Pipe pipe = slot.pipe;
+        synchronized (pipe) {
+            return !slot.writable
+                    || pipe.readerClosed
+                    || pipe.length < pipe.buffer.length;
+        }
     }
 
     /** How many bytes a read would return without waiting. */
@@ -536,6 +633,9 @@ final class Fds {
             @Override
             public int read() throws IOException {
                 byte[] one = Fds.read(fd, 1);
+                if (one == null) {
+                    throw new WouldBlock();
+                }
                 return one.length == 0 ? -1 : one[0] & 0xff;
             }
 
@@ -545,6 +645,9 @@ final class Fds {
                     return 0;
                 }
                 byte[] bytes = Fds.read(fd, length);
+                if (bytes == null) {
+                    throw new WouldBlock();
+                }
                 if (bytes.length == 0) {
                     return -1;
                 }
@@ -564,27 +667,52 @@ final class Fds {
         };
     }
 
+    /**
+     * A stream over a writable descriptor, which is what {@code io.open(fd, 'wb')} wraps.
+     *
+     * <p>{@link #writeCount} is the row the {@code _io} layer below asks: it is the one answer that can
+     * say "the pipe took this many and no more", which the {@link OutputStream} interface cannot carry.
+     * The overrides that make it one are for callers outside that layer and refuse a short write rather
+     * than pretending it finished.
+     */
+    static final class DescriptorOutput extends OutputStream {
+        private final int fd;
+
+        DescriptorOutput(int fd) {
+            this.fd = fd;
+        }
+
+        int writeCount(byte[] bytes) {
+            return Fds.write(fd, bytes);
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            if (writeCount(new byte[] {(byte) b}) == 0) {
+                throw new WouldBlock();
+            }
+        }
+
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            if (length == 0) {
+                return;
+            }
+            int written = writeCount(Arrays.copyOfRange(bytes, offset, offset + length));
+            if (written < length) {
+                throw new WouldBlock();
+            }
+        }
+
+        @Override
+        public void close() {
+            Fds.closeQuietly(fd);
+        }
+    }
+
     /** A stream over a writable descriptor, which is what {@code io.open(fd, 'wb')} wraps. */
     static OutputStream outputStream(int fd) {
-        return new OutputStream() {
-            @Override
-            public void write(int b) throws IOException {
-                Fds.write(fd, new byte[] {(byte) b});
-            }
-
-            @Override
-            public void write(byte[] bytes, int offset, int length) throws IOException {
-                if (length == 0) {
-                    return;
-                }
-                Fds.write(fd, Arrays.copyOfRange(bytes, offset, offset + length));
-            }
-
-            @Override
-            public void close() {
-                Fds.closeQuietly(fd);
-            }
-        };
+        return new DescriptorOutput(fd);
     }
 
     // ---- internals -------------------------------------------------------------------------
@@ -632,21 +760,12 @@ final class Fds {
                 new PyObject[] {PyInt.of(5), PyStr.of("Input/output error")}));
     }
 
-    private static void append(Pipe pipe, byte[] bytes) {
-        if (pipe.length + bytes.length > pipe.buffer.length) {
-            int wanted = Math.max(pipe.buffer.length * 2, pipe.length + bytes.length);
-            byte[] grown = new byte[wanted];
-            for (int i = 0; i < pipe.length; i++) {
-                grown[i] = pipe.buffer[(pipe.start + i) % pipe.buffer.length];
-            }
-            pipe.buffer = grown;
-            pipe.start = 0;
-        }
+    private static void append(Pipe pipe, byte[] bytes, int offset, int count) {
         int tail = (pipe.start + pipe.length) % pipe.buffer.length;
-        for (byte b : bytes) {
-            pipe.buffer[tail] = b;
+        for (int i = 0; i < count; i++) {
+            pipe.buffer[tail] = bytes[offset + i];
             tail = (tail + 1) % pipe.buffer.length;
         }
-        pipe.length += bytes.length;
+        pipe.length += count;
     }
 }

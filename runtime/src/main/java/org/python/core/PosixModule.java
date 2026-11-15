@@ -305,7 +305,11 @@ final class PosixModule {
                     Arguments.exactly("read", args, kwNames, 2);
                     int fd = Numbers.asIndex(args[0]).intValue();
                     int length = Numbers.asIndex(args[1]).intValue();
-                    return PyBytes.of(Fds.read(fd, Math.max(length, 0)));
+                    byte[] bytes = Fds.read(fd, Math.max(length, 0));
+                    if (bytes == null) {
+                        throw wouldBlock();
+                    }
+                    return PyBytes.of(bytes);
                 }));
         module.set("write", function(
                 "write",
@@ -313,7 +317,12 @@ final class PosixModule {
                 (args, kwNames) -> {
                     Arguments.exactly("write", args, kwNames, 2);
                     int fd = Numbers.asIndex(args[0]).intValue();
-                    return PyInt.of(Fds.write(fd, PyFileIO.octetsToWrite(args[1])));
+                    byte[] bytes = PyFileIO.octetsToWrite(args[1]);
+                    int written = Fds.write(fd, bytes);
+                    if (written == 0 && bytes.length > 0) {
+                        throw wouldBlock();
+                    }
+                    return PyInt.of(written);
                 }));
         module.set("dup", function(
                 "dup",
@@ -1113,6 +1122,20 @@ final class PosixModule {
                             ? PyBytes.of(path.text().getBytes(StandardCharsets.UTF_8))
                             : PyStr.of(path.text()),
                 }));
+    }
+
+    /**
+     * {@code EAGAIN}: the answer {@code os.read} and {@code os.write} give a non-blocking descriptor
+     * that has nothing to give, or no room to take.
+     *
+     * <p>The two descriptors say "would block" differently at the layer below — a read comes back
+     * {@code null} and a write comes back zero — and both report the same two-argument error here, which
+     * is the shape {@code os} has: no {@code characters_written}, because none of the bytes moved.
+     */
+    private static PyRaise wouldBlock() {
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.BLOCKING_IO_ERROR,
+                new PyObject[] {PyInt.of(35), PyStr.of("Resource temporarily unavailable")}));
     }
 
     /**

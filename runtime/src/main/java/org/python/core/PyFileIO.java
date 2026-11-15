@@ -195,8 +195,10 @@ public final class PyFileIO extends PyIOStream {
      * One {@code read(2)}, cut to what one Java array can hold: the octets that came, and no more.
      *
      * <p>An empty answer is the end of the descriptor, which is what the loops here and the reader above
-     * both read it as. A read that comes back short is not an error and is not filled in — that is the
-     * whole contract of this layer — and a request of nothing asks the descriptor nothing.
+     * both read it as; {@code null} is the third answer a non-blocking descriptor gives when it has
+     * nothing yet, which the rows below turn into {@code None}. A read that comes back short is not an
+     * error and is not filled in — that is the whole contract of this layer — and a request of nothing
+     * asks the descriptor nothing.
      *
      * <p>This is the half of the traffic that stays in Java. The reference fills the store above it
      * through {@code raw.readinto(memoryview)}, and this runtime has no memoryview to hand over yet, so
@@ -216,23 +218,63 @@ public final class PyFileIO extends PyIOStream {
             // A descriptor a pipe feeds blocks here, so the interpreter lock is given up for the read.
             int got = Gil.blockingIO(() -> file == null ? in.read(buffer) : file.read(buffer));
             return got <= 0 ? new byte[0] : Arrays.copyOf(buffer, got);
+        } catch (Fds.WouldBlock wouldBlock) {
+            return null;
         } catch (IOException refusal) {
             throw Slots.osError("reading error");
         }
     }
 
+    /**
+     * {@code raw.readinto(bytearray)}: one read, poured into the buffer the caller gave.
+     *
+     * <p>The buffer is converted before the descriptor is looked at, which is the order clinic uses;
+     * {@code None} is the non-blocking would-block answer, as it is for {@code read}.
+     */
+    private PyObject readinto(PyObject[] args, String[] kwNames) {
+        Arguments.onlyPositional("readinto", args, kwNames, 1);
+        if (!(args[0] instanceof PyByteArray buffer)) {
+            throw Slots.typeError(
+                    "readinto() argument 1 must be read-write bytes-like object, not %s",
+                    Slots.argumentName(args[0]));
+        }
+        checkGetter();
+        if (!readable) {
+            throw Slots.unsupportedOperation("File not open for reading");
+        }
+        byte[] octets = octets(Math.min(buffer.size(), MAX_READ));
+        if (octets == null) {
+            return PyNone.INSTANCE;
+        }
+        System.arraycopy(octets, 0, buffer.raw(), 0, octets.length);
+        return PyInt.of(octets.length);
+    }
+
     /** {@code raw.read(n)}: one read of the descriptor, and {@code readall()} for anything negative. */
     private PyObject read(long wanted) {
         checkGetter();
-        return wanted < 0 ? readAllValue() : PyBytes.of(octets(wanted));
+        if (wanted < 0) {
+            return readAllValue();
+        }
+        byte[] octets = octets(wanted);
+        return octets == null ? PyNone.INSTANCE : PyBytes.of(octets);
     }
 
-    /** {@code raw.readall()}, which is the loop {@code read(-1)} cannot avoid. */
+    /**
+     * {@code raw.readall()}, which is the loop {@code read(-1)} cannot avoid.
+     *
+     * <p>A non-blocking descriptor that has nothing to give answers {@code None} when not one octet has
+     * arrived, and the octets it did get when some did — the reference stops its loop at the first
+     * would-block rather than losing what it already holds.
+     */
     private PyObject readAllValue() {
         checkGetter();
         ByteArrayOutputStream all = new ByteArrayOutputStream();
         while (true) {
             byte[] chunk = octets(MAX_READ);
+            if (chunk == null) {
+                return all.size() == 0 ? PyNone.INSTANCE : PyBytes.of(all.toByteArray());
+            }
             if (chunk.length == 0) {
                 return PyBytes.of(all.toByteArray());
             }
@@ -252,7 +294,12 @@ public final class PyFileIO extends PyIOStream {
         ByteArrayOutputStream line = new ByteArrayOutputStream();
         PyObject read = Slots.getAttr(this, "read");
         while (true) {
-            byte[] answer = octetsOf(Slots.call(read, new PyObject[] {PyInt.ONE}, null));
+            PyObject answerObject = Slots.call(read, new PyObject[] {PyInt.ONE}, null);
+            if (answerObject == PyNone.INSTANCE) {
+                // A non-blocking descriptor with nothing to give: the octets already collected, or None.
+                return line.size() == 0 ? PyNone.INSTANCE : PyBytes.of(line.toByteArray());
+            }
+            byte[] answer = octetsOf(answerObject);
             if (answer.length == 0) {
                 return PyBytes.of(line.toByteArray());
             }
@@ -282,6 +329,10 @@ public final class PyFileIO extends PyIOStream {
     /**
      * {@code raw.write(data)}: the value is turned into a buffer before the descriptor is looked at, and
      * the descriptor is looked at before the mode is.
+     *
+     * <p>A non-blocking descriptor that took nothing answers {@code None} — the reference's
+     * "would block" for this layer — while a short write reports the octets it accepted. The buffered
+     * writer above turns either into the {@code BlockingIOError} it reports to a program.
      */
     private PyObject write(PyObject data) {
         byte[] octets = octetsToWrite(data);
@@ -289,8 +340,11 @@ public final class PyFileIO extends PyIOStream {
         if (!writable) {
             throw Slots.unsupportedOperation("File not open for writing");
         }
-        writeOctets(octets);
-        return PyInt.of(octets.length);
+        if (octets.length == 0) {
+            return PyInt.of(0);
+        }
+        int written = writeOctets(octets);
+        return written == 0 ? PyNone.INSTANCE : PyInt.of(written);
     }
 
     /**
@@ -299,11 +353,18 @@ public final class PyFileIO extends PyIOStream {
      * <p>An append mode is the kernel's {@code O_APPEND} read from Java side: every write moves the
      * position to the end first, so a {@code seek} between two writes changes nothing about where the
      * second one lands. The reference gets that from the flag itself; here it is the one line below.
+     *
+     * @return how many octets the descriptor took, 0 when it would block
      */
-    void writeOctets(byte[] octets) {
+    int writeOctets(byte[] octets) {
         checkGetter();
         if (!writable) {
             throw Slots.unsupportedOperation("File not open for writing");
+        }
+        if (file == null && out instanceof Fds.DescriptorOutput descriptor) {
+            // The descriptor's own write can take part of the octets and say so; asking through the
+            // stream interface would lose that count.
+            return descriptor.writeCount(octets);
         }
         try {
             Gil.blockingIO(() -> {
@@ -318,6 +379,7 @@ public final class PyFileIO extends PyIOStream {
                 }
                 return null;
             });
+            return octets.length;
         } catch (IOException refusal) {
             throw Slots.osError("writing error");
         }
@@ -493,12 +555,8 @@ public final class PyFileIO extends PyIOStream {
             .add("read", (self, args, kwNames) ->
                     ((PyFileIO) self).read(sizeArgument("read", args, kwNames)))
             .addNoArgument("readall", self -> ((PyFileIO) self).readAllValue())
-            .add("readinto", (self, args, kwNames) -> {
-                Arguments.onlyPositional("readinto", args, kwNames, 1);
-                throw Slots.typeError(
-                        "readinto() argument 1 must be read-write bytes-like object, not %s",
-                        Slots.argumentName(args[0]));
-            })
+            .add("readinto", (self, args, kwNames) ->
+                    ((PyFileIO) self).readinto(args, kwNames))
             .add("readline", (self, args, kwNames) ->
                     ((PyFileIO) self).readlineRow(args, kwNames))
             .add("readlines", (self, args, kwNames) -> ((PyIOStream) self).readLines(args, kwNames))

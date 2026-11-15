@@ -206,14 +206,48 @@ public final class PyBufferedReader extends PyIOStream {
         }
     }
 
-    /** {@code _bufferedwriter_flush_unlocked}: the octets the writer accepted, in one write for as long. */
+    /**
+     * {@code _bufferedwriter_flush_unlocked}: the octets the writer accepted, in one write for as long.
+     *
+     * <p>A non-blocking descriptor that stops taking octets raises {@code BlockingIOError}, and the
+     * count it carries is what this flush managed to hand over — zero when the very first write would
+     * have blocked, which is the case the reference test asserts.
+     */
     private void flushOutgoing() {
-        if (outgoing.size() == 0) {
+        int written = 0;
+        while (outgoing.size() > 0) {
+            int taken = emit(outgoing.toByteArray());
+            if (taken == 0) {
+                throw wouldBlock(written);
+            }
+            written += taken;
+            drop(taken);
+        }
+    }
+
+    /** The {@code BlockingIOError} a non-blocking descriptor reports, with the octets it took so far. */
+    private static PyRaise wouldBlock(int charactersWritten) {
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.BLOCKING_IO_ERROR,
+                new PyObject[] {
+                    PyInt.of(35),
+                    PyStr.of("write could not complete without blocking"),
+                    PyInt.of(charactersWritten)
+                }));
+    }
+
+    /** Removes the first {@code count} octets of the outgoing store. */
+    private void drop(int count) {
+        if (count <= 0) {
             return;
         }
-        byte[] octets = outgoing.toByteArray();
+        if (count >= outgoing.size()) {
+            outgoing.reset();
+            return;
+        }
+        byte[] rest = outgoing.toByteArray();
         outgoing.reset();
-        emit(octets);
+        outgoing.write(rest, count, rest.length - count);
     }
 
     /**
@@ -234,6 +268,10 @@ public final class PyBufferedReader extends PyIOStream {
             PyByteArray into = PyByteArray.wrap(new byte[(int) ask]);
             PyObject count = Slots.call(
                     Slots.getAttr(source, "readinto"), new PyObject[] {into}, null);
+            if (count == PyNone.INSTANCE) {
+                // The raw layer's would-block answer, which is this layer's signal to stop reading.
+                return null;
+            }
             if (!(count instanceof PyInt given)) {
                 throw Slots.typeError(
                         "readinto() should return int, not %s", Slots.argumentName(count));
@@ -246,6 +284,9 @@ public final class PyBufferedReader extends PyIOStream {
         }
         PyObject answer = Slots.call(
                 Slots.getAttr(source, "read"), new PyObject[] {PyInt.of(wanted)}, null);
+        if (answer == PyNone.INSTANCE) {
+            return null;
+        }
         if (!(answer instanceof PyBytes octets)) {
             throw Slots.typeError(
                     "read() should return bytes, not %s", Slots.argumentName(answer));
@@ -266,21 +307,36 @@ public final class PyBufferedReader extends PyIOStream {
         return false;
     }
 
-    /** The write half of {@link #fetch}: {@code self->raw.write} has to take every octet it was given. */
-    private void emit(byte[] octets) {
+    /**
+     * The write half of {@link #fetch}: {@code self->raw.write} takes what it can and says how many.
+     *
+     * <p>A raw that answers {@code None} — a non-blocking descriptor with no room — took nothing, and a
+     * short {@code int} took that many. Both are {@code BlockingIOError} material to the caller, which is
+     * why the count is returned rather than checked here.
+     *
+     * @return the octets the raw layer took, 0 when it would block
+     */
+    private int emit(byte[] octets) {
         if (octets.length == 0) {
-            return;
+            return 0;
         }
         PyObject target = held();
         if (target instanceof PyFileIO file) {
-            file.writeOctets(octets);
-            return;
+            return file.writeOctets(octets);
         }
         PyObject answer = Slots.call(
                 Slots.getAttr(target, "write"), new PyObject[] {PyBytes.of(octets)}, null);
-        if (!(answer instanceof PyInt written) || written.getValue().longValue() != octets.length) {
-            throw Slots.osError("raw write() returned invalid length");
+        if (answer == PyNone.INSTANCE) {
+            return 0;
         }
+        if (answer instanceof PyInt written) {
+            long count = written.getValue().longValue();
+            if (count < 0 || count > octets.length) {
+                throw Slots.osError("raw write() returned invalid length");
+            }
+            return (int) count;
+        }
+        throw Slots.osError("raw write() returned invalid length");
     }
 
     /**
@@ -289,12 +345,15 @@ public final class PyBufferedReader extends PyIOStream {
      * <p>A dry descriptor leaves the cursors where they were, which is how a reset store stays reset
      * through a {@code peek} that had to ask and got nothing.
      *
-     * @return how many octets came, and 0 at the end of the descriptor
+     * @return how many octets came, 0 at the end of the descriptor and -1 when it would block
      */
     private int fill() {
         drain();
         int start = readEnd < 0 ? 0 : readEnd;
         byte[] chunk = fetch(BUFFER_SIZE - start);
+        if (chunk == null) {
+            return -1;
+        }
         if (chunk.length == 0) {
             return 0;
         }
@@ -321,7 +380,12 @@ public final class PyBufferedReader extends PyIOStream {
         return wanted > readahead() ? null : take(wanted);
     }
 
-    /** {@code buffer.read(n)}: {@code n} octets, all that is left for a negative count, nothing for 0. */
+    /**
+     * {@code buffer.read(n)}: {@code n} octets, all that is left for a negative count, nothing for 0.
+     *
+     * <p>A non-blocking descriptor with nothing to give answers {@code None}, and one that gave part of
+     * what was asked answers that part.
+     */
     private PyObject read(long wanted) {
         requireReadable("read");
         held();
@@ -330,10 +394,14 @@ public final class PyBufferedReader extends PyIOStream {
         }
         checkClosed(READ);
         if (wanted == -1) {
-            return PyBytes.of(readAll());
+            return readAll();
         }
         byte[] fast = readFast(wanted);
-        return PyBytes.of(fast == null ? readGeneric(wanted) : fast);
+        if (fast != null) {
+            return PyBytes.of(fast);
+        }
+        byte[] generic = readGeneric(wanted);
+        return generic == null ? PyNone.INSTANCE : PyBytes.of(generic);
     }
 
     /**
@@ -341,21 +409,29 @@ public final class PyBufferedReader extends PyIOStream {
      *
      * <p>The store is copied and reset before the descriptor is asked, so a {@code read()} that reaches a
      * closed descriptor with octets in hand reports the descriptor's refusal and not a sentence of this
-     * layer's — and the octets it had are gone either way.
+     * layer's — and the octets it had are gone either way. A non-blocking descriptor that would block
+     * before answering anything makes this {@code None}; one that already gave octets leaves them in the
+     * answer.
      */
-    private byte[] readAll() {
+    private PyObject readAll() {
         byte[] buffered = take(readahead());
         reset();
+        byte[] rest = restartOfRaw();
+        if (rest == null) {
+            return buffered.length == 0 ? PyNone.INSTANCE : PyBytes.of(buffered);
+        }
         ByteArrayOutputStream answer = new ByteArrayOutputStream();
         writeInto(answer, buffered);
-        writeInto(answer, restartOfRaw());
-        return answer.toByteArray();
+        writeInto(answer, rest);
+        return PyBytes.of(answer.toByteArray());
     }
 
     /**
      * The descriptor's own {@code readall()}, or — for a raw object that has only {@code read}, as
      * tarfile's {@code _FileInFile} does — {@code read} in blockfuls until one comes back empty. That
      * second shape is what {@code _bufferedreader_read_all} falls back to.
+     *
+     * @return the octets, or null when a non-blocking descriptor would block before giving any
      */
     private byte[] restartOfRaw() {
         PyObject source = held();
@@ -370,8 +446,8 @@ public final class PyBufferedReader extends PyIOStream {
             if (rest instanceof PyBytes tail) {
                 return tail.getValue();
             }
-            if (rest instanceof PyNone) {
-                return new byte[0];
+            if (rest == PyNone.INSTANCE) {
+                return null;
             }
             throw Slots.typeError("readall() should return bytes");
         }
@@ -379,8 +455,8 @@ public final class PyBufferedReader extends PyIOStream {
         while (true) {
             PyObject chunk = Slots.call(
                     Slots.getAttr(source, "read"), new PyObject[] {PyInt.of(BUFFER_SIZE)}, null);
-            if (chunk instanceof PyNone) {
-                return answer.toByteArray();
+            if (chunk == PyNone.INSTANCE) {
+                return answer.size() == 0 ? null : answer.toByteArray();
             }
             if (!(chunk instanceof PyBytes given)) {
                 throw Slots.typeError("read() should return bytes");
@@ -406,27 +482,41 @@ public final class PyBufferedReader extends PyIOStream {
         writeInto(answer, take(readahead()));
         long remaining = wanted - answer.size();
         reset();
+        boolean wouldBlock = false;
         while (remaining > 0 && (remaining & ~(long) (BUFFER_SIZE - 1)) != 0) {
             byte[] chunk = fetch(remaining & ~(long) (BUFFER_SIZE - 1));
+            if (chunk == null) {
+                wouldBlock = true;
+                break;
+            }
             if (chunk.length == 0) {
                 return answer.toByteArray();
             }
             writeInto(answer, chunk);
             remaining -= chunk.length;
         }
-        pos = 0;
-        readEnd = 0;
-        while (remaining > 0 && readEnd < BUFFER_SIZE) {
-            int got = fill();
-            if (got == 0) {
-                break;
+        if (!wouldBlock) {
+            pos = 0;
+            readEnd = 0;
+            while (remaining > 0 && readEnd < BUFFER_SIZE) {
+                int got = fill();
+                if (got < 0) {
+                    wouldBlock = true;
+                    break;
+                }
+                if (got == 0) {
+                    break;
+                }
+                long given = Math.min(remaining, got);
+                writeInto(answer, take(given));
+                remaining -= given;
+                if (remaining == 0) {
+                    break;
+                }
             }
-            long given = Math.min(remaining, got);
-            writeInto(answer, take(given));
-            remaining -= given;
-            if (remaining == 0) {
-                break;
-            }
+        }
+        if (answer.size() == 0 && wouldBlock) {
+            return null;
         }
         return answer.toByteArray();
     }
@@ -447,7 +537,8 @@ public final class PyBufferedReader extends PyIOStream {
             return PyBytes.of(take(Math.min(have, limit)));
         }
         reset();
-        return PyBytes.of(fetch(limit));
+        byte[] fetched = fetch(limit);
+        return PyBytes.of(fetched == null ? new byte[0] : fetched);
     }
 
     /** {@code buffer.peek(n)}: the whole store, which the count never limits. */
@@ -588,6 +679,11 @@ public final class PyBufferedReader extends PyIOStream {
      * <p>The count is the octets accepted, not the ones written: anything below one block stays here
      * until a flush, a blockful, or a close. A write also drops whatever the store was holding for a
      * read, because a {@code '+'} stream may not answer from a buffer the write has just overtaken.
+     *
+     * <p>A non-blocking descriptor that fills up is the third answer. The octets already accepted from
+     * this call — handed to the descriptor or still in the store, which will be flushed later — are the
+     * {@code characters_written} the {@code BlockingIOError} carries, and the rest of the call is
+     * dropped: the caller is told to retry from there, exactly as the reference does.
      */
     private PyObject write(PyObject data) {
         if (!writable) {
@@ -598,15 +694,34 @@ public final class PyBufferedReader extends PyIOStream {
         checkClosed("write to closed file");
         pos = 0;
         readEnd = -1;
-        if (outgoing.size() + octets.length >= BUFFER_SIZE) {
-            flushOutgoing();
-            if (octets.length >= BUFFER_SIZE) {
-                emit(octets);
-                return PyInt.of(octets.length);
+        int consumed = 0;
+        while (consumed < octets.length) {
+            if (outgoing.size() == 0 && octets.length - consumed > BUFFER_SIZE) {
+                // More than a storeful, and nothing waiting: hand it straight to the descriptor, which
+                // may take part of it or none at all.
+                int taken = emit(Arrays.copyOfRange(octets, consumed, octets.length));
+                if (taken > 0) {
+                    consumed += taken;
+                    continue;
+                }
+            }
+            int space = BUFFER_SIZE - outgoing.size();
+            if (space > 0) {
+                int take = Math.min(space, octets.length - consumed);
+                outgoing.write(octets, consumed, take);
+                consumed += take;
+            }
+            if (outgoing.size() >= BUFFER_SIZE && consumed < octets.length) {
+                while (outgoing.size() > 0) {
+                    int taken = emit(outgoing.toByteArray());
+                    if (taken == 0) {
+                        throw wouldBlock(consumed);
+                    }
+                    drop(taken);
+                }
             }
         }
-        outgoing.write(octets, 0, octets.length);
-        return PyInt.of(octets.length);
+        return PyInt.of(consumed);
     }
 
     /**
