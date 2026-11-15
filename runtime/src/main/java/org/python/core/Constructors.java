@@ -1385,6 +1385,22 @@ final class Constructors {
         if (textual) {
             throw Slots.typeError("string argument without an encoding");
         }
+        // `bytes_result_unchanged`: an exact bytes is what was asked for, and nothing else is tried.
+        if (value.getType() == PyType.BYTES) {
+            return value;
+        }
+        // Before any other reading of the value, `__bytes__` gets the first word — on a bytes
+        // subclass it is the inherited method (which copies to an exact bytes) or the override, and on
+        // an ordinary object it is how `bytes(WithBytes())` is answered at all. Only `bytes` asks:
+        // `bytearray(WithBytes())` is a refusal.
+        PyObject answered = Specials.invoke(value, "__bytes__");
+        if (answered != Slots.DECLINED) {
+            if (answered instanceof PyBytes) {
+                return answered;
+            }
+            throw Slots.typeError(
+                    "__bytes__ returned non-bytes (type %s)", answered.getType().filedName());
+        }
         Long count = askedForOctets(value);
         if (count != null) {
             if (count < 0) {
@@ -1392,22 +1408,8 @@ final class Constructors {
             }
             return PyBytes.wrap(new byte[Numbers.total(count)]);
         }
-        if (value instanceof PyBytes) {
-            // `bytes_result_unchanged`: an exact bytes is what was asked for. A subclass is asked for
-            // its own `__bytes__` first — inherited, that copies to an exact bytes, and an override's
-            // answer is used as it stands, which is how `bytes(B('ab'))` answers `b'zz'`.
-            if (value.getType() == PyType.BYTES) {
-                return value;
-            }
-            PyObject answered = Specials.invoke(value, "__bytes__");
-            if (answered != Slots.DECLINED) {
-                if (answered instanceof PyBytes result) {
-                    return result;
-                }
-                throw Slots.typeError(
-                        "__bytes__ returned non-bytes (type %s)", answered.getType().filedName());
-            }
-            return PyBytes.wrap(((PyBytes) value).getValue().clone());
+        if (value instanceof PyBytes source) {
+            return PyBytes.wrap(source.getValue().clone());
         }
         // A buffer argument is copied octet for octet, not element by element: `bytes(array('i',
         // [1]))` is four octets, and `bytes(memoryview(array('i', [1])))` is the same four.
