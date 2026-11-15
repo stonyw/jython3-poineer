@@ -98,6 +98,18 @@ public final class ExceptionTypes {
             child("StopAsyncIteration", EXCEPTION)
                     .documented("Signal the end from iterator.__anext__().");
 
+    /**
+     * {@code pyexpat.ExpatError}: every refusal the XML reader makes.
+     *
+     * <p>expat's exception is neither a {@code ValueError} nor a {@code SyntaxError}; it is its own
+     * class, which is what {@code xml.etree.ElementTree} catches and re-raises as {@code ParseError}.
+     * The three fields a caller reads — {@code code}, {@code lineno} and {@code offset} — are not slots
+     * of the type but names the reader writes into the instance's dictionary, which is why an
+     * {@code ExpatError("text")} made by hand has none of them.
+     */
+    public static final PyType EXPAT_ERROR =
+            child("ExpatError", EXCEPTION).filedUnder("pyexpat.ExpatError");
+
     public static final PyType RUNTIME_ERROR =
             child("RuntimeError", EXCEPTION).documented("Unspecified run-time error.");
 

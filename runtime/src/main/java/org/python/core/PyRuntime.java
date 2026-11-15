@@ -791,6 +791,11 @@ public final class PyRuntime {
         if (dotted.equals("_ssl")) {
             return cached(SslModule.install(), dotted);
         }
+        // `pyexpat` is the same shape: `xml.parsers.expat` is a one-line re-export of it, and
+        // `xml.etree.ElementTree` cannot parse anything until it is there.
+        if (dotted.equals("pyexpat")) {
+            return cached(PyexpatModule.install(), dotted);
+        }
         int dot = dotted.lastIndexOf('.');
         if (dot <= 0) {
             return find(dotted, PyNone.INSTANCE);
@@ -851,6 +856,9 @@ public final class PyRuntime {
         }
         if (name.equals("_ssl")) {
             return keep(SslModule.install(), name);
+        }
+        if (name.equals("pyexpat")) {
+            return keep(PyexpatModule.install(), name);
         }
         // `array` is built on first import for the same reason, one step further: its module exec
         // registers the type with `collections.abc.MutableSequence` (gh-153210 in 3.14 has no

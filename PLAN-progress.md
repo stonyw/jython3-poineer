@@ -705,3 +705,35 @@
 **七、回归**：`test_socket` 749／198／8／24／519、`test_ssl` 207／102／41／30／34（与基线 102／42／29／34 的一例差异是该套 SNI race 例在 fail↔error 间摆动，总量不变）、`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4，逐项与基线一致。
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m26s，26 个任务）。
+
+## M5 切片 54 明细：`pyexpat` 实现与 `_elementtree` 盘点（2026-11-15）
+
+**一、修前实测**：`import pyexpat` → `ModuleNotFoundError`；`import xml.etree.ElementTree` 成功（纯 Python 回退），但 `ET.fromstring('<a><b/></a>')` → `ImportError: No module named expat; use SimpleXMLTreeBuilder instead`；`import _elementtree` → `ModuleNotFoundError`。`test_pyexpat`／`test_xml_etree`／`test_xml_etree_c` 全部在导入期炸掉，0 用例。
+
+**二、盘点结论**：JVM 有 JAXP／SAX／DOM／StAX，没有 expat。做 `pyexpat`（承重件），不做 `_elementtree`（可选加速层）。逐面判定见 [PLAN.md](file:///Users/stony/qoder/jython3-poineer/PLAN.md) §3.11 的表，摘要：
+
+- **能做**：`ParserCreate`／`xmlparser` 类型与 `__setattr__` 约束、增量 `Parse`／`ParseFile`、22 个 handler 槽（其中 18 个真派发）、`errors.codes`／`messages`／`XML_ERROR_*`（44 条 message＋44 个枚举名）、`ExpatError.code/lineno/offset`、命名空间（`uri sep local`、未绑定前缀 27、`xml`/`xmlns` 保留前缀 38/39、默认命名空间取消 28）、`buffer_text`／`ordered_attributes`／`specified_attributes`、四组 `Current*`／`Error*` 位置。
+- **部分做**：DTD 声明类 handler（只有槽位）、编码（`charmap` 家族依赖缺的 `codecs.charmap_encode` → 18）、外部实体（handler 收到 `(name, base, systemId, publicId)`，但不读内容；无 handler 时按 expat 的 `XML_DefaultCurrent` 走 DefaultHandler）、Billion Laughs 保护（只做参数校验）、逐字节错误措辞。
+- **做不到**：外部 DTD／参数实体读取、reparse deferral（`version_info=(2,5,0)` 明确标注）、DTD 声明回调。
+
+**三、实现分层**：[pyexpat.py](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/resources/org/python/core/pyexpat.py)（类型、handler 槽、开关、`ParserCreate`、`ExternalEntityParserCreate`、错误表装配）＋ [PyexpatModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyexpatModule.java)（自写扫描器、实体表、编码嗅探、位置、44 条 message／枚举名、`errorsModule()`／`modelModule()`）。`ExceptionTypes.EXPAT_ERROR` 新增，`PyRuntime` 加 pyexpat 懒加载分支（`_ssl` 同款），`PyStr.interned` 改为缓存包装对象让 `is` 成立（`InterningTest` 需要）。
+
+**四、收尾修掉的 6 个实现问题**：`Current*` 一族把 `self._id` 传给原生层（应传 `self`）；文本／标签内 C0 控制字符未按 XML 1.0 拒绝；第二个根元素未报 9；已声明外部实体被引用时静默丢弃（改为走 DefaultHandler，`ET.XML` 因此能报出与参考同字同位的 `undefined entity &entity;: line 4, column 10`）；`Parse(str)` 仍按 XML 声明切编码（`encoding='utf-16'` 的 str 源现在正确忽略声明）；`features` 改为参考的 `(name, value)` 列表。
+
+**五、已知措辞差异**（只此一条，未编造行号列号）：`Parse(b"\0\r\n")`——参考当 NUL 结尾 C 字符串报 `unclosed token: line 2, column 0`；这里当非法字符报 `not well-formed (invalid token): line 1, column 0`。
+
+**六、测试修前修后**：
+
+| 套件 | 修前 | 修后 |
+| --- | --- | --- |
+| `test_pyexpat` | 0（导入期 `ModuleNotFoundError`） | **86 ran／successes 47／fail 14／err 87／skip 17**（fail、err 含 subTest 条目故大于 ran） |
+| `test_xml_etree` | 0（导入期失败） | **228／206／12／14／7** |
+| `test_xml_etree_c` | 0（导入期失败） | **246／206／12／14／25**（多 18 skip 为 `requires _elementtree`） |
+
+`test_xml_etree`／`test_xml_etree_c` 都排除了 5 个会令 JVM 崩掉的 `PyList.replace` 变异用例（`test_ass_subscr_with_mutating_slice` 等），那是既有运行时缺陷。剩余失败集中在：外部 DTD（`test_parse_*`、`test_expat224_utf8_bug_file`、`test_attlist_default`）、`codecs.charmap_encode`（`test_encoding`、`test_incompatible_encodings`）、`sys.getrefcount`／`weakref`、`C14NTest`、`IOTest.test_encoding*`（本运行时 `codecs.getwriter('utf-16')` 每次 `write` 都写 BOM）、`test_bug_xmltoolkit63`、`BadElementPath` unhashable、`MyElement` 不可迭代。
+
+**七、语料对拍**（[corpus.py](file:///tmp/m5_54/corpus.py)）：92 行，覆盖嵌套元素与属性顺序、命名空间、CDATA、注释、PI、内部实体与 `&amp;`/`&lt;`/`&#65;`/`&#x42;`、XML 声明、`XMLID`、`iterparse`（start/end/comment）、`Element`/`SubElement` 构造、`tostring` 五种形态、9 种错误 XML。**89 行与参考逐字节相同**；4 行不同：`iterparse` comment 事件的函数 repr 带地址 vs 不带、`err.nul`、`version_info`、`EXPAT_VERSION`。
+
+**八、回归**（与切片 53 基线逐项比）：`test_socket` 749／197／9／24／519（基线 749／198／8／24／519）、`test_ssl` 207／102／42／29／34（基线 207／102／41／30／34，fail+err 总量 71 不变）、`test_io` 675／511／84／60／20（基线 675／512／83／60／20）、`test_csv` 134／129／1／0／4（基线 134／130／0／0／4，`test_lazy_import` 单跑通过）、`test_tarfile` 768／411／23／1／333（完全一致）、`test_stat` 22／20／0／0／2（完全一致）、`test_os` 385／168／13／12／192（基线 385／169／13／11／192）。每套各摆动 1 例（ok↔fail 或 fail↔err），未触碰这些模块代码，属环境相关用例。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m21s**（26 个任务）。

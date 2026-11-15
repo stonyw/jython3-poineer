@@ -317,6 +317,48 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
 
+### 3.11 M5 切片 54：`pyexpat` 实现与 `_elementtree` 盘点（2026-11-15）
+
+**修前实测**：`import pyexpat` → `ModuleNotFoundError: No module named 'pyexpat'`；`import xml.etree.ElementTree` **成功**（走纯 Python 回退），但 `ET.fromstring('<a><b/></a>')` → `ImportError: No module named expat; use SimpleXMLTreeBuilder instead`；`import _elementtree` → `ModuleNotFoundError`。`test_pyexpat`／`test_xml_etree`／`test_xml_etree_c` 三套全部在**导入期**失败（`import pyexpat` 直接炸），0 个用例运行。
+
+**盘点（JVM 有 JAXP／SAX／DOM／StAX，没有 expat，所以按面判）**：
+
+| 面 | 判定 | 依据 |
+|---|---|---|
+| `ParserCreate`／`xmlparser` 类型 | 能做 | 参考的 22 个 handler 槽、4 个开关、`buffer_size` 约束全部照搬；`__setattr__` 的拒绝文本（`'pyexpat.xmlparser' object has no attribute …`、`buffer_size must be greater than zero`）与参考一致 |
+| `Parse`／`ParseFile` 增量 | 能做 | 自写扫描器：完整 token 立即派发，不完整尾部留待下一块；`ParseFile` 循环 `read()`；handler 内再 `Parse` → `cannot call Parse() from within a handler` |
+| 22 个 handler | 部分做 | Start／End／CharacterData／Comment／PI／Start·EndCdata／Start·EndNamespace／XmlDecl／Start·EndDoctype／EntityDecl（仅 `<!ENTITY>`）／ExternalEntityRef／Default／DefaultHandlerExpand／SkippedEntity 已派发；ElementDecl／AttlistDecl／NotationDecl／UnparsedEntityDecl／NotStandalone 只有槽位不回调（JAXP 不暴露 DTD 声明） |
+| `errors.codes`／`messages`／`XML_ERROR_*` | 能做 | expat 44 条 message 表与 44 个枚举名逐条硬编码；枚举名不按文本推导（`"syntax error"` 是 `XML_ERROR_SYNTAX`，不是 `XML_ERROR_SYNTAX_ERROR`） |
+| `ExpatError` 的 `lineno`／`offset`／`code` | 能做 | 位置由自写扫描器给出；`ExceptionTypes.EXPAT_ERROR` 注册为 `pyexpat.ExpatError`（`error` 同物） |
+| 命名空间（`separator`／`namespace_prefixes`／Start·EndNamespaceDecl） | 能做 | `uri + sep + local` 展开；未绑定前缀 27、`xml`／`xmlns` 保留前缀 38／39、默认命名空间取消 28 |
+| `buffer_text`／`ordered_attributes`／`specified_attributes` | 能做（`specified_attributes` 部分） | `buffer_text` 关 → 文本按 `\n` 切、开 → 跨元素合并到下次 handler／Parse 结束；`ordered_attributes` → list 而非 dict；`specified_attributes` 读取但无 DTD 默认值可区分，等价于恒真 |
+| `CurrentLineNumber`／`CurrentColumnNumber`／`CurrentByteIndex`／`Error*` | 能做 | 语料里行号与参考一致（`<a>\n<b/>` 的 StartElement 在 line 2） |
+| 编码嗅探与 `unknown encoding` | 部分做 | BOM／`<?xml encoding=…?>`／`Parse(str)` 忽略声明；UTF-8、ISO-8859-1（含 `iso8859`／`l1` 别名）、cp125x、UTF-16／32 可用；`charmap` 家族依赖本运行时缺的 `codecs.charmap_encode` → 报 18 |
+| DTD 声明回调（ElementDecl／AttlistDecl／NotationDecl／UnparsedEntityDecl） | 做不到 | JAXP 不暴露 DTD 声明 |
+| 外部 DTD／参数实体读取 | 做不到 | 无外部读取器；`SetParamEntityParsing` 返回 1 但不读；`unreadSubset` 下的未解析实体走 SkippedEntity |
+| 外部实体内容（`ExternalEntityRefHandler` 返回 1 后读文件） | 部分做 | handler 被调用并收到 `(name, base, systemId, publicId)`；返回值不触发二次解析、内容不入文档；没有 handler 时按 expat 的 `XML_DefaultCurrent` 走 DefaultHandler（`&name;`），于是 `ET.XML` 的 `_default` 能报出与参考同字同位的 `undefined entity &entity;: line 4, column 10` |
+| reparse deferral（`Get/SetReparseDeferralEnabled`、`GetInputContext`） | 做不到 | `version_info = (2, 5, 0)`，明确低于 2.6；调用方据此知道没有该行为 |
+| Billion Laughs 保护 | 部分做 | setter 的参数校验与错误文本照搬（`invalid argument`／`parser must be a root parser`／`'max_factor' must be at least 1.0`）；不真正计数，阈值永不触发 |
+| 逐字节错误措辞 | 部分做 | 表是 expat 原文、位置是本扫描器的；已对齐 `mismatched tag`／`unclosed token`／`not well-formed (invalid token)`／`undefined entity`（含名字与不含名字两种）／`junk after document element`／`unbound prefix`／`no element found`；唯一已知不同见下 |
+| `_elementtree`：`Element`／`SubElement`／`Comment`／`ProcessingInstruction`、`tostring`（含 `short_empty_elements`／`method='html'`／`'text'`）、`fromstring`／`XML`／`XMLID`、`XMLParser`／`TreeBuilder`／`iterparse`／`C14NWriterTarget` | 不做（纯 Python 已可用） | 参考的 `_elementtree` 是可选加速层，`ElementTree.py` 的纯 Python 实现完整；验收判据也不含它。`import _elementtree` 仍为 `ModuleNotFoundError`，`test_xml_etree_c` 的 18 个 `requires _elementtree` 用例继续 skip |
+
+**结论**：做 `pyexpat`（承重件，解锁纯 Python `xml.etree.ElementTree` 全链路），不做 `_elementtree`。实现分两层：[pyexpat.py](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/resources/org/python/core/pyexpat.py)（类型、handler 槽、开关、`ParserCreate`、错误表装配）与 [PyexpatModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyexpatModule.java)（扫描器、实体表、编码、位置、44 条 message／枚举名）。`xml/parsers/expat.py` 是 `from pyexpat import *` 再把 `model`／`errors` 注册进 `sys.modules`，所以两个子模块必须导出为**模块对象**——`errorsModule()` 与 `modelModule()` 就是为此。
+
+**本切片收尾时修掉的问题**（都在实现层，非盘点结论）：`CurrentLineNumber` 一族把 `self._id` 传给原生层（应传 `self`）；文本／标签内的 C0 控制字符未按 XML 1.0 拒绝（`<a>\x01</a>` 现在报 `not well-formed (invalid token): line 1, column 3`）；第二个根元素未报 9（`<a/><b/>` 现在 `junk after document element: line 1, column 4`）；已声明外部实体被引用时静默丢弃（改为走 DefaultHandler）；`Parse(str)` 仍按 XML 声明切编码（`encoding='utf-16'` 的 str 源现在正确忽略声明）；`features` 从字符串列表改为参考的 `(name, value)` 列表。
+
+**已知的唯一措辞差异**：`Parse(b"\0\r\n")`。参考把输入当 NUL 结尾 C 字符串，报 `unclosed token: line 2, column 0`；这里把 NUL 当非法字符，报 `not well-formed (invalid token): line 1, column 0`。行号列号没有为了对拍去编造。
+
+**验证**：
+
+- `import pyexpat` 修前 `ModuleNotFoundError` → 修后成功；`import xml.etree.ElementTree` 修前可用但 `fromstring` 抛 `ImportError: No module named expat` → 修后 `fromstring`／`tostring`／`iterparse`／`XMLID` 全链路正常。
+- `test_pyexpat` 修前 **0（导入期失败）** → 修后 **86 ran／successes 47／fail 14／err 87／skip 17**（fail、err 含 subTest 条目所以大于 ran，判据看 `SUCCESSES`）。剩余失败集中在四类：外部 DTD／参数实体（`test_parse_str`／`test_parse_bytes`／`test_parse_file` 的大 diff、`InterningTest.test_issue9402`）、`codecs.charmap_encode` 缺失（`test_incompatible_encodings` 的多数子例）、`sys.getrefcount`／`weakref` 等既有运行时缺口、以及上面那条 NUL 措辞。
+- `test_xml_etree` 修前 **0** → 修后 **228／206／12／14／7**；`test_xml_etree_c` 修前 **0** → 修后 **246／206／12／14／25**（多出的 18 skip 是 `requires _elementtree`）。两套都排除了 5 个会令 JVM 崩掉的 `PyList.replace` 变异用例（`test_ass_subscr_with_mutating_slice` 等），那是既有运行时缺陷、与本切片无关，运行时在报告中如实标注。剩余失败：外部 DTD（`test_expat224_utf8_bug_file`、`test_attlist_default`）、`codecs.charmap_encode`（`test_encoding`）、`sys.getrefcount`（`test_bug_xmltoolkit63`）、`C14NTest`（纯 Python `C14NWriterTarget` 的两处差异）、`IOTest.test_encoding*`（本运行时 `codecs.getwriter('utf-16')` 每次 `write` 都写 BOM，属 codecs 面）、`test_weakref`／`BadElementPath` 的 unhashable／`MyElement` 不可迭代等既有缺口。
+- 语料（[corpus.py](file:///tmp/m5_54/corpus.py)）92 行：嵌套元素与属性顺序、命名空间、CDATA、注释、PI、实体引用（内部实体＋`&amp;`／`&lt;`／`&#65;`／`&#x42;`）、XML 声明、`XMLID`、`iterparse` 四类事件、`Element`／`SubElement` 构造、`tostring` 的四种形态（默认／`short_empty_elements=False`／`method='html'`／`method='text'`／`encoding='unicode'`）、9 种错误 XML。**89 行与参考逐字节相同**；不同的 4 行是：`iterparse` 的 comment 事件里函数 repr 带地址 vs 不带（运行时函数 repr 差异，非 ET 行为）、`err.nul`（上条措辞）、`version_info` 与 `EXPAT_VERSION`（有意标 2.5.0）。
+
+**回归**（与本文件切片 53 的基线逐项比）：`test_socket` 749／197／9／24／519（基线 749／198／8／24／519，1 例在 ok↔fail 间摆动）、`test_ssl` 207／102／42／29／34（基线 207／102／41／30／34，fail+err 总量 71 不变）、`test_io` 675／511／84／60／20（基线 675／512／83／60／20，1 例摆动）、`test_csv` 134／129／1／0／4（基线 134／130／0／0／4；`MiscTestCase.test_lazy_import` 在模块内顺序相关，单跑通过，属既有噪声）、`test_tarfile` 768／411／23／1／333（与基线完全一致）、`test_stat` 22／20／0／0／2（与基线完全一致）、`test_os` 385／168／13／12／192（基线 385／169／13／11／192，1 例摆动）。本切片未触碰这些模块的代码，摆动项均为环境相关用例。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m21s**。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

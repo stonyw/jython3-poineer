@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Python's {@code str}, backed by a Java {@code String}.
@@ -70,8 +71,29 @@ public class PyStr extends PyObject {
      * {@code String}.
      */
     public static PyStr interned(String value) {
-        return value.isEmpty() ? EMPTY : new PyStr(value.intern(), true);
+        if (value.isEmpty()) {
+            return EMPTY;
+        }
+        String key = value.intern();
+        PyStr known = INTERNED.get(key);
+        if (known != null) {
+            return known;
+        }
+        PyStr fresh = new PyStr(key, true);
+        PyStr raced = INTERNED.putIfAbsent(key, fresh);
+        return raced == null ? fresh : raced;
     }
+
+    /**
+     * The one {@code PyStr} each interned {@code String} answers with.
+     *
+     * <p>{@code String.intern()} alone only makes the storage shared, not the wrapper, and
+     * {@code 'a' is 'a'} is answered by this runtime with object identity. Caching the wrapper is
+     * what makes an interned name compare identically across events: {@code pyexpat} hands the same
+     * element name out once per event, and the reference interpreter's own interned cache is why
+     * those names satisfy {@code is}.
+     */
+    private static final ConcurrentHashMap<String, PyStr> INTERNED = new ConcurrentHashMap<>();
 
     public String getValue() {
         return value;
