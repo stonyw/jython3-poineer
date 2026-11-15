@@ -134,6 +134,24 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 
 **列为明确不做、不占切片号的**：`test_os` 余下的 spawn 家族（`fork`／`exec`／`posix_spawn`／`subprocess` 的 spawn 路径），理由见 §3.2.1 第 5 条；`test_os` 里 chmod 特殊位与 `st_*` 字段的用例，理由见第 6、7 条。
 
+### 3.4 M5 切片 47：`_ssl` 盘点与最小真实面
+
+本运行时没有 OpenSSL，TLS 由 JDK 的 JSSE（`SSLContext`／`SSLSocket`／`SSLEngine`）提供。切片 47 先按面盘点，再把「能做」的部分按参考语义落地。
+
+| 面 | 判定 | 依据 |
+|---|---|---|
+| `SSLContext` | 能做 | `PROTOCOL_TLS`／`TLS_CLIENT`／`TLS_SERVER` 映射到 `SSLContext("TLS")` 加角色检查；`load_cert_chain` 支持 PKCS#8 明文与 PBES2 加密私钥、PEM 证书链；`load_verify_locations` 支持 cafile／capath／cadata；`minimum_version`／`maximum_version` 落到 `SSLParameters.setProtocols`；`verify_mode` 与 `check_hostname` 落到 `TrustManager`／`setEndpointIdentificationAlgorithm`；`options`／`verify_flags` 按参考记录数值，JSSE 没有对应开关的部分不假装生效。`set_ciphers` 是 JDK 启用套件上的关键字选择，不是 OpenSSL 密码串语法。 |
+| `SSLSocket` | 能做 | 真实 TLS 1.2／1.3 握手、证书链与主机名校验、SNI、ALPN、`cipher()`／`version()`／`shared_ciphers()`、`getpeercert()`（JDK `X509Certificate` 转参考的 dict 形状）。`compression()` 恒 `None`；`tls-unique` 通道绑定不支持（JSSE 不暴露）。 |
+| `MemoryBIO` | 能做 | 纯字节缓冲，`pending`／`read`／`write`／`write_eof`／`eof` 按参考语义；它只服务于 `SSLObject` 那条路，不冒充 OpenSSL BIO。 |
+| `SSLObject`（`_wrap_bio`） | 做不到 | JSSE 的对应物是 `SSLEngine`，要按 `NEED_WRAP`／`NEED_UNWRAP`／`FINISHED` 状态机把 `do_handshake`／`read`／`write`／`pending` 全部重写成 buffer 驱动；当前 `_wrap_bio` 明确抛 `NotImplementedError`，不伪造一个只有方法的空壳。 |
+| 证书与密钥格式 | 部分做 | PEM／DER 用 `CertificateFactory` 加手写 PEM 块扫描（`keycert.pem` 私钥块在前、证书块在后，JDK 的 `generateCertificates` 会提前停止）；`X509` 用 JDK 类型；`_ssl.txt2obj`／`nid2obj` 是有限对象表。SEC1 EC 私钥、旧式 `Proc-Type: 4,ENCRYPTED` PEM 不做。 |
+| 模块级常量与函数 | 部分做 | `RAND_bytes` 用 `SecureRandom`；`get_default_verify_paths` 指向 JDK 信任库并保留 `SSL_CERT_FILE`／`SSL_CERT_DIR` 的 OpenSSL 含义；`load_dh_params` 明确 `NotImplementedError`（JSSE 自选 DHE 群，不读参数文件）。版本常量见下。 |
+| `ssl.py`／`test_ssl` 的依赖面 | 已扫 | `ssl.py` 依赖 `_SSLContext`／`_SSLSocket`、协议与 `CERT_*`／`OP_*`／`VERIFY_*` 常量、`txt2obj`／`nid2obj`、`RAND_*`、`MemoryBIO` 与七个异常类；`test_ssl` 另碰 `_wrap_bio`、`_test_decode_cert`、`get_ca_certs`、`session_stats`。 |
+
+**常量取值原则（决定与理由）**：`OPENSSL_VERSION = "Jy3 JSSE (not OpenSSL)"`、`OPENSSL_VERSION_NUMBER = 0`、`OPENSSL_VERSION_INFO = _OPENSSL_API_VERSION = (0, 0, 0, 0, 0)`。版本号是程序用来判断「我在跑哪个 OpenSSL」的；印一个抄来的发行号会让 `OPENSSL_VERSION_NUMBER >= 0x10101000` 一类分支得到错误结论，也让「本运行时不是 OpenSSL」这个事实被掩盖。宁可让 `test_openssl_version` 失败，也不伪造。接口形状的常量（协议版本、`CERT_*`、`OP_*`、`VERIFY_*`、`ALERT_DESCRIPTION_*`）保留 Python 文档值，因为它们是 API 取值，不是对 OpenSSL 版本的声明；`_DEFAULT_CIPHERS = "DEFAULT"`，因为 JSSE 没有 OpenSSL 密码串。
+
+**修后**：`import ssl` 成功；最小 TLS 回环用自签证书跑通 TLS 1.3 与 TLS 1.2+ALPN，`getpeercert`、`MemoryBIO`、不可信证书抛 `SSLCertVerificationError` 均对拍。`test_ssl` 207／25／96／32（fail／error／skip），其中 81 个 ERROR 是 `ssl.py` 的 `encode('idna')` 撞上缺失的 `unicodedata.ucd_3_2_0`，属 `_ssl` 之外的模块缺口。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

@@ -781,6 +781,11 @@ public final class PyRuntime {
         if (dotted.equals("_socket")) {
             return cached(SocketModule.install(), dotted);
         }
+        // `_ssl` is written the same way: the module state is a Python source beside the Java
+        // class, and the JSSE calls are injected into it.
+        if (dotted.equals("_ssl")) {
+            return cached(SslModule.install(), dotted);
+        }
         int dot = dotted.lastIndexOf('.');
         if (dot <= 0) {
             return find(dotted, PyNone.INSTANCE);
@@ -838,6 +843,9 @@ public final class PyRuntime {
         }
         if (name.equals("_socket")) {
             return keep(SocketModule.install(), name);
+        }
+        if (name.equals("_ssl")) {
+            return keep(SslModule.install(), name);
         }
         // `array` is built on first import for the same reason, one step further: its module exec
         // registers the type with `collections.abc.MutableSequence` (gh-153210 in 3.14 has no

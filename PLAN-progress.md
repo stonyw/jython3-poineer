@@ -489,3 +489,30 @@
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m，harness `PASS=12`）。
 
 **`test_io` 收口结论**：余 143 例（83 fail＋60 err），无「一簇十几例」的可修面。构成：析构/确定性终结/`ResourceWarning`/weakref 约 30、`getsizeof`／`sizeof` 2、线程与关闭竞态 5、pickling 子类 1、编码表缺席约 15、`IncrementalNewlineDecoder` 5、`_pyio` 的 `truncate`（`os.lseek`／`os.ftruncate`）2、BOM 与 `reconfigure` 编码约 8、其余散例。**`test_io` 不再作为主战场**；下一片转 §3.3 `_ssl`（切片 47）。
+
+## M5 切片 47 明细：`_ssl` 可行性与最小真实面（2026-11-15）
+
+**盘点表**：见 `PLAN.md` §3.4（七组，逐组判定与依据）。结论是**可行**：JSSE 撑得起 `SSLContext`＋`SSLSocket` 的真实握手，故继续实现；`SSLObject`／`_wrap_bio` 与 DH 参数文件判定为做不到，明确拒绝而不是伪造。
+
+**常量原则**：`OPENSSL_VERSION = "Jy3 JSSE (not OpenSSL)"`、`OPENSSL_VERSION_NUMBER = 0`、`OPENSSL_VERSION_INFO = _OPENSSL_API_VERSION = (0,0,0,0,0)`。理由见 `PLAN.md` §3.4：版本文本是对「是否 OpenSSL」的回答，不应为了通过断言而伪造。API 形状常量（协议、`CERT_*`、`OP_*`、`VERIFY_*`、`ALERT_*`）保留 Python 文档值。
+
+**修前修后**：`import ssl` 修前失败于 `_scproxy` 缺失（导入链环境缺口）；补 shim 后 `test_ssl` 一开跑即 `PyBaseException cannot be cast to PyOSError`（`SSLError` 是 `OSError` 子类，但用 `new PyBaseException` 造出来）。修后 **207 测试／25 fail／96 err／32 skip**；其中 **81 个 ERROR** 是 `ssl._encode_hostname` 调 `encode('idna')`，根因 `unicodedata.ucd_3_2_0` 缺失，属 `_ssl` 之外。
+
+**落地**：
+
+1. `PyRaise.raise`：`type.matches(ExceptionTypes.OS_ERROR)` 时走 `PyOSError.create`；`SslModule.raiseNamed` 走 `Classes.typeCall`（即 `PyErr_SetString` 会跑 `__init__` 的语义），并新增 `library`／`reason` 重载与 `certVerificationError`。这修掉了 ClassCastException，也让 `SSLError.library`／`reason`、`SSLCertVerificationError.verify_code`／`verify_message` 只在 C 层抛出时才有值。
+2. `_ssl.py`：`SSLError.__str__`（有 errno/strerror 时只显示 strerror）、`MemoryBIO.eof`（`_eof and not _data`）、`txt2obj` 名字大小写敏感（`serverAuth` ✓／`serverauth` ✗）、`options` setter 不再 `int()`（非整数 TypeError）、`check_hostname=True` 自动把 `CERT_NONE` 推成 `CERT_REQUIRED`、`maximum_version` 的 `MINIMUM_SUPPORTED` 解到 TLS1.3。
+3. `SslModule.java`：PEM 块手写扫描（私钥块在前时 JDK `generateCertificates` 会提前停）、PKCS#8 私钥的 PBES2 解密与密码回调（惰性求值，明文密钥不调用回调）、密钥/证书配对用签名验证而不是只比 RSA 模数、`load_default_certs` 尊重 `SSL_CERT_FILE`／`SSL_CERT_DIR`、`load_verify_locations` 的 cadata 两种 OpenSSL 措辞、`num_tickets` 的客户端与负数校验、`options` 用 long 并无符号校验、`set_ciphers` 改关键字贪心匹配（`AESGCM` → 33 条）、默认 options 补 `OP_NO_SSLv3`（=2186412096）、证书 dict 的 RDN 顺序／长名／日期格式／SAN 类型（DirName／IP／Registered ID）、`cert_store_stats` 按 BasicConstraints 数 CA、`getpeercert` 的 `OID.` 前缀还原。
+4. `SslModule.java` 的 I/O 通道：`_ssl` 的 JSSE 操作一律在 `blocking(...)` 里跑——本运行时为了 `select()` 让通道始终保持非阻塞，而 `SSLSocket` 拒绝非阻塞通道；每次操作前切阻塞、结束后恢复，超时仍由 `SO_TIMEOUT` 承担（Python `0.0` 映射 1 ms 并翻成 `SSLWantRead/WriteError`，`None` 映射无限）。`_ssl.py` 在 `read`／`write`／`do_handshake` 前把 owner 当前的 `gettimeout()` 同步给 Java，`settimeout()` 在 wrap 之后调用也生效。
+5. `SocketModule.readStream`／`writeStream`：未连接时抛 `ENOTCONN`（参考语义），不再报 `EAGAIN`；`ssl.py` 的「先 wrap、后 connect」路径依赖这一点。
+6. `ctxWrapSocket`：`PROTOCOL_TLS_CLIENT` 上下文按服务端 wrap、以及反向组合，在交换任何字节前抛参考措辞的 `SSLError`。
+
+**逐簇去向**（相对首轮可跑通的 31 fail／105 err）：`check_hostname`、`do_handshake_enotconn`、`getpeercert_enotconn`、`echo`（error）、`min_max_version`、`options`、`PROTOCOL_TLS`、`subclass`、`version_basic` 转绿；`echo` 余 2 例从 error 变 fail（措辞已补齐，剩余为握手本身）。`test_parse_cert_CVE_2013_4238` 由 fail 变 error（畸形 SAN 时我方整段丢弃 SAN，参考保留可解析项）。
+
+**对拍**：`/tmp/m5_47/loop.py` 起本机自签证书，`PROTOCOL_TLS_SERVER` 与 `PROTOCOL_TLS_CLIENT` 直连：TLS 1.3 与 TLS 1.2 均握手成功，`cipher()`／`version()`／`getpeercert()` 的 CN 与回显正确；`/tmp/m5_47/check.py` 另验 ALPN 协商 `http/1.1`、`MemoryBIO` 语义、`txt2obj`／`nid2obj`、`RAND_bytes`、默认校验路径、不可信证书抛 `SSLCertVerificationError`。
+
+**回归**：`test_io` 675／525／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349，与基线一致。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m 4s，harness `PASS=12`，surprises 0）。
+
+**明确不做**：`_wrap_bio`／`SSLObject`（需要 `SSLEngine` 状态机，不伪造）、`load_dh_params`（JSSE 自选 DHE 群）、NPN、PSK、PHA、TLS 压缩、tls-unique、会话票据统计、SEC1 EC 私钥、旧式 `Proc-Type` 加密 PEM、OpenSSL 密码串全语法。**下一片建议**：先补 `unicodedata.ucd_3_2_0`（可一次松开 `test_ssl` 的 81 个 idna ERROR，也惠及 `encodings.idna`），或按 §3.3 转 `_sqlite3`。

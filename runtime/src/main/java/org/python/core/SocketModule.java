@@ -801,6 +801,11 @@ final class SocketModule {
     }
 
     private static int readStream(SocketChannel channel, ByteBuffer buffer, Double limit) {
+        // A read on an unconnected stream is ENOTCONN in the reference, whether or not the
+        // socket was switched to non-blocking; it is not "no data yet".
+        if (!channel.isConnected()) {
+            throw osError(ENOTCONN, "Socket is not connected");
+        }
         try {
             if (limit == null) {
                 channel.configureBlocking(true);
@@ -835,6 +840,9 @@ final class SocketModule {
     }
 
     private static int writeStream(SocketChannel channel, ByteBuffer buffer, Double limit) {
+        if (!channel.isConnected()) {
+            throw osError(ENOTCONN, "Socket is not connected");
+        }
         try {
             if (limit == null) {
                 channel.configureBlocking(true);

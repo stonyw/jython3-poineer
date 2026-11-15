@@ -36,9 +36,17 @@ public final class PyRaise extends RuntimeException {
         return new PyRaise(value);
     }
 
-    /** Raise {@code type(args...)}; the message is built from arguments already converted. */
+    /**
+     * Raise {@code type(args...)}; the message is built from arguments already converted.
+     *
+     * <p>The family that carries fields of its own is built by its own creator: {@code OSError} and
+     * everything under it is a {@link PyOSError} in Java, and a {@link PyBaseException} wearing one of
+     * those types has no {@code errno} for the getset table to read.
+     */
     public static PyRaise raise(PyType type, PyObject... args) {
-        return of(new PyBaseException(type, args.clone()));
+        return of(type.matches(ExceptionTypes.OS_ERROR)
+                ? PyOSError.create(type, args.clone())
+                : new PyBaseException(type, args.clone()));
     }
 
     /** Raise {@code type("message")} for the many cases where CPython formats a single string. */
