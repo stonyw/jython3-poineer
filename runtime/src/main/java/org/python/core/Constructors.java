@@ -1382,9 +1382,6 @@ final class Constructors {
             throw Slots.typeError(
                     textual ? "string argument without an encoding" : "errors without a string argument");
         }
-        if (textual) {
-            throw Slots.typeError("string argument without an encoding");
-        }
         // `bytes_result_unchanged`: an exact bytes is what was asked for, and nothing else is tried.
         if (value.getType() == PyType.BYTES) {
             return value;
@@ -1392,7 +1389,9 @@ final class Constructors {
         // Before any other reading of the value, `__bytes__` gets the first word — on a bytes
         // subclass it is the inherited method (which copies to an exact bytes) or the override, and on
         // an ordinary object it is how `bytes(WithBytes())` is answered at all. Only `bytes` asks:
-        // `bytearray(WithBytes())` is a refusal.
+        // `bytearray(WithBytes())` is a refusal. A `str` subclass may answer here too; the complaint
+        // about a missing encoding belongs to the tail, once no `__bytes__` has spoken (CPython reaches
+        // it from `PyBytes_FromObject`).
         PyObject answered = Specials.invoke(value, "__bytes__");
         if (answered != Slots.DECLINED) {
             if (answered instanceof PyBytes) {
@@ -1400,6 +1399,9 @@ final class Constructors {
             }
             throw Slots.typeError(
                     "__bytes__ returned non-bytes (type %s)", answered.getType().filedName());
+        }
+        if (textual) {
+            throw Slots.typeError("string argument without an encoding");
         }
         Long count = askedForOctets(value);
         if (count != null) {
