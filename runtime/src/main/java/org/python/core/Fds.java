@@ -90,6 +90,16 @@ final class Fds {
         final java.io.RandomAccessFile file;
         /** Where that file was opened, so {@code fstat} can answer with the file's own numbers. */
         final java.nio.file.Path path;
+        /**
+         * A directory opened read-only: a descriptor with a path but no handle behind it.
+         *
+         * <p>{@code open(2)} answers a directory with a descriptor the reference will not read from but
+         * will {@code fstat}, and {@code socket.sendfile} depends on both halves of that: it stats the
+         * descriptor, and a directory is the one regular-looking file the kernel refuses to copy from.
+         * Java's {@code RandomAccessFile} refuses to open a directory at all, so the number is kept
+         * with the path alone.
+         */
+        final boolean directory;
         /** Whether every write seeks to the end first, which is what {@code O_APPEND} asks for. */
         final boolean appending;
         /** 0, 1 or 2 for one of the inherited console descriptors, -1 for everything this table made. */
@@ -99,27 +109,33 @@ final class Fds {
         volatile boolean blocking = true;
 
         Slot(Pipe pipe, boolean writable, boolean devnull) {
-            this(pipe, writable, devnull, null, null, false, -1);
+            this(pipe, writable, devnull, null, null, false, false, -1);
         }
 
         Slot(java.io.RandomAccessFile file, java.nio.file.Path path,
                 boolean writable, boolean appending) {
-            this(null, writable, false, file, path, appending, -1);
+            this(null, writable, false, file, path, false, appending, -1);
+        }
+
+        /** A directory opened read-only: a path with no handle, which {@code fstat} still describes. */
+        Slot(java.nio.file.Path path) {
+            this(null, false, false, null, path, true, false, -1);
         }
 
         /** A standard descriptor: number 0 reads, 1 and 2 write, and the JVM owns the console. */
         Slot(int standard) {
-            this(null, standard != 0, false, null, null, false, standard);
+            this(null, standard != 0, false, null, null, false, false, standard);
         }
 
         private Slot(Pipe pipe, boolean writable, boolean devnull,
-                java.io.RandomAccessFile file, java.nio.file.Path path, boolean appending,
-                int standard) {
+                java.io.RandomAccessFile file, java.nio.file.Path path, boolean directory,
+                boolean appending, int standard) {
             this.pipe = pipe;
             this.writable = writable;
             this.devnull = devnull;
             this.file = file;
             this.path = path;
+            this.directory = directory;
             this.appending = appending;
             this.standard = standard;
         }
@@ -182,6 +198,12 @@ final class Fds {
             java.nio.file.Files.createFile(path);
         }
         boolean writable = write || append;
+        if (!writable && java.nio.file.Files.isDirectory(path)) {
+            // `open(2)` on a directory is a descriptor, not an error: the reference stats it, refuses
+            // to read or write it with EISDIR, and `sendfile` gives up on it. Java's RandomAccessFile
+            // will not open one, so the path is kept on its own.
+            return allocate(new Slot(path));
+        }
         java.io.RandomAccessFile file =
                 new java.io.RandomAccessFile(path.toFile(), writable ? "rw" : "r");
         if (truncate && writable) {
@@ -190,15 +212,23 @@ final class Fds {
         return allocate(new Slot(file, path, writable, append));
     }
 
-    /** Whether the number names a real file rather than a pipe end or the null device. */
+    /** Whether the number names a real file or a directory rather than a pipe end or the null device. */
     static boolean isFile(int fd) {
         Slot slot = peek(fd);
-        return slot != null && slot.file != null;
+        return slot != null && (slot.file != null || slot.directory);
     }
 
-    /** The handle a real-file descriptor names, which is what {@code io.open(fd, 'r+b')} wraps. */
+    /**
+     * The handle a real-file descriptor names, which is what {@code io.open(fd, 'r+b')} wraps.
+     *
+     * <p>A directory has no handle: reading one is {@code EISDIR}, the answer the reference gives.
+     */
     static java.io.RandomAccessFile file(int fd) {
-        return slot(fd).file;
+        Slot slot = slot(fd);
+        if (slot.file == null) {
+            throw isADirectory();
+        }
+        return slot.file;
     }
 
     /** Where a real-file descriptor was opened. */
@@ -273,7 +303,8 @@ final class Fds {
                 return;
             }
         }
-        if (slot.devnull || slot.standard >= 0) {
+        if (slot.devnull || slot.standard >= 0 || slot.directory) {
+            // A directory descriptor owns nothing to close: the number being dropped is the whole of it.
             return;
         }
         if (slot.file != null) {
@@ -356,6 +387,9 @@ final class Fds {
             } finally {
                 Gil.resume(holds);
             }
+        }
+        if (slot.directory) {
+            throw isADirectory();
         }
         if (slot.devnull) {
             return new byte[0];
@@ -444,6 +478,9 @@ final class Fds {
             } finally {
                 Gil.resume(holds);
             }
+        }
+        if (slot.directory) {
+            throw isADirectory();
         }
         if (slot.devnull) {
             return bytes.length;
@@ -605,7 +642,7 @@ final class Fds {
         if (slot.devnull) {
             return true;
         }
-        if (slot.file != null) {
+        if (slot.file != null || slot.directory) {
             return true;
         }
         if (slot.writable) {
@@ -650,7 +687,7 @@ final class Fds {
         if (slot == null || slot.devnull) {
             return 0;
         }
-        if (slot.file != null) {
+        if (slot.file != null || slot.directory) {
             return 0;
         }
         Pipe pipe = slot.pipe;
@@ -833,6 +870,13 @@ final class Fds {
         return PyRaise.of(PyOSError.create(
                 ExceptionTypes.OS_ERROR,
                 new PyObject[] {PyInt.of(9), PyStr.of("Bad file descriptor")}));
+    }
+
+    /** {@code EISDIR}, which a read or write on a directory descriptor reports. */
+    private static PyRaise isADirectory() {
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.OS_ERROR,
+                new PyObject[] {PyInt.of(21), PyStr.of("Is a directory")}));
     }
 
     /** {@code EINVAL}, which an impossible position, length or whence reports. */

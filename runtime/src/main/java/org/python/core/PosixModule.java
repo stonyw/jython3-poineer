@@ -21,6 +21,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
@@ -337,6 +338,72 @@ final class PosixModule {
                     }
                     return PyInt.of(written);
                 }));
+        module.set("sendfile", function(
+                "sendfile",
+                "sendfile($module, out_fd, in_fd, offset, count, /)\n--\n\n"
+                        + "Copy count bytes from file descriptor in_fd to file descriptor out_fd.\n\n"
+                        + "Starting at offset, copy count bytes from in_fd to out_fd until EOF is\n"
+                        + "reached. Return the number of bytes sent.",
+                (args, kwNames) -> {
+                    Arguments.exactly("sendfile", args, kwNames, 4);
+                    int out = intArgument(args[0]);
+                    int in = intArgument(args[1]);
+                    boolean fromCurrent = args[2] == PyNone.INSTANCE;
+                    long offset = fromCurrent ? 0 : longArgument(args[2]);
+                    long count = longArgument(args[3]);
+                    if (!SocketModule.owns(out) || !Fds.isFile(in) || (!fromCurrent && offset < 0)) {
+                        // sendfile(2) refuses a descriptor pair it cannot copy between (a pipe, a
+                        // character device, a negative offset) with EINVAL rather than guessing.
+                        throw PyRaise.of(PyOSError.create(
+                                ExceptionTypes.OS_ERROR,
+                                new PyObject[] {PyInt.of(22), PyStr.of("Invalid argument")}));
+                    }
+                    if (count <= 0) {
+                        return PyInt.of(0);
+                    }
+                    java.io.RandomAccessFile file = Fds.file(in);
+                    int wanted = (int) Math.min(count, 1 << 20);
+                    java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(wanted);
+                    long position;
+                    int read;
+                    int holds = Gil.suspend();
+                    try {
+                        // A positional read leaves the handle's own position alone, which is what a
+                        // given offset asks for; a NULL offset is the one case that advances it.
+                        position = fromCurrent ? file.getFilePointer() : offset;
+                        read = file.getChannel().read(buffer, position);
+                    } catch (IOException error) {
+                        throw PyRaise.of(PyOSError.create(
+                                ExceptionTypes.OS_ERROR,
+                                new PyObject[] {PyInt.of(5), PyStr.of("Input/output error")}));
+                    } finally {
+                        Gil.resume(holds);
+                    }
+                    if (read <= 0) {
+                        return PyInt.of(0);
+                    }
+                    byte[] bytes =
+                            read == wanted ? buffer.array() : Arrays.copyOf(buffer.array(), read);
+                    // One non-blocking attempt, as sendfile(2) on a non-blocking descriptor is: what
+                    // fits goes now and the rest is the caller's to retry, which is what makes
+                    // socket.sendfile's selector wait and its timeout mean anything.
+                    int sent = SocketModule.writeFdNonBlocking(out, bytes);
+                    if (sent > 0 && fromCurrent) {
+                        int nested = Gil.suspend();
+                        try {
+                            // Only what was sent is consumed, so a short write leaves the rest to be
+                            // read again rather than dropping it.
+                            file.seek(position + sent);
+                        } catch (IOException error) {
+                            throw PyRaise.of(PyOSError.create(
+                                    ExceptionTypes.OS_ERROR,
+                                    new PyObject[] {PyInt.of(5), PyStr.of("Input/output error")}));
+                        } finally {
+                            Gil.resume(nested);
+                        }
+                    }
+                    return PyInt.of(sent);
+                }));
         module.set("lseek", function(
                 "lseek",
                 "lseek($module, fd, position, whence, /)\n--\n\n"
@@ -456,7 +523,7 @@ final class PosixModule {
                         + "Equivalent to os.stat(fd).",
                 (args, kwNames) -> {
                     Arguments.exactlyOne("fstat", args, kwNames);
-                    int fd = Numbers.asIndex(args[0]).intValue();
+                    int fd = intArgument(args[0]);
                     if (Fds.isFile(fd)) {
                         // The descriptor names a real file, so the numbers come from the file itself.
                         return statPath(new FsPath(Fds.path(fd).toString(), false), true);
@@ -1208,6 +1275,16 @@ final class PosixModule {
             throw Slots.overflowError("Python int too large to convert to C long");
         }
         return number.longValue();
+    }
+
+    /** A C {@code int} argument: descriptor numbers are read as one, so an oversized number is
+     * {@code OverflowError} rather than a silently truncated descriptor. */
+    private static int intArgument(PyObject value) {
+        BigInteger number = Numbers.asIndex(value);
+        if (number.bitLength() >= Integer.SIZE) {
+            throw Slots.overflowError("Python int too large to convert to C int");
+        }
+        return number.intValue();
     }
 
     /**

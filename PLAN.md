@@ -228,6 +228,47 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m8s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。
 
+### 3.8 M5 切片 51：skip 审计与 `os.sendfile`（2026-11-15）
+
+**问题**：`test_socket` 在参考 3.14.10 上只 skip 255 例，本运行时 skip 531 例（按测试 id 去重 519）。多出来的若来自「某个 `hasattr` 为假」，就是把失败藏进了 skip。
+
+**逐 reason 差异（唯一 id）**：
+
+| | 参考 skip | 我们 skip | 双方同 skip | 同 reason | 我们多 skip | 我们少 skip |
+|---|---|---|---|---|---|---|
+| `test_socket` 修前 | 255 | 519 | 255 | 127 | **264** | 0 |
+| `test_socket` 修后 | 255 | 507 | 255 | 127 | **252** | 0 |
+| `test_ssl` | 17 | 35 | 14 | 10 | **21** | 3 |
+
+`test_socket` 没有「参考 skip、我们跑了」的反向偏差。`test_ssl` 的 3 例反向偏差见下。
+
+**「我们多 skip」的簇与根因**（修后 252）：
+
+| 簇 | 例数 | 根因 |
+|---|---|---|
+| `sendmsg`／`recvmsg`／`recvmsg_into`／`CMSG_*`／`send_fds` | **226** | JVM 无 `msghdr`／`cmsg`／`SCM_RIGHTS`，Java NIO 没有辅助数据 API；PLAN §3.2 硬墙总清单（M5 限制②）已具名，不能按参考语义实现 |
+| `signal.siginterrupt` | 9 | JVM 无 SA_RESTART 控制，也无真信号打断阻塞调用 |
+| `_testcapi` | 5 | C 扩展模块 |
+| `socket.if_nameindex`／`if_nametoindex`／`if_indextoname` | 5 | 接口枚举面未实现（`NetworkInterface` 可支撑，留待下一片） |
+| `signal.alarm`（含 +`socketpair`） | 3 | JVM 无进程级定时信号 |
+| 未实现 `fcntl` | 2 | 模块缺失 |
+| `sys.getrefcount` | 2 | JVM 无引用计数 |
+| `os.sendfile` | 12 → **0** | 本切片补上，见下 |
+
+剩余 252 例全部落在上述具名硬墙或未实现模块上，没有「条件为假但不是平台限制」的簇。`sendmsg` 族 226 例与参考的 128 条「双方都 skip 但 reason 不同」（参考报 `UDPLITE sockets required`／`SCTP Protocol not supported`／`MSG_DONTWAIT not known`／`VSOCK sockets required`）结局一致：都是 skip，不是藏起来的失败。
+
+**修最大可修簇：`os.sendfile`（12 例）**。[PosixModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PosixModule.java) 按 `sendfile(2)` 语义实现：`count <= 0` 答 0；给定 `offset` 时用 `FileChannel.read(buffer, position)` 定位读、**不动**文件位置，`offset=None` 时从当前位置读并且只按**实发**字节数推进；单次最多搬 1 MiB；写出改用新加的 `SocketModule.writeFdNonBlocking`（内部 `writeStream(..., 0.0)`），一次非阻塞尝试，装不下就抛 `BlockingIOError`(EAGAIN 35) 交给 `socket.py` 的 selector 等待——这正是 `_sendfile_use_sendfile` 依赖的节奏，超时才由它抛 `TimeoutError`。`fstat` 的 fd 改走新的 `intArgument`：`2**1000` 答 `OverflowError`、`None` 答 `TypeError`（`test__sendfile_use_sendfile` 的两条断言）。
+
+配套补齐 [Fds.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Fds.java) 的**只读目录描述符**：`os.open('.', os.O_RDONLY)` 在参考里成功并返回可 `fstat` 的 fd，而 Java 的 `RandomAccessFile` 拒绝打开目录。现在这类 fd 只记路径（`Slot.directory`），`isFile` 为真、`fstat` 走 `statPath`、读写报 `EISDIR`、`close` 只丢号码；关闭后 `fstat` 报 `EBADF`，`socket.sendfile` 由此拿到 `_GiveupOnSendfile`。具名偏差：`os.sendfile` 只收 4 个位置参数，参考的 `headers`／`trailer`／`flags` 未实现（`socket.py` 与测试都只走 4 参路径）。
+
+**`test_socket` 修前修后**：修前 **749／ok 186／fail 8／err 24／skip 531**；修后 **749／ok 198／fail 8／err 24／skip 519**（去重 507）。12 例 sendfile skip 全部转入运行并全部通过；两个中途断点已修：`test__sendfile_use_sendfile` 的 `IsADirectoryError`（目录 fd）与 `SendfileUsingSendfileTest.testWithTimeoutTriggeredSend` 的 `BrokenPipeError`（阻塞写改成非阻塞写）。
+
+**`test_ssl`（未改，同上方法过一遍）**：**207／ok 101／fail 42／err 29／skip 35**，修前修后一致。21 例「我们多 skip」中：14 例 `Test needs TLS 1.3 PHA`（Java `SSLEngine` 不支持 post-handshake auth，硬墙）、2 例 runner 注入的非阻塞 SSL 缺口（切片 48 具名）、2 例 `requires TLS-PSK` + 1 例 `TLS-PSK disabled`、1 例 RFC 5280/OpenSSL 3.0+、1 例 locale 月份名。3 例反向偏差：`test_protocol_tlsv1_2`（我们跑→error）与 `test_preauth_data_to_tls_client/server`（我们跑→fail）。根因是**平台标识不一致**：参考链接 OpenSSL 4.1.0，TLS ≤1.2 全部关闭（`HAS_TLSv1_2` 为 False），JSSE 如实报告 `HAS_TLSv1_2` 为 True；preauth 两例参考判定「在 darwin 上无法复现条件」而我们的 socket 栈能构造出来。这三例是「我们少 skip」，不是藏失败，按参考语义不应伪造 `HAS_TLSv1_2=False`，如实记录。
+
+**回归**：`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349、`test_fstring` 95／95／0／0／0，逐项与基线一致。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m13s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

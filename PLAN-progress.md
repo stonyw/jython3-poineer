@@ -603,3 +603,48 @@
 2. `TestUnixDomain.testSurrogateescapeBind` 仍是 error：Java NIO 的 `UnixDomainSocketAddress` 无法表示含孤立代理项的路径，参考能 bind。已把未检查的 `InvalidPathException` 换成 `OSError(EINVAL)` 以免杀 VM，但不伪造成功能。
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m8s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。
+
+## M5 切片 51 明细：skip 审计与 `os.sendfile`（2026-11-15）
+
+**一、参考的逐 reason skip 清单**。同一份 `test.test_socket` 用 `/opt/homebrew/bin/python3.14`（3.14.10）跑 `unittest` verbosity=0，日志 `/tmp/m5_51/ref_socket.out`：**749／ok 493／fail 1／err 0／skip 255**。逐条 `S id | reason` 与本运行时的 `S id | reason` 用 `/tmp/m5_51/audit.py` 对照，输出 `/tmp/m5_51/audit.txt`。
+
+**二、逐 reason 差异表**（按测试 id 去重；`RESULT` 行按例计数会略多）：
+
+| | 参考 skip | 我们 skip | 双方同 skip | reason 相同 | 我们多 skip | 我们少 skip |
+|---|---|---|---|---|---|---|
+| `test_socket` 修前 | 255 | 519（报告 531） | 255 | 127 | **264** | 0 |
+| `test_socket` 修后 | 255 | 507（报告 519） | 255 | 127 | **252** | 0 |
+| `test_ssl` | 17 | 35 | 14 | 10 | **21** | 3 |
+
+`test_socket` 没有反向偏差。`test_ssl` 的 3 例反向偏差与 21 例多 skip 的根因见下。
+
+**三、「我们多 skip」的簇（修后 252）**：
+
+| 簇 | 例数 | 根因 |
+|---|---|---|
+| `sendmsg`／`recvmsg`／`recvmsg_into`／`CMSG_*`／`send_fds` | **226** | JVM 无 `msghdr`／`cmsg`／`SCM_RIGHTS`，Java NIO 无辅助数据 API；PLAN §3.2 硬墙总清单（M5 限制②）具名 |
+| `signal.siginterrupt` | 9 | JVM 无 SA_RESTART 控制与真信号 |
+| `_testcapi` | 5 | C 扩展 |
+| `socket.if_nameindex`／`if_nametoindex`／`if_indextoname` | 5 | 接口枚举面未实现（留待下一片） |
+| `signal.alarm`（含 +`socketpair`） | 3 | JVM 无进程级定时信号 |
+| `fcntl` | 2 | 模块缺失 |
+| `sys.getrefcount` | 2 | JVM 无引用计数 |
+| `os.sendfile` | 12 → **0** | 本切片补上 |
+
+226 例 `sendmsg` 族是硬墙，不伪造。另有 128 条「双方都 skip 但 reason 不同」：我们统一报 `don't have recvmsg/recvmsg_into/sendmsg`，参考按平台报 `UDPLITE sockets required`／`SCTP Protocol not supported`／`MSG_DONTWAIT not known`／`VSOCK sockets required`／`issue #12958`——结局同为 skip，不是藏起来的失败。
+
+**四、修最大可修簇：`os.sendfile`（12 例）**：
+
+- [PosixModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PosixModule.java) 新增 `sendfile(out_fd, in_fd, offset, count, /)`：`count <= 0` 答 0；有 `offset` 时 `FileChannel.read(buffer, position)` 定位读、不移动文件位置；`offset=None` 从当前位置读、按**实发**字节推进（短写不丢数据）；单次上限 1 MiB。
+- 写出走新加的 `SocketModule.writeFdNonBlocking(fd, bytes)`（流走 `writeStream(..., 0.0)`，DGRAM 走 `writeDatagram(..., 0.0)`）：一次非阻塞尝试，装不下抛 `BlockingIOError`(EAGAIN 35)，由 `socket.py` 的 selector 等待；`select` 超时才抛 `TimeoutError`，不再阻塞到对端关闭后的 `BrokenPipeError`。
+- `fstat` 的 fd 改用新的 `intArgument`：`2**1000` → `OverflowError: Python int too large to convert to C int`、`None` → `TypeError`。
+- [Fds.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Fds.java) 支持**只读目录描述符**（`Slot.directory`）：`os.open('.', O_RDONLY)` 成功、`isFile` 为真、`fstat` 走 `statPath`、读写报 `EISDIR`、`close` 只丢号码。关闭后 `fstat` 报 `EBADF`，`socket.sendfile` 得到 `_GiveupOnSendfile`（`test__sendfile_use_sendfile` 依赖）。目录 fd 四行行为与参考逐字一致：`isdir True`、`read` 21 `Is a directory`、关闭后 `fstat` 9 `Bad file descriptor`、`open('.', O_WRONLY)` 21。
+- 具名偏差：`os.sendfile` 只收 4 个位置参数，参考的 `headers`／`trailer`／`flags` 未实现（`socket.py` 与测试都只走 4 参路径）。
+
+**五、`test_socket` 修前修后**：修前 **749／ok 186／fail 8／err 24／skip 531**；修后 **749／ok 198／fail 8／err 24／skip 519**（去重 507）。12 例 sendfile skip 全部转入运行并全部通过；两个中途断点（`test__sendfile_use_sendfile` 的 `IsADirectoryError`、`testWithTimeoutTriggeredSend` 的 `BrokenPipeError`）修后均 ok，fail／err 未增。
+
+**六、`test_ssl`（未改代码，同法审计）**：**207／ok 101／fail 42／err 29／skip 35**，修前修后一致。21 例多 skip：14 例 `Test needs TLS 1.3 PHA`（Java `SSLEngine` 不支持 post-handshake auth，硬墙）、2 例 runner 注入的非阻塞 SSL 缺口（切片 48 具名）、2 例 `requires TLS-PSK`、1 例 `TLS-PSK disabled`、1 例 RFC 5280/OpenSSL 3.0+、1 例 locale 月份名。3 例反向偏差：`test_protocol_tlsv1_2`（跑→error）、`test_preauth_data_to_tls_client/server`（跑→fail×2）。根因是平台标识不一致：参考链接 OpenSSL 4.1.0，TLS ≤1.2 关闭（`HAS_TLSv1_2` False），JSSE 报 `HAS_TLSv1_2` True；preauth 两例参考判定「darwin 上无法复现条件」而我们的 socket 栈能构造。如实记录，不伪造 `HAS_TLSv1_2=False`。
+
+**七、回归**：`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349、`test_fstring` 95／95／0／0／0，逐项与基线一致。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m13s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。

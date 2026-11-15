@@ -444,6 +444,23 @@ final class SocketModule {
         return writeStream(stream(found), octets, null);
     }
 
+    /**
+     * {@code os.sendfile}'s write half: one non-blocking attempt on a socket descriptor.
+     *
+     * <p>{@code socket.sendfile} surrounds each {@code os.sendfile} call with a selector wait and treats
+     * {@code BlockingIOError} as "the send buffer is full, wait again". A write that blocked inside
+     * {@code sendfile} would therefore hang the loop instead of letting its 0.01-second timeout fire,
+     * and would surface as {@code BrokenPipeError} once the peer hung up. Sending only what fits now is
+     * the descriptor behaviour the reference relies on.
+     */
+    static int writeFdNonBlocking(int fd, byte[] octets) {
+        Handle found = handle(fd);
+        if (found.type == SOCK_DGRAM) {
+            return writeDatagram(found, octets, 0.0);
+        }
+        return writeStream(stream(found), octets, 0.0);
+    }
+
     private static void quietly(AutoCloseable channel) {
         if (channel == null) {
             return;
