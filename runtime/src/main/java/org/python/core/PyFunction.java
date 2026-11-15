@@ -603,11 +603,10 @@ public final class PyFunction extends PyObject implements Descriptors.Protocol {
             case "__type_params__" -> typeParams;
             case "__get__" -> new PyNativeFunction(
                     "__get__", (args, kwNames) -> Descriptors.called(this, args, kwNames));
-            // `func.__call__` is the function itself under another name: CPython hands out a fresh
-            // method-wrapper each read, and calling it vectorcalls the very same function. The pickler and
-            // `test_wrapper_segfault` both read this name rather than calling the function directly.
-            case "__call__" -> new PyNativeFunction(
-                    "__call__", (args, kwNames) -> call(args, PyBoundMethod.keywordTuple(kwNames)));
+            // `func.__call__` is not answered here: CPython files the function's `tp_call` as a slot
+            // wrapper on the `function` type, so the read has to make a method-wrapper bound to this
+            // function. Answering it in this switch would shadow that row and hand out a plain builtin
+            // function with no `__self__`, which is why the row lives in `functionObjectTable` instead.
             default -> {
                 PyObject held =
                         attributes == null ? null : attributes.get(PyStr.interned(attribute));

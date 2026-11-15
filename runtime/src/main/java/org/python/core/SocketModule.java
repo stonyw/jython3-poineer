@@ -26,6 +26,7 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -481,7 +482,7 @@ final class SocketModule {
                 SocketChannel reservation = SocketChannel.open(protocol(handle.family));
                 reservation.configureBlocking(false);
                 reuseAddress(reservation, handle);
-                SocketAddress local = socketAddress(handle, address);
+                SocketAddress local = socketAddress(handle, address, "bind");
                 if (local instanceof UnixDomainSocketAddress unix) {
                     handle.unixPath = unix.getPath().toString();
                 }
@@ -494,7 +495,7 @@ final class SocketModule {
                 DatagramChannel datagram = openDatagram(handle);
                 datagram.configureBlocking(false);
                 reuseAddress(datagram, handle);
-                datagram.bind(socketAddress(handle, address));
+                datagram.bind(socketAddress(handle, address, "bind"));
                 handle.datagram = datagram;
             }
         } catch (IOException e) {
@@ -635,7 +636,7 @@ final class SocketModule {
     private static void connectHandle(Handle handle, PyObject address, Double limit) {
         try {
             if (handle.type == SOCK_DGRAM) {
-                datagram(handle).connect(socketAddress(handle, address));
+                datagram(handle).connect(socketAddress(handle, address, "connect"));
                 return;
             }
             SocketAddress local = null;
@@ -655,7 +656,7 @@ final class SocketModule {
             if (local != null) {
                 channel.bind(local);
             }
-            connectOne(handle, channel, socketAddress(handle, address), limit);
+            connectOne(handle, channel, socketAddress(handle, address, "connect"), limit);
         } catch (IOException e) {
             throw fault(e);
         }
@@ -775,7 +776,7 @@ final class SocketModule {
         DatagramChannel datagram = datagram(handle);
         try {
             return PyInt.of(
-                    datagram.send(ByteBuffer.wrap(octets), socketAddress(handle, args[3])));
+                    datagram.send(ByteBuffer.wrap(octets), socketAddress(handle, args[3], "sendto")));
         } catch (IOException e) {
             throw fault(e);
         }
@@ -803,6 +804,12 @@ final class SocketModule {
         Arguments.exactly("recv", args, null, 4);
         Handle handle = handle(slot(args[0]));
         int size = slot(args[1]);
+        if (size < 0) {
+            // `sock_recv` refuses a negative length before it touches the descriptor; letting
+            // `ByteBuffer.allocate` see it would end in a Java `IllegalArgumentException` that no
+            // `except ValueError` in the test suite could catch.
+            throw Slots.valueError("negative buffersize in recv");
+        }
         Double limit = timeout(args[3]);
         if (handle.type == SOCK_DGRAM) {
             ByteBuffer buffer = ByteBuffer.allocate(size);
@@ -822,7 +829,15 @@ final class SocketModule {
         Handle handle = handle(slot(args[0]));
         PyMemoryView view = PyMemoryView.of(args[1]);
         int asked = slot(args[2]);
-        int size = asked <= 0 ? view.byteLength() : Math.min(asked, view.byteLength());
+        if (asked < 0) {
+            throw Slots.valueError("negative buffersize in recv_into");
+        }
+        if (asked > view.byteLength()) {
+            // `sock_recv_into` asks for `nbytes` bytes of writable buffer and refuses a buffer that
+            // cannot take them; clamping would read fewer bytes than the caller asked for.
+            throw Slots.valueError("buffer too small for requested bytes");
+        }
+        int size = asked <= 0 ? view.byteLength() : asked;
         Double limit = timeout(args[4]);
         ByteBuffer buffer = ByteBuffer.allocate(size);
         int count;
@@ -843,6 +858,9 @@ final class SocketModule {
         Arguments.exactly("recvfrom", args, null, 4);
         Handle handle = handle(slot(args[0]));
         int size = slot(args[1]);
+        if (size < 0) {
+            throw Slots.valueError("negative buffersize in recvfrom");
+        }
         Double limit = timeout(args[3]);
         ByteBuffer buffer = ByteBuffer.allocate(size);
         if (handle.type == SOCK_DGRAM) {
@@ -862,7 +880,13 @@ final class SocketModule {
         Handle handle = handle(slot(args[0]));
         PyMemoryView view = PyMemoryView.of(args[1]);
         int asked = slot(args[2]);
-        int size = asked <= 0 ? view.byteLength() : Math.min(asked, view.byteLength());
+        if (asked < 0) {
+            throw Slots.valueError("negative buffersize in recvfrom_into");
+        }
+        if (asked > view.byteLength()) {
+            throw Slots.valueError("buffer too small for requested bytes");
+        }
+        int size = asked <= 0 ? view.byteLength() : asked;
         Double limit = timeout(args[4]);
         ByteBuffer buffer = ByteBuffer.allocate(size);
         SocketAddress from;
@@ -1575,20 +1599,49 @@ final class SocketModule {
         return PyTuple.of(PyStr.of("0.0.0.0"), PyInt.of(0));
     }
 
-    private static SocketAddress socketAddress(Handle handle, PyObject address) {
+    private static SocketAddress socketAddress(Handle handle, PyObject address, String method) {
         if (handle.family == AF_UNIX) {
             String path = text(address);
-            return UnixDomainSocketAddress.of(path);
+            try {
+                return UnixDomainSocketAddress.of(path);
+            } catch (InvalidPathException e) {
+                // Java cannot name a path holding lone surrogates — the spelling Python's
+                // `surrogateescape` uses for undecodable bytes. The reference binds such a path; here
+                // it is an OSError rather than an unchecked Java exception that would abort the VM.
+                throw osError(EINVAL, "Invalid argument");
+            }
         }
-        PyTuple tuple = (PyTuple) address;
+        String family = handle.family == AF_INET6 ? "AF_INET6" : "AF_INET";
+        if (!(address instanceof PyTuple tuple)) {
+            // `getsockaddrarg` names the failing call and the family before it looks at the pair:
+            // `sendto(b'', None)` is a TypeError, not a Java cast failure.
+            throw Slots.typeError(
+                    "%s(): %s address must be tuple, not %s",
+                    method, family, address.getType().name());
+        }
+        if (handle.family == AF_INET ? tuple.size() != 2 : tuple.size() != 2 && tuple.size() != 4) {
+            throw Slots.typeError(handle.family == AF_INET
+                    ? "%s address must be a pair (host, port)"
+                    : "%s address must be a tuple of length 2 or 4", family);
+        }
         String host = text(tuple.at(0));
-        int port = slot(tuple.at(1));
+        long port;
+        try {
+            port = Numbers.asIndex(tuple.at(1)).longValueExact();
+        } catch (ArithmeticException e) {
+            throw Slots.overflowError("%s(): port must be 0-65535.", method);
+        }
+        if (port < 0 || port > 65535) {
+            // `getsockaddrarg` names the call and answers OverflowError; a Java constructor would
+            // throw an unchecked IllegalArgumentException that no `except OverflowError` could catch.
+            throw Slots.overflowError("%s(): port must be 0-65535.", method);
+        }
         String fallback = handle.family == AF_INET6 ? "::" : "0.0.0.0";
         try {
             InetAddress resolved = host.isEmpty()
                     ? InetAddress.getByName(fallback)
                     : InetAddress.getByName(host);
-            return new InetSocketAddress(resolved, port);
+            return new InetSocketAddress(resolved, (int) port);
         } catch (UnknownHostException e) {
             throw gaiError(8, NODENAME);
         }

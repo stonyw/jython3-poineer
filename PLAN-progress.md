@@ -454,7 +454,7 @@
 
 ## M5 切片 46 明细：`test_io` 收口——单缓冲模型、`seek(whence)`、`__new__` 空壳与 close 顺序（2026-11-15）
 
-**修前修后**：`675／484／112／72／20` → **`675／525／83／60／20`**（+41 ok、−29 fail、−12 err）。
+**修前修后**：`675／484／112／72／20` → **`675／512／83／60／20`**（+41 ok、−29 fail、−12 err）。**更正（切片 50，2026-11-15）**：本行原记 `ok 525`，但 `525+83+60+20=688≠675`，不闭合；切片 49 实测为 `512／83／60／20`（512+83+60+20=675），与切片 21／22 那次同类笔误一样是 `ok` 抄错，当前基线统一为 **ok 512**。
 
 **参考语义取证**（`/tmp/bufferedio.c`，3.14.0）：
 
@@ -511,7 +511,7 @@
 
 **对拍**：`/tmp/m5_47/loop.py` 起本机自签证书，`PROTOCOL_TLS_SERVER` 与 `PROTOCOL_TLS_CLIENT` 直连：TLS 1.3 与 TLS 1.2 均握手成功，`cipher()`／`version()`／`getpeercert()` 的 CN 与回显正确；`/tmp/m5_47/check.py` 另验 ALPN 协商 `http/1.1`、`MemoryBIO` 语义、`txt2obj`／`nid2obj`、`RAND_bytes`、默认校验路径、不可信证书抛 `SSLCertVerificationError`。
 
-**回归**：`test_io` 675／525／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349，与基线一致。
+**回归**：`test_io` 675／512／83／60／20（切片 50 更正后的基线）、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349，与基线一致。
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m 4s，harness `PASS=12`，surprises 0）。
 
@@ -560,3 +560,46 @@
 **冒烟**：切片 17 的 asyncio 回环 echo、切片 44 的 `BufferedRWPair` 均在改后通过。
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 BUILD SUCCESSFUL（7m6s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。
+
+## M5 切片 50 明细：`__call__` 的属性面与 `test_socket` 解锁（2026-11-15）
+
+**一、真值表（参考 3.14.10 逐类实测）**。`__call__` 不是「每个可调用值都该有的一个成员」，而是各类型字典里由 `tp_call` 抄进去的那一行；读出来的形状由抄它的是 `wrapper_descriptor` 还是普通函数／方法决定。
+
+| 值 | `hasattr(x, '__call__')` | `type(x.__call__)` | 读出的形状 |
+|---|---|---|---|
+| 函数 `f`、`lambda`、类体里的函数 | True | `method-wrapper` | 绑到 `f`，`__self__ is f` |
+| 绑定方法 `m = C().f` | True | `method-wrapper` | 绑到 `m`，`__self__ is m` |
+| 内建函数 `len` | True | `method-wrapper` | 绑到 `len`，`__self__ is len` |
+| 内建方法 `[].append` | True | `method-wrapper` | 绑到该绑定方法 |
+| 方法描述符 `str.join` | True | `method-wrapper` | 绑到描述符自己，无 receiver |
+| 包装描述符 `object.__init__` | True | `method-wrapper` | 同上 |
+| `functools.partial(p)` | True | 参考 `method-wrapper`（C）；jy3 `method` | 见偏差① |
+| 普通类 `C`（metaclass 是 `type`） | True | `method-wrapper` | `type.__call__` 的 `wrapper_descriptor` 绑到 `C` |
+| `type` 自己 | True | `wrapper_descriptor` | **不绑**，无 `__self__` |
+| 类自带 `__call__` 的 `C.__call__` | True | `function` | **不绑**，就是那个函数 |
+| 自定义 metaclass 的 `__call__` | True | `method` | 绑到 `C` |
+| 实例带 `__call__` | True | `method` | 绑到实例 |
+| 普通实例、生成器、协程、async 生成器 | False | — | 没有这一行 |
+
+补充实测：`f.__call__ is f.__call__` 为假（每次读新造一个 wrapper），`==` 为真；`C.__call__ is type.__call__` 为假（前者是绑到 `C` 的 wrapper）；六个属性面（`__name__`／`__qualname__`／`__self__`／`__objclass__`／`__doc__`／`__text_signature__`）与「没有 `__get__`」也逐项对齐——`__qualname__` 是 `function.__call__` 这类 `类型.__call__`，`__doc__` 为 `Call self as a function.`，`__text_signature__` 为 `($self, /, *args, **kwargs)`。
+
+**二、实现**。[TypeDict.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/TypeDict.java) 的 `functionObjectTable` 末尾补一行 `table.wrapper("__call__", CALL_DOC, …)`，并新增 `methodObjectTable`（同样一行 wrapper），`fill` 增加 `owner == PyType.METHOD` 的分支；两行都生成 `Shape.WRAPPER`，读时经 `Descriptors` 绑接收者，得到 `method-wrapper`。`BUILTIN_FUNCTION`／`METHOD_DESCRIPTOR`／`WRAPPER_DESCRIPTOR`／`METHOD_WRAPPER` 原本已有这一行，故内建函数、`str.join`、`object.__init__` 与方法包装器本来就对。[PyFunction.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyFunction.java) 删掉 `getAttr` 里自答的 `__call__` 分支——它返回的是 `builtin_function_or_method` 且没有 `__self__`，还遮蔽类型字典里的 wrapper 行；`PyBoundMethod.getAttr` 本来就不答这个名字，正好落到新行。
+
+**三、`test_socket` 修前修后**。修前：`ThreadableTest.clientRun` 的 `hasattr(test_func, '__call__')` 为假，线程抛 `TypeError` 不置 done，`done.wait()` 永久挂住，**0 例完成**。修后整套跑完：**749／ok 186／fail 8／err 24／skip 531，81 秒**（远低于 10 分钟的上限，未触发超时）。途中依次越过的断点：
+
+1. `BasicUDPTest.testRecvFromNegative`：`recvfrom(-1)` 抛 `IllegalArgumentException: capacity < 0`（未检查的 Java 异常，会杀 VM）→ 四个 `recv*` 补负长度检查，报 `ValueError: negative buffersize in <name>`。
+2. `GeneralModuleTests.testSendtoErrors`：`sendto(b'foo', None)` 抛 `ClassCastException: PyNone → PyTuple` → `socketAddress` 增加方法名与地址族参数，报 `sendto(): AF_INET address must be tuple, not NoneType`，并校验元组长度。
+3. `GeneralModuleTests.test_getsockaddrarg`：`bind(('127.0.0.1', 118967))` 抛 `IllegalArgumentException: port out of range` → 端口先走 `Numbers.asIndex(...).longValueExact()`，越界报 `OverflowError: bind(): port must be 0-65535.`。
+4. `TestUnixDomain.testSurrogateescapeBind`（第 697 例）：含孤立代理项的路径让 `UnixDomainSocketAddress.of` 抛 `InvalidPathException` 杀 VM → 映射为 `OSError(EINVAL, "Invalid argument")`，套件得以跑完；该例仍是 error（见偏差②）。
+5. `BufferIOTest.testRecvFromIntoSmallBuffer`：参考对 `nbytes > len(buffer)` 报 `ValueError: buffer too small for requested bytes`，原先用 `Math.min` 夹取 → `recv_into`／`recvfrom_into` 补此检查。
+
+余下 8 fail 与 24 err 全是 socket 模块既有面（缺 `getservbyname`／`gethostbyaddr`／`getnameinfo`／`getfqdn`、缺 `SOCK_RDM`／`IPV6_RTHDR`／`TCP_KEEPALIVE`、`socketpair` 的 PEP 573 认证、`fileno`／`set_inheritable`、IPv6 `flowinfo`、`TestUnixDomain.testEmptyAddress` 等），与 `__call__` 无关。
+
+**四、七套回归（逐套照看）**：`test_io` 675／512／83／60／20（69s）、`test_ssl` 207／101／42／29／35（55s，两例既有 SSL 缺口具名 skip）、`test_csv` 134／130／0／0／4（12s）、`test_tarfile` 768／396／23／0／349（140s）、`test_fstring` 95／95（36s）、`test_class` 42／39／1／0／2（11s）、`test_descr` 163／147／4／4／8（21s），七套全部与基线一致。
+
+**本切片已知偏差（具名）**：
+
+1. `functools.partial.__call__` 在参考是 `method-wrapper`，在 jy3 是 `method`。原因是 jy3 的 `functools.partial` 来自 stdlib 的纯 Python `class partial`（`_functools` 尚未实现），`__call__` 是 Python 函数——这是 `_functools` 的既有偏差，不在属性面里伪造 C 类型的形状。
+2. `TestUnixDomain.testSurrogateescapeBind` 仍是 error：Java NIO 的 `UnixDomainSocketAddress` 无法表示含孤立代理项的路径，参考能 bind。已把未检查的 `InvalidPathException` 换成 `OSError(EINVAL)` 以免杀 VM，但不伪造成功能。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m8s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。

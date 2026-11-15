@@ -819,6 +819,10 @@ final class TypeDict {
             functionObjectTable(into);
             return;
         }
+        if (owner == PyType.METHOD) {
+            methodObjectTable(into);
+            return;
+        }
         if (owner == PyType.METHOD_DESCRIPTOR) {
             methodDescrTable(into);
             return;
@@ -5566,6 +5570,33 @@ final class TypeDict {
                 (self, value) -> ((PyFunction) self).recode(value));
         fromTable(PyType.FUNCTION, into);
         table.member("__globals__", self -> ((PyFunction) self).globals());
+        // `func.__call__` is not a function of its own: CPython files `tp_call` as a slot wrapper, so each
+        // read makes a fresh method-wrapper bound to the function, exactly as `len.__call__` is one bound
+        // to `len`. `hasattr(f, '__call__')` and `f.__call__.__self__ is f` both rest on this row.
+        table.wrapper(
+                "__call__",
+                CALL_DOC,
+                (args, kwNames, qualified) ->
+                        args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
+    }
+
+    /**
+     * {@code method}'s own dictionary: the slot wrapper `tp_call` files.
+     *
+     * <p>A bound method is callable through {@code tp_call} like every other callable, so CPython's
+     * {@code type_ready_fill_dict} copies that slot into the dictionary as a {@code wrapper_descriptor}.
+     * A read of {@code m.__call__} therefore hands out a method-wrapper bound to {@code m} itself, and
+     * {@code hasattr(m, '__call__')} is true — which is what {@code ThreadableTest} in the socket tests
+     * asks before it waits for a worker thread's result.
+     */
+    private static void methodObjectTable(PyDict into) {
+        Table table = new Table(PyType.METHOD, into);
+        fromTable(PyType.METHOD, into);
+        table.wrapper(
+                "__call__",
+                CALL_DOC,
+                (args, kwNames, qualified) ->
+                        args[0].call(tail(args, kwNames), PyBoundMethod.keywordTuple(kwNames)));
     }
 
     /**
