@@ -973,3 +973,57 @@
 **九、回归十二套**（最终二进制）：`test_pyexpat` 86／47／14／87／17（`ok -32` 为 subTest 记账，`SUCCESSES` 47）、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／30／34（连跑三次 42／30／34、41／29／34、42／30／34：同一组线程化 TLS 用例在 ok／fail／err 间摆动，fail+err 70–72，基线 71 为其中一样本）、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1——无一项越出基线。
 
 **十、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m30s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。提交：59a「str/bytes/bytearray 查找换用 fastsearch 的两路算法」（代码）、59b（PLAN 双文件）。
+
+## M5 切片 60 明细：收 `test_str` 与 `test_bytes` 的剩余簇（2026-11-16）
+
+**一、修前分簇**（`test_str` 27 = 15 fail＋12 err，`test_bytes` 61 = 36 fail＋25 err，按 traceback 共同落点聚类）：
+
+| 套件 | 簇 | 例数 | 原文末行 | 性质 | 去向 |
+|---|---|---|---|---|---|
+| `test_str` | 大小写映射 | 5 | `test_casefold`：`+ aισ` | 真语义错 | 修（60b） |
+| `test_str` | 未改动与身份 | 3 | `'abcd' is not 'abcd'`／`unexpectedly identical: 'abc'` | 真语义错 | 修（60b） |
+| `test_str` | `__str__`／`__repr__` 交回子类 | 3 | `<class 'str'> is not <class '...StrSubclass'>` | 缺方法形态 | 修（60b） |
+| `test_str` | `format_map` | 1 | `NotImplementedError: str.format_map is not implemented` | 缺方法形态 | 修（60b） |
+| `test_str` | 重复关键字 | 1 | `"…given by name \('encoding'\) and position \(2\)" does not match …` | 全调用面机制缺口 | 不改，具名 |
+| `test_str` | 缺模块名 | 5 | `module 'codecs' has no attribute 'charmap_decode'`；`itertools`；`unicodedata`×2；`%ld` | 缺模块 | 不改，具名 |
+| `test_str` | memoryview／complex | 2 | `need a bytes-like object, memoryview found`；`unsupported format string passed to complex.__format__` | 另一模块缺方法形态 | 不改，具名 |
+| `test_str` | `getsizeof` | 4 | `module 'sys' has no attribute 'getsizeof'` | JVM 结构性硬墙 | 不改，具名 |
+| `test_str` | 引用计数与环境 | 2 | `False is not true`；`21 != 10` | JVM 结构性硬墙／`-X dev` 子进程 | 不改，具名 |
+| `test_str` | `isdigit` | 1 | `True != False` | 真语义错 | 修（60b） |
+| `test_bytes` | 未改动／子类身份 | 14 | 10 例 `unexpectedly identical: b'abc'`；3 例 fromhex 类身份；`bytes_subclass != bytes` | 真语义错 | 修（60a） |
+| `test_bytes` | `bytes()` 构造顺序 | 2 | `TypeError not raised by bytes`；`cannot convert 'WithBytes' object to bytes` | 真语义错 | 修（60c／60d），余下卡 codecs |
+| `test_bytes` | 导出计数与 `BufferError` | 12 | `BufferError not raised`；`IndexError not raised` | JVM 结构性硬墙 | 不改，具名 |
+| `test_bytes` | memoryview／array 作 bytes-like | 16 | `sequence item 0: expected a bytes-like object, memoryview found` | JVM 结构性硬墙 | 不改，具名 |
+| `test_bytes` | bytearray 切片赋值 | 2 | `test_setslice` 内容不符 | 真语义错 | 留待下一片 |
+| `test_bytes` | 迭代中变异快照 | 2 | `b'**' != b'*'` | 真语义错 | 留待下一片 |
+| `test_bytes` | bytearray 子类属性 | 4 | `'bytearray' object has no attribute 'x'` | 另一模块 | 不改，具名 |
+| `test_bytes` | 子类 copy／pickle | 2 | `RecursionError: maximum recursion depth exceeded` | 另一模块（copy 协议） | 不改，具名 |
+| `test_bytes` | `getsizeof` | 1 | `module 'sys' has no attribute 'getsizeof'` | JVM 结构性硬墙 | 不改，具名 |
+| `test_bytes` | 引用计数与环境 | 4 | `False is not true`×2；`22 != 10`×2 | JVM 结构性硬墙／`-X dev` | 不改，具名 |
+| `test_bytes` | `%c` 类型名限定 | 2 | `not .*\.PseudoFloat` vs `not PseudoFloat` | 类型命名（跨模块） | 不改，具名 |
+
+两簇超 20 例（16 与 12）合看 28 例，根因同为「JVM 没有 `Py_buffer` 导出计数、memoryview／array 未接入 bytes-like 读取」，不是某个小东西没接上；本片诊断到此为止，未顺手做一半。
+
+**二、60a**：[PyBytes.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyBytes.java)／[PyByteArray.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyByteArray.java) 的未改动路径不再交回自身；`fromhex` 走 `Slots.call` 让 `METH_CLASS` 绑调用所用的子类；`bytes.__bytes__` 交给子类一份 exact bytes。
+
+**三、60b**：[PyStr.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyStr.java) 全码点大小写按 3.14.10 的 UnicodeData 表（Georgian 10D0–10FA／10FD–10FF 只动 uppercase、`title` 不动；casefold 211 项二分表；final sigma 规则）；`replace`／`join` 的身份；`__getnewargs__` 交 exact tuple；`isdigit` 的 20 段非十进制数字；`format_map` 落地，`Format` 改为「先解析整字段再求值」两阶段，九句文案与时机按实测（`Single '{'`、`expected '}' before end of string`、`unmatched '{' in format spec`、`end of string while looking for conversion specifier`、`expected ':' after conversion specifier`、`Unknown conversion specifier \xNN`、`Only '.' or '[' may follow ']'`、`Empty attribute in format string`、`Max string recursion exceeded`）；`strObject()`／`reprObject()` 让 `__str__`／`__repr__` 交回的 str 子类原样带出。
+
+**四、60c／60d**：[Constructors.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Constructors.java) 的 `bytes()` 按 `bytes_new_impl` 重排——exact bytes 先返回自身；`__bytes__` 对所有值先问（子类继承的那份复制成 exact，覆写的答案原样用，非 bytes 报 `__bytes__ returned non-bytes (type %s)`）；再 int 计数、buffer、可迭代；`str` 子类的 `__bytes__` 因此在「缺 encoding」抱怨之前生效，而没有 `__bytes__` 的 `str` 仍在尾部报 `string argument without an encoding`。
+
+**五、语料对拍**：[corpus60.py](file:///tmp/m5_60/corpus60.py) 155 行（转换／身份／16 个大小写样本／final sigma／casefold／isdigit 8 个码点／format_map 24 条／bytes 身份与 `__bytes__` 顺序）与参考 3.14.10 `diff` 仅 1 行：`str(dup name)` 参考报 `TypeError: str() got multiple values for keyword argument 'encoding'`，jy3 报 `LookupError: unknown encoding: x`（即上表具名的全调用面机制缺口）。畸形 format 探针 [t2.py](file:///tmp/m5_60/t2.py)（34 行）＋[t3.py](file:///tmp/m5_60/t3.py)（20 行）共 54 条 **0 diff**；全码点 `title`／`capitalize` dump（212,256 行）**0 diff**；[c61.py](file:///tmp/m5_60/c61.py)（`__bytes__` 先于 encoding 抱怨）与 [c62.py](file:///tmp/m5_60/c62.py) **0 diff**（`iso8859-15` 一项因 codecs 缺 `charmap_encode` 报 LookupError，属 codecs 模块）。
+
+**六、修前修后**：
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `test_str` | 139／105／15／12／7（`SUCCESSES` 108） | **139／119／2／11／7（`SUCCESSES` 122）** |
+| `test_bytes` | 325／251／36／25／13（`SUCCESSES` 263） | **325／266／21／25／13（`SUCCESSES` 278，带 `_testlimitedcapi` 桩）** |
+| `test_list` | 68／64／1／2／1 | 68／64／1／2／1 |
+| `test_tuple` | 39／32／6／1／0 | 39／32／6／1／0 |
+| `test_deque` | 82／80／1／0／1 | 82／80／1／0／1 |
+
+`test_str` 残留 13 = `check_encoding_errors`、`free_after_iterating`、`codecs_charmap`、`compare`、`constructor`、`format`、`formatting`、`unicodedata`×2、`getsizeof`×4；`test_bytes` 残留 46 = 上表具名项（buffer 28、切片赋值 2、快照 2、子类 copy／pickle 6、`%c` 2、`getsizeof` 1、引用计数 2、`check_encoding` 2、`test_custom` 1）。
+
+**七、回归九套**（最终二进制）：`test_pyexpat` 86／47／14／87／17（`ok -32` 为 subTest 记账，`SUCCESSES` 47）、`test_xml_etree` 233／200／12／14／7（首跑 199／13 是 `BadElementTest.test_deeply_nested_deepcopy` 的 JVM 栈深摆动——切片 54 已具名，重跑回 12）、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／514／83／58／20（ok 多 2、err 少 2，不越基线）、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／41／30／35（fail＋err 71，与基线同）、`test_mmap` 53／40／0／2／11——无一项越出基线。
+
+**八、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m**（26 个任务，9 executed、17 up-to-date）。提交：60a「bytes/bytearray 未改动路径与 fromhex/`__bytes__` 交回 exact 类型」、60b「str 的身份、大小写与 format_map 按 3.14.10 收敛」、60c「bytes() 先认 exact bytes，再对任意值问 `__bytes__`」、60d「bytes() 的 `__bytes__` 询问先于缺 encoding 的抱怨」四笔代码，本文件与 `PLAN.md` 一笔。
