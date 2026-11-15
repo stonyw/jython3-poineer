@@ -22,8 +22,9 @@ import java.io.RandomAccessFile;
  *
  * <p>Buffering is chosen the way {@code _io} chooses it: a text stream always sits on a
  * {@link PyBufferedReader} over a {@link PyFileIO}, and so does a binary one unless
- * {@code buffering=0} asked for the descriptor itself. A size above one is accepted and ignored — the
- * layer is the same, only the chunk the reference would read is larger.
+ * {@code buffering=0} asked for the descriptor itself. A negative size means
+ * {@code io.DEFAULT_BUFFER_SIZE}, {@code 1} means line buffering in text mode and the default block in
+ * binary mode, and a size above one is the block the reader fills its store from.
  *
  * <p>Every mode is wired: {@code r}, {@code w}, {@code x} and {@code a}, each with or without
  * {@code +}, in text or binary. The caller's spelling is what a text stream reports as {@code mode},
@@ -118,7 +119,8 @@ final class Open {
             return buffering == 0
                     ? raw
                     : new PyBufferedReader(
-                            raw, bufferType(parsed), parsed.readable(), parsed.writable());
+                            raw, bufferType(parsed), parsed.readable(), parsed.writable(),
+                            bufferedSize(buffering));
         }
         try {
             return text(raw, path, buffering, encoding, errors, newline, mode, parsed);
@@ -256,7 +258,26 @@ final class Open {
         return buffering == 0
                 ? raw
                 : new PyBufferedReader(
-                        raw, bufferType(parsed), parsed.readable(), parsed.writable());
+                        raw, bufferType(parsed), parsed.readable(), parsed.writable(),
+                        bufferedSize(buffering));
+    }
+
+    /**
+     * The block size a binary buffered stream is built with.
+     *
+     * <p>{@code _io} fills {@code buffer_size} from the {@code buffering} argument: every negative value and
+     * {@code 1} mean {@code io.DEFAULT_BUFFER_SIZE}, and a value above one <em>is</em> the block size. The
+     * {@code 1} case only gets there through the warning the reference writes, because line buffering is a
+     * policy the text layer has and this one does not.
+     */
+    private static int bufferedSize(int buffering) {
+        if (buffering == 1) {
+            PyRuntime.warn(
+                    "line buffering (buffering=1) isn't supported in binary mode, "
+                            + "the default buffer size will be used",
+                    "RuntimeWarning");
+        }
+        return buffering > 1 ? buffering : PyBufferedReader.DEFAULT_BUFFER_SIZE;
     }
 
     private static String modeText(PyObject value) {
@@ -513,7 +534,8 @@ final class Open {
                 : encoding.equals("locale") ? "UTF-8" : encoding;
         return new PyStream(
                 path,
-                new PyBufferedReader(raw, bufferType(parsed), parsed.readable(), parsed.writable()),
+                new PyBufferedReader(raw, bufferType(parsed), parsed.readable(), parsed.writable(),
+                        buffering > 1 ? buffering : PyBufferedReader.DEFAULT_BUFFER_SIZE),
                 -1,
                 spelling,
                 mode,

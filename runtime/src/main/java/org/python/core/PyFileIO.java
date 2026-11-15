@@ -39,8 +39,8 @@ import java.util.Set;
  */
 public final class PyFileIO extends PyIOStream {
 
-    /** {@code io.DEFAULT_BUFFER_SIZE}: what one read of the descriptor is asked for at most. */
-    private static final int MAX_READ = 1 << 16;
+    /** {@code io.DEFAULT_BUFFER_SIZE}: the block {@code readall} asks the descriptor for. */
+    private static final int MAX_READ = 1 << 17;
 
     /** The errno a pipe answers when it is asked for a position: {@code ESPIPE}. */
     private static final int ESPIPE = 29;
@@ -213,7 +213,7 @@ public final class PyFileIO extends PyIOStream {
         if (wanted <= 0) {
             return new byte[0];
         }
-        byte[] buffer = new byte[(int) Math.min(wanted, MAX_READ)];
+        byte[] buffer = new byte[(int) Math.min(wanted, Integer.MAX_VALUE - 8)];
         try {
             // A descriptor a pipe feeds blocks here, so the interpreter lock is given up for the read.
             int got = Gil.blockingIO(() -> file == null ? in.read(buffer) : file.read(buffer));
@@ -242,7 +242,7 @@ public final class PyFileIO extends PyIOStream {
         if (!readable) {
             throw Slots.unsupportedOperation("File not open for reading");
         }
-        byte[] octets = octets(Math.min(buffer.size(), MAX_READ));
+        byte[] octets = octets(buffer.size());
         if (octets == null) {
             return PyNone.INSTANCE;
         }

@@ -320,3 +320,43 @@
 **被硬墙遮挡、不算修好：2 例**——`test_special_method_lookup`（装表即断在 `sys.getsizeof`，其后整段特殊方法查找断言从未执行）、`SharedKeyTests.test_subclasses`（首个 `sys.getsizeof` 断言即断；切片 25 记的 fail→err 本轮仍在，未回退也未修好）。
 
 **语料对拍**：`/tmp/corpus_descr.py` 覆盖数据描述符 vs 实例字典 vs 非数据描述符的优先级与绑定时机、`__slots__` 继承／重复 slot／`__weakref__`／`__dict__`／slot 与类变量冲突、metaclass `__getattribute__`／`__getattr__`／`type.__getattribute__`、`type.__new__` 的拒绝顺序；与参考 3.14.10 输出 **CORPUS-SAME**。`_io` 11 条 `METH_METHOD` 行分类、`06_weakref_ref_subclass.py`、`58_metaclass_side_write.py`、`168_namereplace_and_the_name_table.py` 均 **SAME**。全量 `./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` **BUILD SUCCESSFUL**。
+
+## M5 切片 43 明细：`open(buffering=N)` 真实现（2026-11-15）
+
+**背景**：切片 40 已查实 `open()` 的 `buffering` 只区分 `0`，`PyBufferedReader.BUFFER_SIZE` 写死 8192；`Io.DEFAULT_BUFFER_SIZE` 却是 131072，两者从未接上。切片 41 转 fail 的 6 例新断点（`6388 != 8194`、`694 != 1000`、`0 != 5`）正是它下游。
+
+**分档（参考 3.14.10 探针钉死）**：
+- `buffering=0`：二进制返回 `FileIO` raw；文本抛 `ValueError: can't have unbuffered text I/O`（在文件打开之后）。
+- `buffering=1`：文本 `line_buffering=True`，块大小仍 `io.DEFAULT_BUFFER_SIZE`（`peek` 长度 131072）；二进制发 `RuntimeWarning: line buffering (buffering=1) isn't supported in binary mode, the default buffer size will be used` 并用默认块。
+- `buffering<0`：`io.DEFAULT_BUFFER_SIZE`（131072）。
+- `buffering>1`：该值即块大小；`read(n)` 直取整块时按 `n - n % buffer_size`（参考对 200 这类非 2 次幂也如此）。
+
+**落地**：
+1. `PyBufferedReader` 的 `BUFFER_SIZE` 改为实例字段 `bufferSize`（`DEFAULT_BUFFER_SIZE=131072`），`store` 随 `__init__` 重新分配；`readGeneric` 的整块直取由位掩码改为取模，`read1(-1)`／`peek`／`fill` 的上限都改读实例字段。
+2. `buffer_size` 参数走 `Numbers.size`，`<=0` 抛 `ValueError: buffer size must be strictly positive`；`construct`（`tp_new`）只对三个内建类型转换尺寸——Python 子类的 `tp_new` 收到的是子类自己的参数，**若在此转换会把 `tarfile.ExFileObject(self, tarinfo)` 的 `TarInfo` 当成尺寸**（第一版实测 `TypeError: 'TarInfo' object cannot be interpreted as an integer`，`test_tarfile` 53 err；把转换挪回 `__init__` 后 396／23／0／349 复原）。
+3. `__init__` 先置 `initialized=false` 再校验尺寸；失败后 `closed`／`read` 抛 `ValueError: I/O operation on uninitialized object`，对应参考 `test_initialization` 的后半段。
+4. `Open` 的两处二进制缓冲分支与 `text()` 都按上述分档传尺寸；二进制 `buffering=1` 的警告在 `bufferedSize` 里发一次。
+5. `PyFileIO.octets` 不再把单次读取切到 64KiB、`readall` 块改为 131072，默认文本层 `buffer.peek()` 因此与参考同为 131072（改前 65536）。
+
+**`write_through`**：无需改动。参考的 `write_through` 只让文本层在每次 `write` 后 `_textiowrapper_writeflush`（文本字节 → `buffer.write`），**不**调用 `buffer.flush()`；本运行的文本字节本就立即写进 `buffer.write`，语义已同。行缓冲仍是「含换行才 `buffer.flush()`」，与参考一致。
+
+**修前修后**：`675／423／119／141／20` → **`675／431／111／141／20`**（+8 ok、−8 fail、err 持平）。
+
+**buffering 相关 6 例去向（全部 FAIL→PASS，无新增失败）**：
+- `CBufferedReaderTest.test_buffering`、`CBufferedRandomTest.test_buffering`——`MockFileIO.read_history` 断言 `[4,4,1]`；
+- `CBufferedWriterTest.test_constructor`、`CBufferedWriterTest.test_initialization`——`buffer_size` 尺寸与拒绝句；
+- `CBufferedReaderTest.test_initialization`——`buffer_size=0` 抛 `ValueError`，且失败后 `read()` 抛 `ValueError`；
+- `CTextIOWrapperTest.test_bufio_write_through`——`write_through=True` 时 `buffer.write` 被调、`buffer.flush` 不被调（本片未改此路径，因默认块大小改正后该例整体转绿）。
+
+**语料对拍** `/tmp/buf_corpus.py`（与参考 3.14.10 **逐字节 IDENTICAL**）：
+- `readinto` 计数桩，`buffer_size=None／1024／200` × `read(1／3／1000／5000／20000)`，打印每次底层请求的字节数，例如默认 `read(20000)` 为 `[20000]`、`buffer_size=1024` 为 `[19968, 1024]`、`200` 为 `[10000, 200]`；
+- `read1(7)` 的取块序列；
+- `buffering=0` 三条路径：二进制 `read(2)=='he'` 且类型为 `bytes`（`FileIO`），文本 `ValueError: can't have unbuffered text I/O`；
+- 文本 `-1／1／1024` 的 `line_buffering`／`write_through`／`buffer.peek()` 长度（131072／131072／1024）；
+- 二进制 `buffering=1` 的 `RuntimeWarning` 原文。
+
+**回归**：`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349、`test_fstring` 95／95，均持平。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+
+**具名偏差**：① `buffer_size` 超出 int 范围时截到 `Integer.MAX_VALUE-8` 且立即分配（参考惰性分配、按 `ssize_t` 接受）；② descriptor 分支读写同开的 `FileIO` 仍直接返 raw、忽略 `buffering`（既有偏差，本片未动）；③ `io.BufferedReader` 包 `CMockRawIO`（无 `read`／`readinto` 的 raw）时 `read()` 仍 `NotImplementedError`——既有断点，与本片无关，`test_io` 的 141 err 里已含。

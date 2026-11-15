@@ -36,7 +36,7 @@ import java.util.Set;
 public final class PyBufferedReader extends PyIOStream {
 
     /** {@code io.DEFAULT_BUFFER_SIZE}, which is what one fill of the store asks the descriptor for. */
-    private static final int BUFFER_SIZE = 8192;
+    static final int DEFAULT_BUFFER_SIZE = 131072;
 
     /** The five sentences {@code CHECK_CLOSED} says from inside the five rows that carry it. */
     private static final String READ = "read of closed file";
@@ -48,13 +48,19 @@ public final class PyBufferedReader extends PyIOStream {
 
     private PyObject descriptor;
 
+    /** {@code self->buffer_size}, which every blockful below is measured in. */
+    private int bufferSize;
+
     /** {@code self->buffer}, with {@code self->pos} into it and {@code self->read_end} at its far edge. */
-    private final byte[] store = new byte[BUFFER_SIZE];
+    private byte[] store;
     private int pos;
     private int readEnd = -1;
 
     /** Whether {@code detach()} has taken the descriptor away, which is the first question of every row. */
     private boolean detached;
+
+    /** {@code self->initialized}: a failed {@code __init__} leaves the layer unable to answer at all. */
+    private boolean initialized = true;
 
     /** The two directions the mode string chose, which decide what the rows below refuse. */
     private boolean readable;
@@ -69,14 +75,51 @@ public final class PyBufferedReader extends PyIOStream {
     private final ByteArrayOutputStream outgoing = new ByteArrayOutputStream();
 
     PyBufferedReader(PyFileIO raw) {
-        this(raw, PyType.BUFFERED_READER, true, false);
+        this(raw, PyType.BUFFERED_READER, true, false, DEFAULT_BUFFER_SIZE);
     }
 
     PyBufferedReader(PyObject raw, PyType type, boolean readable, boolean writable) {
+        this(raw, type, readable, writable, DEFAULT_BUFFER_SIZE);
+    }
+
+    PyBufferedReader(
+            PyObject raw, PyType type, boolean readable, boolean writable, int bufferSize) {
         super(type);
         this.descriptor = raw;
         this.readable = readable;
         this.writable = writable;
+        initializeStore(bufferSize);
+    }
+
+    /**
+     * {@code self->buffer_size = size; self->buffer = NULL}, which the reference does in
+     * {@code buffered_init} and repeats when {@code __init__} runs a second time.
+     */
+    private void initializeStore(int size) {
+        bufferSize = size;
+        store = new byte[size];
+        pos = 0;
+        readEnd = -1;
+    }
+
+    /**
+     * The {@code buffer_size} of {@code BufferedReader(raw, buffer_size=DEFAULT_BUFFER_SIZE)}.
+     *
+     * <p>{@code buffered_init} reads it as a {@code Py_ssize_t} and refuses the two ends of the range
+     * itself — {@code buffer size must be strictly positive} for zero and every negative number — while a
+     * number too wide for a {@code ssize_t} is the converter's own {@code OverflowError}.
+     */
+    private static int bufferSizeValue(PyObject value) {
+        if (value == null) {
+            return DEFAULT_BUFFER_SIZE;
+        }
+        long size = Numbers.size(value);
+        if (size <= 0) {
+            throw Slots.valueError("buffer size must be strictly positive");
+        }
+        // A size beyond the int range is accepted by the reference and only allocated when needed; this
+        // runtime keeps the cursors in an int, so it reads such a request as the widest store it can hold.
+        return (int) Math.min(size, Integer.MAX_VALUE - 8);
     }
 
     /**
@@ -92,7 +135,16 @@ public final class PyBufferedReader extends PyIOStream {
                 || kind.matches(PyType.BUFFERED_RANDOM);
         boolean readable = kind.matches(PyType.BUFFERED_READER)
                 || kind.matches(PyType.BUFFERED_RANDOM);
-        return new PyBufferedReader(values[0], kind, readable, writable);
+        // A subclass's `tp_new` is handed the subclass's own arguments, which need not have a buffer size
+        // in second place — `__init__` is where the reference converts the size, and where this layer
+        // re-points at the raw. The three built-in types have no `__init__` of their own, so for them this
+        // is the only place the size is seen.
+        boolean builtin = kind == PyType.BUFFERED_READER
+                || kind == PyType.BUFFERED_WRITER
+                || kind == PyType.BUFFERED_RANDOM;
+        return new PyBufferedReader(
+                values[0], kind, readable, writable,
+                builtin ? bufferSizeValue(values[1]) : DEFAULT_BUFFER_SIZE);
     }
 
     /**
@@ -111,20 +163,23 @@ public final class PyBufferedReader extends PyIOStream {
                 new String[] {"raw", "buffer_size"},
                 1,
                 2);
-        initialize(values[0]);
+        // `buffered_init` writes the new raw before it checks the size, so a refusal leaves the layer
+        // uninitialized rather than pointed at the raw it had a moment ago.
+        initialized = false;
+        initialize(values[0], bufferSizeValue(values[1]));
         return PyNone.INSTANCE;
     }
 
     /** Point this layer at {@code raw}: the descriptor and the cursors, as {@code buffered_init} does. */
-    private void initialize(PyObject raw) {
+    private void initialize(PyObject raw, int size) {
         descriptor = raw;
         detached = false;
         readable = getType().matches(PyType.BUFFERED_READER)
                 || getType().matches(PyType.BUFFERED_RANDOM);
         writable = getType().matches(PyType.BUFFERED_WRITER)
                 || getType().matches(PyType.BUFFERED_RANDOM);
-        pos = 0;
-        readEnd = -1;
+        initializeStore(size);
+        initialized = true;
         outgoing.reset();
     }
 
@@ -158,6 +213,9 @@ public final class PyBufferedReader extends PyIOStream {
     boolean closedFlag() {
         if (detached) {
             throw Slots.valueError(DETACHED);
+        }
+        if (!initialized) {
+            throw Slots.valueError("I/O operation on uninitialized object");
         }
         return Slots.truth(Slots.getAttr(descriptor, "closed"));
     }
@@ -350,7 +408,7 @@ public final class PyBufferedReader extends PyIOStream {
     private int fill() {
         drain();
         int start = readEnd < 0 ? 0 : readEnd;
-        byte[] chunk = fetch(BUFFER_SIZE - start);
+        byte[] chunk = fetch(bufferSize - start);
         if (chunk == null) {
             return -1;
         }
@@ -454,7 +512,7 @@ public final class PyBufferedReader extends PyIOStream {
         ByteArrayOutputStream answer = new ByteArrayOutputStream();
         while (true) {
             PyObject chunk = Slots.call(
-                    Slots.getAttr(source, "read"), new PyObject[] {PyInt.of(BUFFER_SIZE)}, null);
+                    Slots.getAttr(source, "read"), new PyObject[] {PyInt.of(bufferSize)}, null);
             if (chunk == PyNone.INSTANCE) {
                 return answer.size() == 0 ? null : answer.toByteArray();
             }
@@ -473,7 +531,7 @@ public final class PyBufferedReader extends PyIOStream {
      * fills until the count is reached.
      *
      * <p>The middle loop is what makes a request bigger than the store cost few system calls rather than
-     * one fill per block, and it is skipped entirely below {@code BUFFER_SIZE} — where the store is emptied
+     * one fill per block, and it is skipped entirely below {@code buffer_size} — where the store is emptied
      * into the answer, reset, and refilled until the count is reached. The octets beyond the count stay in
      * the store for the next row.
      */
@@ -483,8 +541,10 @@ public final class PyBufferedReader extends PyIOStream {
         long remaining = wanted - answer.size();
         reset();
         boolean wouldBlock = false;
-        while (remaining > 0 && (remaining & ~(long) (BUFFER_SIZE - 1)) != 0) {
-            byte[] chunk = fetch(remaining & ~(long) (BUFFER_SIZE - 1));
+        while (remaining >= bufferSize) {
+            // Whole blocks go straight from the descriptor, which is what makes a request bigger than the
+            // store cost few calls rather than one fill per block.
+            byte[] chunk = fetch(remaining - remaining % bufferSize);
             if (chunk == null) {
                 wouldBlock = true;
                 break;
@@ -498,7 +558,7 @@ public final class PyBufferedReader extends PyIOStream {
         if (!wouldBlock) {
             pos = 0;
             readEnd = 0;
-            while (remaining > 0 && readEnd < BUFFER_SIZE) {
+            while (remaining > 0 && readEnd < bufferSize) {
                 int got = fill();
                 if (got < 0) {
                     wouldBlock = true;
@@ -527,7 +587,7 @@ public final class PyBufferedReader extends PyIOStream {
         held();
         // A negative count is one storeful, and the answer to a dry store is that one read whatever the
         // count was, so what a read1 fetches beyond its own answer is lost rather than buffered.
-        long limit = wanted < 0 ? BUFFER_SIZE : wanted;
+        long limit = wanted < 0 ? bufferSize : wanted;
         checkClosed(READ);
         if (limit == 0) {
             return PyBytes.of(new byte[0]);
@@ -696,7 +756,7 @@ public final class PyBufferedReader extends PyIOStream {
         readEnd = -1;
         int consumed = 0;
         while (consumed < octets.length) {
-            if (outgoing.size() == 0 && octets.length - consumed > BUFFER_SIZE) {
+            if (outgoing.size() == 0 && octets.length - consumed > bufferSize) {
                 // More than a storeful, and nothing waiting: hand it straight to the descriptor, which
                 // may take part of it or none at all.
                 int taken = emit(Arrays.copyOfRange(octets, consumed, octets.length));
@@ -705,13 +765,13 @@ public final class PyBufferedReader extends PyIOStream {
                     continue;
                 }
             }
-            int space = BUFFER_SIZE - outgoing.size();
+            int space = bufferSize - outgoing.size();
             if (space > 0) {
                 int take = Math.min(space, octets.length - consumed);
                 outgoing.write(octets, consumed, take);
                 consumed += take;
             }
-            if (outgoing.size() >= BUFFER_SIZE && consumed < octets.length) {
+            if (outgoing.size() >= bufferSize && consumed < octets.length) {
                 while (outgoing.size() > 0) {
                     int taken = emit(outgoing.toByteArray());
                     if (taken == 0) {
