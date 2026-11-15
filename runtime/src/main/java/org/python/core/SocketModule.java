@@ -470,7 +470,8 @@ final class SocketModule {
             if (limit == null) {
                 server.configureBlocking(true);
                 try {
-                    return server.accept();
+                    // accept waits for a peer: give the interpreter lock up for the wait.
+                    return Gil.blockingIO(() -> server.accept());
                 } finally {
                     // Every channel stays non-blocking between calls, which is what lets select
                     // register it; the blocking wait above is the one place this one is switched.
@@ -558,7 +559,11 @@ final class SocketModule {
         try {
             if (limit == null) {
                 channel.configureBlocking(true);
-                channel.connect(address);
+                // connect waits for the peer: give the interpreter lock up for the wait.
+                Gil.blockingIO(() -> {
+                    channel.connect(address);
+                    return null;
+                });
                 channel.configureBlocking(false);
                 return;
             }
@@ -595,7 +600,7 @@ final class SocketModule {
                 if (remain <= 0) {
                     return false;
                 }
-                if (selector.select(Math.max(1, remain / 1_000_000L)) > 0) {
+                if (Gil.blockingIO(() -> selector.select(Math.max(1, remain / 1_000_000L))) > 0) {
                     selector.selectedKeys().clear();
                     return channel.finishConnect();
                 }
@@ -764,7 +769,7 @@ final class SocketModule {
         try {
             if (limit == null) {
                 datagram.configureBlocking(true);
-                return datagram.receive(buffer);
+                return Gil.blockingIO(() -> datagram.receive(buffer));
             }
             datagram.configureBlocking(false);
             if (limit == 0.0) {
@@ -800,7 +805,8 @@ final class SocketModule {
             if (limit == null) {
                 channel.configureBlocking(true);
                 try {
-                    return channel.read(buffer);
+                    // recv waits for the peer: give the interpreter lock up for the wait.
+                    return Gil.blockingIO(() -> channel.read(buffer));
                 } finally {
                     // Channels stay non-blocking between calls so that select can register them.
                     channel.configureBlocking(false);
@@ -833,11 +839,14 @@ final class SocketModule {
             if (limit == null) {
                 channel.configureBlocking(true);
                 try {
-                    int count = channel.write(buffer);
-                    if (count == 0 && buffer.hasRemaining()) {
-                        count = channel.write(buffer);
-                    }
-                    return count;
+                    // send waits for room in the socket buffer: give the interpreter lock up.
+                    return Gil.blockingIO(() -> {
+                        int count = channel.write(buffer);
+                        if (count == 0 && buffer.hasRemaining()) {
+                            count = channel.write(buffer);
+                        }
+                        return count;
+                    });
                 } finally {
                     channel.configureBlocking(false);
                 }
@@ -874,7 +883,7 @@ final class SocketModule {
                 if (remain <= 0) {
                     return false;
                 }
-                if (selector.select(Math.max(1, remain / 1_000_000L)) > 0) {
+                if (Gil.blockingIO(() -> selector.select(Math.max(1, remain / 1_000_000L))) > 0) {
                     selector.selectedKeys().clear();
                     return true;
                 }

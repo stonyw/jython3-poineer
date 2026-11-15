@@ -164,12 +164,15 @@ final class PosixSubprocessModule {
             return PyTuple.of(PyInt.of(0), PyInt.of(0));
         }
         int status;
-        try {
-            status = child.process.waitFor() << 8;
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw Slots.osError("waitpid() was interrupted");
-        }
+        // The child may run for a long time: wait for it with the interpreter lock given up.
+        status = Gil.blocking(() -> {
+            try {
+                return child.process.waitFor();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw Slots.osError("waitpid() was interrupted");
+            }
+        }) << 8;
         synchronized (CHILDREN) {
             CHILDREN.remove(pid);
         }

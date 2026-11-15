@@ -2,6 +2,7 @@ package org.python.core;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 /**
  * The interpreter lock: the one thing that makes more than one Python thread at a time mean what
@@ -226,6 +227,51 @@ final class Gil {
     static void resume(int holds) {
         for (int i = 0; i < holds; i++) {
             LOCK.lock();
+        }
+    }
+
+    /** A wait that answers a value; it may throw the checked exception the JDK call declares. */
+    @FunctionalInterface
+    interface Wait<T> {
+        T run() throws java.io.IOException;
+    }
+
+    /**
+     * Run a blocking wait with the interpreter lock given up, and take it back however it ends.
+     *
+     * <p>This is the one door every blocking system call goes through, so a missed release is a
+     * compile-time absence rather than a forgotten line: {@code read} on a pipe, {@code accept},
+     * {@code recv}, {@code connect}, {@code select}, {@code waitpid} and {@code sleep} all call one
+     * of these three. The body must not hold a Java monitor that another Python thread may want —
+     * that thread would take the lock and then wait for the monitor while this one waits for the
+     * lock. Callers therefore release the lock around the monitor, not inside it.
+     */
+    static <T> T blockingIO(Wait<T> body) throws java.io.IOException {
+        int holds = suspend();
+        try {
+            return body.run();
+        } finally {
+            resume(holds);
+        }
+    }
+
+    /** {@link #blockingIO(Wait)} for a Java call whose checked exception is not {@code IOException}. */
+    static <T> T blocking(Supplier<T> body) {
+        int holds = suspend();
+        try {
+            return body.get();
+        } finally {
+            resume(holds);
+        }
+    }
+
+    /** {@link #blockingIO(Wait)} for a wait that answers nothing. */
+    static void blockingRun(Runnable body) {
+        int holds = suspend();
+        try {
+            body.run();
+        } finally {
+            resume(holds);
         }
     }
 }

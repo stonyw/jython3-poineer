@@ -213,7 +213,8 @@ public final class PyFileIO extends PyIOStream {
         }
         byte[] buffer = new byte[(int) Math.min(wanted, MAX_READ)];
         try {
-            int got = file == null ? in.read(buffer) : file.read(buffer);
+            // A descriptor a pipe feeds blocks here, so the interpreter lock is given up for the read.
+            int got = Gil.blockingIO(() -> file == null ? in.read(buffer) : file.read(buffer));
             return got <= 0 ? new byte[0] : Arrays.copyOf(buffer, got);
         } catch (IOException refusal) {
             throw Slots.osError("reading error");
@@ -305,15 +306,18 @@ public final class PyFileIO extends PyIOStream {
             throw Slots.unsupportedOperation("File not open for writing");
         }
         try {
-            if (file != null) {
-                if (appending) {
-                    file.seek(file.length());
+            Gil.blockingIO(() -> {
+                if (file != null) {
+                    if (appending) {
+                        file.seek(file.length());
+                    }
+                    file.write(octets);
+                } else {
+                    out.write(octets);
+                    out.flush();
                 }
-                file.write(octets);
-            } else {
-                out.write(octets);
-                out.flush();
-            }
+                return null;
+            });
         } catch (IOException refusal) {
             throw Slots.osError("writing error");
         }

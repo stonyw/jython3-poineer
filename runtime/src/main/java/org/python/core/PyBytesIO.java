@@ -37,6 +37,7 @@ final class PyBytesIO extends PyIOStream {
             .add("__iter__", PyBytesIO::iterRow)
             .add("__next__", PyBytesIO::nextRow)
             .addClassNamed("__new__", PyBytesIO::newRow)
+            .add("__init__", PyBytesIO::initRow)
             .add("__getstate__", PyBytesIO::getStateRow)
             .add("__setstate__", PyBytesIO::setStateRow);
 
@@ -95,7 +96,26 @@ final class PyBytesIO extends PyIOStream {
     }
 
     /**
-     * {@code BytesIO.__getstate__}: the contents, the cursor and the instance dictionary.
+     * {@code io.BytesIO.__init__(initial_bytes=b'')}: the row a subclass reaches through {@code
+     * super().__init__(*args)}, since the creator above only serves a direct call of the class.
+     */
+    private static PyObject initRow(PyObject self, PyObject[] args, String[] kwNames) {
+        PyObject[] given = Arguments.unpackKeywords(
+                "BytesIO", args, kwNames, new String[] {"initial_bytes"}, 0, 1);
+        PyBytesIO stream = (PyBytesIO) self;
+        stream.data = new byte[0];
+        stream.length = 0;
+        stream.position = 0;
+        if (given[0] != null && given[0] != PyNone.INSTANCE) {
+            byte[] initial = octetsOf(given[0]);
+            stream.data = initial.clone();
+            stream.length = initial.length;
+        }
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code io.BytesIO.__getstate__}: the contents, the cursor and the instance dictionary.
      *
      * <p>The reference writes the third item as {@code None} when nothing was filed beside the buffer,
      * which is the shape {@code __setstate__} accepts back; the buffer itself is a copy, so a later write

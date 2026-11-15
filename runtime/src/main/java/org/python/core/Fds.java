@@ -295,7 +295,8 @@ final class Fds {
             }
             byte[] bytes = new byte[Math.max(length, 0)];
             try {
-                int count = System.in.read(bytes);
+                // The one call that may wait for a terminal or a pipe holding this process's input.
+                int count = Gil.blockingIO(() -> System.in.read(bytes));
                 if (count <= 0) {
                     return new byte[0];
                 }
@@ -305,17 +306,25 @@ final class Fds {
             }
         }
         if (slot.file != null) {
-            synchronized (slot) {
-                byte[] bytes = new byte[Math.max(length, 0)];
-                try {
-                    int count = slot.file.read(bytes);
+            byte[] bytes = new byte[Math.max(length, 0)];
+            // The lock is given up before the monitor is taken and taken back after it is dropped, so
+            // no thread ever waits for this monitor while holding the interpreter lock.
+            int holds = Gil.suspend();
+            try {
+                synchronized (slot) {
+                    int count;
+                    try {
+                        count = slot.file.read(bytes);
+                    } catch (IOException error) {
+                        throw ioFailure();
+                    }
                     if (count <= 0) {
                         return new byte[0];
                     }
                     return count == bytes.length ? bytes : Arrays.copyOf(bytes, count);
-                } catch (IOException error) {
-                    throw ioFailure();
                 }
+            } finally {
+                Gil.resume(holds);
             }
         }
         if (slot.devnull) {
@@ -325,23 +334,31 @@ final class Fds {
             throw badFd(fd);
         }
         Pipe pipe = slot.pipe;
-        synchronized (pipe) {
-            while (slot.blocking && pipe.length == 0 && !pipe.writerClosed && !pipe.readerClosed) {
-                try {
-                    pipe.wait();
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    break;
+        // The pipe waits on a monitor that a writer must also take, so the interpreter lock is given
+        // up around the monitor rather than inside it: the writer needs the lock to reach this pipe.
+        int holds = Gil.suspend();
+        try {
+            synchronized (pipe) {
+                while (slot.blocking && pipe.length == 0 && !pipe.writerClosed
+                        && !pipe.readerClosed) {
+                    try {
+                        pipe.wait();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
+                int count = Math.min(Math.max(length, 0), pipe.length);
+                byte[] bytes = new byte[count];
+                for (int i = 0; i < count; i++) {
+                    bytes[i] = pipe.buffer[(pipe.start + i) % pipe.buffer.length];
+                }
+                pipe.start = (pipe.start + count) % pipe.buffer.length;
+                pipe.length -= count;
+                return bytes;
             }
-            int count = Math.min(Math.max(length, 0), pipe.length);
-            byte[] bytes = new byte[count];
-            for (int i = 0; i < count; i++) {
-                bytes[i] = pipe.buffer[(pipe.start + i) % pipe.buffer.length];
-            }
-            pipe.start = (pipe.start + count) % pipe.buffer.length;
-            pipe.length -= count;
-            return bytes;
+        } finally {
+            Gil.resume(holds);
         }
     }
 
@@ -363,16 +380,21 @@ final class Fds {
             if (!slot.writable) {
                 throw badFd(fd);
             }
-            synchronized (slot) {
-                try {
-                    if (slot.appending) {
-                        slot.file.seek(slot.file.length());
+            int holds = Gil.suspend();
+            try {
+                synchronized (slot) {
+                    try {
+                        if (slot.appending) {
+                            slot.file.seek(slot.file.length());
+                        }
+                        slot.file.write(bytes);
+                        return bytes.length;
+                    } catch (IOException error) {
+                        throw ioFailure();
                     }
-                    slot.file.write(bytes);
-                    return bytes.length;
-                } catch (IOException error) {
-                    throw ioFailure();
                 }
+            } finally {
+                Gil.resume(holds);
             }
         }
         if (slot.devnull) {
