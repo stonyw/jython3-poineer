@@ -363,6 +363,11 @@ final class Fds {
         if (slot.writable) {
             throw badFd(fd);
         }
+        if (length <= 0) {
+            // read(2) with a zero count answers nothing without waiting, even on a pipe whose writer
+            // is still open: the count is looked at before the pipe is.
+            return new byte[0];
+        }
         Pipe pipe = slot.pipe;
         // The pipe waits on a monitor that a writer must also take, so the interpreter lock is given
         // up around the monitor rather than inside it: the writer needs the lock to reach this pipe.
@@ -490,6 +495,83 @@ final class Fds {
                     }
                 }
                 return written;
+            }
+        } finally {
+            Gil.resume(holds);
+        }
+    }
+
+    /**
+     * {@code lseek(2)}: the new offset of a descriptor.
+     *
+     * <p>Only a real file and the null device can seek. A pipe end and the console refuse with
+     * {@code ESPIPE} before the position or the whence is looked at, because that is the order the
+     * kernel dispatches in; a seekable descriptor refuses a negative position and an unknown whence
+     * with {@code EINVAL}. The null device is the zero-length file the kernel presents, so every
+     * answer there is the offset itself.
+     */
+    static long seek(int fd, long position, int whence) {
+        Slot slot = slot(fd);
+        if (slot.file == null && !slot.devnull) {
+            throw illegalSeek();
+        }
+        if (whence < 0 || whence > 2) {
+            throw invalidArgument();
+        }
+        if (slot.devnull) {
+            if (position < 0) {
+                throw invalidArgument();
+            }
+            return position;
+        }
+        int holds = Gil.suspend();
+        try {
+            synchronized (slot) {
+                try {
+                    long base = whence == 0
+                            ? 0
+                            : whence == 1 ? slot.file.getFilePointer() : slot.file.length();
+                    long next = base + position;
+                    if (next < 0) {
+                        throw invalidArgument();
+                    }
+                    slot.file.seek(next);
+                    return next;
+                } catch (IOException error) {
+                    throw ioFailure();
+                }
+            }
+        } finally {
+            Gil.resume(holds);
+        }
+    }
+
+    /**
+     * {@code ftruncate(2)}: set the length of a real file.
+     *
+     * <p>The length is looked at before the descriptor, which is why a negative one is {@code EINVAL}
+     * even when the number names nothing; the null device takes every length and a pipe end refuses
+     * with {@code EINVAL}.
+     */
+    static void truncate(int fd, long length) {
+        if (length < 0) {
+            throw invalidArgument();
+        }
+        Slot slot = slot(fd);
+        if (slot.file == null) {
+            if (slot.devnull) {
+                return;
+            }
+            throw invalidArgument();
+        }
+        int holds = Gil.suspend();
+        try {
+            synchronized (slot) {
+                try {
+                    slot.file.setLength(length);
+                } catch (IOException error) {
+                    throw ioFailure();
+                }
             }
         } finally {
             Gil.resume(holds);
@@ -751,6 +833,20 @@ final class Fds {
         return PyRaise.of(PyOSError.create(
                 ExceptionTypes.OS_ERROR,
                 new PyObject[] {PyInt.of(9), PyStr.of("Bad file descriptor")}));
+    }
+
+    /** {@code EINVAL}, which an impossible position, length or whence reports. */
+    private static PyRaise invalidArgument() {
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.OS_ERROR,
+                new PyObject[] {PyInt.of(22), PyStr.of("Invalid argument")}));
+    }
+
+    /** {@code ESPIPE}, which a pipe end and the console report when asked to seek. */
+    private static PyRaise illegalSeek() {
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.OS_ERROR,
+                new PyObject[] {PyInt.of(29), PyStr.of("Illegal seek")}));
     }
 
     /** The errno a failing read or write on a real file reports: EIO, the one Java leaves unspoken. */

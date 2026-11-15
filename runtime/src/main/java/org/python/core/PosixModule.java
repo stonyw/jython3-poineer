@@ -324,6 +324,56 @@ final class PosixModule {
                     }
                     return PyInt.of(written);
                 }));
+        module.set("lseek", function(
+                "lseek",
+                "lseek($module, fd, position, whence, /)\n--\n\n"
+                        + "Set the position of a file descriptor.  Return the new position.",
+                (args, kwNames) -> {
+                    Arguments.exactly("lseek", args, kwNames, 3);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    long position = longArgument(args[1]);
+                    int whence = Numbers.asIndex(args[2]).intValue();
+                    return PyInt.of(Fds.seek(fd, position, whence));
+                }));
+        module.set("readinto", function(
+                "readinto",
+                "readinto($module, fd, buffer, /)\n--\n\n"
+                        + "Read into a buffer object from a file descriptor.",
+                (args, kwNames) -> {
+                    Arguments.exactly("readinto", args, kwNames, 2);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    PyObject target = args[1];
+                    int length;
+                    if (target instanceof PyByteArray run) {
+                        length = run.size();
+                    } else if (target instanceof PyMemoryView view && !view.readonly()) {
+                        length = view.byteLength();
+                    } else {
+                        throw Slots.typeError(
+                                "readinto() argument 2 must be read-write bytes-like object, not %s",
+                                Slots.argumentName(target));
+                    }
+                    byte[] bytes = Fds.read(fd, length);
+                    if (bytes == null) {
+                        throw wouldBlock();
+                    }
+                    if (target instanceof PyByteArray run) {
+                        System.arraycopy(bytes, 0, run.raw(), 0, bytes.length);
+                    } else {
+                        ((PyMemoryView) target).writeWindow(0, bytes, 0, bytes.length);
+                    }
+                    return PyInt.of(bytes.length);
+                }));
+        module.set("ftruncate", function(
+                "ftruncate",
+                "ftruncate($module, fd, length, /)\n--\n\n"
+                        + "Truncate a file, specified by file descriptor, to a specific length.",
+                (args, kwNames) -> {
+                    Arguments.exactly("ftruncate", args, kwNames, 2);
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    Fds.truncate(fd, longArgument(args[1]));
+                    return PyNone.INSTANCE;
+                }));
         module.set("dup", function(
                 "dup",
                 "dup($module, fd, /)\n--\n\nReturn a duplicate of a file descriptor.",
@@ -1136,6 +1186,15 @@ final class PosixModule {
         return PyRaise.of(PyOSError.create(
                 ExceptionTypes.BLOCKING_IO_ERROR,
                 new PyObject[] {PyInt.of(35), PyStr.of("Resource temporarily unavailable")}));
+    }
+
+    /** A {@code Py_off_t} argument: what the reference reads as a C long and refuses beyond it. */
+    private static long longArgument(PyObject value) {
+        BigInteger number = Numbers.asIndex(value);
+        if (number.bitLength() >= Long.SIZE) {
+            throw Slots.overflowError("Python int too large to convert to C long");
+        }
+        return number.longValue();
     }
 
     /**
