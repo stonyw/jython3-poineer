@@ -95,6 +95,7 @@ final class SocketModule {
     private static final int EADDRNOTAVAIL = 49;
     private static final int ECONNRESET = 54;
     private static final int ENOTCONN = 57;
+    private static final int ETIMEDOUT = 60;
     private static final int ECONNREFUSED = 61;
     private static final int EHOSTUNREACH = 65;
     private static final int EOPNOTSUPP = 102;
@@ -183,6 +184,16 @@ final class SocketModule {
         final int proto;
         final Map<Long, Integer> options = new HashMap<>();
         SocketChannel stream;
+        /**
+         * The address a {@code bind} reserved but {@code listen} has not started accepting on.
+         *
+         * <p>A {@link ServerSocketChannel} binds and listens in one call, so a stream socket that is
+         * only bound holds its address through a client-side channel instead: the address is taken,
+         * and a peer that connects to it is refused (or left waiting), as the reference's bound but
+         * un-listening socket does. {@code listen} gives this up and lets the real listener take the
+         * address over.
+         */
+        SocketChannel reservation;
         ServerSocketChannel server;
         DatagramChannel datagram;
         boolean listening;
@@ -338,12 +349,28 @@ final class SocketModule {
 
     private static int connectErrno(IOException failure) {
         if (failure instanceof ConnectException) {
-            return ECONNREFUSED;
+            return timedOutConnect(failure) ? ETIMEDOUT : ECONNREFUSED;
         }
         if (failure instanceof NoRouteToHostException) {
             return EHOSTUNREACH;
         }
         return EIO;
+    }
+
+    /**
+     * Whether a failed connect was given up on rather than refused.
+     *
+     * <p>{@link java.nio.channels.SocketChannel} reports both as a {@link ConnectException} and does not
+     * carry the errno, so the distinction is read from the message the JDK builds from it: a peer that
+     * dropped the SYN — a socket that is bound but does not listen, on this platform — ends as "Operation
+     * timed out", while a closed port says "Connection refused". The reference reports exactly that
+     * split ({@code ETIMEDOUT} versus {@code ECONNREFUSED}), so the message is the only place the fact
+     * survives.
+     */
+    private static boolean timedOutConnect(IOException failure) {
+        String message = failure.getMessage();
+        return message != null
+                && message.toLowerCase(java.util.Locale.ROOT).contains("timed out");
     }
 
     private static PyObject info(PyObject[] args) {
@@ -355,19 +382,65 @@ final class SocketModule {
 
     private static PyObject close(PyObject[] args) {
         Arguments.exactly("close", args, null, 1);
-        int fd = slot(args[0]);
+        closeFd(slot(args[0]));
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * Closes a socket descriptor, dropping the channel only when the last number naming it is gone.
+     *
+     * <p>Also the answer for {@code os.close(fd)} on a socket: the reference has one descriptor table,
+     * so a program that asks the {@code os} module to close a socket gets the socket closed. The
+     * channels stay open while a {@code dup}ed number still names the handle, which is where the
+     * reference's file description shares its lifetime between descriptors too.
+     */
+    static void closeFd(int fd) {
         Handle found = HANDLES.remove(fd);
         if (found == null) {
             throw badFileDescriptor();
         }
         if (found.refs > 1) {
             found.refs--;
-            return PyNone.INSTANCE;
+            return;
         }
         quietly(found.server);
+        quietly(found.reservation);
         quietly(found.stream);
         quietly(found.datagram);
-        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code os.read(fd, length)} on a socket descriptor: the read the reference's shared table does.
+     *
+     * <p>The socket layer's numbers are not the kernel's, so {@link Fds} cannot answer for them; this
+     * is the half of that seam a program reaches through {@code os.read}. A read waits the way
+     * {@code recv} without a timeout does, and a zero count answers nothing without waiting, both as
+     * {@code read(2)} behaves.
+     */
+    static byte[] readFd(int fd, int length) {
+        Handle found = handle(fd);
+        if (length <= 0) {
+            return new byte[0];
+        }
+        ByteBuffer buffer = ByteBuffer.allocate(length);
+        if (found.type == SOCK_DGRAM) {
+            receiveDatagram(found, buffer, null);
+        } else {
+            int count = readStream(stream(found), buffer, null);
+            if (count < 0) {
+                return new byte[0];
+            }
+        }
+        return taken(buffer);
+    }
+
+    /** {@code os.write(fd, data)} on a socket descriptor: what {@code send} without a timeout does. */
+    static int writeFd(int fd, byte[] octets) {
+        Handle found = handle(fd);
+        if (found.type == SOCK_DGRAM) {
+            return writeDatagram(found, octets, null);
+        }
+        return writeStream(stream(found), octets, null);
     }
 
     private static void quietly(AutoCloseable channel) {
@@ -399,20 +472,21 @@ final class SocketModule {
     private static void bindHandle(Handle handle, PyObject address) {
         try {
             if (handle.type == SOCK_STREAM) {
-                if (handle.server != null) {
+                if (handle.server != null || handle.reservation != null) {
                     throw osError(EINVAL, "Invalid argument");
                 }
-                ServerSocketChannel server = ServerSocketChannel.open(protocol(handle.family));
-                server.configureBlocking(false);
-                reuseAddress(server, handle);
+                // bind() only takes the address: listening is listen()'s job. A ServerSocketChannel
+                // cannot be bound without listening, so the address is held by a client channel,
+                // which the kernel refuses connections to exactly as it does an un-listening socket.
+                SocketChannel reservation = SocketChannel.open(protocol(handle.family));
+                reservation.configureBlocking(false);
+                reuseAddress(reservation, handle);
                 SocketAddress local = socketAddress(handle, address);
                 if (local instanceof UnixDomainSocketAddress unix) {
                     handle.unixPath = unix.getPath().toString();
                 }
-                // The backlog belongs to listen() in Python; Java fixes it at bind time, so every
-                // listener here carries SOMAXCONN and listen() only records the call.
-                server.bind(local, 128);
-                handle.server = server;
+                reservation.bind(local);
+                handle.reservation = reservation;
             } else {
                 if (handle.datagram != null) {
                     throw osError(EINVAL, "Invalid argument");
@@ -434,8 +508,38 @@ final class SocketModule {
         if (handle.type != SOCK_STREAM) {
             throw osError(EOPNOTSUPP, "Operation not supported on socket");
         }
-        if (handle.server == null) {
+        int backlog = Math.max(1, slot(args[1]));
+        if (handle.listening) {
+            // listen() on a socket that already listens is a no-op in the reference, not an error.
+            return PyNone.INSTANCE;
+        }
+        if (handle.reservation == null) {
+            if (handle.server != null) {
+                throw osError(EINVAL, "Invalid argument");
+            }
+            // An unbound socket is bound to the wildcard address before listening, as the reference
+            // does; that path also creates the reservation this method is about to give up.
             bindHandle(handle, defaultAddress(handle.family));
+        }
+        try {
+            SocketAddress local = handle.reservation.getLocalAddress();
+            // The listener has to take the address in one call, so the reservation is released
+            // first. Between the two, the port is briefly nobody's; the reference's bind/listen
+            // sequence has the same shape of window.
+            quietly(handle.reservation);
+            handle.reservation = null;
+            ServerSocketChannel server = ServerSocketChannel.open(protocol(handle.family));
+            server.configureBlocking(false);
+            reuseAddress(server, handle);
+            if (handle.unixPath != null) {
+                // A Unix socket leaves its name behind when its channel closes, and binding a name
+                // that exists already is an error.
+                Files.deleteIfExists(Path.of(handle.unixPath));
+            }
+            server.bind(local, backlog);
+            handle.server = server;
+        } catch (IOException e) {
+            throw fault(e);
         }
         handle.listening = true;
         return PyNone.INSTANCE;
@@ -444,7 +548,7 @@ final class SocketModule {
     private static PyObject accept(PyObject[] args) {
         Arguments.exactly("accept", args, null, 2);
         Handle handle = handle(slot(args[0]));
-        if (handle.server == null) {
+        if (handle.server == null || !handle.listening) {
             throw osError(EINVAL, "Invalid argument");
         }
         SocketChannel connected = acceptOne(handle.server, timeout(args[1]));
@@ -515,6 +619,13 @@ final class SocketModule {
         } catch (PyRaise raised) {
             PyObject errno = raised.value().getAttr("errno");
             if (errno == PyNone.INSTANCE) {
+                if (raised.value().getType() == ExceptionTypes.TIMEOUT_ERROR) {
+                    // connect_ex answers a Python-level timeout with the errno a non-blocking
+                    // connect leaves behind (EAGAIN) rather than raising socket.timeout, which is
+                    // what the reference reports. An OSError carrying ETIMEDOUT is not this case:
+                    // it has its errno and is returned below.
+                    return PyInt.of(EAGAIN);
+                }
                 throw raised;
             }
             return PyInt.of(Numbers.asIndex(errno).intValue());
@@ -532,6 +643,13 @@ final class SocketModule {
                 local = handle.server.getLocalAddress();
                 handle.server.close();
                 handle.server = null;
+                handle.listening = false;
+            } else if (handle.reservation != null) {
+                // A socket that was bound and then connected keeps its local address, which the
+                // reservation has to hand over before the stream channel can take it.
+                local = handle.reservation.getLocalAddress();
+                handle.reservation.close();
+                handle.reservation = null;
             }
             SocketChannel channel = stream(handle);
             if (local != null) {
@@ -936,6 +1054,8 @@ final class SocketModule {
         try {
             if (handle.server != null) {
                 local = handle.server.getLocalAddress();
+            } else if (handle.reservation != null) {
+                local = handle.reservation.getLocalAddress();
             } else if (handle.stream != null) {
                 local = handle.stream.getLocalAddress();
             } else if (handle.datagram != null) {
@@ -1560,7 +1680,9 @@ final class SocketModule {
             return badFileDescriptor();
         }
         if (e instanceof ConnectException) {
-            return osError(ECONNREFUSED, "Connection refused");
+            return timedOutConnect(e)
+                    ? osError(ETIMEDOUT, "Operation timed out")
+                    : osError(ECONNREFUSED, "Connection refused");
         }
         if (e instanceof BindException) {
             String message = String.valueOf(e.getMessage());

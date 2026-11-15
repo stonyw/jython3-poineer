@@ -295,7 +295,14 @@ final class PosixModule {
                 "close($module, fd, /)\n--\n\nClose a file descriptor.",
                 (args, kwNames) -> {
                     Arguments.exactlyOne("close", args, kwNames);
-                    Fds.close(Numbers.asIndex(args[0]).intValue());
+                    int fd = Numbers.asIndex(args[0]).intValue();
+                    // A socket descriptor is not in the pipe table; the reference has one table, so
+                    // closing a socket through os closes the socket.
+                    if (SocketModule.owns(fd)) {
+                        SocketModule.closeFd(fd);
+                        return PyNone.INSTANCE;
+                    }
+                    Fds.close(fd);
                     return PyNone.INSTANCE;
                 }));
         module.set("read", function(
@@ -305,6 +312,9 @@ final class PosixModule {
                     Arguments.exactly("read", args, kwNames, 2);
                     int fd = Numbers.asIndex(args[0]).intValue();
                     int length = Numbers.asIndex(args[1]).intValue();
+                    if (SocketModule.owns(fd)) {
+                        return PyBytes.of(SocketModule.readFd(fd, length));
+                    }
                     byte[] bytes = Fds.read(fd, Math.max(length, 0));
                     if (bytes == null) {
                         throw wouldBlock();
@@ -318,6 +328,9 @@ final class PosixModule {
                     Arguments.exactly("write", args, kwNames, 2);
                     int fd = Numbers.asIndex(args[0]).intValue();
                     byte[] bytes = PyFileIO.octetsToWrite(args[1]);
+                    if (SocketModule.owns(fd)) {
+                        return PyInt.of(SocketModule.writeFd(fd, bytes));
+                    }
                     int written = Fds.write(fd, bytes);
                     if (written == 0 && bytes.length > 0) {
                         throw wouldBlock();

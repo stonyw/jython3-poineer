@@ -539,4 +539,24 @@
 
 **一处修正**：`Decoder.decode` 的空输入判断必须在编码名解析之前（参考 `b''.decode('nope') == ''`），否则注册表回退会把空 bytes 也送进 lookup；`CodecsModule.loadEncodings` 在无 stdlib 的单元测试环境里吞掉导入失败，让 `lookup` 仍以 `LookupError: unknown encoding:` 作答。
 
-**下一片建议**：socket 的 `bind` 只绑定不监听（延迟到 `listen()` 建 `ServerSocketChannel`），并修 makefile 存在时的 close/FIN 语义——这两条能让 `test_ssl` 真正跑完，也是 `test_socket` 的同一根因。
+**下一片建议**：socket 的 `bind` 只绑定不监听（延迟到 `listen()` 建 `ServerSocketChannel`），并修 makefile 存在时的 close/FIN 语义——这两条能让 `test_ssl` 真正跑完，也是 `test_socket` 的同一根因。（切片 49 已落地。）
+
+## M5 切片 49 明细：`bind`/`listen` 分离与 `close`/FIN（2026-11-15）
+
+**一、`bind` 只占地址、`listen` 才接受**：JVM 的 `ServerSocketChannel` 一 `bind` 就监听，没有「已绑定未监听」这一档。`bindHandle` 对 SOCK_STREAM 改建**客户端** `SocketChannel` 绑到目标地址（`Handle.reservation`）——地址被内核占住、没有监听队列，与参考一致：macOS 上 SYN 被丢弃，`connect` → `ETIMEDOUT`(60)、`connect_ex` 答 60；端口上根本没进程才是 `ECONNREFUSED`(61)。`listen()` 取预留通道的 `getLocalAddress()`、关预留，再以 `ServerSocketChannel`（`SO_REUSEADDR`，Unix 先删残留名字）重绑同一地址（`backlog = Math.max(1, backlog)`）并置 `listening = true`；重复 `listen` 为 no-op，未 `bind` 的 `listen` 先按通配地址 bind；`accept()` 要求 `listening`，否则 `EINVAL`。已绑定未监听时 `connect`／`getsockname` 也认预留通道。
+
+**二、FIN 断在 `os.read` 而不是 `close`**：先排除误判——普通 TCP 与 socketpair 的 close→对端 `recv` 得 `b''` 本来就成立（`probe_tcp_fin.py` 与参考逐行一致）。真正断的是 `makefile('rb')` 之后的读：文件对象走 `os.read(fd, n)`，socket 的伪描述符在 `HANDLES`（100 起）、不在 `Fds`（3 起），直接 `EBADF`；`test_makefile_close` 第一次读就失败，服务端线程因此等不到那一轮 `recv`，cleanup 的 `join` 才是死锁现场。修法：`PosixModule` 的 `read`／`write`／`close` 先问 `SocketModule.owns(fd)`，命中转 `readFd`／`writeFd`／`closeFd`（带 refs 计数的关闭）。`makefile` 对象与 socket 的关序不用改：stdlib `socket.py` 的 `_io_refs`／`_closed` 已按参考实现「对象 close 只减引用、socket 真关才 FIN」，实测两种顺序都对。
+
+**errno 映射**：NIO 的失败连接只抛 `ConnectException`、不带 errno，只能读 JDK 消息分流——`"Connection refused"` → 61、`"Operation timed out"` → 60；`connect_ex` 对 Python 层 `socket.timeout`（errno 为 `None`）答 `EAGAIN`(35)，对带 errno 的 `OSError(60)` 原样答 60（两者都可能被 `PyOSError` 映射成 `TimeoutError`，只能看 errno 是否为 `None` 区分）。
+
+**语料（真连，线程 + 超时）**：`corpus.py` 8 组与参考 `diff` **IDENTICAL**——未 listen 的端口 `connect` → 60；`listen` 后可连并 echo；`connect_ex` 未监听 60／已监听 0／无进程 61／带 timeout 35；`makefile('rb')` 读端在写端关闭后得 `b''`；`close()` 二次调用；`makefile` 先关、socket 后关两种顺序；对端 `recv` 见 EOF 后 `join` 在超时内返回。`smoke_unix.py` 的 AF_UNIX 路径与参考一致。
+
+**`test_ssl` 修前修后**：修前（切片 48 记录）整套 330 秒完成 143 例后停在 `test_connect_ex_error`。修后同一 runner 下 `test_connect_ex_error`、`test_makefile_close` 均 **ok**，整套 207 例跑完：**207／ok 101／fail 42／err 29／skip 35**（`test_nonblocking_send`、`test_recv_send` 两例为既有 SSL 层缺口，切片 48 已具名，不在本切片范围）。
+
+**`test_socket`**：仍跑不起来——`ThreadableTest.clientRun` 里 `hasattr(test_func, '__call__')` 为假（我方 `method` 类型缺 `__call__` 属性，但 `callable()` 为真），线程抛 `TypeError` 不置 done，`done.wait()` 永久挂住。既有属性模型缺口，非本切片引入，故无数字。
+
+**回归**：`test_io` 675／ok 512／fail 83／err 60／skip 20、`test_csv` 134／OK（skip 4）、`test_tarfile` 768／23 fail／349 skip——与切片 48 逐项一致。`test_subprocess` 339／ok 151／fail 15／err 25／skip 148（排除切片 24 的 4 例与 5 例大管道/超时 communicate；这 5 例修前修后一样挂死：`git stash` 后重建二进制，最小复现 `pipe_buf.py` 同样被 `alarm 60` 杀掉），fail／err 均低于切片 24 基线（17／30）；管道正常尺寸路径由 `cat` 与 `Popen.communicate(b'hello')` 冒烟覆盖。
+
+**冒烟**：切片 17 的 asyncio 回环 echo、切片 44 的 `BufferedRWPair` 均在改后通过。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 BUILD SUCCESSFUL（7m6s，26 个任务），`:runtime:checkOpcodes` 正常通过，0 失败。
