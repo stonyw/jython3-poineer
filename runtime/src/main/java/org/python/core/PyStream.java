@@ -281,6 +281,13 @@ public final class PyStream extends PyIterator {
         this(TYPE);
     }
 
+    /** {@code object.__new__(_io.TextIOWrapper)}: the cleared stream whose {@code __init__} fills it. */
+    static PyStream shell(PyType kind) {
+        PyStream stream = new PyStream(kind);
+        stream.initialized = false;
+        return stream;
+    }
+
     private PyStream(PyType kind) {
         super(kind);
         this.name = null;
@@ -1295,18 +1302,39 @@ public final class PyStream extends PyIterator {
      */
     private PyObject closeAnswer() {
         checkAttached();
-        if (reading()) {
-            if (Slots.truth(Slots.getAttr(attached(), "closed"))) {
-                return PyNone.INSTANCE;
-            }
-            flushSelf();
-            return askBuffer("close", new PyObject[0]);
-        }
-        if (closed) {
+        if (reading() && Slots.truth(Slots.getAttr(attached(), "closed"))) {
             return PyNone.INSTANCE;
         }
-        closed = true;
-        flush();
+        if (!reading() && closed) {
+            return PyNone.INSTANCE;
+        }
+        // The flush first — through this object's own row, so an instance-level `flush` counts — and the
+        // buffer is closed whatever happened. A close failure is what the caller sees, with the flush
+        // failure as its context.
+        PyRaise flushFailure = null;
+        try {
+            flushSelf();
+        } catch (PyRaise failure) {
+            flushFailure = failure;
+        }
+        PyRaise closeFailure = null;
+        try {
+            askBuffer("close", new PyObject[0]);
+        } catch (PyRaise failure) {
+            closeFailure = failure;
+        }
+        if (!reading()) {
+            closed = true;
+        }
+        if (closeFailure != null) {
+            if (flushFailure != null) {
+                closeFailure.value().setContext(flushFailure.value());
+            }
+            throw closeFailure;
+        }
+        if (flushFailure != null) {
+            throw flushFailure;
+        }
         return PyNone.INSTANCE;
     }
 

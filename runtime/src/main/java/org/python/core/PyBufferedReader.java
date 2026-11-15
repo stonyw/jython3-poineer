@@ -51,10 +51,30 @@ public final class PyBufferedReader extends PyIOStream {
     /** {@code self->buffer_size}, which every blockful below is measured in. */
     private int bufferSize;
 
-    /** {@code self->buffer}, with {@code self->pos} into it and {@code self->read_end} at its far edge. */
+    /**
+     * {@code self->buffer}: the one array both directions share.
+     *
+     * <p>{@code self->pos} is the cursor, {@code read_end} the far edge of what a read has put here and
+     * {@code write_pos}..{@code write_end} the bytes a write has accepted but not yet handed over. The
+     * reference keeps one array precisely so a write overwrites the read-ahead in place and a later
+     * {@code seek} back into the store reads the new octets out of it.
+     */
     private byte[] store;
+
     private int pos;
     private int readEnd = -1;
+    private int writePos;
+    private int writeEnd = -1;
+
+    /**
+     * {@code self->raw_pos}: the descriptor position that corresponds to {@code pos}, or -1 when it is
+     * not known. {@code RAW_OFFSET} is {@code raw_pos - pos}, and that is what turns the descriptor's
+     * pointer into the logical stream position.
+     */
+    private long rawPos;
+
+    /** {@code self->abs_pos}: the cached answer of the descriptor's {@code tell}, -1 when not known. */
+    private long absPos = -1;
 
     /** Whether {@code detach()} has taken the descriptor away, which is the first question of every row. */
     private boolean detached;
@@ -65,14 +85,6 @@ public final class PyBufferedReader extends PyIOStream {
     /** The two directions the mode string chose, which decide what the rows below refuse. */
     private boolean readable;
     private boolean writable;
-
-    /**
-     * {@code self->buffer}: the octets a writer has accepted but not yet handed to the descriptor.
-     *
-     * <p>The reference keeps one array for both directions and this layer keeps a growable one for the
-     * outgoing half, since only a writer accumulates — a reader's octets live in {@link #store}.
-     */
-    private final ByteArrayOutputStream outgoing = new ByteArrayOutputStream();
 
     PyBufferedReader(PyFileIO raw) {
         this(raw, PyType.BUFFERED_READER, true, false, DEFAULT_BUFFER_SIZE);
@@ -92,6 +104,24 @@ public final class PyBufferedReader extends PyIOStream {
     }
 
     /**
+     * The cleared value {@code object.__new__(_io.BufferedReader)} answers with.
+     *
+     * <p>The reference's {@code tp_new} for these three types <em>is</em> {@code object_new}, so the call
+     * is legal and leaves an object whose {@code __init__} has not run: every row refuses with
+     * {@code I/O operation on uninitialized object} until it has.
+     */
+    private PyBufferedReader(PyType kind) {
+        super(kind);
+        initializeStore(DEFAULT_BUFFER_SIZE);
+        initialized = false;
+    }
+
+    /** {@code tp.__new__(tp)} for one of the three buffered types: an uninitialized shell. */
+    static PyBufferedReader shell(PyType kind) {
+        return new PyBufferedReader(kind);
+    }
+
+    /**
      * {@code self->buffer_size = size; self->buffer = NULL}, which the reference does in
      * {@code buffered_init} and repeats when {@code __init__} runs a second time.
      */
@@ -100,6 +130,10 @@ public final class PyBufferedReader extends PyIOStream {
         store = new byte[size];
         pos = 0;
         readEnd = -1;
+        writePos = 0;
+        writeEnd = -1;
+        rawPos = 0;
+        absPos = -1;
     }
 
     /**
@@ -180,7 +214,13 @@ public final class PyBufferedReader extends PyIOStream {
                 || getType().matches(PyType.BUFFERED_RANDOM);
         initializeStore(size);
         initialized = true;
-        outgoing.reset();
+        // `_buffered_init` asks the descriptor where it is and remembers the answer, clearing the
+        // failure when the descriptor has no tell — that cached answer is `RAW_TELL` from then on.
+        try {
+            rawTell();
+        } catch (PyRaise notSeekable) {
+            absPos = -1;
+        }
     }
 
     /**
@@ -230,15 +270,67 @@ public final class PyBufferedReader extends PyIOStream {
         return Set.of("raw");
     }
 
+    /** {@code VALID_READ_BUFFER}: the store holds octets for a reader, rather than being reset. */
+    private boolean validRead() {
+        return readable && readEnd != -1;
+    }
+
+    /** {@code VALID_WRITE_BUFFER}: a write has octets waiting for the descriptor. */
+    private boolean validWrite() {
+        return writable && writeEnd != -1;
+    }
+
     /** {@code READAHEAD}: the octets still held, and 0 for a store that has been reset. */
     private long readahead() {
-        return readEnd < 0 ? 0 : readEnd - pos;
+        return validRead() ? readEnd - pos : 0;
+    }
+
+    /** {@code RAW_OFFSET}: how far the descriptor's pointer runs ahead of the logical position. */
+    private long rawOffset() {
+        return (validRead() || validWrite()) && rawPos >= 0 ? rawPos - pos : 0;
+    }
+
+    /** {@code ADJUST_POSITION}, which drags the read edge along when the cursor passes it. */
+    private void adjustPosition(int newPos) {
+        pos = newPos;
+        if (validRead() && readEnd < pos) {
+            readEnd = pos;
+        }
     }
 
     /** {@code _bufferedreader_reset_buf}, which is the third state of the store rather than an empty one. */
+    private void resetReadBuf() {
+        readEnd = -1;
+    }
+
     private void reset() {
         pos = 0;
         readEnd = -1;
+    }
+
+    /** {@code _bufferedwriter_reset_buf}. */
+    private void resetWriteBuf() {
+        writePos = 0;
+        writeEnd = -1;
+    }
+
+    /** {@code _buffered_raw_tell}, which caches the answer in {@code abs_pos}. */
+    private long rawTell() {
+        if (absPos != -1) {
+            return absPos;
+        }
+        absPos = Numbers.cLong(ask("tell"));
+        return absPos;
+    }
+
+    /** {@code _buffered_raw_seek}: two arguments, and the answer is the descriptor's new position. */
+    private long rawSeek(long target, int whence) {
+        PyObject answer = Slots.call(
+                Slots.getAttr(held(), "seek"),
+                new PyObject[] {PyInt.of(target), PyInt.of(whence)},
+                null);
+        absPos = Numbers.cLong(answer);
+        return absPos;
     }
 
     /** {@code CHECK_CLOSED}: a closed descriptor is only a refusal when the store cannot answer instead. */
@@ -250,37 +342,49 @@ public final class PyBufferedReader extends PyIOStream {
 
     /** The direction guard of a layer that files both halves of the rows whatever its mode was. */
     private void requireReadable(String row) {
+        if (!initialized) {
+            throw Slots.valueError("I/O operation on uninitialized object");
+        }
         if (!readable) {
             throw Slots.unsupportedOperation(row);
         }
     }
 
     /**
-     * Hand the outgoing octets over before reading, which is what a {@code '+'} stream needs: the
-     * descriptor holds what a write has accepted, and one read cannot see it until the buffer is drained.
+     * {@code _bufferedwriter_flush_unlocked}: hand the accepted octets to the descriptor.
+     *
+     * <p>The descriptor is first rewound by {@code RAW_OFFSET + (pos - write_pos)} — how far it ran
+     * ahead when the store was filled, plus how far the cursor moved past the first pending octet — so
+     * the write lands where the logical stream says it should. A non-blocking descriptor that stops
+     * taking octets raises {@code BlockingIOError}, as the reference's own flush does.
      */
-    private void drain() {
-        if (outgoing.size() > 0) {
-            flushOutgoing();
+    private void flushUnlocked() {
+        if (validWrite() && writePos != writeEnd) {
+            long rewind = rawOffset() + (pos - writePos);
+            if (rewind != 0) {
+                rawSeek(-rewind, 1);
+                rawPos -= rewind;
+            }
+            while (writePos < writeEnd) {
+                int taken = emit(Arrays.copyOfRange(store, writePos, writeEnd));
+                if (taken == 0) {
+                    throw wouldBlock(0);
+                }
+                writePos += taken;
+                rawPos = writePos;
+            }
         }
+        // This is what makes `VALID_WRITE_BUFFER` false after a flush, and hence RAW_OFFSET zero when
+        // the read buffer is empty too.
+        resetWriteBuf();
     }
 
-    /**
-     * {@code _bufferedwriter_flush_unlocked}: the octets the writer accepted, in one write for as long.
-     *
-     * <p>A non-blocking descriptor that stops taking octets raises {@code BlockingIOError}, and the
-     * count it carries is what this flush managed to hand over — zero when the very first write would
-     * have blocked, which is the case the reference test asserts.
-     */
-    private void flushOutgoing() {
-        int written = 0;
-        while (outgoing.size() > 0) {
-            int taken = emit(outgoing.toByteArray());
-            if (taken == 0) {
-                throw wouldBlock(written);
-            }
-            written += taken;
-            drop(taken);
+    /** {@code buffered_flush_and_rewind_unlocked}: flush, then pull the descriptor back to the cursor. */
+    private void flushAndRewind() {
+        flushUnlocked();
+        if (readable) {
+            rawSeek(-rawOffset(), 1);
+            resetReadBuf();
         }
     }
 
@@ -295,26 +399,20 @@ public final class PyBufferedReader extends PyIOStream {
                 }));
     }
 
-    /** Removes the first {@code count} octets of the outgoing store. */
-    private void drop(int count) {
-        if (count <= 0) {
-            return;
-        }
-        if (count >= outgoing.size()) {
-            outgoing.reset();
-            return;
-        }
-        byte[] rest = outgoing.toByteArray();
-        outgoing.reset();
-        outgoing.write(rest, count, rest.length - count);
-    }
-
     /**
      * One read of the raw layer, which is {@code PyObject_CallMethod(self->raw, "read", "n")} whenever
      * the raw is not a descriptor this runtime owns. A Python raw ({@code _FileInFile}) answers the row
      * itself, so the call has to go through the object, not through a Java field.
      */
     private byte[] fetch(long wanted) {
+        byte[] octets = fetchRaw(wanted);
+        if (octets != null && octets.length > 0 && absPos != -1) {
+            absPos += octets.length;
+        }
+        return octets;
+    }
+
+    private byte[] fetchRaw(long wanted) {
         PyObject source = held();
         if (source instanceof PyFileIO file) {
             return file.octets(wanted);
@@ -379,6 +477,14 @@ public final class PyBufferedReader extends PyIOStream {
         if (octets.length == 0) {
             return 0;
         }
+        int taken = emitRaw(octets);
+        if (taken > 0 && absPos != -1) {
+            absPos += taken;
+        }
+        return taken;
+    }
+
+    private int emitRaw(byte[] octets) {
         PyObject target = held();
         if (target instanceof PyFileIO file) {
             return file.writeOctets(octets);
@@ -407,7 +513,6 @@ public final class PyBufferedReader extends PyIOStream {
      * @return how many octets came, 0 at the end of the descriptor and -1 when it would block
      */
     private int fill() {
-        drain();
         int start = readEnd < 0 ? 0 : readEnd;
         byte[] chunk = fetch(bufferSize - start);
         if (chunk == null) {
@@ -418,6 +523,9 @@ public final class PyBufferedReader extends PyIOStream {
         }
         System.arraycopy(chunk, 0, store, start, chunk.length);
         readEnd = start + chunk.length;
+        // `_bufferedreader_fill_buffer` remembers where the descriptor stopped: RAW_OFFSET is measured
+        // from it, so a read-ahead is what makes `tell` answer the logical position and not the pointer.
+        rawPos = readEnd;
         return chunk.length;
     }
 
@@ -474,6 +582,9 @@ public final class PyBufferedReader extends PyIOStream {
      */
     private PyObject readAll() {
         byte[] buffered = take(readahead());
+        if (writable) {
+            flushAndRewind();
+        }
         reset();
         byte[] rest = restartOfRaw();
         if (rest == null) {
@@ -540,6 +651,9 @@ public final class PyBufferedReader extends PyIOStream {
         ByteArrayOutputStream answer = new ByteArrayOutputStream();
         writeInto(answer, take(readahead()));
         long remaining = wanted - answer.size();
+        if (writable) {
+            flushAndRewind();
+        }
         reset();
         boolean wouldBlock = false;
         while (remaining >= bufferSize) {
@@ -559,6 +673,7 @@ public final class PyBufferedReader extends PyIOStream {
         if (!wouldBlock) {
             pos = 0;
             readEnd = 0;
+            rawPos = 0;
             while (remaining > 0 && readEnd < bufferSize) {
                 int got = fill();
                 if (got < 0) {
@@ -597,7 +712,10 @@ public final class PyBufferedReader extends PyIOStream {
         if (have > 0) {
             return PyBytes.of(take(Math.min(have, limit)));
         }
-        reset();
+        if (writable) {
+            flushAndRewind();
+        }
+        resetReadBuf();
         byte[] fetched = fetch(limit);
         return PyBytes.of(fetched == null ? new byte[0] : fetched);
     }
@@ -635,10 +753,17 @@ public final class PyBufferedReader extends PyIOStream {
             int given = (int) Math.min(have, length);
             target.write(0, take(given), given);
             total += given;
-            if (readahead() == 0) {
-                reset();
+            if (given == length) {
+                // The store answered the whole request, which the reference returns without touching
+                // the descriptor at all.
+                return PyInt.of(total);
             }
         }
+        if (writable) {
+            flushAndRewind();
+        }
+        resetReadBuf();
+        pos = 0;
         if (single) {
             int remaining = length - total;
             if (remaining > 0) {
@@ -705,6 +830,9 @@ public final class PyBufferedReader extends PyIOStream {
         if (readahead() > 0) {
             return PyBytes.of(heldOctets());
         }
+        if (writable) {
+            flushAndRewind();
+        }
         reset();
         fill();
         pos = 0;
@@ -742,6 +870,9 @@ public final class PyBufferedReader extends PyIOStream {
             if (limit >= 0) {
                 limit -= scanned;
             }
+        }
+        if (writable) {
+            flushAndRewind();
         }
         while (true) {
             reset();
@@ -798,18 +929,40 @@ public final class PyBufferedReader extends PyIOStream {
         return descriptor;
     }
 
-    /** {@code buffer.close()}: nothing to do once the descriptor says it is closed, and both closed below. */
+    /** {@code buffer.close()}: flush first, then the descriptor, and the descriptor closes either way. */
     @Override
     public PyObject close() {
         held();
         if (Slots.truth(Slots.getAttr(descriptor, "closed"))) {
             return PyNone.INSTANCE;
         }
-        Slots.call(Slots.getAttr(this, "flush"), new PyObject[0], null);
-        PyObject answer = ask("close");
+        // The reference flushes through the object's own row — so an instance-level `flush` is honoured —
+        // and remembers a failure rather than giving up: the descriptor is closed regardless.
+        PyRaise flushFailure = null;
+        try {
+            Slots.call(Slots.getAttr(this, "flush"), new PyObject[0], null);
+        } catch (PyRaise failure) {
+            flushFailure = failure;
+        }
+        PyRaise closeFailure = null;
+        try {
+            ask("close");
+        } catch (PyRaise failure) {
+            closeFailure = failure;
+        }
         pos = 0;
         readEnd = 0;
-        return answer;
+        if (closeFailure != null) {
+            if (flushFailure != null) {
+                // The close failure is what the caller sees; the flush failure is its context.
+                closeFailure.value().setContext(flushFailure.value());
+            }
+            throw closeFailure;
+        }
+        if (flushFailure != null) {
+            throw flushFailure;
+        }
+        return PyNone.INSTANCE;
     }
 
     private PyObject truncate(PyObject[] args, String[] kwNames) {
@@ -825,8 +978,17 @@ public final class PyBufferedReader extends PyIOStream {
             throw Slots.unsupportedOperation("truncate");
         }
         checkClosed(TRUNCATE);
-        flushOutgoing();
-        return Slots.call(Slots.getAttr(descriptor, "truncate"), args, null);
+        flushAndRewind();
+        PyObject position = args.length > 0 ? args[0] : PyNone.INSTANCE;
+        PyObject answer = Slots.call(
+                Slots.getAttr(descriptor, "truncate"), new PyObject[] {position}, null);
+        // Reset the cached position: the descriptor may have moved it.
+        try {
+            rawTell();
+        } catch (PyRaise notSeekable) {
+            absPos = -1;
+        }
+        return answer;
     }
 
     /**
@@ -842,42 +1004,109 @@ public final class PyBufferedReader extends PyIOStream {
      * dropped: the caller is told to retry from there, exactly as the reference does.
      */
     private PyObject write(PyObject data) {
+        if (!initialized) {
+            throw Slots.valueError("I/O operation on uninitialized object");
+        }
         if (!writable) {
             throw Slots.unsupportedOperation("write");
         }
         byte[] octets = PyFileIO.octetsToWrite(data);
         held();
         checkClosed("write to closed file");
-        pos = 0;
-        readEnd = -1;
-        int consumed = 0;
-        while (consumed < octets.length) {
-            if (outgoing.size() == 0 && octets.length - consumed > bufferSize) {
-                // More than a storeful, and nothing waiting: hand it straight to the descriptor, which
-                // may take part of it or none at all.
-                int taken = emit(Arrays.copyOfRange(octets, consumed, octets.length));
-                if (taken > 0) {
-                    consumed += taken;
-                    continue;
-                }
-            }
-            int space = bufferSize - outgoing.size();
-            if (space > 0) {
-                int take = Math.min(space, octets.length - consumed);
-                outgoing.write(octets, consumed, take);
-                consumed += take;
-            }
-            if (outgoing.size() >= bufferSize && consumed < octets.length) {
-                while (outgoing.size() > 0) {
-                    int taken = emit(outgoing.toByteArray());
-                    if (taken == 0) {
-                        throw wouldBlock(consumed);
-                    }
-                    drop(taken);
-                }
-            }
+        // The fast path: the octets fit from the cursor and are copied into the store in place. A write
+        // does not reset the read buffer — it overwrites the read-ahead it has run past, and that is what
+        // makes a later seek back into the store read the new octets out of it.
+        if (!validRead() && !validWrite()) {
+            pos = 0;
+            rawPos = 0;
         }
-        return PyInt.of(consumed);
+        int avail = bufferSize - pos;
+        if (octets.length <= avail && octets.length < bufferSize) {
+            System.arraycopy(octets, 0, store, pos, octets.length);
+            if (!validWrite() || writePos > pos) {
+                writePos = pos;
+            }
+            adjustPosition(pos + octets.length);
+            if (pos > writeEnd) {
+                writeEnd = pos;
+            }
+            return PyInt.of(octets.length);
+        }
+
+        // Hand over what the store already holds. A non-blocking descriptor that fills up leaves the
+        // accepted octets in the store for the caller to retry from.
+        try {
+            flushUnlocked();
+        } catch (PyRaise refusal) {
+            if (!blocked(refusal)) {
+                throw refusal;
+            }
+            if (readable) {
+                resetReadBuf();
+            }
+            // Make some place by shifting the buffer down, and buffer as much as there is room for.
+            System.arraycopy(store, writePos, store, 0, writeEnd - writePos);
+            writeEnd -= writePos;
+            rawPos -= writePos;
+            pos -= writePos;
+            writePos = 0;
+            avail = bufferSize - writeEnd;
+            if (octets.length <= avail) {
+                System.arraycopy(octets, 0, store, writeEnd, octets.length);
+                writeEnd += octets.length;
+                pos += octets.length;
+                return PyInt.of(octets.length);
+            }
+            System.arraycopy(octets, 0, store, writeEnd, avail);
+            writeEnd += avail;
+            pos += avail;
+            throw wouldBlock(avail);
+        }
+
+        // A read-ahead that was filled but not modified still has to be pulled back, which is the
+        // issue-6629 adjustment the flush alone does not make.
+        long offset = rawOffset();
+        if (offset != 0) {
+            rawSeek(-offset, 1);
+            rawPos -= offset;
+        }
+
+        int remaining = octets.length;
+        int written = 0;
+        while (remaining >= bufferSize) {
+            int taken = emit(Arrays.copyOfRange(octets, written, octets.length));
+            if (taken == 0) {
+                // The raw file is non-blocking and took nothing: buffer as much as possible.
+                if (remaining > bufferSize) {
+                    System.arraycopy(octets, written, store, 0, bufferSize);
+                    rawPos = 0;
+                    adjustPosition(bufferSize);
+                    writeEnd = bufferSize;
+                    written += bufferSize;
+                    throw wouldBlock(written);
+                }
+                break;
+            }
+            written += taken;
+            remaining -= taken;
+        }
+        if (readable) {
+            resetReadBuf();
+        }
+        if (remaining > 0) {
+            System.arraycopy(octets, written, store, 0, remaining);
+            written += remaining;
+        }
+        writePos = 0;
+        writeEnd = remaining;
+        adjustPosition(remaining);
+        rawPos = 0;
+        return PyInt.of(written);
+    }
+
+    /** Whether a refused flush is the {@code BlockingIOError} a non-blocking descriptor raises. */
+    private static boolean blocked(PyRaise refusal) {
+        return refusal.value().getType() == ExceptionTypes.BLOCKING_IO_ERROR;
     }
 
     /**
@@ -910,28 +1139,36 @@ public final class PyBufferedReader extends PyIOStream {
         if (ask("seekable") != PyBool.TRUE) {
             throw Slots.unsupportedOperation("File or stream is not seekable.");
         }
-        long offset = Numbers.cLong(args[0]);
+        long target = Numbers.cLong(args[0]);
+        // Seeking inside the store costs no descriptor call at all: the reference turns the pair into an
+        // offset from the cursor and only moves `pos` when it lands in the octets already held.
+        if ((whence == 0 || whence == 1) && readable) {
+            long current = rawTell();
+            long avail = readahead();
+            if (avail > 0) {
+                long offset = whence == 0 ? target - (current - rawOffset()) : target;
+                if (offset >= -pos && offset <= avail) {
+                    pos += (int) offset;
+                    // GH-95782: a seek before the start of the stream answers zero rather than a
+                    // negative position.
+                    return PyInt.of(Math.max(current - avail + offset, 0));
+                }
+            }
+        }
+        // The fallback: hand over the writes and let the descriptor seek. A relative seek is relative to
+        // the logical position, which is the pointer less what the store read ahead of it.
         if (writable) {
-            flushOutgoing();
+            flushUnlocked();
         }
         if (whence == 1) {
-            long rawPosition = Numbers.cLong(ask("tell"));
-            long target = rawPosition - readahead() + offset;
-            if (readEnd >= 0 && target >= rawPosition - readahead() && target <= rawPosition) {
-                pos = (int) (readEnd - (rawPosition - target));
-                return PyInt.of(target);
-            }
-            PyObject answer = Slots.call(
-                    Slots.getAttr(descriptor, "seek"), new PyObject[] {PyInt.of(target)}, null);
-            reset();
-            return answer;
+            target -= rawOffset();
         }
-        PyObject answer = Slots.call(
-                Slots.getAttr(descriptor, "seek"),
-                new PyObject[] {args[0], PyInt.of(whence)},
-                null);
-        reset();
-        return answer;
+        long answer = rawSeek(target, whence);
+        rawPos = -1;
+        if (readable) {
+            resetReadBuf();
+        }
+        return PyInt.of(answer);
     }
 
     /** Clinic's {@code (self, size=-1, /)} over {@code Py_ssize_t(accept={int, NoneType})}. */
@@ -994,23 +1231,21 @@ public final class PyBufferedReader extends PyIOStream {
             .addNoArgument("tell", self -> {
                 PyBufferedReader buffer = (PyBufferedReader) self;
                 buffer.held();
-                if (buffer.writable) {
-                    buffer.flushOutgoing();
-                }
-                // The descriptor's pointer is past the octets the store has already read ahead of,
-                // so the position this layer reports is that pointer less the unread tail.
-                return PyInt.of(Numbers.cLong(buffer.ask("tell")) - buffer.readahead());
+                // The reference asks the descriptor every time — the cache is only for the seek fast path —
+                // which is what makes `tell` on a closed buffer refuse at all.
+                long position = Numbers.cLong(buffer.ask("tell")) - buffer.rawOffset();
+                return PyInt.of(Math.max(position, 0));
             })
-            // BufferedReader's `flush` is `_io._Buffered.flush` filed as the simple one: CHECK_INITIALIZED
-            // and then nothing but the descriptor's row — including the full stop it refuses a closed
-            // descriptor with, which is the sentence here rather than the `flush of closed file` the
-            // writer's version of the row says.
+            // `flush` is `_io._Buffered.flush`: a writable layer hands over its octets and rewinds the
+            // descriptor to the logical position, which drops the read-ahead; a reader only asks its
+            // descriptor to flush and keeps what it holds.
             .addNoArgument("flush", self -> {
                 PyBufferedReader buffer = (PyBufferedReader) self;
                 buffer.held();
+                buffer.checkClosed("flush of closed file");
                 if (buffer.writable) {
-                    buffer.checkClosed("flush of closed file");
-                    buffer.flushOutgoing();
+                    buffer.flushAndRewind();
+                    return PyNone.INSTANCE;
                 }
                 return buffer.ask("flush");
             })

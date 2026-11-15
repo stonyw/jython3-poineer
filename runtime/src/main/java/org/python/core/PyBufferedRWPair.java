@@ -37,6 +37,11 @@ public final class PyBufferedRWPair extends PyIOStream {
         super(type);
     }
 
+    /** {@code object.__new__(_io.BufferedRWPair)}: the cleared shell {@code __init__} fills. */
+    static PyBufferedRWPair shell(PyType kind) {
+        return new PyBufferedRWPair(kind);
+    }
+
     /**
      * {@code tp_new} for this type: a call with the two halves both makes and fills the object, while
      * {@code tp.__new__(tp)} with nothing makes the shell that {@code __init__} fills afterwards.

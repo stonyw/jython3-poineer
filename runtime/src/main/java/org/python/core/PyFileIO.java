@@ -417,7 +417,14 @@ public final class PyFileIO extends PyIOStream {
      */
     @Override
     public PyObject close() {
-        PyObject answer = internalClose();
+        // The base class's body flushes first and re-raises a failure — but the descriptor still has to
+        // be let go and `closed` still has to become true, which is what the reference's close does.
+        PyRaise flushFailure = null;
+        try {
+            internalClose();
+        } catch (PyRaise failure) {
+            flushFailure = failure;
+        }
         closed = true;
         if (closefd) {
             try {
@@ -437,7 +444,10 @@ public final class PyFileIO extends PyIOStream {
                 // The answer is the Python one; a descriptor the JVM already lost cannot change it.
             }
         }
-        return answer;
+        if (flushFailure != null) {
+            throw flushFailure;
+        }
+        return PyNone.INSTANCE;
     }
 
     /**

@@ -451,3 +451,41 @@
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
 
 **具名偏差**：`rawRead` 对 `size > Integer.MAX_VALUE-8` 直接 `MemoryError`（参考按 `ssize_t` 惰性分配、失败时也是 `MemoryError`），未做逐字节惰性；`readall` 的块常量固定 131072（与 3.14.10 的 `DEFAULT_BUFFER_SIZE` 一致，非平台 `BUFSIZ` 推断）。
+
+## M5 切片 46 明细：`test_io` 收口——单缓冲模型、`seek(whence)`、`__new__` 空壳与 close 顺序（2026-11-15）
+
+**修前修后**：`675／484／112／72／20` → **`675／525／83／60／20`**（+41 ok、−29 fail、−12 err）。
+
+**参考语义取证**（`/tmp/bufferedio.c`，3.14.0）：
+
+- `VALID_READ_BUFFER = readable && read_end != -1`；`VALID_WRITE_BUFFER = writable && write_end != -1`；`READAHEAD = read_end - pos`；`RAW_OFFSET = ((validRead||validWrite) && raw_pos>=0) ? raw_pos - pos : 0`；`ADJUST_POSITION` 在 `pos` 越过 `read_end` 时把 `read_end` 一起推过去。
+- `_bufferedwriter_flush_unlocked`：`rewind = RAW_OFFSET + (pos - write_pos)`；非零则 `raw.seek(-rewind, 1)`、`raw_pos -= rewind`；循环写 `store[write_pos..write_end]`，`write_pos += n; raw_pos = write_pos`；最后 `_bufferedwriter_reset_buf`。它本身不 seek 到逻辑位置、不清读缓冲。
+- `buffered_flush_and_rewind_unlocked`：先 flush_unlocked，再 `raw.seek(-RAW_OFFSET, 1)`、`_bufferedreader_reset_buf`。
+- `_io._Buffered.flush`：可写 → flush_and_rewind（**丢弃预读**）；只读 → 只调 `raw.flush()`（**保留预读**）。已用 CPython 探针确认。
+- `_io._Buffered.tell`：`raw.tell() - RAW_OFFSET`，负数夹到 0（GH-95782）。缓存 `abs_pos` 只给 seek 快路径用；`tell` 行必须永远问 raw，所以关掉的 buffer `tell` 会报错。
+- `_io._Buffered.seek`：whence 0..2（另允许 3/4）；快路径仅 `(whence==0||1) && readable && avail>0`，`offset = whence==0 ? target-(current-RAW_OFFSET) : target`，`-pos <= offset <= avail` 时只挪 `pos`；否则可写时 flush_unlocked、`whence==1` 时 `target -= RAW_OFFSET`、两参 `raw.seek`、`raw_pos=-1`、读缓冲 reset。
+- `buffered_close`：先经对象自己的 `flush` 行 flush（`b.flush = bad` 会生效），存下失败；**仍继续** `raw.close()`；close 失败 → 抛 close 错并把 flush 错挂成 `__context__`；close 成功 → 重抛 flush 错。
+- `_io.TextIOWrapper.close`：同样 flush 先、buffer.close 后、close 错优先、flush 错作 context；`closed` 委派给 buffer，close 失败时仍为 False。
+- `object.__new__` 门槛是 `type->tp_new != object_new`；3.14.10 实测 BufferedReader／BufferedWriter／BufferedRandom／BufferedRWPair／TextIOWrapper 允许并给空壳（FileIO／BytesIO／StringIO 也允许），`IncrementalNewlineDecoder` 是 `.withoutNew()`。
+
+**落地**：
+
+1. `PyBufferedReader` 改为单数组模型：新增 `writePos`／`writeEnd = -1`／`rawPos`／`absPos = -1`，删除 `outgoing`；`initializeStore` 一并清这五个；`initialize` 末尾 `try { rawTell(); } catch (PyRaise) { absPos = -1; }`。新增 `validRead`／`validWrite`／`rawOffset`／`adjustPosition`／`resetReadBuf`／`reset`／`resetWriteBuf`／`rawTell`／`rawSeek(long,int)`；`drain`／`flushOutgoing`／`drop` 换成 `flushUnlocked`／`flushAndRewind`／`blocked`；`fetch`／`emit` 成功后推进 `absPos`；`fill` 末尾 `rawPos = readEnd`。
+2. 读路径 `readAll`／`readGeneric`／`read1`／`readIntoRow`／`peek`／`readline` 进入前统一 `if (writable) flushAndRewind();`（丢弃预读），再 `reset`／`resetReadBuf`；`write` 全量移植 C 的快路径、回退与直写循环；`tell` 行每次 `ask("tell")` 减 `rawOffset()` 并夹 0；`flush` 行可写走 `checkClosed("flush of closed file")` + `flushAndRewind()`、只读转发 raw；`seek`／`truncate` 按 C 算法重写。
+3. `close`：flush 失败先存下，仍 `ask("close")`，close 错优先并 `setContext(flushFailure.value())`；`PyStream.closeAnswer` 同步为 flush 先、buffer.close 后、close 错优先；`PyFileIO.close` 改为 `closed = true` 与释放 fd 无条件执行、最后重抛 flush 失败。
+4. 空壳：`PyBufferedReader`／`PyBufferedRWPair`／`PyStream` 各加 `shell(kind)`；`TypeDict.inheritsObjectNew` 放行五种 `_io` 类型，`objectNew` 分派到空壳；空壳 `read`／`write` 报 `ValueError: I/O operation on uninitialized object`。
+
+**逐簇去向**：
+
+- ⑦ `BufferedRandom` 12 例全绿：`test_read_and_write`、`flush_and_peek`、`flush_and_read`、`flush_and_readinto`、`interleaved_read_write`、`interleaved_readline_write`、`read1_after_write`、`write_after_readahead`、`write_rewind_write`、`seek_and_tell`、`truncate_after_read_or_write`、`BufferedRandomTest.test_write_non_blocking`；顺带 `test_tell_character_device_file`×2、`BufferedWriterTest.test_write_non_blocking` 也转绿。
+- ⑧ `seek` whence 6 例全绿：`BufferedWriterTest.test_writes_and_seeks` 与 `BufferedRandomTest` 的 `writes_and_reads`／`writes_and_peek`／`writes_and_read1s`／`writes_and_readintos`／`writes_and_seeks`（原 traceback 均为 `MockRawIOWithoutRead.seek() missing 1 required positional argument: 'whence'`）。
+- ⑨ 空壳 5/6：`BufferedReaderTest`／`BufferedWriterTest`／`BufferedRandomTest`／`CTextIOWrapperTest.test_uninitialized` 与 `CTextIOWrapperTest.test_initialization` 转绿；`CIncrementalNewlineDecoderTest.test_uninitialized` 仍 `cannot create '_io.IncrementalNewlineDecoder' instances`，与 `test_subclassing`／`test_newline_decoder`／`test_newline_bytes` 一起留缺失面。
+- ⑥ 15 例全绿（复核结论见前）：`close_error_on_close`×4、`flush_error_on_close`×5、`nonnormalized_close_error_on_close`×4、`write_error_on_close`×2；修后日志 `error_on_close` 计数 0（修前 47 处）。
+
+**语料对拍**（`/tmp/m5_46_corpus.py` 对 3.14.10 与 `jy3`）：`BufferedRandom` 写后读、读写交替 `tell` 序列（`BR.read2`／`write4`／`seek0`／`readall`／`interleaved`／`rewind`）、`seek` 三种 `whence` 与越界、`object.__new__` 对六个 `_io` 类型的答复，均逐条一致；剩 4 条具名偏差：① `BytesIO.seek(-100, 2)` 参考夹到 0，我方抛 `ValueError: negative seek position -90`；② `object.__new__(io.FileIO)`；③ `object.__new__(io.StringIO)`（参考允许，我方仍 `is not safe`）；④ `IncrementalNewlineDecoder` 无实现。另：任务书原写「`object.__new__` 对六个 `_io` 类型拒绝」，实测 3.14.10 对其中五个是允许并返回空壳。
+
+**回归**：`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349、`test_fstring` 95／95、`test_generators` 59／52／4／2／1，与基线一致。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m，harness `PASS=12`）。
+
+**`test_io` 收口结论**：余 143 例（83 fail＋60 err），无「一簇十几例」的可修面。构成：析构/确定性终结/`ResourceWarning`/weakref 约 30、`getsizeof`／`sizeof` 2、线程与关闭竞态 5、pickling 子类 1、编码表缺席约 15、`IncrementalNewlineDecoder` 5、`_pyio` 的 `truncate`（`os.lseek`／`os.ftruncate`）2、BOM 与 `reconfigure` 编码约 8、其余散例。**`test_io` 不再作为主战场**；下一片转 §3.3 `_ssl`（切片 47）。

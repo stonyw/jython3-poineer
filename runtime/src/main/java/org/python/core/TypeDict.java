@@ -4880,12 +4880,29 @@ final class TypeDict {
             // The walk reached a class with no creator at all — the one refusal that names nothing else.
             throw Slots.typeError("cannot create '%s' instances", staticBase.filedName());
         }
-        if (creatorOf(staticBase) != creatorOf(declaring)) {
+        if (creatorOf(staticBase) != creatorOf(declaring) && !inheritsObjectNew(staticBase)) {
             throw Slots.typeError(
                     "%s.__new__(%s) is not safe, use %s.__new__()",
                     declaring.filedName(), subtype.filedName(), staticBase.filedName());
         }
         return subtype;
+    }
+
+    /**
+     * Whether this type's {@code tp_new} is {@code object_new} itself, which is what makes
+     * {@code object.__new__(kind)} legal.
+     *
+     * <p>Six {@code _io} types are allocated by {@code object_new} in the reference even though the layer
+     * that fills them is written in C: the three buffered ones, {@code BufferedRWPair},
+     * {@code TextIOWrapper} and {@code IncrementalNewlineDecoder}. Its own safety check is therefore
+     * satisfied, and the call answers a cleared value rather than refusing.
+     */
+    private static boolean inheritsObjectNew(PyType kind) {
+        return kind == PyType.BUFFERED_READER
+                || kind == PyType.BUFFERED_WRITER
+                || kind == PyType.BUFFERED_RANDOM
+                || kind == PyType.BUFFERED_RW_PAIR
+                || kind == PyStream.TYPE;
     }
 
     /**
@@ -6067,6 +6084,17 @@ final class TypeDict {
             if (inheritsObjectInit(kind)) {
                 throw Slots.typeError("%s() takes no arguments", kind.name());
             }
+        }
+        if (kind == PyType.BUFFERED_READER
+                || kind == PyType.BUFFERED_WRITER
+                || kind == PyType.BUFFERED_RANDOM) {
+            return PyBufferedReader.shell(kind);
+        }
+        if (kind == PyType.BUFFERED_RW_PAIR) {
+            return PyBufferedRWPair.shell(kind);
+        }
+        if (kind == PyStream.TYPE) {
+            return PyStream.shell(kind);
         }
         return new PyInstance(kind);
     }
