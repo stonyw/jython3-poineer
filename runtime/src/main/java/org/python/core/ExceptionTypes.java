@@ -265,6 +265,9 @@ public final class ExceptionTypes {
     /** {@code zlib.error}: the one failure the compression module raises. */
     public static final PyType ZLIB_ERROR = child("error", EXCEPTION).filedUnder("zlib.error");
 
+    /** {@code _csv.Error}: every refusal the CSV parser and writer make. */
+    public static final PyType CSV_ERROR = child("Error", EXCEPTION).filedUnder("_csv.Error");
+
     /** {@code _hashlib.UnsupportedDigestmodError}: {@code hmac} names an unknown digest. */
     public static final PyType UNSUPPORTED_DIGESTMOD_ERROR =
             child("UnsupportedDigestmodError", VALUE_ERROR).filedUnder("_hashlib.UnsupportedDigestmodError");

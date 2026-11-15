@@ -47,7 +47,8 @@ public final class PyRuntime {
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "zlib", "array", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
-                "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator"};
+                "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
+                "_csv"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -327,6 +328,9 @@ public final class PyRuntime {
         // The filesystem and environment calls `os` re-exports, and the one container `collections`
         // cannot import without: `contextlib` imports `deque` from there at module scope.
         PyModule posixModule = PosixModule.newModule();
+        // `csv.py` imports `_csv` at module scope, and `csv` is imported by `test_csv` and by much of
+        // the tooling the tests reach for.
+        PyModule csvModule = CsvModule.newModule();
         // The two modules `subprocess` imports: the C fork/exec half, which this runtime answers over
         // ProcessBuilder, and the readiness call `selectors` needs before `communicate` can loop.
         PyModule posixSubprocessModule = PosixSubprocessModule.newModule();
@@ -368,6 +372,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("select"), selectModule);
         modules.put(PyStr.interned("_typing"), typingModule);
         modules.put(PyStr.interned("_struct"), structModule);
+        modules.put(PyStr.interned("_csv"), csvModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
         modules.put(PyStr.interned("zlib"), zlibModule);
         for (PyModule hashlibModule : hashlibModules) {
@@ -448,6 +453,7 @@ public final class PyRuntime {
         belongTo(contextvarsModule);
         belongTo(contextvarsWrapper);
         belongTo(posixModule);
+        belongTo(csvModule);
         belongTo(collectionsModule);
         belongTo(gcModule);
     }

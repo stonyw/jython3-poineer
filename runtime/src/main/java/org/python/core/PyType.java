@@ -916,6 +916,18 @@ public class PyType extends PyObject {
             builtin("TokenizerIter").filedUnder("_tokenize.TokenizerIter");
 
     /**
+     * {@code _csv}'s three types.
+     *
+     * <p>{@code Dialect} is the one Python subclasses ({@code csv.Dialect} does), so it is an ordinary
+     * builtin type with constructible instances. The reader and the writer cannot be built from
+     * Python at all — the reference declares no {@code tp_new} for them — and the module's
+     * {@code reader}/{@code writer} functions are what hand one out.
+     */
+    public static final PyType CSV_DIALECT = builtin("Dialect").filedUnder("_csv.Dialect");
+    public static final PyType CSV_READER = builtin("reader").withoutNew().filedUnder("_csv.reader");
+    public static final PyType CSV_WRITER = builtin("writer").withoutNew().filedUnder("_csv.writer");
+
+    /**
      * {@code types.CapsuleType}'s sentence, which wraps a C pointer a program cannot open.
      *
      * <p>It carries no argument table, so {@code __text_signature__} is {@code None} and the whole text

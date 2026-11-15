@@ -212,6 +212,9 @@ final class Constructors {
         if (type == PyType.RANDOM) {
             return RandomModule.constructing(args, keywordNames);
         }
+        if (type == PyType.CSV_DIALECT) {
+            return CsvModule.dialectCalled(args, keywordNames);
+        }
         if (type == PyType.STRUCT) {
             return StructModule.compile(args, keywordNames);
         }
@@ -1070,6 +1073,10 @@ final class Constructors {
                 return PyComplex.of(0.0, negative ? -1.0 : 1.0);
             }
             body = body.substring(1);
+        }
+        if (body.isEmpty()) {
+            // A bare `j` or `-j` is one times the imaginary unit, which is why `complex('j')` is 1j.
+            return PyComplex.of(0.0, negative ? -1.0 : 1.0);
         }
         Double parsed = decodeFloat(body);
         if (parsed == null) {

@@ -123,6 +123,11 @@ final class Members {
             // `_struct.Struct` files two fields and five methods; the module that compiled the format
             // owns the class, so its table is loaded whenever the type is asked about.
             Map.entry(PyType.STRUCT, StructModule.Struct.class),
+            // `_csv`'s three types: `csv.py` subclasses `_csv.Dialect` before a dialect exists, and
+            // the reader and writer answer `dialect`/`line_num`/`writerow` from tables of their own.
+            Map.entry(PyType.CSV_DIALECT, CsvModule.CsvDialect.class),
+            Map.entry(PyType.CSV_READER, CsvModule.CsvReader.class),
+            Map.entry(PyType.CSV_WRITER, CsvModule.CsvWriter.class),
             // Both cursors a range hands out declare the same three rows, over two bodies, so one class
             // files both tables — and `range_iterator.__setstate__` is askable before a cursor exists.
             Map.entry(PyType.RANGE_ITERATOR, RangeIterators.class),
