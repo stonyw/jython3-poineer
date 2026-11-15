@@ -236,7 +236,7 @@ public final class PyDeque extends PyObject {
         if (Slices.isSlice(key)) {
             throw Slots.typeError("sequence index must be integer, not 'slice'");
         }
-        return items.get(Slices.index(key, items.size(), "deque", "deque index out of range"));
+        return items.get(Slices.index(key, items::size, "deque", "deque index out of range"));
     }
 
     @Override
@@ -244,7 +244,7 @@ public final class PyDeque extends PyObject {
         if (Slices.isSlice(key)) {
             throw Slots.typeError("sequence index must be integer, not 'slice'");
         }
-        items.set(Slices.index(key, items.size(), "deque", "deque index out of range"), value);
+        items.set(Slices.index(key, items::size, "deque", "deque index out of range"), value);
         return PyNone.INSTANCE;
     }
 
@@ -253,7 +253,7 @@ public final class PyDeque extends PyObject {
         if (Slices.isSlice(key)) {
             throw Slots.typeError("sequence index must be integer, not 'slice'");
         }
-        items.remove(Slices.index(key, items.size(), "deque", "deque index out of range"));
+        items.remove(Slices.index(key, items::size, "deque", "deque index out of range"));
         return PyNone.INSTANCE;
     }
 

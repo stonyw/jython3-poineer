@@ -272,7 +272,15 @@ class IndexProtocolTest {
         assertThat(Sequences.searchStart(indexing(WIDE, "Wide"), 4)).isEqualTo(4);
         assertThat(Sequences.indexStop(indexing(WIDE, "Wide"), 4)).isEqualTo(4);
         assertThat(Sequences.searchStart(indexing(WIDE.negate(), "Deep"), 4)).isZero();
-        assertThat(Sequences.indexStop(PyNone.INSTANCE, 4)).isEqualTo(4);
+        // None is not a bound at all here: `(1,).index(1, None)` is a TypeError, unlike a slice.
+        refused(
+                () -> Sequences.indexStop(PyNone.INSTANCE, 4),
+                ExceptionTypes.TYPE_ERROR,
+                "slice indices must be integers or have an __index__ method");
+        refused(
+                () -> Sequences.searchStart(PyNone.INSTANCE, 4),
+                ExceptionTypes.TYPE_ERROR,
+                "slice indices must be integers or have an __index__ method");
         assertThat(Sequences.searchStart(THREE, 4)).isEqualTo(3);
     }
 

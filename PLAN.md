@@ -407,6 +407,36 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 - 回归：`test_pyexpat` 86 ran／47 ok／14 fail／87 err／17 skip、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／29／35（与基线 102／41／30／34 的差异是该套已知的 SNI race 例在 ok↔fail↔skip 间摆动，总量 207 不变）。
 - **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m57s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS）。
 
+### 3.13 M5 切片 56：Java 异常不再漏成 `internal error`
+
+**动机**：切片 55 修的 `PyList` 切片／`remove`／`index`·`count` 与 `PyMmap.getItem` 是同一模式——**先取快照或先算下标，再执行用户代码，而用户代码能让快照作废**。这类漏出被启动器打成 `internal error` 后直接退进程，看不出哪一行，`test_list`／`test_sort`／`test_dict`／`test_set` 四个套件因此 0 用例。
+
+**机制**：[Interpreter.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Interpreter.java) 的每指令 `catch` 记录最近 16 条 Python 站点（文件／行／函数／Java 异常类，`LEAK_SITES` 线程本地、最新在前），`leakTrace()` 供启动器读取；[jy3.java](file:///Users/stony/qoder/jython3-poineer/embedding/src/main/java/org/python/util/jy3.java) 的内部错误路径改为 `internal error: <Java 类>: <消息>` + 站点 + `printStackTrace()`，退出码仍 70。**无环境变量开关**，默认只有 `internal error` 行后多出站点与栈。
+
+**普查与修**（判定 A＝该报 Python 异常却漏出／漏报，B＝内部不变量，C＝结果偏差无异常；完整 19 行见 [PLAN-progress.md](file:///Users/stony/qoder/jython3-poineer/PLAN-progress.md) §切片 56）：
+
+| 落点 | 文件 | 判定 | 状态 |
+| --- | --- | --- | --- |
+| `list` 的 `in`／`==`／`<` | `PyList` | A：`__eq__` 清空后 CME（每步重读尺寸） | 已修 |
+| `list.count`／`index`／`pop(i)` | `PyList` | C＋A：快照失效；`pop` 空表消息次序 | 已修 |
+| `l[i]`／`t[i]`／`b[i]`／`ba[i]`／`dq[i]` | `Slices`＋五容器 | A：先读长度再跑 `__index__`，缩小后越界 | 已修（长度供应器） |
+| `list.sort(key=)`／`sorted()` | `PyList`／`Sequences`／`Builtins` | A：TimSort IAE／CME | 已修（`mutations`、`ValueError: list modified during sort`、回滚、稳定归并兜底） |
+| `dict.fromkeys`／`repr`／`update`·`\|`·`copy` | `PyDict` | A：NPE／CME／缺 `dict mutated during update` | 已修 |
+| `set` 的 `==`／`&`／`-`／`^`／子集／`isdisjoint`／四则赋值 | `PySet` | A：CME／树化桶 NPE | 已修（快照＋私有表整体替换） |
+| `set`／`frozenset`／子类 `repr` | `PySet` 等 | A：CME／`RecursionError` | 已修（快照＋`Py_ReprEnter`） |
+| `dict` 迭代器删除后重插同键 | `PyDict` | A：缺 `dictionary keys changed during iteration` | 未修（需条目级版本号） |
+| `set.copy`／集合运算重算 `__hash__` | `PySet` | C：参考复用已存哈希 | 未修（需并存哈希表） |
+| `bytearray` 导出期间 resize／`deque.index`／`heapq` 变异检测／`d[X()] = v` 回调清空 | 库与 `PyDict` | A／C | 未修（登记，见 progress 表 15–18） |
+
+判定 B 的落点本片没有新增；`PySet` 树化桶 NPE 确认由用户 `__hash__`／`__eq__` 在 `removeTreeNode` 里清空表引起，按 A 修。
+
+**验证**：
+
+- 修前四套件全部 `exit 70`（0 用例）→ 修后 `test_list` **68 ran／63 ok／2 fail／2 err／1 skip**、`test_sort` **21／20／1／0／0**、`test_dict` **122／107／9／6／0**、`test_set` **630／616／4／10／0**；`test_deque` 仍因 `subclassing 'deque' is not implemented` 导入期即断。剩余失败均为既有缺口（GC 确定性、`sys.getsizeof`、keys-changed、pickling 等）。
+- 语料（[corpus3.py](file:///tmp/m5_56/corpus3.py)，30 组）**25 组与参考 3.14.10 逐字节相同**；5 组为具名偏差（`bytearray` 导出、`deque.index`、`set` 哈希复用、keys-changed、`heapq`）。补充探针 [probe_mutate.py](file:///tmp/m5_56/probe_mutate.py) 9/9、[probe_views.py](file:///tmp/m5_56/probe_views.py) 13/13、[probe_order.py](file:///tmp/m5_56/probe_order.py) 12/12、[probe_iter.py](file:///tmp/m5_56/probe_iter.py) 8/8 逐字节相同。
+- 回归：`test_pyexpat` 86／47／14／87／17、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／100／42／30／35（基线 101／42／29／35；已知 SNI race 在 ok↔err 间摆动）、`test_mmap` 53／40／0／2／11。
+- **门禁**：`./gradlew check --rerun-tasks --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m4s**（26 个任务全部执行，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

@@ -1,6 +1,7 @@
 package org.python.core;
 
 import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -251,12 +252,19 @@ public final class PyDict extends PyObject {
         try {
             StringBuilder out = new StringBuilder("{");
             boolean first = true;
-            for (Map.Entry<PyObject, PyObject> entry : items.entrySet()) {
-                if (!first) {
-                    out.append(", ");
+            try {
+                // CPython walks the live table and a repr that clears the dict simply ends the walk
+                // there; an iterator cannot be resumed, so its concurrent-modification refusal is
+                // read as that same end rather than escaping as a Java exception.
+                for (Map.Entry<PyObject, PyObject> entry : items.entrySet()) {
+                    if (!first) {
+                        out.append(", ");
+                    }
+                    first = false;
+                    out.append(entry.getKey().repr()).append(": ").append(entry.getValue().repr());
                 }
-                first = false;
-                out.append(entry.getKey().repr()).append(": ").append(entry.getValue().repr());
+            } catch (ConcurrentModificationException changed) {
+                // the text keeps what was already written
             }
             return out.append('}').toString();
         } finally {
@@ -438,8 +446,15 @@ public final class PyDict extends PyObject {
     }
 
     void putAll(PyDict source) {
-        for (Map.Entry<PyObject, PyObject> entry : source.items.entrySet()) {
+        // CPython's dict_merge remembers the source's size and reports a mutation it can see after
+        // each insert: hashing a key of `this` runs Python code, which may clear the source.
+        Map.Entry<PyObject, PyObject>[] entries = source.items.entrySet().toArray(new Map.Entry[0]);
+        int original = source.items.size();
+        for (Map.Entry<PyObject, PyObject> entry : entries) {
             put(entry.getKey(), entry.getValue());
+            if (source.items.size() != original) {
+                throw Slots.runtimeError("dict mutated during update");
+            }
         }
     }
 

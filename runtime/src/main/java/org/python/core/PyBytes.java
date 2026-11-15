@@ -111,7 +111,7 @@ public class PyBytes extends PyObject {
             return PyBytes.wrap(out);
         }
         return PyInt.of(
-                value[Slices.index(key, value.length, "byte", "index out of range")] & 0xff);
+                value[Slices.index(key, () -> value.length, "byte", "index out of range")] & 0xff);
     }
 
     @Override

@@ -1,5 +1,6 @@
 package org.python.core;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -151,7 +152,7 @@ public final class PyList extends PyObject {
             return gathered(Sequences.gather(elements(), range));
         }
         return items.get(
-                Slices.index(key, items.size(), "list", "list index out of range"));
+                Slices.index(key, items::size, "list", "list index out of range"));
     }
 
     @Override
@@ -583,8 +584,17 @@ public final class PyList extends PyObject {
             })
             .addNoArgument("copy", self -> gathered(((PyList) self).elements()))
             .addOne("count", (self, item) -> {
-                PyObject[] elements = ((PyList) self).elements();
-                return PyInt.of(Sequences.countOf(elements, item, 0, elements.length));
+                // CPython's list_count re-reads Py_SIZE each step, so an `__eq__` that appends is
+                // counted in the walk it is extending; a snapshot would stop one short.
+                PyList list = (PyList) self;
+                int found = 0;
+                for (int i = 0; i < list.items.size(); i++) {
+                    PyObject candidate = list.items.get(i);
+                    if (candidate == item || Slots.compareTrue(CompareOp.EQ, candidate, item)) {
+                        found++;
+                    }
+                }
+                return PyInt.of(found);
             })
             .addOne("extend", (self, iterable) -> {
                 ((PyList) self).extend(iterable);
@@ -594,18 +604,24 @@ public final class PyList extends PyObject {
                 noKeywords("list.index()", kwNames);
                 Arguments.between("index", args, kwNames, 1, 3);
                 PyList list = (PyList) self;
-                PyObject[] elements = list.elements();
-                int found = Sequences.indexOf(
-                        elements,
-                        args[0],
-                        args.length > 1 ? Sequences.searchStart(args[1], elements.length) : 0,
-                        args.length > 2
-                                ? Sequences.indexStop(args[2], elements.length)
-                                : elements.length);
-                if (found < 0) {
-                    throw Slots.valueError("list.index(x): x not in list");
+                // CPython converts both bounds before it reads Py_SIZE and then re-reads the size on
+                // every step: an `__index__` may clear the list and an `__eq__` may shrink it, so
+                // neither the length nor the elements may be taken before the callbacks run.
+                BigInteger start = Sequences.bound(args.length > 1 ? args[1] : null);
+                BigInteger stop = Sequences.bound(args.length > 2 ? args[2] : null);
+                int size = list.items.size();
+                int startAt = Sequences.folded(start, size, 0);
+                // CPython's default stop is PY_SSIZE_T_MAX, not the length it happens to see: an
+                // `__eq__` that appends is still inside the walk the caller asked for.
+                int stopAt = Sequences.folded(stop, size, Integer.MAX_VALUE);
+                for (int i = startAt; i < stopAt && i < list.items.size(); i++) {
+                    PyObject candidate = list.items.get(i);
+                    if (candidate == args[0]
+                            || Slots.compareTrue(CompareOp.EQ, candidate, args[0])) {
+                        return PyInt.of(i);
+                    }
                 }
-                return PyInt.of(found);
+                throw Slots.valueError("list.index(x): x not in list");
             })
             .add("insert", (self, args, kwNames) -> {
                 noKeywords("list.insert()", kwNames);
@@ -618,10 +634,14 @@ public final class PyList extends PyObject {
                 noKeywords("list.pop()", kwNames);
                 Arguments.atMost("pop", args, kwNames, 1);
                 PyList list = (PyList) self;
+                // CPython converts the index during argument parsing and only then asks whether the
+                // list is empty, so an `__index__` that empties it is heard as "pop from empty list".
+                boolean defaulted = args.length == 0;
+                long index = defaulted ? -1 : counted(args[0]);
                 if (list.items.isEmpty()) {
                     throw Slots.indexError("pop from empty list");
                 }
-                return list.items.remove(args.length == 0 ? list.size() - 1 : list.popped(counted(args[0])));
+                return list.items.remove(defaulted ? list.size() - 1 : list.popped(index));
             })
             .addOne("remove", (self, item) -> {
                 PyList list = (PyList) self;

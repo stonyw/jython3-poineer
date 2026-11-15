@@ -36,8 +36,11 @@ final class Slices {
      * @param indices the word CPython puts in front of "indices must be integers or slices"
      * @param outOfRange the whole sentence for an index past the end
      */
-    static int index(PyObject key, int length, String indices, String outOfRange) {
-        return Numbers.wrapIndex(key, Numbers.index(key, indices), length, outOfRange);
+    static int index(PyObject key, IntSupplier lengthOf, String indices, String outOfRange) {
+        // CPython converts the key before it measures the sequence: `__index__` is arbitrary code
+        // that may shrink the very sequence being indexed, so the length is read after it returns.
+        BigInteger value = Numbers.index(key, indices);
+        return Numbers.wrapIndex(key, value, lengthOf.getAsInt(), outOfRange);
     }
 
     /**

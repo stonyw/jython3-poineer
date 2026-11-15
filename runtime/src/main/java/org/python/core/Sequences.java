@@ -173,17 +173,12 @@ final class Sequences {
     }
 
     /**
-     * The {@code start} of a {@code list} or {@code tuple} {@code index} search, resolved the way
-     * CPython resolves it: {@code None} means the whole sequence, a negative bound counts back from
-     * the end, and a bound beyond either end is clamped rather than refused.
-     *
-     * <p>{@code None} is not in the refusal because it has already been taken as the whole sequence —
-     * these two are the only callers of {@link Numbers#searchIndex}.
+     * The {@code start} of a {@code tuple} {@code index} search, resolved the way CPython resolves
+     * it: a negative bound counts back from the end, and a bound beyond either end is clamped rather
+     * than refused. {@code None} is refused, as the clinic converter {@code slice_index} refuses it.
      */
     static int searchStart(PyObject bound, int length) {
-        return bound == null || bound == PyNone.INSTANCE
-                ? 0
-                : clamp(Numbers.searchIndex(bound), 0, length);
+        return bound == null ? 0 : clamp(Numbers.searchIndex(bound), 0, length);
     }
 
     /**
@@ -214,11 +209,41 @@ final class Sequences {
                 : clamp(Numbers.sliceIndex(bound), 0, length);
     }
 
-    /** {@code list} and {@code tuple} {@code index} read their {@code stop} as their {@code start}. */
+    /** {@code tuple} {@code index} reads its {@code stop} as its {@code start}. */
     static int indexStop(PyObject bound, int length) {
-        return bound == null || bound == PyNone.INSTANCE
-                ? length
-                : clamp(Numbers.searchIndex(bound), 0, length);
+        return bound == null ? length : clamp(Numbers.searchIndex(bound), 0, length);
+    }
+
+    /**
+     * The bound an argument names, converted but not yet folded against a length.
+     *
+     * <p>CPython's argument parsing turns each bound into a {@code Py_ssize_t} before the method body
+     * reads the sequence's length; an {@code __index__} is arbitrary code and may change that length,
+     * so the two steps are kept apart for callers that must not snapshot first. Null means omitted;
+     * {@code None} is not a bound at all and is refused by the converter.
+     */
+    static BigInteger bound(PyObject value) {
+        return value == null ? null : Numbers.searchIndex(value);
+    }
+
+    /**
+     * The converted bound folded against {@code length} as CPython's body does it.
+     *
+     * <p>Only a negative bound is folded — {@code value += Py_SIZE} followed by a floor at zero —
+     * so a bound past the end stays where it is, and a positive stop keeps its reach if the
+     * sequence grows while the search is running. A number too wide for an {@code int} lands on
+     * {@link Integer#MAX_VALUE}, which no walk can reach.
+     */
+    static int folded(BigInteger value, int length, int whenOmitted) {
+        if (value == null) {
+            return whenOmitted;
+        }
+        if (value.signum() < 0) {
+            return value.compareTo(BigInteger.valueOf(-(long) length)) < 0
+                    ? 0
+                    : length + value.intValue();
+        }
+        return value.bitLength() > 31 ? Integer.MAX_VALUE : value.intValue();
     }
 
     private static int clamp(BigInteger value, int low, int high) {

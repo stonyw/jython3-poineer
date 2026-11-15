@@ -175,7 +175,7 @@ public class PyByteArray extends PyObject {
             return PyByteArray.wrap(out);
         }
         return PyInt.of(
-                value[Slices.index(key, value.length, "bytearray", "bytearray index out of range")]
+                value[Slices.index(key, () -> value.length, "bytearray", "bytearray index out of range")]
                         & 0xff);
     }
 
@@ -185,7 +185,8 @@ public class PyByteArray extends PyObject {
             setSlice((PySlice) key, item);
             return PyNone.INSTANCE;
         }
-        int at = Slices.index(key, value.length, "bytearray", "bytearray index out of range");
+        int at = Slices.index(
+                key, () -> value.length, "bytearray", "bytearray index out of range");
         value[at] = octetOf(item);
         return PyNone.INSTANCE;
     }
@@ -196,7 +197,8 @@ public class PyByteArray extends PyObject {
             deleteSlice((PySlice) key);
             return PyNone.INSTANCE;
         }
-        int at = Slices.index(key, value.length, "bytearray", "bytearray index out of range");
+        int at = Slices.index(
+                key, () -> value.length, "bytearray", "bytearray index out of range");
         int size = value.length;
         System.arraycopy(value, at + 1, value, at, size - at - 1);
         resize(size - 1);

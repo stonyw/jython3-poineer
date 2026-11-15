@@ -775,3 +775,69 @@
 
 **十一、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m57s**（26 个任务；`:harness:check` 12 例 smoke 全 PASS，surprises 0）。
 
+## M5 切片 56 明细：Java 异常漏出可追查与容器回调下的快照失效（2026-11-16）
+
+**一、修前症状**：`test_list`／`test_sort`／`test_dict`／`test_set` 四个套件启动即 `jy3: internal error` 后以 70 退出，0 用例，且只有一句 Java 异常类名，不知道是哪一行 Python。切片 55 修的 `PyList` 切片／`remove`／`index`·`count` 与 `PyMmap.getItem` 是同一模式：**先取快照或先算下标，再执行用户代码，而用户代码能让快照作废**。
+
+**二、机制层（让漏出可追查）**：[Interpreter.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Interpreter.java) 新增 `LEAK_SITES`（`ThreadLocal<ArrayDeque<String>>`，上限 16 条、最新在前）、`rememberLeak(frame, index, leaked)` 与 `leakTrace()`；每指令的 `catch (StackOverflowError)` 后新增 `catch (RuntimeException leaked)`，记录 `  File "<file>", line N, in <qualname> (<JavaClass>)` 后原样 rethrow，不改变原有异常。[jy3.java](file:///Users/stony/qoder/jython3-poineer/embedding/src/main/java/org/python/util/jy3.java) 的内部错误路径改为打印 `jy3: internal error: <Java 类>: <消息>` + 最多 16 条站点 + `bug.printStackTrace()`，退出码仍 70。**没有环境变量开关**；默认行为唯一变化是 `internal error` 行后多出站点与栈，正常路径不变。
+
+**三、普查表**（判定：**A**＝该报 Python 异常却漏出／漏报 Java 异常或静默；**B**＝内部不变量被破坏；**C**＝结果偏差但不抛异常）：
+
+| # | 落点 | 文件 | 判定 | 状态 |
+| --- | --- | --- | --- | --- |
+| 1 | `list` 的 `in`／`==`／`<` | `PyList` | A：`__eq__` 清空后 `ConcurrentModificationException` | 已修（每步重读尺寸，identity 快路径） |
+| 2 | `list.count` | `PyList` | C：快照漏算 `__eq__` 追加的元素（3→2） | 已修（每步重读尺寸） |
+| 3 | `list.index` | `PyList` | C＋A：先快照再跑 `__index__`／`__eq__`；`None` 边界被当成省略，缺省 `stop` 被夹到入口长度 | 已修（边界先转换、`None` 拒绝、缺省 `stop` 为无界、每步重读） |
+| 4 | `list.pop(i)` | `PyList` | A：`__index__` 清空后答 `pop index out of range`（参考 `pop from empty list`） | 已修（先转换后空表检查） |
+| 5 | `l[i]`／`t[i]`／`b[i]`／`ba[i]`／`dq[i]`（读、写、删） | `Slices`＋五个容器 | A：先读长度再跑 `__index__`，缩小后旧长度越界（`IndexOutOfBoundsException`） | 已修（`Slices.index` 收长度供应器，转换后才读） |
+| 6 | `list.sort(key=)` | `PyList`／`Sequences` | A：`IllegalArgumentException: Comparison method violates its general contract!`／CME | 已修（`mutations` 计数、`ValueError: list modified during sort`、异常回滚、稳定归并兜底） |
+| 7 | `sorted()` | `Builtins` | 同 6 | 已修（`tolerantSort` + 按下标回填） |
+| 8 | `dict.fromkeys`（子类／`__new__` 返回非 dict） | `PyDict` | A：NPE／跳过 `__setitem__` | 已修（先调类、再取迭代器、子类走 `Slots.setItem`） |
+| 9 | `dict` 的 `repr` | `PyDict` | A：值的 `__repr__` 清空字典后 CME | 已修（迭代器的 CME 收敛为参考的截断输出） |
+| 10 | `dict.update`／`dict` 的 `\|`／`copy` | `PyDict` | A：缺 `RuntimeError: dict mutated during update` | 已修（源尺寸检查） |
+| 11 | `set` 的 `==`／`&`／`-`／`^`／`<`／`isdisjoint` 等 | `PySet` | A：CME／树化桶 `NullPointerException` | 已修（快照＋私有表构建后整体替换） |
+| 12 | `set`／`frozenset`／两者子类的 `repr` | `PySet`／`PyFrozenSet`／两个子类 | A：元素 `__repr__` 改动集合后 CME／`RecursionError` | 已修（元素快照＋`Py_ReprEnter` 保护，子类只包基类文本） |
+| 13 | `dict` 迭代器（删除后重插同键） | `PyDict` | A：缺 `RuntimeError: dictionary keys changed during iteration` | 未修（需条目级版本号；现有只有尺寸检查） |
+| 14 | `set.copy`／`&`／`\|` 重算 `__hash__` | `PySet` | C：参考复用已存哈希（0 次），这里每元素重算 | 未修（需并存哈希表；`test_do_not_rehash_dict_keys` 属此列） |
+| 15 | `bytearray` 导出期间 resize | `PyByteArray`／`PyMemoryView` | A：缺 `BufferError: Existing exports of data: object cannot be re-sized` | 未修（需导出计数） |
+| 16 | `collections.deque.index` | 标准库 `collections` | A：方法缺失（参考 `RuntimeError: deque mutated during iteration`） | 未修（`test_deque` 另因 `subclassing 'deque' is not implemented` 导入期即断） |
+| 17 | `heapq` 变异检测 | 纯 Python 回退 vs C `_heapq` | A：缺 `RuntimeError: list changed size during iteration` | 未修（参考走 C 加速模块） |
+| 18 | `d[X()] = v` 中 `__eq__` 清空 `d` | `PyDict` | C：赋值丢失（参考剩 1 项，这里 0 项） | 未修（`HashMap.putVal` 不可重入；登记） |
+| 19 | 迭代器与视图（迭代中修改容器） | `PyList`／`PyDict`／`PySet` | 无漏出：`list` 迭代中 `pop`／`clear`／`append`、`reversed` 中 `pop` 与参考同解；`dict` 增删、`set` 增都答参考原文 | 不需修（8/8 逐字节对拍） |
+
+判定为 B（内部不变量）的落点：本片普查中**没有**新增——所有能触发的都是 A 或 C；`PySet` 树化桶 NPE 曾像 B，收尾确认是用户 `__hash__`／`__eq__` 在 `removeTreeNode` 里清空表，按 A 修。
+
+**四、修法要点**（按 CPython 原始次序，不是统一 try/catch 兜成 `ValueError`）：
+
+- `PyList`：`items` 改为内部 `Items extends ArrayList`，`add`／`addAll`／`remove`／非空 `clear` 计 `mutations`；`contains`／`eq`／`richCompare` 每步重读双方尺寸与元素（`list_contains`／`list_richcompare`）；`sort` 先取 `before`、清空、记 `stamp`，每步 key 后比对 `mutations`，不等即 `ValueError: list modified during sort`，任何异常都恢复 `before`，最后按排序结果重填。
+- `Sequences.tolerantSort`：JDK TimSort 对不自洽 comparator 抛 IAE 时（仅认这一条消息）改用自写的稳定自底向上归并，保证与 CPython 一样不抛而是给出确定次序；`Builtins.sorted` 也改走它。
+- `PyDict`：`repr` 的迭代器 CME 视为参考的“表被改动后走完已有文本”；`putAll` 记录源尺寸并每插一项后比对，变化即 `RuntimeError: dict mutated during update`；`fromkeys` 先调用类（`dict` 的子类实例才拿到），`exact dict` 走 `PyDict_SetItem`，其余走 `Slots.setItem`。
+- `PySet`：破坏性方法（`update`／`difference_update`／`intersection_update`／`symmetric_difference_update`／`intersection`／`detached` 等）在 Python 够不到的私有 `LinkedHashSet` 里构建，最后整体替换 `items`；`==`／子集／相交判断用 `copyOf` 快照；`set`／`dict` 参数走 `tableWalk` 快照（对应 `set_next`／`PyDict_Next` 不做并发检查）；`repr` 用元素快照，子类只给基类文本加 `Py_ReprEnter`（类自己的 `__repr__` 不进保护，与参考 slot 覆盖关系一致）。
+- `Slices.index`：签名由 `int length` 改为 `IntSupplier lengthOf`，先 `Numbers.index(key)`（`__index__` 是用户代码）再取长度；`PyList`／`PyTuple`／`PyBytes`／`PyByteArray`／`PyDeque` 的九个调用点全部更新。
+- `list.index`：`Sequences.bound`／`folded` 把“转换”与“按长度折算”拆开，两个边界都转换完才读一次长度，循环每步再读长度；`None` 边界按 clinic 的 `slice_index` 拒绝（`tuple.index` 同），缺省 `stop` 是 `PY_SSIZE_T_MAX` 而不是入口长度——所以 `__eq__` 追加的元素仍在搜索范围内。
+- `list.pop`：先转换显式下标，再判空表（参考在参数解析后才看 `Py_SIZE`），空表答 `pop from empty list`。
+
+**五、测试修前修后**：
+
+| 套件 | 修前 | 修后 |
+| --- | --- | --- |
+| `test_list` | exit 70（internal error，0 用例） | **68 ran／63 ok／2 fail／2 err／1 skip** |
+| `test_sort` | exit 70（同上） | **21 ran／20 ok／1 fail／0 err／0 skip** |
+| `test_dict` | exit 70（同上） | **122 ran／107 ok／9 fail／6 err／0 skip** |
+| `test_set` | exit 70（同上） | **630 ran／616 ok／4 fail／10 err／0 skip** |
+| `test_deque` | 无法运行 | 仍无法运行：`NotImplementedError: subclassing 'deque' is not implemented`（导入期；与 `deque.index` 缺失同属标准库 `collections` 的既有缺口） |
+
+剩余失败均为与本片无关的既有缺口：`list` 的 `test_free_after_iterating`（GC 确定性）、`test_repeat`（tuple `s*1` identity 优化）、`test_keywords_in_subclass`、`test_preallocation`（`sys.getsizeof`）；`sort` 的 `test_key_with_mutating_del`（依赖引用计数式 `__del__`）；`dict` 的 keys-changed（上表 13）、`test_dict_copy_order`、`test_reversed_dict_after_clear_and_restore`、`test_setdefault_atomic`、`test_update_shared_keys`（`int.__hash__` 递归）、`test_update_type_error`（`TypeError.__notes__`）、`_testcapi`／`sys.getsizeof`；`set` 的 `test_free_after_iterating`×4、`test_do_not_rehash_dict_keys`（上表 14）、`test_hash_effectiveness`（缺 `itertools.combinations`）、pickling×4。
+
+**六、语料对拍**（[corpus3.py](file:///tmp/m5_56/corpus3.py)，30 组）：`list` 的 `in`／`index`／`count`／`remove`／`==`／`repr`／`sort`（key 追加、弹出、清空再填、无 key 的 `__lt__` 追加）／`sorted`／`min`，`dict` 的 `fromkeys`（子类与 `__new__` 返回 `UserDict`）／`repr`／迭代中删除重插／`update` 变异／`__eq__` 变异，`set` 的 `copy`／`&`／`|`／`repr`／迭代中清空，`deque.index`、`bisect.insort(key=)`、`heapq.heapify`、`bytearray` 导出与自切片。**25 组与参考 3.14.10 逐字节相同**（含错误类型、消息原文与发生时机）；5 组为已登记的具名偏差：`bytearray` 导出期间 resize（表 15）、`deque.index` 缺失（表 16）、`dict` 的 `__eq__` 清空后赋值（表 18）、删除重插同键（表 13）、`heapq` 变异（表 17）。
+
+补充探针三份：[probe_mutate.py](file:///tmp/m5_56/probe_mutate.py)（9 组：`set` 的 `add`／`discard`／`remove`／`in` 与 `dict` 的 `in`／`del`／赋值／`get` 里 `__hash__`／`__eq__` 清空容器）**9/9 逐字节相同**；[probe_views.py](file:///tmp/m5_56/probe_views.py)（13 组：`keys()`／`items()` 的 `&`／`|`／`-`／`<=`／`==`、值的 `__repr__` 清空、`sort(key=)` 抛异常的回滚、`l[i]` 与 `l.index(x, start)` 的 `__index__` 清空、切片赋值迭代器清空）**13/13 逐字节相同**；[probe_order.py](file:///tmp/m5_56/probe_order.py)（12 组：`pop`／`insert`／`del`／读写下标的 `__index__` 清空、切片三个边界、`count(x, start)`、`tuple.index`、`sort(reverse=…)`）**12/12 逐字节相同**；[probe_iter.py](file:///tmp/m5_56/probe_iter.py)（8 组：`list` 迭代中 `pop`／`clear`／`append`、`reversed` 中 `pop`、`dict` 迭代删与增、`set` 迭代加、遍历 tuple 时清另一表）**8/8 逐字节相同**，其中两条 `RuntimeError: dictionary changed size during iteration` 与 `Set changed size during iteration` 的原文、时机都一致。另有 [hashcount.py](file:///tmp/m5_56/hashcount.py) 量出表 14 的偏差：参考 `set.copy()` 与集合运算对 2 个元素调用 `__hash__` 0 次，这里 2 次。
+
+边界次序补充三份：[idxbounds.py](file:///tmp/m5_56/idxbounds.py)（5 组：`__eq__` 追加后缺省 `stop`／`None` 边界、`__index__` 缩小后两个负边界的折算）——修前 `grow_default` 少比一次、`None` 被当成省略；修后 **5/5 逐字节相同**；[idxconv.py](file:///tmp/m5_56/idxconv.py)（13 组：`None`／`float`／`str` 边界的拒绝原文、`__index__` 自身抛错、`10**20` 边界、空表）修前 4 组偏差、修后 **13/13 相同**；[idxmore.py](file:///tmp/m5_56/idxmore.py)（8 组：`tuple.index` 的 `None` 拒绝，与 `str`／`bytes`／`bytearray` 接受 `None` 的对照）修后 **8/8 相同**。
+
+**七、回归**（最终二进制，与切片 55 基线逐项比，13 套件一次跑完）：`test_pyexpat` 86／47／14／87／17（一致；`ok` 为负是该套 subTest 记账，`SUCCESSES` 47 为准）、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／100／42／30／35（基线 101／42／29／35：已知 SNI race 让一个例在 ok↔err 间摆动，总量不变）、`test_mmap` 53／40／0／2／11——**无一项越过基线**。
+
+**八、门禁**：`./gradlew check --rerun-tasks --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m4s**（26 个任务全部执行；`:harness:check` 12 例 smoke 全 PASS、surprises 0）。中途一次 `:runtime:test` 失败是 `IndexProtocolTest` 里按旧语义断言 `Sequences.indexStop(None, 4) == 4`——参考实测 `(1,).index(1, 0, None)` 是 `TypeError: slice indices must be integers or have an __index__ method`，该断言随之改为拒绝，重跑即绿。
+
+
+
