@@ -733,6 +733,11 @@ public class PyInstance extends PyObject {
      */
     @Override
     public String str() {
+        return ((PyStr) strObject()).getValue();
+    }
+
+    @Override
+    public PyObject strObject() {
         PyObject answer = displayed("__str__");
         if (answer == null) {
             answer = displayed("__repr__");
@@ -741,33 +746,38 @@ public class PyInstance extends PyObject {
             if (type.matches(PyType.NAMESPACE)) {
                 // `object.__str__` falls back to the repr slot, and a class over `SimpleNamespace`
                 // inherits `namespace_repr` rather than writing a Python-level method.
-                return PyNamespace.display(type.name(), ensureInstanceDict(), this);
+                return PyStr.of(PyNamespace.display(type.name(), ensureInstanceDict(), this));
             }
-            return defaultDisplay();
+            return PyStr.of(defaultDisplay());
         }
-        if (!(answer instanceof PyStr text)) {
+        if (!(answer instanceof PyStr)) {
             throw Slots.typeError(
                     "__str__ returned non-string (type %s)", answer.getType().name());
         }
-        return text.getValue();
+        return answer;
     }
 
     @Override
     public String repr() {
+        return ((PyStr) reprObject()).getValue();
+    }
+
+    @Override
+    public PyObject reprObject() {
         PyObject answer = displayed("__repr__");
         if (answer == null) {
             if (type.matches(PyType.NAMESPACE)) {
                 // `namespace_repr` is the slot a class written over `SimpleNamespace` inherits, and it
                 // prints the class's own name: `Spam(a=1)`.
-                return PyNamespace.display(type.name(), ensureInstanceDict(), this);
+                return PyStr.of(PyNamespace.display(type.name(), ensureInstanceDict(), this));
             }
-            return defaultDisplay();
+            return PyStr.of(defaultDisplay());
         }
-        if (!(answer instanceof PyStr text)) {
+        if (!(answer instanceof PyStr)) {
             throw Slots.typeError(
                     "__repr__ returned non-string (type %s)", answer.getType().name());
         }
-        return text.getValue();
+        return answer;
     }
 
     /**

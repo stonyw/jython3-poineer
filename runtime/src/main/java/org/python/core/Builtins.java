@@ -226,7 +226,7 @@ final class Builtins {
                                 + "--\n"
                                 + "\n"
                                 + "Return the number of items in a container."));
-        put(out, "repr", unary("repr", value -> PyStr.of(value.repr()))
+        put(out, "repr", unary("repr", PyObject::reprObject)
                 .documented(
                         "repr($module, obj, /)\n"
                                 + "--\n"
@@ -735,7 +735,12 @@ final class Builtins {
      * escapes; a lone surrogate in a hand-written {@code __repr__} earns the same six characters either way.
      */
     private static PyObject asciiText(PyObject value) {
-        return PyStr.of(Encoder.asciiEscaped(value.repr()));
+        // `ascii()` reads the repr object, not just its text: when the answer is already ASCII it hands
+        // that very object back, so a str subclass out of `__repr__` survives. Only an escape rebuilds it.
+        PyObject shown = value.reprObject();
+        String text = ((PyStr) shown).getValue();
+        String escaped = Encoder.asciiEscaped(text);
+        return escaped.equals(text) ? shown : PyStr.of(escaped);
     }
 
     /**

@@ -69,8 +69,18 @@ final class PyStrSubclass extends PyStr {
     }
 
     @Override
+    public PyObject strObject() {
+        return SubclassValue.strObject(this, super::str);
+    }
+
+    @Override
     public String repr() {
         return SubclassValue.repr(this, super::repr);
+    }
+
+    @Override
+    public PyObject reprObject() {
+        return SubclassValue.reprObject(this, super::repr);
     }
 
     // --- the sequence protocol the text already answers ----------------------------------

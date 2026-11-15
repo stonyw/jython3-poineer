@@ -75,31 +75,46 @@ final class SubclassValue {
 
     /** {@code str(self)}: {@code __str__}, then {@code __repr__}, then the value's own text. */
     static String str(PyObject self, java.util.function.Supplier<String> fallback) {
+        return ((PyStr) strObject(self, fallback)).getValue();
+    }
+
+    /**
+     * {@code str(self)} as an object: the answer itself, not just its text.
+     *
+     * <p>{@code PyObject_Str} hands back the str a {@code __str__} answered, so a subclass written
+     * there survives {@code str(x)}; only a value with no such method is copied afresh.
+     */
+    static PyObject strObject(PyObject self, java.util.function.Supplier<String> fallback) {
         PyObject answer = displayed(self, "__str__");
         if (answer == null) {
             answer = displayed(self, "__repr__");
         }
         if (answer == null) {
-            return fallback.get();
+            return PyStr.of(fallback.get());
         }
-        if (!(answer instanceof PyStr text)) {
+        if (!(answer instanceof PyStr)) {
             throw Slots.typeError(
                     "__str__ returned non-string (type %s)", answer.getType().name());
         }
-        return text.getValue();
+        return answer;
     }
 
     /** {@code repr(self)}: {@code __repr__}, then the value's own text. */
     static String repr(PyObject self, java.util.function.Supplier<String> fallback) {
+        return ((PyStr) reprObject(self, fallback)).getValue();
+    }
+
+    /** {@code repr(self)} as an object, with {@link #strObject}'s rule about the answer's identity. */
+    static PyObject reprObject(PyObject self, java.util.function.Supplier<String> fallback) {
         PyObject answer = displayed(self, "__repr__");
         if (answer == null) {
-            return fallback.get();
+            return PyStr.of(fallback.get());
         }
-        if (!(answer instanceof PyStr text)) {
+        if (!(answer instanceof PyStr)) {
             throw Slots.typeError(
                     "__repr__ returned non-string (type %s)", answer.getType().name());
         }
-        return text.getValue();
+        return answer;
     }
 
     /**

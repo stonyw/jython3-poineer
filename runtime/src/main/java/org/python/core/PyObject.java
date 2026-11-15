@@ -444,6 +444,27 @@ public abstract class PyObject {
         return repr();
     }
 
+    /**
+     * What {@code str(x)} hands back when it is not a str already.
+     *
+     * <p>CPython's {@code PyObject_Str} returns the object {@code __str__} answered as-is, so a str
+     * subclass written there reaches the caller unchanged; the string-only {@link #str()} cannot carry
+     * that, which is why the identity-aware callers go through here.
+     */
+    public PyObject strObject() {
+        return PyStr.of(str());
+    }
+
+    /**
+     * What {@code repr(x)} and {@code ascii(x)} hand back.
+     *
+     * <p>Same rule as {@link #strObject()}: an answer that is already a str — subclass included — is
+     * returned rather than copied.
+     */
+    public PyObject reprObject() {
+        return PyStr.of(repr());
+    }
+
     /** Python {@code repr()}. */
     public String repr() {
         return "<" + type.name() + " object at " + System.identityHashCode(this) + ">";

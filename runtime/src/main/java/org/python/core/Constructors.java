@@ -1264,19 +1264,55 @@ final class Constructors {
      * one is: {@code str(1, "utf-8")} is a decoding error about the {@code int}. The extra arguments'
      * types are checked first, which is why {@code str(1, 2)} complains about {@code encoding} rather
      * than about the number, and four arguments is the legacy count message instead.
+     *
+     * <p>The four arity refusals come in the reference's own split: a call that gave four positionals
+     * is counted the legacy way ({@code str expected at most 3 arguments, got 4}), while four arguments
+     * that include a name keep the parentheses ({@code str() takes at most 3 arguments (4 given)}), and
+     * a name that fills a position already given says so without the word {@code multiple}
+     * ({@code argument for str() given by name ('encoding') and position (2)}).
      */
     private static PyObject text(PyObject[] args, String[] kwNames) {
-        Arguments.atMost("str", args, kwNames, 3);
-        acceptKeywordsOnly("str", kwNames, STR_NAMES);
-        PyObject[] given = Arguments.fill("str", args, kwNames, STR_NAMES, STR_DEFAULTS);
-        PyObject value = given[0];
-        if (Arguments.count(args, kwNames) < 2) {
-            // `str(s)` of an exact str is that str; of a subclass it is a plain copy of the value
-            // `PyObject_Str` reads, so `type(str(tag))` is `str` and not `Tag`.
-            if (value instanceof PyStr s) {
-                return s.getType() == PyType.STR ? s : PyStr.of(value.str());
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = Arguments.positional(args, kwNames);
+        if (positional > STR_NAMES.length) {
+            throw Slots.typeError(
+                    "str expected at most %d arguments, got %d", STR_NAMES.length, positional);
+        }
+        if (args.length > STR_NAMES.length) {
+            throw Slots.typeError(
+                    "str() takes at most %d arguments (%d given)", STR_NAMES.length, args.length);
+        }
+        PyObject[] given = STR_DEFAULTS.clone();
+        System.arraycopy(args, 0, given, 0, positional);
+        for (int i = 0; i < keywords; i++) {
+            int at = -1;
+            for (int j = 0; j < STR_NAMES.length; j++) {
+                if (STR_NAMES[j].equals(kwNames[i])) {
+                    at = j;
+                    break;
+                }
             }
-            return PyStr.of(value.str());
+            if (at < 0) {
+                throw Slots.typeError(
+                        "str() got an unexpected keyword argument '%s'", kwNames[i]);
+            }
+            if (at < positional) {
+                throw Slots.typeError(
+                        "argument for str() given by name ('%s') and position (%d)",
+                        kwNames[i], at + 1);
+            }
+            given[at] = args[positional + i];
+        }
+        PyObject value = given[0];
+        if (args.length < 2) {
+            // `str(s)` of an exact str is that str; of a subclass it asks the class's `__str__` and
+            // otherwise copies the value `PyObject_Str` reads, so `type(str(tag))` is `str` and not
+            // `Tag`. Any other object hands back the very str its `__str__` answered — a subclass
+            // written there is not copied.
+            if (value.getType() == PyType.STR) {
+                return value;
+            }
+            return value.strObject();
         }
         String codec = given[1] == PyNone.INSTANCE
                 ? "utf-8"
@@ -1356,8 +1392,22 @@ final class Constructors {
             }
             return PyBytes.wrap(new byte[Numbers.total(count)]);
         }
-        if (value instanceof PyBytes source) {
-            return PyBytes.wrap(source.getValue().clone());
+        if (value instanceof PyBytes) {
+            // `bytes_result_unchanged`: an exact bytes is what was asked for. A subclass is asked for
+            // its own `__bytes__` first — inherited, that copies to an exact bytes, and an override's
+            // answer is used as it stands, which is how `bytes(B('ab'))` answers `b'zz'`.
+            if (value.getType() == PyType.BYTES) {
+                return value;
+            }
+            PyObject answered = Specials.invoke(value, "__bytes__");
+            if (answered != Slots.DECLINED) {
+                if (answered instanceof PyBytes result) {
+                    return result;
+                }
+                throw Slots.typeError(
+                        "__bytes__ returned non-bytes (type %s)", answered.getType().filedName());
+            }
+            return PyBytes.wrap(((PyBytes) value).getValue().clone());
         }
         // A buffer argument is copied octet for octet, not element by element: `bytes(array('i',
         // [1]))` is four octets, and `bytes(memoryview(array('i', [1])))` is the same four.
