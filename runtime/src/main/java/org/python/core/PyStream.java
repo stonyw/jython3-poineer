@@ -319,6 +319,7 @@ public final class PyStream extends PyIterator {
         this.lineBuffered = false;
         this.fd = fd;
         this.readableLayer = true;
+        this.seekableLayer = Slots.truth(askBuffer("seekable", new PyObject[0]));
         declareMode("r");
     }
 
@@ -352,6 +353,9 @@ public final class PyStream extends PyIterator {
         this.fd = fd;
         this.readableLayer = readable;
         this.writableLayer = writable;
+        // `_textiowrapper_detect_buffer_attributes` asks the buffer once and keeps the three answers; this
+        // path is `open`, which has already built the layer and so asks it here rather than in `__init__`.
+        this.seekableLayer = Slots.truth(askBuffer("seekable", new PyObject[0]));
         declareMode(mode);
     }
 
@@ -1365,14 +1369,87 @@ public final class PyStream extends PyIterator {
     }
 
     /**
-     * {@code tell} and {@code seek}'s shared refusal, which comes out of the memory of the buffer's
-     * {@code seekable} rather than out of the buffer: the two rows ask {@code self->seekable}, and this
-     * stream is built on a pipe that answered False when it was asked.
+     * {@code tell}: the buffer's position, less the octets of the decoded text the program has not taken.
+     *
+     * <p>The reference answers an opaque cookie, and on a stream whose decoder has nothing pending that
+     * cookie is the buffer's byte position; with text still in hand it is that position less the octets
+     * those characters cost, which is why reading two characters of {@code 'héllo'} leaves a utf-8 stream
+     * telling 3 and not 2. The subtraction is the encoder's, so a markful codec counts its mark the way
+     * the decoder read it. What this cannot reproduce is a universal-newline chunk whose consumed prefix
+     * held a {@code '\r\n'}: translation happens after decoding, so the pair is gone by the time the
+     * arithmetic runs here — a named deviation in PLAN-progress.md.
      */
     private PyObject tellAnswer() {
         checkAttached();
         checkOpen();
-        throw Slots.unsupportedOperation("underlying stream is not seekable");
+        if (buffer == null || !seekableLayer) {
+            throw Slots.unsupportedOperation("underlying stream is not seekable");
+        }
+        long cookie = Numbers.cLong(askBuffer("tell", new PyObject[0]));
+        int left = characters(pending) - pendingUsed;
+        if (left > 0) {
+            cookie -= Encoder.encode(cut(pending, pendingUsed, characters(pending)), decoderEncoder(),
+                            errors)
+                    .getValue().length;
+        }
+        // The half character the last chunk could not finish sits inside the buffer's position too.
+        cookie -= carried.length;
+        return PyInt.of(cookie);
+    }
+
+    /** The encoder that matches the decoder, so a cookie counts the octets the decoder consumed. */
+    private String decoderEncoder() {
+        return switch (codec) {
+            case "utf_8_sig" -> "utf_8";
+            case "utf_16" -> utf16Big ? "utf_16_be" : "utf_16_le";
+            default -> codec;
+        };
+    }
+
+    /**
+     * {@code seek}: the four combinations {@link #SEEK_DOC} lists, with the reference's two refusals for
+     * the rest.
+     *
+     * <p>The whence is checked before the cookie is converted, which is why {@code seek('x', 3)} complains
+     * about the whence rather than about the string. A seek resets the decoder: the decoded chunk belongs
+     * to the position left behind, and the next read must start from the new one. The answer is the new
+     * position, reached the same way {@code tell} reaches it.
+     */
+    private PyObject seekAnswer(PyObject[] args, String[] kwNames) {
+        Arguments.noKeywords("TextIOWrapper.seek()", kwNames);
+        Arguments.between("seek", args, kwNames, 1, 2);
+        // clinic converts the whence before the body runs, so a closed or unseekable stream still
+        // refuses a non-integer whence with the converter's sentence rather than its own.
+        int whence = args.length > 1 ? Numbers.cInteger(args[1]) : 0;
+        checkAttached();
+        checkOpen();
+        if (buffer == null || !seekableLayer) {
+            throw Slots.unsupportedOperation("underlying stream is not seekable");
+        }
+        if (whence < 0 || whence > 2) {
+            throw Slots.valueError("invalid whence (%d, should be 0, 1 or 2)", whence);
+        }
+        long cookie = Numbers.cLong(args[0]);
+        if (whence == 1 && cookie != 0) {
+            throw Slots.unsupportedOperation("can't do nonzero cur-relative seeks");
+        }
+        if (whence == 2 && cookie != 0) {
+            throw Slots.unsupportedOperation("can't do nonzero end-relative seeks");
+        }
+        // A writing stream's text has already reached the buffer, so positioning only has to move the
+        // layer below; the two relative forms are the zero-offset ones the book allows.
+        askBuffer(
+                "seek",
+                whence == 0
+                        ? new PyObject[] {PyInt.of(cookie), PyInt.of(0)}
+                        : new PyObject[] {PyInt.of(0), PyInt.of(whence)});
+        replacePending("");
+        resetDecoder();
+        hasDecoded = false;
+        // A markful encoder writes its mark only while it sits at the start, and a seek is what moves it
+        // back there — `_textiowrapper_fix_encoder_state` answers from the buffer's new position.
+        fixEncoderState();
+        return tellAnswer();
     }
 
     private static final Members METHODS = Members.of(TYPE)
@@ -1410,17 +1487,7 @@ public final class PyStream extends PyIterator {
                 return ((PyStream) self)
                         .readlines(args.length == 0 ? -1 : Numbers.optionalSize(args[0], -1));
             })
-            .add("seek", SEEK_DOC, (self, args, kwNames) -> {
-                Arguments.noKeywords("TextIOWrapper.seek()", kwNames);
-                Arguments.between("seek", args, kwNames, 1, 2);
-                PyStream stream = (PyStream) self;
-                // The cookie is an object as far as this method is concerned — it only ever reaches a
-                // seekable stream — but whence is converted, and clinic converts it before the body runs.
-                if (args.length > 1) {
-                    Numbers.size(args[1]);
-                }
-                return stream.tellAnswer();
-            })
+            .add("seek", SEEK_DOC, (self, args, kwNames) -> ((PyStream) self).seekAnswer(args, kwNames))
             .addNoArgument("tell", TELL_DOC, self -> ((PyStream) self).tellAnswer())
             .add("truncate", (self, args, kwNames) -> {
                 Arguments.noKeywords("TextIOWrapper.truncate()", kwNames);

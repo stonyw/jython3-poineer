@@ -179,8 +179,19 @@ final class Open {
                         ExceptionTypes.OS_ERROR,
                         new PyObject[] {PyInt.of(9), PyStr.of("Bad file descriptor")}));
             }
-            return PyFileIO.forDescriptor(kind, Integer.toString(fd), fd, closefd,
-                    parsed.readable(), parsed.writable(), parsed.appending, ioMode(parsed));
+            if (Fds.isFile(fd)) {
+                return PyFileIO.forDescriptor(kind, Integer.toString(fd), fd, closefd,
+                        parsed.readable(), parsed.writable(), parsed.appending, ioMode(parsed));
+            }
+            // A pipe has no file to position, so the raw layer is the stream itself — which is what makes
+            // `seekable()` False and `seek` the descriptor's own `ESPIPE` rather than a null read.
+            if (parsed.readable() && parsed.writable()) {
+                throw Slots.notImplemented(
+                        "FileIO() on a file descriptor for reading and writing at once");
+            }
+            return parsed.writable()
+                    ? new PyFileIO(kind, Integer.toString(fd), Fds.outputStream(fd), fd, closefd)
+                    : new PyFileIO(kind, Integer.toString(fd), Fds.inputStream(fd), fd, closefd);
         }
         if (!closefd) {
             throw Slots.valueError("Cannot use closefd=False with file name");
