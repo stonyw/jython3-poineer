@@ -71,9 +71,7 @@ final class IoBases {
                 .addRevealingClass("write", IoBases::textWrite);
 
         RAW_IO_BASE.add("read", IoBases::rawRead)
-                .addNoArgument("readall", self -> {
-                    throw PyRaise.raise(ExceptionTypes.NOT_IMPLEMENTED_ERROR);
-                })
+                .addNoArgument("readall", IoBases::rawReadAll)
                 .add("readinto", (self, args, kwNames) -> rawUnsupported("_RawIOBase.readinto()", kwNames))
                 .add("write", (self, args, kwNames) -> rawUnsupported("_RawIOBase.write()", kwNames));
 
@@ -357,18 +355,75 @@ final class IoBases {
         throw Slots.unsupportedOperation("write");
     }
 
+    /**
+     * {@code _RawIOBase.read(size=-1)}: the row every raw stream inherits, written over {@code readinto}.
+     *
+     * <p>A negative size is the whole stream, which is {@code readall}; anything else allocates exactly
+     * that many octets, offers them to {@code readinto}, and trims the answer to the count it gave. A
+     * {@code readinto} that claims more than the buffer (or less than nothing) is the reference's
+     * {@code ValueError}, and its would-block {@code None} is passed straight out.
+     */
     private static PyObject rawRead(PyObject self, PyObject[] args, String[] kwNames) {
-        if (kwNames != null) {
-            throw Slots.typeError("_RawIOBase.read() takes no keyword arguments");
+        if (kwNames != null && kwNames.length > 0) {
+            throw Slots.typeError(
+                    "%s.read() takes no keyword arguments", self.getType().name());
         }
         if (args.length > 1) {
             throw Slots.typeError("read expected at most 1 argument, got %d", args.length);
         }
-        if (args.length == 1) {
-            Numbers.size(args[0]);
+        long size = args.length == 0 ? -1 : Numbers.size(args[0]);
+        if (size < 0) {
+            return rawReadAll(self);
         }
-        // A negative size asks for readall, anything else for readinto, and both refuse here.
-        throw PyRaise.raise(ExceptionTypes.NOT_IMPLEMENTED_ERROR);
+        if (size > Integer.MAX_VALUE - 8) {
+            throw PyRaise.raise(ExceptionTypes.MEMORY_ERROR);
+        }
+        byte[] into = new byte[(int) size];
+        PyObject count = Slots.call(
+                Slots.getAttr(self, "readinto"), new PyObject[] {PyByteArray.wrap(into)}, null);
+        if (count == PyNone.INSTANCE) {
+            return PyNone.INSTANCE;
+        }
+        if (!(count instanceof PyInt given)) {
+            throw Slots.typeError(
+                    "'%s' object cannot be interpreted as an integer",
+                    count.getType().name());
+        }
+        long filled = given.getValue().longValue();
+        if (filled < 0 || filled > size) {
+            throw Slots.valueError("readinto returned %d outside buffer size %d", filled, size);
+        }
+        byte[] answer = new byte[(int) filled];
+        System.arraycopy(into, 0, answer, 0, (int) filled);
+        return PyBytes.of(answer);
+    }
+
+    /** The block {@code readall} asks for each time, which is the reference's {@code DEFAULT_BUFFER_SIZE}. */
+    private static final int READALL_BLOCK = 131072;
+
+    /**
+     * {@code _RawIOBase.readall()}: {@code self.read(buffer)} in blocks until one comes back empty.
+     *
+     * <p>The reference walks the {@code read} row rather than {@code readinto}, so a raw that overrides
+     * {@code read} has that override honoured. {@code None} is the would-block answer: the octets gathered
+     * so far are the answer, and {@code None} when there are none.
+     */
+    private static PyObject rawReadAll(PyObject self) {
+        ByteArrayOutputStream answer = new ByteArrayOutputStream();
+        while (true) {
+            PyObject chunk = Slots.call(
+                    Slots.getAttr(self, "read"), new PyObject[] {PyInt.of(READALL_BLOCK)}, null);
+            if (chunk == PyNone.INSTANCE) {
+                return answer.size() == 0 ? PyNone.INSTANCE : PyBytes.of(answer.toByteArray());
+            }
+            if (!(chunk instanceof PyBytes bytes)) {
+                throw Slots.typeError("read() should return bytes");
+            }
+            if (bytes.getValue().length == 0) {
+                return PyBytes.of(answer.toByteArray());
+            }
+            answer.write(bytes.getValue(), 0, bytes.getValue().length);
+        }
     }
 
     private static PyObject rawUnsupported(String qualified, String[] kwNames) {

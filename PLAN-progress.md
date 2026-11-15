@@ -398,3 +398,56 @@
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
 
 **具名偏差**：`BufferedRWPair` 的写侧直接转发 writer，未像参考那样包一层 `BufferedWriter`——`write`／`flush`／`closed` 的可观察结果相同（flush 后 raw 内容一致、`closed` 跟随 writer），差别只在参考会推迟到 flush 才落盘。
+
+## M5 切片 45 明细：`test_io` 余量分簇与 `_io._RawIOBase.read`／`readall`（2026-11-15）
+
+**背景**：切片 44 收口后 `test_io` 停在 `675／471／113／84／20`。本片先不修，按 traceback 末行与断言内容把余下 197 条（113 fail + 84 err）分簇定性，再按任务规则决定：真语言面＋缺失面 ≥ 20 例就修最大一簇，否则判边界。
+
+**分簇表（197 条，按根因归并；数字为 subtest 计数）**：
+
+| 簇 | 例数 | 性质 | 根因／代表用例 | 本片去向 |
+|---|---|---|---|---|
+| ① 析构与确定性终结 | 44 | **硬墙** | JVM 无引用计数与 `__del__` 时点：`_check_base_destructor`（`test_BufferedIOBase/IOBase/RawIOBase/TextIOBase_destructor`）、`test_destructor`、`test_override_destructor`、`test_error_through_destructor`（`NoneType` 无 `exc_type`）、`test_garbage_collection`（ResourceWarning 不触发）、`test_warn_on_dealloc*`、`cannot create weak reference to 'C'/'TextIOWrapper' object` | 不动 |
+| ② `sys.getsizeof` | 6 | **硬墙** | `module 'sys' has no attribute 'getsizeof'`（`test_sizeof`／`test_buffer_freeing`×C/Py 三族） | 不动 |
+| ③ codecs 子进程脚手架 | 10 | **脚手架** | 4×`ModuleNotFoundError: No module named 'codecs'`、4×`Process return code is N`、2×编码错误子进程 traceback——驱动环境缺 stdlib，不该改运行时 | 不动 |
+| ④ 非内建编码缺席 | 10 | 缺失面 | `LookupError: unknown encoding: \udcfe/euc_jp/euc_jis_2004/quopri/rot13/hex/test_decoder/reentrant_tell_test`；`encodings/` 未实现 | 具名 |
+| ⑤ `_io.IncrementalNewlineDecoder` 缺席 | 4 | 缺失面 | `cannot create '_io.IncrementalNewlineDecoder' instances`（`test_newline_bytes/newline_decoder/translate/uninitialized`） | 具名 |
+| ⑥ close／flush `error_on_close` | 15 | 真语言面（根与①同源） | `('flush',) != ('close',)`、`'non_existing_close' not found in "name 'non_existing_flush' is not defined"`、`False is not true`——close 时先 flush 还是先 close、错误叠加顺序 | 具名 |
+| ⑦ `BufferedRandom` 位置与交错 | 12 | 真语言面 | `test_flush_and_peek/read/readinto`、`test_interleaved_read_write/readline_write`、`test_read1_after_write`、`test_seek_and_tell`、`test_write_rewind_write`、`test_write_non_blocking`、`test_slow_close_from_thread`——写后共享位置与 store 失效规则 | 具名 |
+| ⑧ `seek` 缺 `whence` | 6 | **真语言面** | `MockRawIOWithoutRead.seek() missing 1 required positional argument: 'whence'`——我方调 `raw.seek(pos)` 只传一个参（`test_writes_and_seeks`／`test_writes_and_peek`／`test_writes_and_read1s`／`test_writes_and_readintos`／`test_writes_and_reads`） | 具名 |
+| ⑨ `tp.__new__(tp)` 空壳 | 6 | **真语言面** | `object.__new__(_io.BufferedReader/Writer/Random/TextIOWrapper) is not safe`、`object.__new__(MyTextIO) is not safe`——子类 `tp.__new__(tp)` 应返空壳 | 具名 |
+| ⑩ `TextIOWrapper` BOM／编码 | 6 | 真语言面／缺失面 | `test_append_bom`、`test_encoded_writes`、`test_reconfigure_write*`、`test_seek_bom`、`test_seek_append_bom` | 具名 |
+| ⑪ `TextIOWrapper` 内部缓冲／线程 | 9 | 真语言面 | `test_internal_buffer_size`、`test_issue119506`、`test_subclass_repr`、`test_telling`、`test_threads_write`、`test_write_newline_replace_returns_non_string`、`test_issue142594`、`test_read_byteslike/nonbytes` | 具名 |
+| ⑫ misbehaved io／bad readinto | 6 | 真语言面 | `OSError not raised by seek/read`、`test_bad_readinto_type/value` | 具名 |
+| ⑬ pickling 子类关键字 | 3 | 真语言面 | `MyBufferedIO() got an unexpected keyword argument 'tag'`——`__init__` 透传 kwargs | 具名 |
+| ⑭ 字符设备 seek／tell | 4 | 真语言面 | `test_seek/tell_character_device_file` | 具名 |
+| ⑮ 其余单例 | 18 | 混合 | 自旋 opener、NUL 文件名、fd 文本 `open()`、`str.format_map`、`_BytesIOBuffer` 子类化、`test_readline_limit_with_short_read`、`test_next_nonsizeable`、`test_array_writes` 等 | 具名 |
+| **⑯ `_RawIOBase.read`／`readall`** | **13** | **真语言面（本片修）** | `NotImplementedError`：默认 `read`／`readall` 没实现成基于 `readinto` | **已修，见下** |
+
+**判定**：真语言面＋缺失面合计约 55 例 ≥ 20，故修最大单根簇——⑯（13 例）。
+
+**参考取证（3.14.10 探针 `/tmp/probe_raw.py`／`probe_raw2.py`／`probe_raw3.py`）**：
+- `read(size=-1)`：`size<0` 走 `readall`；`size>=0` 分配恰好 `size` 的缓冲交 `readinto`（`size=0` 也调一次空缓冲）；`readinto` 返 `None` → `read` 返 `None`（would-block 透传）；非整数 → `TypeError: 'str' object cannot be interpreted as an integer`；`n<0 || n>size` → `ValueError: readinto returned 2 outside buffer size 1`（`readinto` 返 2147483647／`sys.maxsize` 在 `read()` 路径同样由 `readall` 的缓冲检查报 `ValueError`，−1／−1000 同）。
+- `readall()`：循环 `self.read(131072)`（`DEFAULT_BUFFER_SIZE`）拼接到空 `bytes` 为止——**走 `read` 行而非 `readinto`**（覆写 `read` 的子类被尊重）；中途 `None` → 返回已收内容（无内容返 `None`）；`read` 返非 `bytes` → `TypeError: read() should return bytes`。
+- 参数面：`read` 位置专用，关键字 → `<类型名>.read() takes no keyword arguments`；两个位置参数 → `read expected at most 1 argument, got 2`。
+- 已关的 raw 不检查 `closed`（`_RawIOBase.read`／`readall` 都无 closed 门）。
+
+**落地**（`runtime/src/main/java/org/python/core/IoBases.java`）：
+1. `rawRead` 按参考重写：关键字句带接收者类型名；负尺寸转 `rawReadAll`；正/零尺寸分配 `bytearray` 交 `readinto`，`None` 透传、非整数报错、越界报 `readinto returned %d outside buffer size %d`、按 `n` 截断。
+2. 新增 `rawReadAll`：`ByteArrayOutputStream` + `self.read(131072)` 循环，空 `bytes` 收尾、`None` 收已有、非 `bytes` 报 `read() should return bytes`。
+3. 成员表 `RAW_IO_BASE` 的 `readall` 从 `throw NOT_IMPLEMENTED_ERROR` 改指 `rawReadAll`。
+
+**修前修后**：`675／471／113／84／20` → **`675／484／112／72／20`**（+13 ok、−12 err、−1 fail）。那 1 例 FAIL（`PyMiscIOTest.test_check_encoding_errors`）是③簇子进程脚手架的偶发转绿，不计入本片成果。
+
+**该簇 13 例去向**：
+- 11 例直接转 ok：`CIOTest.test_RawIOBase_read`／`test_RawIOBase_read_bounds_checking`／`test_RawIOBase_readall`、`CBufferedReaderTest.test_constructor`／`test_read`／`test_read_all`／`test_read_non_blocking`、`CBufferedRandomTest.test_constructor`／`test_read`／`test_read_all`／`test_read_non_blocking`。
+- `CBufferedRandomTest.test_read_and_write`：ERR→ERR，越过 `NotImplementedError` 后停在⑧（`seek` 缺 `whence`）。
+- `CTextIOWrapperTest.test_reentrant_detach_during_read`：读路径修好而转 ok。
+
+**边界判定与下一方向**：余量 184 条里硬墙 50 条（①44＋②6，占 27%），⑥15 条与①同源；可修面已无「一簇十几例」的规模（最大为⑦12、④10、⑧6、⑨6、⑩6），故 `test_io` 不再作主战场。下一个方向：先就近收⑧ `seek` whence 与⑨ `tp.__new__` 空壳（各 6 例，两行级改动），再转 `test_textwrap`／`test_configparser` 一类新模块，或 §3.3 里能一次松开整族的 `_ssl`／`_sqlite3`。
+
+**回归**：`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349、`test_fstring` 95／95，与基线一致（子进程类用例仍带 `PYTHONPATH` 指向参考 stdlib）。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+
+**具名偏差**：`rawRead` 对 `size > Integer.MAX_VALUE-8` 直接 `MemoryError`（参考按 `ssize_t` 惰性分配、失败时也是 `MemoryError`），未做逐字节惰性；`readall` 的块常量固定 131072（与 3.14.10 的 `DEFAULT_BUFFER_SIZE` 一致，非平台 `BUFSIZ` 推断）。
