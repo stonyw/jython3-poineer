@@ -516,3 +516,27 @@
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m 4s，harness `PASS=12`，surprises 0）。
 
 **明确不做**：`_wrap_bio`／`SSLObject`（需要 `SSLEngine` 状态机，不伪造）、`load_dh_params`（JSSE 自选 DHE 群）、NPN、PSK、PHA、TLS 压缩、tls-unique、会话票据统计、SEC1 EC 私钥、旧式 `Proc-Type` 加密 PEM、OpenSSL 密码串全语法。**下一片建议**：先补 `unicodedata.ucd_3_2_0`（可一次松开 `test_ssl` 的 81 个 idna ERROR，也惠及 `encodings.idna`），或按 §3.3 转 `_sqlite3`。
+
+## M5 切片 48 明细：`unicodedata.ucd_3_2_0` 独立数据表与 idna 打通（2026-11-15）
+
+**为什么必须独立**：IDNA／stringprep 的规则冻结在 Unicode 3.2.0，`ucd_3_2_0` 是单独一份库；参考的解释器级 `unicodedata` 是 16.0.0。实测逐码位差异：`category` 60,027、`combining` 607、`bidirectional` 约 220、`decomposition` 770、`numeric` 1,431、`decimal` 1,448、`digit` 1,431、`east_asian_width` 数量级更大、`mirrored` 少量；单码位 NFC／NFD／NFKC／NFKD 分别 116／160／731／775 处不同。拿 16.0 冒充会在 `stringprep` 的边界字符上答错。
+
+**生成器与资源**：`runtime/tools/gen_unicode_320.py` 在参考 3.14.10 进程里读 `unicodedata.ucd_3_2_0`（校验 `unidata_version == '3.2.0'`），导出 `runtime/src/main/resources/org/python/core/unicode-320.txt.gz`：gzip 109,195 B、raw 587,339 B、21,797 行；3,772 条 range、16,315 条分解、385 条 named 范围（95,156 个有名码位）、1,316 条组合对。与 `unicode-names.txt.gz` 同量级，无需再压缩。
+
+**字段复用（具名）**：`name` 与 `lookup` 复用现行全局名字表——3.2.0 的 95,156 个有名码位在 16.0.0 中名字逐字一致（0 差），表里只记 named 范围；参考的 `ucd_3_2_0.lookup` 本身就是全局 16.0 名字查找（可查 `GRINNING FACE`）。其余 `category`／`combining`／`bidirectional`／`mirrored`／`east_asian_width`／`numeric`／`decimal`／`digit`／`decomposition` 与 `normalize`／`is_normalized` 全部走 3.2.0 独立表；规范化按 UAX #15 自实现（递归分解、canonical ordering、composition pairs、Hangul），组合排除项由参考 `NFC(NFD(c)) == c` 往返推导。
+
+**运行时接线**：`PyType.UCD`（`withoutNew()`）+ `Members` 注册 + `UnicodeDataModule.Ucd`，方法签名文案按参考实测；`Encoder`／`Decoder` 对非内置编码名回退到 `CodecsModule.lookup`，后者首次调用惰性导入 `encodings` 注册 `search_function`——这是 `str.encode('idna')` 真能走通的关键（此前只认 17 个内置 codec）。
+
+**对拍**：2,600 码位（ASCII、Latin-1、步进网格、22 个区块 ±0x40、LCG 随机、未分配区）×14 字段 = 36,400 项 **0 不一致**；208 个 `lookup` 0 不一致；25 组字符串的 NFC／NFD／NFKC／NFKD 与 `is_normalized` 0 不一致。
+
+**连带验证**：`'ä'.encode('idna') == b'xn--4ca'`、`b'xn--4ca'.decode('idna') == 'ä'`；`import stringprep` 修前 ImportError（`from unicodedata import ucd_3_2_0`），修后可用，`map_table_b2`、`in_table_c11/c12/c21/c22/d1/d2` 边界字符全部符合参考。
+
+**回归**：`test_io` Ran 675／failures 83／errors 60／skipped 20、`test_csv` Ran 134／OK（skip 4）、`test_tarfile` Ran 768／failures 23／skipped 349、`test_fstring` Ran 95／OK——与切片 47 记录一致。
+
+**`test_ssl` 修前修后**：修前 207／25 fail／96 err／32 skip，81 个 ERROR 全部来自 `encode('idna')`（80 个不同方法）。修后 `unknown encoding: idna` 计数 0，80 个原 idna 方法中 60 个已跑完；整套在 330 秒内完成 143 例（ok 68／fail 29／err 18／skip 28）后停在既有 socket 缺口上：`socket.bind()` 直接监听使「保留但不监听」的端口可连（`test_connect_ex_error`），以及 `test_makefile_close` 后 FIN 不到导致 join 死锁（后续 `test_nonblocking_send` 同样卡住）。测量时仅对这两例具名 skip，其余原样运行；两处差距不属本切片，留待 socket 切片。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 BUILD SUCCESSFUL（6m59s，26 任务），`:runtime:checkOpcodes` 通过，0 失败。
+
+**一处修正**：`Decoder.decode` 的空输入判断必须在编码名解析之前（参考 `b''.decode('nope') == ''`），否则注册表回退会把空 bytes 也送进 lookup；`CodecsModule.loadEncodings` 在无 stdlib 的单元测试环境里吞掉导入失败，让 `lookup` 仍以 `LookupError: unknown encoding:` 作答。
+
+**下一片建议**：socket 的 `bind` 只绑定不监听（延迟到 `listen()` 建 `ServerSocketChannel`），并修 makefile 存在时的 close/FIN 语义——这两条能让 `test_ssl` 真正跑完，也是 `test_socket` 的同一根因。

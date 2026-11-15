@@ -72,6 +72,9 @@ final class Decoder {
         if (data.length == 0) {
             return "";
         }
+        if (!Encoder.knows(encoding)) {
+            return registered(data, encoding, errors);
+        }
         StringBuilder out = new StringBuilder(data.length);
         switch (Encoder.codec(encoding)) {
             case "ascii" -> oneByte(out, data, errors, "ascii", 0x80, "ordinal not in range(128)");
@@ -95,6 +98,25 @@ final class Decoder {
             default -> throw new AssertionError(encoding);
         }
         return out.toString();
+    }
+
+    /**
+     * A codec from the registry rather than from the seventeen: {@code codecs.lookup(name)}'s own answer,
+     * which is how {@code idna} and the other pure-Python codecs reach {@code bytes.decode}. The decoder
+     * answers a string or {@code (str, length)}, and both are accepted as the reference accepts them.
+     */
+    private static String registered(byte[] data, String encoding, String errors) {
+        PyObject info = CodecsModule.lookup(encoding);
+        PyObject answer = info.getAttr("decode")
+                .call(new PyObject[] {PyBytes.wrap(data), PyStr.of(errors)}, null);
+        PyObject text = answer instanceof PyTuple
+                ? Slots.getItem(answer, PyInt.of(0))
+                : answer;
+        if (!(text instanceof PyStr decoded)) {
+            throw Slots.typeError(
+                    "decoder returned %s instead of str", Slots.argumentName(answer));
+        }
+        return decoded.getValue();
     }
 
     /**

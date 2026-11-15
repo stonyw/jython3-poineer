@@ -445,6 +445,9 @@ final class Encoder {
 
     /** {@code s.encode(encoding, errors)} and {@code bytes(s, encoding, errors)}: the same call. */
     static PyBytes encode(String text, String encoding, String errors) {
+        if (!knows(encoding)) {
+            return registered(text, encoding, errors);
+        }
         if (codec(encoding).equals("utf_7")) {
             // UTF-7 is the one codec here with a mode that outlives a character: a run of characters it
             // cannot write directly is one shift sequence, so the per-character walk cannot express it.
@@ -860,6 +863,35 @@ final class Encoder {
             return module;
         }
         throw Slots.lookupError("unknown encoding: " + encoding);
+    }
+
+    /** Whether one of the seventeen answers to this name; no exception either way. */
+    static boolean knows(String encoding) {
+        try {
+            codec(encoding);
+            return true;
+        } catch (PyRaise unknown) {
+            return false;
+        }
+    }
+
+    /**
+     * A codec from the registry rather than from the seventeen: {@code codecs.lookup(name)}'s own answer,
+     * which is how {@code idna} and the other pure-Python codecs reach {@code str.encode}. The encoder
+     * answers bytes or {@code (bytes, length)}, and both are accepted as the reference accepts them.
+     */
+    private static PyBytes registered(String text, String encoding, String errors) {
+        PyObject info = CodecsModule.lookup(encoding);
+        PyObject answer = info.getAttr("encode")
+                .call(new PyObject[] {PyStr.of(text), PyStr.of(errors)}, null);
+        PyObject bytes = answer instanceof PyTuple
+                ? Slots.getItem(answer, PyInt.of(0))
+                : answer;
+        if (!(bytes instanceof PyBytes encoded)) {
+            throw Slots.typeError(
+                    "encoder returned %s instead of bytes", Slots.argumentName(answer));
+        }
+        return encoded;
     }
 
     /**

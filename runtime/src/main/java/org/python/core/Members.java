@@ -123,6 +123,9 @@ final class Members {
             // `_struct.Struct` files two fields and five methods; the module that compiled the format
             // owns the class, so its table is loaded whenever the type is asked about.
             Map.entry(PyType.STRUCT, StructModule.Struct.class),
+            // `unicodedata.UCD` files thirteen readers and one field; the module owns the class, so
+            // its table is registered when the module that makes the one value is initialized.
+            Map.entry(PyType.UCD, UnicodeDataModule.Ucd.class),
             // `_csv`'s three types: `csv.py` subclasses `_csv.Dialect` before a dialect exists, and
             // the reader and writer answer `dialect`/`line_num`/`writerow` from tables of their own.
             Map.entry(PyType.CSV_DIALECT, CsvModule.CsvDialect.class),

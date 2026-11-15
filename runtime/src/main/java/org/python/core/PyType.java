@@ -1512,6 +1512,14 @@ public class PyType extends PyObject {
             builtin("unpack_iterator").filedUnder("_struct.unpack_iterator");
 
     /**
+     * {@code unicodedata.UCD}: the reader IDNA and {@code stringprep} froze at Unicode 3.2.0.
+     *
+     * <p>Its single value, {@code unicodedata.ucd_3_2_0}, is made by the module; the type refuses
+     * {@code UCD()} the way the reference's does.
+     */
+    static final PyType UCD = builtin("UCD").withoutNew().filedUnder("unicodedata.UCD");
+
+    /**
      * {@code super} is a type although nothing it hands out is one: a proxy holds a class, a value and
      * the order measured against that value, and reads names out of the classes after the class it was
      * given. It is named here because {@link Interpreter} compares a loaded {@code super} against it by

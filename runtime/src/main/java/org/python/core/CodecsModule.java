@@ -154,7 +154,30 @@ final class CodecsModule {
 
     // --- the registry --------------------------------------------------------------------------------
 
-    private static PyObject lookup(String name) {
+    /**
+     * Whether {@code encodings} has been imported. CPython imports the package while the interpreter
+     * starts, and the package is what registers the search function that finds every codec outside the
+     * seventeen; importing it on first use is the same thing at a later moment. The flag is set before
+     * the import so a codec module that looks up a name while it loads cannot come back through here.
+     */
+    private static boolean encodingsLoaded;
+
+    private static void loadEncodings() {
+        if (encodingsLoaded) {
+            return;
+        }
+        encodingsLoaded = true;
+        try {
+            PyRuntime.importModule("encodings");
+        } catch (PyRaise failure) {
+            // A runtime with no stdlib on its path (the unit tests boot that way) has nothing to
+            // register; lookup still owes the caller "unknown encoding" in the registry's words.
+        }
+    }
+
+    /** {@code codecs.lookup}: the seventeen first, then the registered search functions. */
+    static PyObject lookup(String name) {
+        loadEncodings();
         String canonical = null;
         try {
             canonical = Encoder.codec(name);

@@ -152,6 +152,33 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 
 **修后**：`import ssl` 成功；最小 TLS 回环用自签证书跑通 TLS 1.3 与 TLS 1.2+ALPN，`getpeercert`、`MemoryBIO`、不可信证书抛 `SSLCertVerificationError` 均对拍。`test_ssl` 207／25／96／32（fail／error／skip），其中 81 个 ERROR 是 `ssl.py` 的 `encode('idna')` 撞上缺失的 `unicodedata.ucd_3_2_0`，属 `_ssl` 之外的模块缺口。
 
+### 3.5 M5 切片 48：`unicodedata.ucd_3_2_0` 独立数据表与 idna 打通
+
+`ucd_3_2_0` 与模块级的 `unicodedata` 是**两份不同的库**，这不是 API 冗余：IDNA／stringprep 的规则冻结在 Unicode 3.2.0，`stringprep` 的每张表都从 `ucd_3_2_0` 派生；而模块级 `unicodedata` 跟随解释器版本（参考 3.14.10 是 16.0.0）。实测两版本的逐码位差异：`category` 60,027、`combining` 607、`bidirectional` 约 220、`decomposition` 770、`numeric` 1,431、`decimal` 1,448、`digit` 1,431、`east_asian_width` 数量级更大、`mirrored` 少量；单码位四种规范化 NFC／NFD／NFKC／NFKD 分别有 116／160／731／775 个不同结果。故不能用当前库冒充——那会在 `stringprep` 的边界字符上直接答错。
+
+**数据来源与体积**：生成器 [gen_unicode_320.py](file:///Users/stony/qoder/jython3-poineer/runtime/tools/gen_unicode_320.py) 在参考 CPython 3.14.10 进程里读取 `unicodedata.ucd_3_2_0`（并校验 `unidata_version == '3.2.0'`、模块级为 `16.0.0`），导出为 ASCII 表 [unicode-320.txt.gz](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/resources/org/python/core/unicode-320.txt.gz)：gzip **109,195 B**，raw 587,339 B，21,797 行；含 **3,772** 条 range（每个码位九个字段）、**16,315** 条分解、**385** 条 named 范围（覆盖 **95,156** 个有名码位）、**1,316** 条组合对。与 `unicode-names.txt.gz` 同量级，不需要额外压缩策略。
+
+**字段级复用与否**（不默默复用整库）：
+
+| 字段 | 来源 | 依据 |
+|---|---|---|
+| `category`／`combining`／`bidirectional`／`mirrored`／`east_asian_width`／`numeric`／`decimal`／`digit`／`decomposition` | 3.2.0 独立表 | 上列差异全部非零，必须用 3.2 的数据。 |
+| `normalize`／`is_normalized` | 3.2.0 独立表 + 自实现 UAX #15 | ccc 与分解都与 16.0 不同，不能交给 JDK `Normalizer`；递归分解、canonical ordering、composition pairs、Hangul 算法全在本模块内完成，组合排除项由参考的 `NFC(NFD(c)) == c` 往返推导，不人工誊抄。 |
+| `name` | **两版本一致，复用 `UnicodeNames`** | 3.2.0 的 95,156 个有名码位在 16.0.0 中名字逐字一致（0 差）；本表只记录「3.2 哪些码位有名字」（named 范围），名字文本仍读既有 `unicode-names.txt.gz`。 |
+| `lookup` | **复用全局名字表** | 参考的 `ucd_3_2_0.lookup` 实测走的是全局 16.0 名字表（能查到 `GRINNING FACE`、`TURKISH LIRA SIGN`），并不是 3.2 库的方法；bytes 按 UTF-8 + replace 解码，bytearray 拒绝。 |
+
+**运行时接线**：`PyType.UCD`（`withoutNew()`，故 `UCD()` 报 `cannot create 'unicodedata.UCD' instances`）经 [Members.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Members.java) 注册到 [UnicodeDataModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/UnicodeDataModule.java) 的 `Ucd`；方法签名语义按参考实测（单字符方法拒绝非 str／长度≠1 的文案、`decimal`／`digit`／`name` 的可选 default 与 arity 文案、`normalize` 两个位置参数且不收关键字、`unidata_version` 为 member_descriptor）。idna 真正可用的另一半在 [Encoder.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Encoder.java)／[Decoder.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Decoder.java)：`str.encode` 原先只认 17 个内置 codec、从不查 `codecs` 注册表，现在非内置名字回退到 `CodecsModule.lookup` 并调用 Python codec；`CodecsModule.lookup` 首次调用惰性导入 `encodings` 以注册 `search_function`。
+
+**逐项对拍**：2,600 个码位（ASCII 0x00–0xFF、Latin-1、步进网格、22 个区块各 ±0x40、LCG 随机补充、未分配区）× 14 个字段（`category`／`combining`／`bidirectional`／`decomposition`／`numeric`／`east_asian_width`／`mirrored`／`name`／NFD／NFC／NFKC／NFKD／`decimal`／`digit`）＝ **36,400 项，0 不一致**；另 208 个 `lookup`（200 随机有名码位 + 8 定点，含 16.0-only 名字）0 不一致；25 组字符串的四种规范化与 `is_normalized` 0 不一致。
+
+**连带验证**：`'ä'.encode('idna')` → `b'xn--4ca'`，`b'xn--4ca'.decode('idna')` → `'ä'`，`'Ä'.encode('idna')` → `b'xn--4ca'`；`import stringprep` 修前在 `from unicodedata import ucd_3_2_0` 处 ImportError，修后成功导入，`in_table_c11(' ') is True`／`in_table_c11('a') is False`／`in_table_c12('\u00a0') is True`／`in_table_c21('\x00') is True`／`in_table_c22('\x7f') is False`／`in_table_d1('\u05d0') is True`／`in_table_d2('A') is True`／`map_table_b2('a') == 'a'` 全部符合参考。
+
+**`test_ssl` 修前修后**：修前 207／25 fail／96 err／32 skip，其中 81 个 ERROR 均由 `encode('idna')` 触发（`ssl.py` 的 `_encode_hostname`，共 80 个不同方法）。修后这些用例不再以 idna 报错：同一 runner 下 `unknown encoding: idna` 计数 **0**，80 个原 idna 方法中有 60 个已跑到完成，整套在 330 秒内完成 143 例（ok 68／fail 29／err 18／skip 28）后停住。停住的原因不是本切片：这些用例由此**首次真正建连**，暴露出两处既有 socket 缺口——其一 `socket.bind()` 直接开监听（`ServerSocketChannel`），参考里「只绑定不监听」的端口在本运行时接受连接，`test_connect_ex_error` 会在 TLS 握手处永久阻塞；其二 `test_makefile_close` 之后服务端线程等不到 FIN，主线程 join 死锁（后续 `test_nonblocking_send` 同样卡住）。测量时对这两例做了具名 skip，其余原样运行；两处差距留待 socket 切片处理。
+
+**回归**：`test_io` 675／83 fail／60 err／20 skip、`test_csv` 134／OK（skip 4）、`test_tarfile` 768／23 fail／349 skip、`test_fstring` 95／OK——与切片 47 逐项一致。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（6m59s，26 个任务），`:runtime:checkOpcodes` 正常通过，无失败用例。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；
