@@ -452,6 +452,68 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 - 语料（[gate.py](file:///tmp/m5_57_gate.py)、[dict.py](file:///tmp/m5_57_dict.py)、[corpus.py](file:///tmp/m5_57_corpus.py)）：方法面、`maxlen` 边界、`index` 边界、`repr` 与比较、pickle／copy、子类化（属性、重跑 `__init__`、`__new__`、`super().append`、`__class__` 赋值）——**与参考 3.14.10 逐字节相同**，`deque.index` 对拍通过。
 - 回归九套与门禁数字见 [PLAN-progress.md](file:///Users/stony/qoder/jython3-poineer/PLAN-progress.md) §切片 57。
 
+### 3.15 M5 切片 58：收掉 `seq_tests.py` 共享基类里的失败
+
+**动机**：切片 57 剩下的两个 fail 都不属于 deque，而且指向同一份基类——`Lib/test/seq_tests.py` 是 list／tuple／str／bytes／bytearray／deque 共同继承的测试基类，里面一个断言不对，会在多个套件里各记一次。本片先把基类内的失败逐条列出，再只修能如实修的两条。
+
+**一、`seq_tests.py` 失败清单（修前）**：
+
+| 用例 | 断言 | 涉及类型 | 结论 |
+|---|---|---|---|
+| `CommonTest.test_repeat` | `assertEqual(id(s), id(s * 1))`，`s = tuple(range(m))`；再用 `type2test` 对 n=0,1,-1,2 做等值比对 | 被断言的对象恒为 **tuple**，所以 `test_list`／`test_tuple`／`test_deque` 各记一次 | **修**：精确 tuple／str／bytes 在 n==1 返回自身 |
+| `CommonTest.test_contains_fake` | `assertIn(ALWAYS_EQ, (1,))`、`assertNotIn(ALWAYS_EQ, ())` | **tuple**（list 早已走 `PyObject_RichCompareBool`） | **修**：`PyTuple.contains` 补身份快路径与对方 `__eq__` 回退 |
+| `CommonTest.test_free_after_iterating` | `support.gc_collect()` 后 `assertTrue(done)`，`done` 由临时子类实例的 `__del__` 置位 | **list、tuple**（deque 的同名用例自己 skip） | **不修**：JVM 没有引用计数，具名偏差 |
+
+同属基类的 `test_mul`（`assertIsNot(r, u3)`：子类 `u3 * 1` 不得是自身）修前修后都过——子类照旧复制成基类型的新对象。
+
+**二、`s * n` 身份语义（参考 3.14.10 逐类型实测）**：
+
+| 类型 | `s*1`／`1*s` 是自身 | n=0 | n=-1 | n=2 | 空值 |
+|---|---|---|---|---|---|
+| tuple | **是** | 新空 tuple（与 `()` 同一单例） | 同 n=0 | 复制 | `()*n` 恒为 `()` |
+| str | **是** | `''` | `''` | 复制 | `''*n` 恒为 `''` |
+| bytes | **是** | `b''` | `b''` | 复制 | 同左 |
+| list | 否 | 新空 list | 新空 list | 复制 | 不复用 |
+| bytearray | 否 | 新空 bytearray | 新空 bytearray | 复制 | 不复用 |
+| deque | 否 | 新空 deque | 新空 deque | 复制 | 不复用（切片 57 实测） |
+
+子类一律不复用：`class S(tuple)` 的 `S((1,2)) * 1` 是**精确 tuple** 且 `is not s`（str／bytes 子类同），因此身份复用按精确类型收窄，`PyVersionInfo` 这类 tuple 子类不会被误返回。
+
+**三、`__sizeof__`：不改，登记为具名偏差**。参考实测（n=0,1,2,3,5,8,16,32）：
+
+| 类型 | 参考 3.14.10 | 本运行时 |
+|---|---|---|
+| list | 40／56／56／72／88／104／168／296（随追加历史变动） | 0 |
+| tuple | 32／40／48／56／72／96／160／288（32+8n） | 0 |
+| str | 41／42／43／44／46／49／57／73（紧凑 ASCII 41+n，非 ASCII 换 kind） | 0 |
+| bytes | 33／34／35／36／38／41／49／65（33+n） | 0 |
+| bytearray | 56／58／59／60／62／65／73／89（56+alloc） | **与参考逐项相同**（既有模型） |
+| dict | 48／208／208／208／208／336／616／1152 | 0 |
+| set | 200／200／200／200／712／712／712／2248 | 0 |
+| deque | 744（受 CPython 块布局影响） | 0 |
+
+tuple／str／bytes 的数值可以靠抄 CPython 的 C 结构常数“算”出来，但那是把 JVM 对象的真实占用换成一个看起来像的假数字；list／dict／set／deque 还随分配历史与块布局变化，根本无法从 Python 可见状态复现。按“宁可不做也不编数”的口径，本片不动 `__sizeof__`，`test_deque.TestBasic.test_sizeof` 与 `test_list.test_preallocation`（`sys.getsizeof` 缺失）继续保持具名偏差；`PyByteArray` 既有的 56+alloc 是真实模型，保留。
+
+**四、修前修后**：
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `test_list` | 68／63／2／2／1 | **68／64／1／2／1** |
+| `test_tuple` | 39／30／8／1／0 | **39／32／6／1／0** |
+| `test_deque` | 82／79／2／0／1 | **82／80／1／0／1** |
+| `test_str` | 全量跑不完（见断点） | `StrTest.test_repeat_id_preserving` 单跑 **OK** |
+| `test_bytes` | 模块导入被 `ByteArrayTest` 类体的 `_testlimitedcapi` 挡住 | `BytesTest.test_repeat_id_preserving` 单跑 **OK** |
+
+`test_list` 剩下的 fail 是 `test_free_after_iterating`（上表具名偏差），2 err 是 `test_keywords_in_subclass` 与 `test_preallocation`（list 自身缺口，与基类无关）；`test_tuple` 剩下的 6 fail 全部是 tuple 自有缺口（`test_bug7466`／`test_hash_deeply_nested`／三条 `test_track_*`／`test_free_after_iterating`），1 err 是 `test_keywords_in_subclass`；`test_deque` 剩下的 fail 是 `test_sizeof`。
+
+**五、断点**：`test_str` 全量在第 2 个用例 `StrTest.test_adaptive_find` 卡死（N=1,000,000、haystack 5M 字符的“朴素算法会极慢”用例，本运行时的 `str.find`／`count` 仍是 O(n·m)，与参考的 two-way 算法不同；属既有性能缺口，不是本片改动）。`test_bytes` 无法整模块导入：`class ByteArrayTest` 类体执行 `import_helper.import_module('_testlimitedcapi')` 直接抛 `SkipTest`，导入失败即从 `sys.modules` 回滚；两条身份用例分别用 `/tmp/m5_58/one.py` 与带桩的 `bytes_one.py` 单跑确认。
+
+**六、语料对拍**：[repeat_corpus.py](file:///tmp/m5_58/repeat_corpus.py) 在参考与运行时各跑一遍，`diff` 只有 `__sizeof__` 一段不同（上表），其余 `s*n`／`n*s` 在 n=0／1／-1／2 的 `is`、`==`、结果类型、空值、六种子类——**逐字节相同**。
+
+**七、回归九套**（最终二进制）：`test_pyexpat` 86／47／14／87／17（`SUCCESSES` 47）、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／29／35（与切片 57 记录的同一组抖动：`test_wrong_cert_tls13` 与 `test_sni_callback_race` 两个线程化 TLS 用例在 fail↔err 间摆动，fail+err 总量 71 不变；二次重跑得 42／30／34，另一例 skip 也摆一格）、`test_mmap` 53／40／0／2／11——**无一项越过基线**。
+
+**八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m59s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

@@ -881,6 +881,54 @@
 
 **八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m3s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
 
+---
 
+## M5 切片 58 明细：收掉 `seq_tests.py` 共享基类里的失败（2026-11-16）
 
+**一、失败清单（`<ref stdlib>/test/seq_tests.py`，修前）**：
 
+| 用例 | 断言 | 涉及类型 | 结论 |
+|---|---|---|---|
+| `CommonTest.test_repeat`（约 314 行） | `assertEqual(id(s), id(s * 1))`，`s = tuple(range(m))`；再按 n=0,1,-1,2 用 `type2test` 等值比对 | 断言对象恒为 **tuple**，故 `test_list`／`test_tuple`／`test_deque` 各记一次 | **修** |
+| `CommonTest.test_contains_fake` | `assertIn(ALWAYS_EQ, (1,))`、`assertNotIn(ALWAYS_EQ, ())` | **tuple**（list 早已走 RichCompareBool） | **修** |
+| `CommonTest.test_free_after_iterating` | `support.gc_collect()` 后 `assertTrue(done)`，`done` 由临时子类实例的 `__del__` 置位 | **list、tuple**（deque 同名用例自 skip） | **不修**：JVM 无引用计数 |
+| `CommonTest.test_mul` | `assertIsNot(r, u3)`：子类 `u3*1` 不得是自身 | 三个套件的子类 | 修前修后都过（子类照旧复制成基类型） |
+
+**二、`s * n` 身份语义（参考 3.14.10 实测）**：
+
+| 类型 | `s*1`／`1*s` | n=0／负数 | n=2 | 空值 |
+|---|---|---|---|---|
+| tuple | **同一个对象** | 新空 tuple（`()` 单例） | 复制 | `()*n is ()` |
+| str | **同一个对象** | `''` | 复制 | `''*n is ''` |
+| bytes | **同一个对象** | `b''` | 复制 | 同左 |
+| list | 新 list | 新空 list | 复制 | 不复用 |
+| bytearray | 新 bytearray | 新空 bytearray | 复制 | 不复用 |
+| deque | 新 deque | 新空 deque | 复制 | 不复用 |
+
+子类一律不复用，结果是精确基类型：`class S(tuple)` 的 `S((1,2))*1` 是 tuple 且 `is not s`；str／bytes 子类同。`PyVersionInfo` 是 tuple 子类，也不会被误返回。
+
+**三、实现**：[PyTuple.binaryOp](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyTuple.java) 的 `MUL` 分支改为先 `Sequences.multiplier`，`times == 1 && getClass() == PyTuple.class` 时返回 `this`，否则 `Sequences.repeat` 后建精确 tuple（零长回 `EMPTY`）；[PyStr.repeated](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyStr.java) 与 [PyBytes.repeated](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyBytes.java) 由返回 `String`／`byte[]` 改为返回 `PyObject`，同样按 `getClass()` 收窄 n==1 复用，`binaryOp`／`reflectedOp` 直接转交。`PyList`／`PyByteArray`／`PyDeque` 保持复制（参考本就不复用）。[PyTuple.contains](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyTuple.java) 从 `candidate.eq(item)` 改为 `candidate == item || Slots.compareTrue(CompareOp.EQ, candidate, item)`，与 list 的 `PyObject_RichCompareBool` 口径一致。
+
+**四、`__sizeof__`：不改，登记具名偏差**。参考实测（n=0,1,2,3,5,8,16,32）：list 40／56／56／72／88／104／168／296（随追加历史变）、tuple 32+8n、str 紧凑 ASCII 41+n（非 ASCII 换 kind）、bytes 33+n、bytearray 56+alloc、dict 48／208×4／336／616／1152、set 200×4／712×3／2248、deque 744（块布局）。本运行时除 bytearray 外一律 0；bytearray 的既有模型与参考逐项相同。tuple／str／bytes 的数值虽可抄 C 结构常数算出，但那是给 JVM 对象填一个看起来像的假数字；list／dict／set／deque 还依赖分配历史与块布局，无法从 Python 可见状态复现。因此本片不动 `__sizeof__`，`test_deque.TestBasic.test_sizeof`（`0 != 216`）与 `test_list.test_preallocation`（`sys.getsizeof` 缺失）继续作为具名偏差。
+
+**五、修前修后**：
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `test_list` | 68／63／2／2／1 | **68／64／1／2／1**（`SUCCESSES 64`） |
+| `test_tuple` | 39／30／8／1／0 | **39／32／6／1／0**（`SUCCESSES 32`） |
+| `test_deque` | 82／79／2／0／1 | **82／80／1／0／1**（`SUCCESSES 80`） |
+| `test_str` | 全量卡死在第 2 例 `test_adaptive_find` | `StrTest.test_repeat_id_preserving` 单跑 **OK** |
+| `test_bytes` | 模块导入抛 `SkipTest`（`ByteArrayTest` 类体缺 `_testlimitedcapi`） | `BytesTest.test_repeat_id_preserving` 带桩单跑 **OK** |
+
+`test_list` 剩 1 fail `test_free_after_iterating`、2 err（`test_keywords_in_subclass`／`test_preallocation`）；`test_tuple` 剩 6 fail 全是自身缺口（`test_bug7466`／`test_hash_deeply_nested`／`test_track_dynamic`／`test_track_literals`／`test_track_subtypes`／`test_free_after_iterating`）、1 err `test_keywords_in_subclass`；`test_deque` 剩 1 fail `test_sizeof`、1 skip `test_free_after_iterating`（deque 自带 skip）。
+
+**六、断点**：`test_str` 全量在 `StrTest.test_adaptive_find` 卡死——该用例明说“朴素算法会极慢”，N 到 1,000,000、haystack 5M 字符；本运行时 `str.find`／`count` 仍是 O(n·m)，参考是 two-way 算法。这是既有性能缺口，不是本片引入。`test_bytes` 整模块导入即失败（`ByteArrayTest` 类体 `import_helper.import_module('_testlimitedcapi')` 抛 `SkipTest`，导入失败从 `sys.modules` 回滚），身份用例改用 `/tmp/m5_58/bytes_one.py` 给 `_testlimitedcapi` 一个空桩后单跑。
+
+**七、语料对拍**：[repeat_corpus.py](file:///tmp/m5_58/repeat_corpus.py) 覆盖六类型 × `s*n`／`n*s` × n=0／1／-1／2 的 `is`／`==`／结果类型，空值四种，六种子类 `*1`，以及八类型 × 八个长度的 `__sizeof__`。参考 3.14.10 与运行时各跑一份，`diff` **只有 `__sizeof__` 一段不同**（上表），其余逐字节相同。
+
+**八、回归九套**（最终二进制）：`test_pyexpat` 86／47／14／87／17（`ok -32` 是 subTest 记账，`SUCCESSES` 47）、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／42／29／35（与切片 57 同一组抖动：`test_wrong_cert_tls13`、`test_sni_callback_race` 在线程化 TLS 用例里 fail↔err 摆动，fail+err 总量 71 不变；二次重跑 42／30／34）、`test_mmap` 53／40／0／2／11——无一项越过基线。
+
+**九、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 6m59s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
+
+**十、提交**：58a「tuple／str／bytes 乘以 1 返回自身」、58b「tuple contains 走 RichCompareBool」与 PLAN 双文件。

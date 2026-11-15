@@ -111,8 +111,10 @@ public class PyTuple extends PyObject {
 
     @Override
     public PyObject contains(PyObject item) {
+        // RichCompareBool's identity fast path first, then the item's `__eq__` with the target's as the
+        // fallback — the same rule the list follows, so `(1,).__contains__(ALWAYS_EQ)` is true.
         for (PyObject candidate : items) {
-            if (candidate.eq(item)) {
+            if (candidate == item || Slots.compareTrue(CompareOp.EQ, candidate, item)) {
                 return PyBool.TRUE;
             }
         }
