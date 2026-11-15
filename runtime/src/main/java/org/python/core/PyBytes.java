@@ -1298,14 +1298,7 @@ public class PyBytes extends PyObject {
         if (needle.length == 0) {
             return right ? to : from;
         }
-        for (int at = right ? to - needle.length : from;
-                right ? at >= from : at + needle.length <= to;
-                at += right ? -1 : 1) {
-            if (matchesAt(text, at, needle)) {
-                return at;
-            }
-        }
-        return -1;
+        return FastSearch.find(text, from, to - from, needle, right);
     }
 
     /** How many non-overlapping copies of {@code needle} the range holds; an empty one fills every gap. */
@@ -1316,13 +1309,8 @@ public class PyBytes extends PyObject {
         if (needle.length == 0) {
             return to - from + 1;
         }
-        int found = 0;
-        for (int at = first(text, needle, from, to, false);
-                at >= 0;
-                at = first(text, needle, at + needle.length, to, false)) {
-            found++;
-        }
-        return found;
+        int found = FastSearch.count(text, from, to - from, needle, Long.MAX_VALUE);
+        return Math.max(found, 0);
     }
 
     /** Whether the whole of {@code needle} sits at {@code at}, which the range must still have room for. */

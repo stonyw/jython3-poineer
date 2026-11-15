@@ -154,7 +154,8 @@ public class PyStr extends PyObject {
                     "'in <string>' requires string as left operand, not %s",
                     needle.getType().name());
         }
-        return PyBool.of(value.contains(text.value));
+        return PyBool.of(text.value.isEmpty()
+                || FastSearch.find(value, 0, value.length(), text.value, false) >= 0);
     }
 
     @Override
@@ -315,6 +316,17 @@ public class PyStr extends PyObject {
             return "";
         }
         return value.substring(charIndex(from), to >= codePoints ? value.length() : charIndex(to));
+    }
+
+    /**
+     * {@code startswith}/{@code endswith} against one candidate, without copying the window the way
+     * {@link #between} would: the comparison is the candidate's length, not the range's.
+     */
+    private boolean edgeMatches(String edge, int fromUnit, int width, boolean prefix) {
+        if (edge.length() > width) {
+            return false;
+        }
+        return value.startsWith(edge, prefix ? fromUnit : fromUnit + width - edge.length());
     }
 
     /** The code points a slice selects, in the order the slice walks them. */
@@ -1278,7 +1290,9 @@ public class PyStr extends PyObject {
             // distinguishes this from {@code list.index}'s reading of the same bound.
             return PyBool.FALSE;
         }
-        String window = text.between(from, to);
+        int fromUnit = text.charIndex(from);
+        int toUnit = to >= text.codePoints ? text.value.length() : text.charIndex(to);
+        int width = toUnit - fromUnit;
         if (args[0] instanceof PyTuple candidates) {
             // Each element is tested in turn and a match ends the test, so an element after the one
             // that matched is never looked at and may be anything at all.
@@ -1289,7 +1303,7 @@ public class PyStr extends PyObject {
                             "tuple for %s must only contain str, not %s",
                             name, candidate.getType().name());
                 }
-                if (prefix ? window.startsWith(edge) : window.endsWith(edge)) {
+                if (text.edgeMatches(edge, fromUnit, width, prefix)) {
                     return PyBool.TRUE;
                 }
             }
@@ -1301,7 +1315,7 @@ public class PyStr extends PyObject {
                     "%s first arg must be str or a tuple of str, not %s",
                     name, args[0].getType().name());
         }
-        return PyBool.of(prefix ? window.startsWith(single) : window.endsWith(single));
+        return PyBool.of(text.edgeMatches(single, fromUnit, width, prefix));
     }
 
     private static PyObject split(
@@ -1751,12 +1765,13 @@ public class PyStr extends PyObject {
             // Every boundary is a match, and a start past the end is not a range at all.
             return to < from || from > codePoints ? 0 : to - from + 1;
         }
-        String window = between(from, to);
-        int found = 0;
-        for (int at = window.indexOf(sub); at >= 0; at = window.indexOf(sub, at + sub.length())) {
-            found++;
+        if (from >= to) {
+            return 0;
         }
-        return found;
+        int fromUnit = charIndex(from);
+        int toUnit = to >= codePoints ? value.length() : charIndex(to);
+        int found = FastSearch.count(value, fromUnit, toUnit - fromUnit, sub, Long.MAX_VALUE);
+        return Math.max(found, 0);
     }
 
     /**
@@ -1769,9 +1784,13 @@ public class PyStr extends PyObject {
         if (sub.isEmpty()) {
             return to < from || from > codePoints ? -1 : right ? to : from;
         }
-        String window = between(from, to);
-        int at = right ? window.lastIndexOf(sub) : window.indexOf(sub);
-        return at < 0 ? -1 : from + window.codePointCount(0, at);
+        if (from >= to) {
+            return -1;
+        }
+        int fromUnit = charIndex(from);
+        int toUnit = to >= codePoints ? value.length() : charIndex(to);
+        int at = FastSearch.find(value, fromUnit, toUnit - fromUnit, sub, right);
+        return at < 0 ? -1 : from + value.codePointCount(fromUnit, at);
     }
 
     /** {@code partition} and {@code rpartition}: before, separator, after. */
@@ -1779,9 +1798,11 @@ public class PyStr extends PyObject {
         if (separator.isEmpty()) {
             throw Slots.valueError("empty separator");
         }
-        int at = left ? value.indexOf(separator) : value.lastIndexOf(separator);
+        int at = FastSearch.find(value, 0, value.length(), separator, !left);
         if (at < 0) {
-            return List.of(value, "", "");
+            // A miss puts the whole value on the side the method reads from: `partition` before the
+            // separator it could not find, `rpartition` after it.
+            return left ? List.of(value, "", "") : List.of("", "", value);
         }
         int here = value.codePointCount(0, at);
         int there = here + separator.codePointCount(0, separator.length());
@@ -1852,7 +1873,7 @@ public class PyStr extends PyObject {
         long remaining = count < 0 ? Long.MAX_VALUE : count;
         int at = 0;
         while (remaining > 0) {
-            int found = value.indexOf(old, at);
+            int found = FastSearch.find(value, at, value.length() - at, old, false);
             if (found < 0) {
                 break;
             }
@@ -1899,7 +1920,7 @@ public class PyStr extends PyObject {
         if (right) {
             int end = value.length();
             while (cuts > 0) {
-                int at = value.lastIndexOf(separator, end - separator.length());
+                int at = FastSearch.find(value, 0, end, separator, true);
                 if (at < 0) {
                     break;
                 }
@@ -1912,7 +1933,7 @@ public class PyStr extends PyObject {
         }
         int at = 0;
         while (cuts > 0) {
-            int found = value.indexOf(separator, at);
+            int found = FastSearch.find(value, at, value.length() - at, separator, false);
             if (found < 0) {
                 break;
             }
