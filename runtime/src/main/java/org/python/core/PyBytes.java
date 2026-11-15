@@ -298,7 +298,9 @@ public class PyBytes extends PyObject {
                             Numbers.cInteger(Arguments.parameters(
                                     "expandtabs", args, kwNames, TAB_SIZE, TAB_DEFAULTS, 0)[0]))))
             .add("find", (self, args, kwNames) -> search(self, args, kwNames, "find", false, false))
-            .addClass("fromhex", (args, kwNames) -> fromHexadecimal(args, kwNames, false))
+            .addClassNamed(
+                    "fromhex",
+                    (type, args, kwNames) -> fromHexadecimal(type, args, kwNames, false))
             .add("hex", (self, args, kwNames) -> hexadecimal(
                     octets(self),
                     Arguments.parameters("hex", args, kwNames, HEX, HEX_DEFAULTS, 0)))
@@ -355,11 +357,14 @@ public class PyBytes extends PyObject {
             .addOne("zfill", (self, width) -> zeroFilled(self, octets(self), Numbers.size(width)))
             // The two names pickle and the buffer protocol read off a value rather than call: the argument
             // list a rebuild is made from is the octet run itself, and `__bytes__` answers the same object
-            // it was asked on, because a bytes is already the exact type it converts to.
+            // it was asked on, because a bytes is already the exact type it converts to. A subclass is not:
+            // CPython copies it to an exact bytes, which is what `bytes.__bytes__(B(b'x'))` hands back.
             .addNoArgument("__getnewargs__", self -> PyTuple.of(self))
             .add("__bytes__", (self, args, kwNames) -> {
                 Arguments.none("bytes.__bytes__()", args, kwNames);
-                return self;
+                return self.getClass() == PyBytes.class
+                        ? self
+                        : PyBytes.wrap(((PyBytes) self).value);
             })
             // The whole internal text clinic writes beside each of the forty-three rows `bytes_methods`
             // files with an `ml_doc`; the forty-fourth row, `__getnewargs__`, is filed with none, so it has
@@ -855,9 +860,14 @@ public class PyBytes extends PyObject {
         return self instanceof PyByteArray ? PyByteArray.wrap(text) : PyBytes.wrap(text);
     }
 
-    /** An unchanged read-only result: {@code self} for a bytes, a fresh copy for a bytearray. */
+    /** An unchanged read-only result: {@code self} for an exact bytes, a fresh copy otherwise. */
     static PyObject unchanged(PyObject self, byte[] text) {
-        return self instanceof PyByteArray ? PyByteArray.of(text) : self;
+        if (self instanceof PyByteArray) {
+            return PyByteArray.of(text);
+        }
+        // CPython's `unicode_result_unchanged` keeps the receiver only when it is the exact type: a
+        // bytes subclass is rebuilt as an exact bytes, so `B(b'x').strip() is not` the receiver.
+        return self.getClass() == PyBytes.class ? self : PyBytes.wrap(text);
     }
 
     static PyObject capitalized(PyObject self) {
@@ -1706,11 +1716,22 @@ public class PyBytes extends PyObject {
         return value;
     }
 
-    /** {@code bytes.fromhex(string)}: two digits per octet, with a space allowed between the pair. */
-    static PyObject fromHexadecimal(PyObject[] args, String[] kwNames, boolean mutable) {
+    /**
+     * {@code bytes.fromhex(string)}: two digits per octet, with a space allowed between the pair.
+     *
+     * <p>{@code fromhex} is a {@code METH_CLASS} method that builds a value of the class it was read
+     * through, so {@code B1.fromhex(...)} runs {@code B1.__new__} with the octets — the same rule
+     * {@code int.from_bytes} follows, and the reason the table files it with {@link Members#addClassNamed}.
+     */
+    static PyObject fromHexadecimal(
+            PyObject type, PyObject[] args, String[] kwNames, boolean mutable) {
         Arguments.exactlyOne(mutable ? "bytearray.fromhex()" : "bytes.fromhex()", args, kwNames);
         byte[] digits = hexadecimalDigits(args[0]);
-        return mutable ? PyByteArray.wrap(digits) : PyBytes.wrap(digits);
+        if (type == (mutable ? PyType.BYTEARRAY : PyType.BYTES)) {
+            return mutable ? PyByteArray.wrap(digits) : PyBytes.wrap(digits);
+        }
+        PyObject value = mutable ? PyByteArray.wrap(digits) : PyBytes.wrap(digits);
+        return Slots.call(type, new PyObject[] {value}, null);
     }
 
     /**

@@ -297,7 +297,9 @@ public class PyByteArray extends PyObject {
                     "translate",
                     "upper",
                     "zfill")
-            .addClass("fromhex", (args, kwNames) -> PyBytes.fromHexadecimal(args, kwNames, true))
+            .addClassNamed(
+                    "fromhex",
+                    (type, args, kwNames) -> PyBytes.fromHexadecimal(type, args, kwNames, true))
             .addStatic("maketrans", (args, kwNames) -> PyBytes.translationTable(args, kwNames, true))
             .document(
                     "__alloc__",
