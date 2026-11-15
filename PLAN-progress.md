@@ -674,3 +674,34 @@
 **七、回归**：`test_socket` 749／198／8／24／519、`test_ssl` 207／102／42／29／34（101／35↔102／34 是该套已知波动，旧输出 `final_ssl3`／`final_ssl4` 各居一边）、`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4、`test_tarfile` 768／396／23／0／349，均与基线一致。`test_os` 385／154／14／14／203，与任务书基线 385／140／13／19／213 有漂移；**把 `_stat` 从 `sys.modules` 屏蔽为 None 复跑结果完全相同**，证明漂移与本切片无关（落在 `os.mkdir` mode 与 `os.stat` 的 fd-PathLike 两处旧账：`MakedirTests.test_mode` 493≠365、`PathTConverterTests.test_path_t_converter(name='stat')`）。
 
 **门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+## M5 切片 53 明细：posix 面收口——`symlink`／`mkfifo`／`mkdir` mode／`stat` 的 PathLike·fd（2026-11-15）
+
+**一、现状实测（修前）**：`hasattr(os,'symlink')`／`hasattr(os,'mkfifo')`／`hasattr(os,'umask')` 全为假。`test_stat` **22／16／0／0／6**（4 个 skip：2 个 `os.mkfifo not available`、2 个 `Requires functional symlink implementation`）；`test_os` **385／154／14／14／203**，其中 `MakedirTests.test_mode` 报 `493 != 365`（`mode=0o555` 被当成 0o755 落地）、`PathTConverterTests.test_path_t_converter(name='stat')` 失败；`test_tarfile` **768／396／23／0／349**，16 个 skip 由 `can_symlink()`／`hasattr(os,'umask')` 判假造成。
+
+**二、四项做法**（全部在 [PosixModule.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PosixModule.java)）：
+
+1. `os.symlink(src, dst, target_is_directory=False, *, dir_fd=None)`：`Files.createSymbolicLink`；target 按调用方文本原样存进链接（不 resolve 虚拟 cwd），dst 走 `resolve`；dst 已存在 → `FileExistsError [Errno 17] File exists: 'src' -> 'dst'`，不覆盖；悬空 target 允许（实测 `createSymbolicLink` 不校验，与参考一致）；`target_is_directory` 接收后忽略；参数错误 `symlink: src should be string, bytes or os.PathLike, not float`；其他失败同样带两个文件名。`readlink` 往返逐字节对拍。
+2. `os.mkfifo(path, mode=0o666, *, dir_fd=None)`：JDK 无 FIFO API，**取用外部命令 `/usr/bin/mkfifo`**，再 `/bin/chmod` 落 `mode & ~umask & 07777`。这是**具名的外部命令依赖，不是 JDK 能力**，PLAN 已记明；拒绝用普通文件伪装（`stat` 类型位会错）。命令非零退出 → 取 stderr 末尾 C 库原文映射 errno，构造**两元素** OSError（参考 `mkfifo` 失败消息不带文件名，EEXIST／ENOENT／EPERM 实测皆如此）；失败清掉半成品。`0o2777` → `PermissionError [Errno 1] Operation not permitted`，与参考的 `chmod` EPERM 同。
+3. `os.mkdir(path, mode=0o777, *, dir_fd=None)`：`mode & ~umask & 0o777`，`createDirectory` 后 `setPosixFilePermissions` 精确落位；setuid/setgid/sticky 丢弃（macOS 同样丢弃，实测 `0o2777`→`0o755`、`0o4755`→`0o755`）。补 `os.umask`：**一个必传参数、返回旧值**；参考 3.14.10 无参调用是 `TypeError: posix.umask() takes exactly one argument (0 given)`，任务书说「无参查询」，按实测实现并在此记明差异。JVM 无 `umask(2)`，故 umask 是**本运行时字段**：首次使用时用 0o777 临时目录读回 `unix:mode` 反推进程真实掩码（本机 0o022），之后 `os.umask` 只改字段；`mkdir`／`mkfifo`／`os.open` 在本运行时内应用它，直达操作系统的路径仍看进程掩码。`os.open(..., O_CREAT, mode)` 一并改为 `mode & ~umask`（修前硬落 0o666，是 `test_tarfile` 的 `w|` 路径 `test_file_mode` 失败根因）。
+4. `os.stat(path, *, dir_fd=None, follow_symlinks=True)`：PathLike 沿用 `fsPath`；整数／bool 当 fd；`stat(-1)` 是哨兵，回落路径 `"-1"` 且错误文件名是**整数**（`FileNotFoundError: -1`）；其余无效 fd → `OSError [Errno 9] Bad file descriptor: -2`；越界 `OverflowError: fd is greater/less than maximum/minimum`；`stat(fd, follow_symlinks=False)` → `ValueError: stat: cannot use fd and follow_symlinks together`；`stat(fd, dir_fd=…)` → `ValueError: stat: can't specify dir_fd without matching path`；`lstat(int)` → `TypeError: lstat: path should be string, bytes or os.PathLike, not int`；`lstat` 仅 `path`／`dir_fd` 两个关键字。
+
+**三、`dir_fd` 统一口径**：JVM 无 `openat` 家族，五个入口（`mkdir`／`mkfifo`／`symlink`／`stat`／`lstat`）接受关键字后抛 `NotImplementedError: dir_fd unavailable on this platform`（CPython 平台缺失时的原文）。参考 macOS 支持 dir_fd（`dir_fd=0` 报 `NotADirectoryError`），这 5 行是语料里唯一不同的行；`posix._have_functions` 保持空元组，`os.supports_dir_fd` 为空，标准库测试会跳过 dir_fd 路径。
+
+**四、附带修掉一个死锁**：`mkfifo` 真能建 FIFO 后，`tarfile.extractall` 会给 FIFO 设时间，而 Java `BasicFileAttributeView.setTimes` 会 **open** 路径——打开无写端的 FIFO 永久阻塞（实测卡在 `test_extractall_none_gid`）。`utime` 对 FIFO 改走外部 **`/usr/bin/touch -a/-m -d`**（`utimensat` 不打开），ISO 8601 带 9 位小数与 `Z`，纳秒精确；同样具名外部命令。
+
+**五、语料对拍**（[corpus53.py](file:///tmp/m5_53/corpus53.py)）：临时目录里真做创建／重复创建／悬空链接／`readlink` 往返／`follow_symlinks` 两种／umask `0o027`／`0o077`／`0o022`／`0` 四种对 `mkdir`、对 `os.open`／FIFO 的纳秒时间／各错误文本。**53 行里只有 5 条 `dir_fd` 行不同，其余逐字节一致**。
+
+**六、五个套件修前修后**：
+
+| 套件 | 修前 | 修后 |
+| --- | --- | --- |
+| `test_stat` | 22／16／0／0／6 | **22／20／0／0／2**（4 个 mkfifo/symlink skip 转运行并真通过；余 2 个 Win32，同参考） |
+| `test_os` | 385／154／14／14／203 | **385／169／13／11／192**（11 skip 转运行全通过；`MakedirTests.test_mode`、`PathTConverterTests.test_path_t_converter` 转 ok；无新增失败） |
+| `test_os.TestScandir.test_broken_symlink` | skip | **ok**（3.14 无独立 `test_scandir`，该例在 test_os 内） |
+| `test_tarfile` | 768／396／23／0／349 | **768／411／23／1／333**（16 skip 转运行：15 通过、1 转 error；`F` 列表与修前相同，无新增 fail） |
+
+`test_tarfile` 多出的 1 个 error 是 `test_realpath_limit_attack`：只因 `skip_unless_symlink` 解锁才运行，实际缺 `os.pathconf_names`，与 symlink 语义无关。`GzipStreamWriteTest.test_file_mode`、`StreamWriteTest.test_file_mode` 两例由失败转通过（修 `os.open` 的 umask 后），是 `F` 列表减少的两条。
+
+**七、回归**：`test_socket` 749／198／8／24／519、`test_ssl` 207／102／41／30／34（与基线 102／42／29／34 的一例差异是该套 SNI race 例在 fail↔error 间摆动，总量不变）、`test_io` 675／512／83／60／20、`test_csv` 134／130／0／0／4，逐项与基线一致。
+
+**门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m26s，26 个任务）。

@@ -20,6 +20,7 @@ import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -190,6 +191,18 @@ final class PosixModule {
             Path.of(System.getProperty("user.dir", ".")).toAbsolutePath();
 
     /**
+     * The file-mode mask this runtime applies to the calls it makes itself.
+     *
+     * <p>A JVM has no {@code umask(2)} and no way to read the process's own, so the value starts out
+     * as the one the process was started with — measured once by creating a directory with known bits
+     * and reading back what the kernel allowed — and {@code os.umask} changes this field rather than
+     * the process. That is the honest split: {@code mkdir} and {@code mkfifo} honour it here because
+     * this runtime sets their final modes, while a call that goes straight to the operating system
+     * still sees the process mask. {@code -1} means "not measured yet".
+     */
+    private static int umask = -1;
+
+    /**
      * Where the runtime believes it is, for a child process that would inherit it.
      *
      * <p>{@code chdir} moves this path rather than the JVM's, so a child started without an explicit
@@ -273,9 +286,11 @@ final class PosixModule {
                         throw failure(error, path);
                     }
                     if (create && !existed) {
+                        // The kernel would have masked the mode with the process umask; creating
+                        // through Java sets no mode at all, so the mask is applied here instead.
+                        int created = Numbers.asIndex(values[2]).intValue() & ~umaskValue() & 0777;
                         try {
-                            Files.setPosixFilePermissions(
-                                    target, permissions(Numbers.asIndex(values[2]).intValue() & 0x1FF));
+                            Files.setPosixFilePermissions(target, permissions(created));
                         } catch (IOException | UnsupportedOperationException ignored) {
                             // A file system without permissions still has the file; the mode is advisory.
                         }
@@ -523,30 +538,7 @@ final class PosixModule {
                         + "Equivalent to os.stat(fd).",
                 (args, kwNames) -> {
                     Arguments.exactlyOne("fstat", args, kwNames);
-                    int fd = intArgument(args[0]);
-                    if (Fds.isFile(fd)) {
-                        // The descriptor names a real file, so the numbers come from the file itself.
-                        return statPath(new FsPath(Fds.path(fd).toString(), false), true);
-                    }
-                    long size = Fds.size(fd);
-                    // A descriptor in this table is a pipe or the null device; there is no file behind
-                    // one, so the mode names which, and every other field is the empty value.
-                    // 0o020000 (character device) or 0o010000 (FIFO), with 0o666.
-                    long mode = (Fds.isDevnull(fd) ? 8192 : 4096) | 438;
-                    return PyStatResult.of(
-                            new PyObject[] {
-                                PyInt.of(mode),
-                                PyInt.of(0),
-                                PyInt.of(0),
-                                PyInt.of(1),
-                                PyInt.of(0),
-                                PyInt.of(0),
-                                PyInt.of(size),
-                                PyInt.of(0),
-                                PyInt.of(0),
-                                PyInt.of(0),
-                            },
-                            0, 0, 0, 0, 0);
+                    return descriptorStat(intArgument(args[0]));
                 }));
         module.set("set_blocking", function(
                 "set_blocking",
@@ -722,15 +714,49 @@ final class PosixModule {
                 "mkdir($module, path, mode=511, *, dir_fd=None)\n--\n\n"
                         + "Create a directory.",
                 (args, kwNames) -> {
-                    PyObject[] values = Arguments.parameters(
-                            "mkdir", args, kwNames, PATH_AND_MODE, PATH_AND_MODE_DEFAULTS, 1);
+                    PyObject[] values = Arguments.unpackKeywords(
+                            "mkdir", args, kwNames,
+                            new String[] {"path", "mode", "dir_fd"}, 1, 2);
                     FsPath path = fsPath(values[0], "mkdir");
+                    int mode = values[1] == null ? 511 : intArgument(values[1]);
+                    if (values[2] != null) {
+                        throw dirFdUnavailable();
+                    }
+                    int actual = mode & ~umaskValue() & 0777;
+                    Path target = resolve(path.text());
                     try {
-                        Files.createDirectory(resolve(path.text()));
+                        Files.createDirectory(
+                                target, PosixFilePermissions.asFileAttribute(permissions(actual)));
                     } catch (IOException e) {
                         throw failure(e, path);
                     }
+                    try {
+                        // `mkdir(2)` would have applied the mask at creation; `createDirectory` did its
+                        // own, so the requested bits are set again after the fact. The special bits are
+                        // already dropped above, as macOS drops them on a new directory.
+                        Files.setPosixFilePermissions(target, permissions(actual));
+                    } catch (IOException e) {
+                        try {
+                            Files.deleteIfExists(target);
+                        } catch (IOException ignored) {
+                            // The directory is left behind only if it cannot be removed either.
+                        }
+                        throw failure(e, path);
+                    }
                     return PyNone.INSTANCE;
+                }));
+        module.set("umask", function(
+                "umask",
+                "umask($module, mask, /)\n--\n\n"
+                        + "Set the current numeric umask and return the previous umask.",
+                (args, kwNames) -> {
+                    // The reference spells this one with its module-qualified name, not the bare one
+                    // the other builtins in this file use.
+                    Arguments.exactlyOne("posix.umask()", args, kwNames);
+                    int requested = intArgument(args[0]);
+                    int previous = umaskValue();
+                    umask = requested;
+                    return PyInt.of(previous);
                 }));
         // The reference also takes `dir_fd` and `follow_symlinks` as keyword-only arguments; neither
         // has anything to change here, because there is no directory-fd notion and the Java call
@@ -796,6 +822,74 @@ final class PosixModule {
                     return path.bytes()
                             ? PyBytes.of(text.getBytes(StandardCharsets.UTF_8))
                             : PyStr.of(text);
+                }));
+        module.set("symlink", function(
+                "symlink",
+                "symlink($module, src, dst, target_is_directory=False, *, dir_fd=None)\n--\n\n"
+                        + "Create a symbolic link pointing to src named dst.",
+                (args, kwNames) -> {
+                    PyObject[] values = Arguments.unpackKeywords(
+                            "symlink", args, kwNames,
+                            new String[] {"src", "dst", "target_is_directory", "dir_fd"}, 2, 3);
+                    FsPath src = fsPath(values[0], "symlink", false, "src");
+                    FsPath dst = fsPath(values[1], "symlink", false, "dst");
+                    if (values[3] != null) {
+                        throw dirFdUnavailable();
+                    }
+                    // `target_is_directory` is read and dropped: it exists for Windows, and this
+                    // platform's symlink(2) has no such notion, which is why the reference ignores it.
+                    Path target = resolve(dst.text());
+                    Path linked;
+                    try {
+                        linked = Path.of(src.text());
+                    } catch (InvalidPathException unrepresentable) {
+                        throw failure(new NoSuchFileException(src.text()), src);
+                    }
+                    try {
+                        // The target is stored exactly as given, so a relative one stays relative to
+                        // the link's directory and readlink() answers the same bytes the call took.
+                        Files.createSymbolicLink(target, linked);
+                    } catch (IOException e) {
+                        // The reference's message names both ends: 'src' -> 'dst'.
+                        throw failure(e, src, dst);
+                    }
+                    return PyNone.INSTANCE;
+                }));
+        module.set("mkfifo", function(
+                "mkfifo",
+                "mkfifo($module, path, mode=438, *, dir_fd=None)\n--\n\n"
+                        + "Create a FIFO (named pipe).",
+                (args, kwNames) -> {
+                    PyObject[] values = Arguments.unpackKeywords(
+                            "mkfifo", args, kwNames,
+                            new String[] {"path", "mode", "dir_fd"}, 1, 2);
+                    FsPath path = fsPath(values[0], "mkfifo");
+                    int mode = values[1] == null ? 0666 : intArgument(values[1]);
+                    if (values[2] != null) {
+                        throw dirFdUnavailable();
+                    }
+                    Path target = resolve(path.text());
+                    // A JVM cannot make a FIFO: there is no mkfifo in java.nio.file, and faking one
+                    // with a regular file would make stat() lie about the type. The POSIX utility is
+                    // the only honest route, so it is named here as the external dependency it is.
+                    runCommand("/usr/bin/mkfifo", target.toString());
+                    int actual = mode & ~umaskValue() & 07777;
+                    try {
+                        // chmod is used rather than a file-permission update because a FIFO may carry
+                        // the sticky and setuid bits, which java.nio.file cannot spell. It refuses
+                        // setgid exactly as mkfifo(2) does here, which is the behaviour to keep.
+                        runCommand("/bin/chmod", Integer.toOctalString(actual), target.toString());
+                    } catch (PyRaise refused) {
+                        // mkfifo(2) with a setgid mode fails without creating anything; leave no FIFO
+                        // behind so the failure looks the same to the caller.
+                        try {
+                            Files.deleteIfExists(target);
+                        } catch (IOException ignored) {
+                            // Nothing more can be done about a file that will not go away.
+                        }
+                        throw refused;
+                    }
+                    return PyNone.INSTANCE;
                 }));
         module.set("rename", function(
                 "rename",
@@ -872,7 +966,14 @@ final class PosixModule {
                     BasicFileAttributeView view = Files.getFileAttributeView(
                             target, BasicFileAttributeView.class);
                     try {
-                        view.setTimes(mtime, atime, null);
+                        if (isFifo(target)) {
+                            // `setTimes` opens the path for attribute access, and opening a FIFO with no
+                            // writer blocks until one appears — while the reference's `utimensat` never
+                            // opens it. `touch` is the same syscall without the open.
+                            touchTimes(target, atime, mtime);
+                        } else {
+                            view.setTimes(mtime, atime, null);
+                        }
                     } catch (IOException e) {
                         throw failure(e, path);
                     }
@@ -1018,10 +1119,105 @@ final class PosixModule {
 
     private static PyObject stat(PyObject[] args, String[] kwNames, boolean follow) {
         String function = follow ? "stat" : "lstat";
-        PyObject[] values = Arguments.parameters(
-                function, args, kwNames, PATH_AND_FOLLOW, PATH_AND_FOLLOW_DEFAULTS, 1);
-        FsPath path = fsPath(values[0], function);
-        return statPath(path, follow && Slots.truth(values[1]));
+        // `follow_symlinks` is keyword-only for `stat` and absent from `lstat`; `dir_fd` is
+        // keyword-only for both. `path` is the one positional argument in either spelling.
+        PyObject[] values = follow
+                ? Arguments.unpackKeywords(function, args, kwNames,
+                        new String[] {"path", "dir_fd", "follow_symlinks"}, 1, 1)
+                : Arguments.unpackKeywords(function, args, kwNames,
+                        new String[] {"path", "dir_fd"}, 1, 1);
+        PyObject pathValue = values[0];
+        PyObject dirFd = values[1];
+        PyObject followValue = follow ? values[2] : null;
+        boolean follows = follow && (followValue == null || Slots.truth(followValue));
+
+        // Only `stat` reads an integer as a descriptor; `lstat` has no descriptor form, which is why
+        // its complaint leaves the integer out of the list of things it accepts.
+        if (follow && isInteger(pathValue)) {
+            int fd = fileDescriptor(pathValue);
+            if (!follows) {
+                throw Slots.valueError("%s: cannot use fd and follow_symlinks together", function);
+            }
+            if (dirFd != null) {
+                throw Slots.valueError("%s: can't specify dir_fd without matching path", function);
+            }
+            // The reference reads `-1` as "no descriptor here" and falls back to the path `"-1"`, so
+            // that a negative close() result can be handed straight to os.stat(). The failure it
+            // reports names the integer itself, not a quoted path.
+            if (fd == -1) {
+                Path candidate = resolve("-1");
+                if (!Files.exists(candidate)) {
+                    throw PyRaise.of(PyOSError.create(
+                            ExceptionTypes.OS_ERROR,
+                            new PyObject[] {
+                                PyInt.of(2), PyStr.of("No such file or directory"), PyInt.of(-1),
+                            }));
+                }
+                return statPath(new FsPath("-1", false), true);
+            }
+            if (!Fds.isOpen(fd)) {
+                throw PyRaise.of(PyOSError.create(
+                        ExceptionTypes.OS_ERROR,
+                        new PyObject[] {
+                            PyInt.of(9), PyStr.of("Bad file descriptor"), PyInt.of(fd),
+                        }));
+            }
+            return descriptorStat(fd);
+        }
+        if (dirFd != null) {
+            throw dirFdUnavailable();
+        }
+        FsPath path = fsPath(pathValue, function, follow);
+        return statPath(path, follows);
+    }
+
+    /** Whether a value is an integer the way the reference's path converter reads one. */
+    private static boolean isInteger(PyObject value) {
+        return value instanceof PyInt || value instanceof PyBool;
+    }
+
+    /**
+     * An integer path argument read as a C {@code int} descriptor, with the reference's two range
+     * complaints: it names which end of the range was crossed rather than a generic overflow.
+     */
+    private static int fileDescriptor(PyObject value) {
+        BigInteger number = Numbers.asIndex(value);
+        if (number.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
+            throw Slots.overflowError("fd is greater than maximum");
+        }
+        if (number.compareTo(BigInteger.valueOf(Integer.MIN_VALUE)) < 0) {
+            throw Slots.overflowError("fd is less than minimum");
+        }
+        return number.intValue();
+    }
+
+    /**
+     * {@code stat} over a descriptor this runtime's {@link Fds} table already knows.
+     *
+     * <p>A real file answers from the file itself. A pipe end or the null device has no file behind
+     * it, so the mode names which it is and every other field is the empty value: 0o020000 (character
+     * device) or 0o010000 (FIFO), with 0o666.
+     */
+    private static PyObject descriptorStat(int fd) {
+        if (Fds.isFile(fd)) {
+            return statPath(new FsPath(Fds.path(fd).toString(), false), true);
+        }
+        long size = Fds.size(fd);
+        long mode = (Fds.isDevnull(fd) ? 8192 : 4096) | 438;
+        return PyStatResult.of(
+                new PyObject[] {
+                    PyInt.of(mode),
+                    PyInt.of(0),
+                    PyInt.of(0),
+                    PyInt.of(1),
+                    PyInt.of(0),
+                    PyInt.of(0),
+                    PyInt.of(size),
+                    PyInt.of(0),
+                    PyInt.of(0),
+                    PyInt.of(0),
+                },
+                0, 0, 0, 0, 0);
     }
 
     /** {@code stat} over a path this module already spelled, which is also what a {@code DirEntry} asks. */
@@ -1125,6 +1321,136 @@ final class PosixModule {
         return perms;
     }
 
+    /**
+     * The current mask, measured on first use.
+     *
+     * <p>The probe creates a directory asking for 0o777 and reads back what the kernel allowed; the
+     * bits that vanished are the process's own mask. Doing it this way costs no external command and
+     * is as accurate as the file system is, and the probe directory is removed again.
+     */
+    private static synchronized int umaskValue() {
+        if (umask < 0) {
+            umask = measureUmask();
+        }
+        return umask;
+    }
+
+    private static int measureUmask() {
+        Path probe = null;
+        Path asked = null;
+        try {
+            probe = Files.createTempDirectory("jy3-umask");
+            asked = probe.resolve("probe");
+            Files.createDirectory(asked, PosixFilePermissions.asFileAttribute(permissions(0777)));
+            int granted = ((Number) Files.getAttribute(asked, "unix:mode")).intValue() & 0777;
+            return 0777 & ~granted;
+        } catch (IOException | RuntimeException unmeasurable) {
+            // A file system that cannot answer leaves the usual value rather than a guess of zero.
+            return 0022;
+        } finally {
+            if (asked != null) {
+                try {
+                    Files.deleteIfExists(asked);
+                } catch (IOException ignored) {
+                    // Best effort: the temporary directory goes away with the process anyway.
+                }
+            }
+            if (probe != null) {
+                try {
+                    Files.deleteIfExists(probe);
+                } catch (IOException ignored) {
+                    // As above.
+                }
+            }
+        }
+    }
+
+    /** The reference's refusal where a platform has no directory-relative calls. */
+    private static PyRaise dirFdUnavailable() {
+        return PyRaise.raise(
+                ExceptionTypes.NOT_IMPLEMENTED_ERROR, "dir_fd unavailable on this platform");
+    }
+
+    /**
+     * Whether {@code path} names a FIFO, the one file type whose attribute view cannot be opened.
+     *
+     * <p>{@code utime} is the only caller: setting times through Java opens the path, which a FIFO
+     * without a writer holds open forever.
+     */
+    private static boolean isFifo(Path path) {
+        try {
+            Object mode = Files.getAttribute(path, "unix:mode", LinkOption.NOFOLLOW_LINKS);
+            return mode instanceof Number number && (number.intValue() & 0170000) == 0010000;
+        } catch (IOException | RuntimeException unreadable) {
+            return false;
+        }
+    }
+
+    /**
+     * Set both times on a FIFO through {@code touch(1)}, whose {@code utimensat} does not open it.
+     *
+     * <p>{@code -d} takes an ISO 8601 instant with an explicit {@code Z} and nine fractional digits, so
+     * the nanoseconds the caller asked for survive exactly, as they do on a regular file.
+     */
+    private static void touchTimes(Path path, FileTime atime, FileTime mtime) {
+        runCommand("/usr/bin/touch", "-a", "-d", stamp(atime), path.toString());
+        runCommand("/usr/bin/touch", "-m", "-d", stamp(mtime), path.toString());
+    }
+
+    /** {@code YYYY-MM-DDThh:mm:SS.nnnnnnnnnZ}, the spelling {@code touch -d} reads back exactly. */
+    private static String stamp(FileTime time) {
+        java.time.Instant instant = time.toInstant();
+        java.time.LocalDateTime moment = java.time.LocalDateTime.ofEpochSecond(
+                instant.getEpochSecond(), 0, java.time.ZoneOffset.UTC);
+        return String.format(
+                "%04d-%02d-%02dT%02d:%02d:%02d.%09dZ",
+                moment.getYear(), moment.getMonthValue(), moment.getDayOfMonth(),
+                moment.getHour(), moment.getMinute(), moment.getSecond(), instant.getNano());
+    }
+
+    /**
+     * Run one POSIX command and turn its refusal into the exception the reference would have raised.
+     *
+     * <p>Two operations here have no JDK counterpart, so a utility is the implementation:
+     * {@code mkfifo} (no FIFO API in {@code java.nio.file}) and setting a FIFO's times ({@code setTimes}
+     * would open it and block). The utility's message ends in the C library's own wording, which is
+     * exactly what {@link #errno} maps, so the error a program sees keeps the errno the reference's
+     * system call failure would have carried.
+     */
+    private static void runCommand(String... command) {
+        Process process;
+        try {
+            process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        } catch (IOException missingUtility) {
+            throw PyRaise.raise(
+                    ExceptionTypes.NOT_IMPLEMENTED_ERROR,
+                    "the " + command[0] + " utility is needed on this platform");
+        }
+        String output;
+        try {
+            output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            process.waitFor();
+        } catch (IOException failed) {
+            process.destroyForcibly();
+            throw Slots.osError("cannot run %s: %s", command[0], failed.getMessage());
+        } catch (InterruptedException interrupted) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            throw Slots.osError("cannot run %s: %s", command[0], interrupted.getMessage());
+        }
+        if (process.exitValue() == 0) {
+            return;
+        }
+        String text = output.strip();
+        int colon = text.lastIndexOf(": ");
+        String reason = colon >= 0 ? text.substring(colon + 2) : text;
+        // The reference's mkfifo failure carries no file name, so neither does this one.
+        int number = errno(new FileSystemException(null, null, reason));
+        throw PyRaise.of(PyOSError.create(
+                ExceptionTypes.OS_ERROR,
+                new PyObject[] {PyInt.of(number), PyStr.of(strerror(number))}));
+    }
+
     static Path resolve(String path) {
         try {
             return cwd.resolve(path);
@@ -1192,6 +1518,23 @@ final class PosixModule {
     }
 
     static FsPath fsPath(PyObject value, String function) {
+        return fsPath(value, function, true, "path");
+    }
+
+    /**
+     * The same conversion, with the reference's two spellings of the complaint.
+     *
+     * <p>A call that also takes a descriptor ({@code stat}, {@code open}) says
+     * {@code "string, bytes, os.PathLike or integer"}; one that does not ({@code lstat}) leaves the
+     * integer out, and the punctuation differs too, because CPython's two format strings are not the
+     * same sentence. A call with more than one path names the argument it refused ({@code src},
+     * {@code dst}).
+     */
+    static FsPath fsPath(PyObject value, String function, boolean descriptor) {
+        return fsPath(value, function, descriptor, "path");
+    }
+
+    static FsPath fsPath(PyObject value, String function, boolean descriptor, String parameter) {
         value = Open.fspath(value);
         if (value instanceof PyStr text) {
             return new FsPath(text.getValue(), false);
@@ -1201,8 +1544,11 @@ final class PosixModule {
             return new FsPath(new String(bytes.getValue(), StandardCharsets.UTF_8), true);
         }
         throw Slots.typeError(
-                "%s: path should be string, bytes, os.PathLike or integer, not %s",
-                function, value.getType().name());
+                "%s: %s should be %s, not %s",
+                function,
+                parameter,
+                descriptor ? "string, bytes, os.PathLike or integer" : "string, bytes or os.PathLike",
+                value.getType().name());
     }
 
     /**
@@ -1251,6 +1597,30 @@ final class PosixModule {
                     path.bytes()
                             ? PyBytes.of(path.text().getBytes(StandardCharsets.UTF_8))
                             : PyStr.of(path.text()),
+                }));
+    }
+
+    /**
+     * The same failure for a call that takes two paths, whose message names both: {@code 'src' -> 'dst'}.
+     *
+     * <p>{@code symlink} is the only such call, and its refusal is spelled with the two file names
+     * after {@code strerror} — CPython fills {@code filename} and {@code filename2}, which display as
+     * one arrow.
+     */
+    static PyRaise failure(Exception error, FsPath first, FsPath second) {
+        int number = errno(error);
+        return PyRaise.of(PyOSError.create(
+                ExceptionTypes.OS_ERROR,
+                new PyObject[] {
+                    PyInt.of(number),
+                    PyStr.of(strerror(number)),
+                    first.bytes()
+                            ? PyBytes.of(first.text().getBytes(StandardCharsets.UTF_8))
+                            : PyStr.of(first.text()),
+                    PyNone.INSTANCE,
+                    second.bytes()
+                            ? PyBytes.of(second.text().getBytes(StandardCharsets.UTF_8))
+                            : PyStr.of(second.text()),
                 }));
     }
 

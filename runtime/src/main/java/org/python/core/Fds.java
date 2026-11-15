@@ -218,6 +218,11 @@ final class Fds {
         return slot != null && (slot.file != null || slot.directory);
     }
 
+    /** Whether {@code fd} is one of this table's numbers that has not been closed. */
+    static synchronized boolean isOpen(int fd) {
+        return peek(fd) != null;
+    }
+
     /**
      * The handle a real-file descriptor names, which is what {@code io.open(fd, 'r+b')} wraps.
      *
