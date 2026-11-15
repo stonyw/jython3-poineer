@@ -839,5 +839,48 @@
 
 **八、门禁**：`./gradlew check --rerun-tasks --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m4s**（26 个任务全部执行；`:harness:check` 12 例 smoke 全 PASS、surprises 0）。中途一次 `:runtime:test` 失败是 `IndexProtocolTest` 里按旧语义断言 `Sequences.indexStop(None, 4) == 4`——参考实测 `(1,).index(1, 0, None)` 是 `TypeError: slice indices must be integers or have an __index__ method`，该断言随之改为拒绝，重跑即绿。
 
+## M5 切片 57 明细：`collections.deque` 补成完整体并支持子类化（2026-11-16）
+
+**一、修前症状**：`import collections` 能过，但 `test_deque` 停在导入期——`NotImplementedError: subclassing 'deque' is not implemented`（`TestSubclass` 一被收集就断）；`deque.__dict__` 只有 20 个名字，切片 56 表 16 记的 `deque.index` 缺失仍未补。
+
+**二、方法面**（[PyDeque.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyDeque.java)）：`append`／`appendleft`／`extend`／`extendleft`／`pop`／`popleft`／`insert`／`remove`／`clear`／`copy`／`count`／`index`／`reverse`／`rotate`／`maxlen`，加上 `__add__`／`__mul__`／`__rmul__`／`__iadd__`／`__imul__`／`__contains__`／`__getitem__`／`__setitem__`／`__delitem__`／`__iter__`／`__reversed__`／`__len__`／`__eq__` 与比较家族／`__reduce__`。几处口径按参考实测：
+
+| 情形 | 参考行为（已对齐） |
+|---|---|
+| `deque(maxlen=-1)` | `ValueError: maxlen must be non-negative` |
+| `deque(maxlen=0)` | 任何 append／extend／insert 都不报错也不留元素（`append` 静默丢弃） |
+| 有界超长 | `append`／`extend` 从**左**丢；`appendleft`／`extendleft` 从**右**丢；`insert` 在满时答 `IndexError: deque already at its maximum size` |
+| `index` 缺省 `stop` | `PY_SSIZE_T_MAX`（不是 len）；`None` → `TypeError: slice indices must be integers or have an __index__ method` |
+| `index` 的 `start` 之前 | 仍然比较（CPython 的循环先比再判区间），命中 `start` 之前的值继续找 |
+| `d[10**20]` | `IndexError`（`cannot fit ... into an index-sized integer`）；`d[10**20] = x`／`del` 是 `OverflowError` |
+| `d[1.0]` | `TypeError: sequence index must be integer, not 'float'`（`setitem`／`delitem` 是 `cannot be interpreted as an integer`，走 `Numbers.repeat`） |
+| `rotate(0)`／取模后为 0 | 不 bump `state`；`reverse` 与 `d[i] = x` 也不 bump |
+| `iadd`／`imul`／`insert`／`delitem`／`clear` | bump `state`（迭代器与 `count`／`index`／`remove`／`in` 随即报 `deque mutated during iteration`） |
+| `deque() * -1`／`* 0` | 空 deque；`* 1.5` → `TypeError: can't multiply sequence by non-int of type 'float'`；`* 10**20` → `OverflowError` |
+| `deque() + [1]` | `TypeError: can only concatenate deque (not "list") to deque` |
+
+**三、子类化**：新增 [PyDequeSubclass.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyDequeSubclass.java)，与 `dict`／`set` 同走 `SubclassValue`——`__dict__` 读写、`__class__` 赋值被拒、`repr` 用子类名、`hash` 拒绝、比较／迭代／下标先问子类的 dunder 再落父类。[Classes.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Classes.java) 的 `allocate` 加 DEQUE 分支、`canDeriveFrom` 放行 `DEQUE`；`deque.__new__` 定 `maxlen`，`__init__` 其后照跑，因此 `D.__new__(D, [1,2], 5)` 是空的 `D`（`maxlen` 为 `None`），`d.__init__([7])` 清空并重置无界（仅非空时 bump `state`）。
+
+**四、slot wrapper 与自环**：[TypeDict.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/TypeDict.java) 新增 `dequeTable`，按 `deque.__dict__` 的 3.14.10 顺序登记 `__new__`／`__repr__`／`__hash__`（`None`）／`__getattribute__`／六个比较／`__iter__`／`__init__`／`__len__`／`__add__`／`__mul__`／`__rmul__`／`__getitem__`／`__setitem__`／`__delitem__`／`__contains__`／`__iadd__`／`__imul__`／方法面／`__class_getitem__`／`maxlen`／`__doc__`。每个 wrapper 调 `base*` 入口（`baseItem`／`baseSetItem`／`baseContains`／`baseCompare`／`baseBinaryOp`／`baseLength`／`baseIterator`／`baseRepr` 等）而不是虚槽，否则子类的 `__getitem__` 先落到 wrapper 再绕回自己成环。`copy`／`+`／`*` 改走 `tp_new`（`likeThis` 查子类的 `__new__`），`__new__` 交回非 deque 时答 `TypeError: X() must return a deque, not list`。
+
+**五、测试修前修后**：
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `import collections` | 通过 | 通过 |
+| `test_deque` | 导入期失败（`subclassing 'deque' is not implemented`） | **82 ran／79 ok／2 fail／0 err／1 skip**，`SUCCESSES 79` |
+| `test_set` | 630／616／4／10／0 | 630／616／4／10／0 |
+| `test_list` | 68／63／2／2／1 | 68／63／2／2／1 |
+| `test_dict` | 122／107／9／6／0 | 122／107／9／6／0 |
+
+两个 fail 都不是 deque 的：`TestBasic.test_sizeof` 断言 `object.__sizeof__(deque())` 与 `deque().__sizeof__()` 的 CPython 内存布局常数，而本运行时 `__sizeof__` 对 list／dict／set 一律返回 0（既有缺口，`@support.cpython_only`）；`TestSequence.test_repeat` 来自 `seq_tests.py`，断言的是 **tuple** `s*1` 返回自身，与 deque 无关。skip 是 `TestSequence.test_free_after_iterating`（依赖引用计数即时释放）。子类相关的 `test_weakref`（`Weakref.isWeakrefable` 加 `PyDeque`）与四个直接调 `d.__getitem__`／`d.__delitem__`／`d.__contains__` 的用例随本片转绿。
+
+**六、语料对拍**：[gate.py](file:///tmp/m5_57_gate.py)（方法面＋maxlen＋`+`／`*`＋子类＋pickle／copy）、[dict.py](file:///tmp/m5_57_dict.py)（28 个 dunder 的可见性、逐个直调、子类覆盖 `__repr__`／`__len__` 后的交互、weakref）、[corpus.py](file:///tmp/m5_57_corpus.py)（`maxlen` 边界 8 组、`index` 边界 13 组、下标与 `__index__` 拒绝 11 组、方法面 15 组、`repr`／比较 10 组、迭代器 8 组、pickle 0–5 协议、子类化 12 组）——**三份全部与参考 3.14.10 逐字节相同**，含 `deque.index` 的各条边界与错误原文。
+
+**七、回归**（最终二进制，与切片 56 基线逐项比）：`test_pyexpat` 86／47／14／87／17（`ok` 为负是 subTest 记账，`SUCCESSES` 47 为准）、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4（与切片 56 记录的同一例 `err`）、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／41／30／35（基线 101／42／29／35：同一个 SNI 例在 fail↔err 间摆动，总量不变）、`test_mmap` 53／40／0／2／11——**无一项越过基线**。
+
+**八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m3s**（26 个任务，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
+
+
 
 

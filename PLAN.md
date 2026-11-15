@@ -437,6 +437,21 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 - 回归：`test_pyexpat` 86／47／14／87／17、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／512／83／60／20、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／100／42／30／35（基线 101／42／29／35；已知 SNI race 在 ok↔err 间摆动）、`test_mmap` 53／40／0／2／11。
 - **门禁**：`./gradlew check --rerun-tasks --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m4s**（26 个任务全部执行，`:harness:check` 12 例 smoke 全 PASS、surprises 0）。
 
+### 3.14 M5 切片 57：`collections.deque` 补成完整体并支持子类化
+
+**动机**：切片 56 的普查把 `test_deque` 停在导入期——`NotImplementedError: subclassing 'deque' is not implemented`——并留下 `deque.index` 缺失一条（同表 16）。本片按参考 3.14.10 把 `deque` 的方法面一次补齐，并走既有的 `SubclassValue` 路径开放继承。
+
+**方法面**（[PyDeque.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyDeque.java)）：`append`／`appendleft`／`extend`／`extendleft`／`pop`／`popleft`／`insert`／`remove`／`clear`／`copy`／`count`／`index`／`reverse`／`rotate`／`maxlen`，以及 `__add__`／`__mul__`／`__rmul__`／`__iadd__`／`__imul__`／`__contains__`／`__getitem__`／`__setitem__`／`__delitem__`／`__iter__`／`__reversed__`／`__len__`／`__eq__` 与比较家族／`__reduce__`。`maxlen` 的负数原文（`maxlen must be non-negative`）、0 与超长裁剪方向逐条实测；`index` 的 `start`／`stop` 与 `None` 边界按 `list.index` 口径（缺省 `stop` 是 `PY_SSIZE_T_MAX`，`None` 被拒），`__eq__` 每步比对 `state` 报 `deque mutated during iteration`。
+
+**子类化**：[PyDequeSubclass.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyDequeSubclass.java) 与 dict／set 同路：值在 `__new__` 定死、`__init__` 其后照跑、继承槽在子类名下作答，`__dict__`／`__class__` 赋值／pickle／`copy`／`deepcopy`／`repr` 形状照参考实测。[Classes.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Classes.java) 放行 `DEQUE` 的继承与 `allocate`；`copy`／`+`／`*` 改走 `tp_new`，`__new__` 交回非 deque 时答 `X() must return a deque, not list`；[TypeDict.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/TypeDict.java) 新增 DEQUE 表，让 `d.__getitem__` 一类 slot wrapper 可见，每个 wrapper 调 `base*` 入口避免子类自环；[SequenceIterators.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/SequenceIterators.java) 补正向／反向两种游标与二元组 `__reduce__`，`collections` 导出 `_deque_iterator`／`_deque_reverse_iterator`；[Weakref.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/Weakref.java) 的白名单加入 `PyDeque`。
+
+**验证**：
+
+- `import collections` 修前成功、`test_deque` 修前导入期失败 → 修后 **82 ran／79 ok／2 fail／0 err／1 skip**；两个 fail 均为与本片无关的既有缺口（`test_sizeof` 的 `__sizeof__` 全类型返回 0、`test_repeat` 的 tuple `s*1` 不返回自身），skip 是 `test_free_after_iterating`（GC 确定性）。
+- 受影响套件不退：`test_set` 630／616／4／10／0、`test_list` 68／63／2／2／1、`test_dict` 122／107／9／6／0。
+- 语料（[gate.py](file:///tmp/m5_57_gate.py)、[dict.py](file:///tmp/m5_57_dict.py)、[corpus.py](file:///tmp/m5_57_corpus.py)）：方法面、`maxlen` 边界、`index` 边界、`repr` 与比较、pickle／copy、子类化（属性、重跑 `__init__`、`__new__`、`super().append`、`__class__` 赋值）——**与参考 3.14.10 逐字节相同**，`deque.index` 对拍通过。
+- 回归九套与门禁数字见 [PLAN-progress.md](file:///Users/stony/qoder/jython3-poineer/PLAN-progress.md) §切片 57。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

@@ -111,11 +111,39 @@ public class PyDeque extends PyObject {
         return result;
     }
 
-    /** A fresh deque of the same class and bound, used by {@code copy}, {@code +} and {@code *}. */
+    /**
+     * A fresh deque of the same class and bound, used by {@code copy}, {@code +} and {@code *}.
+     *
+     * <p>CPython builds these through {@code tp_new} rather than through the allocation routine, so a
+     * class that replaced {@code __new__} is consulted and a creator that hands back something other
+     * than a deque is refused — {@code "X() must return a deque, not list"} — instead of being quietly
+     * replaced by a deque of the wrong class.
+     */
     PyDeque likeThis() {
-        return getType() == PyType.DEQUE
-                ? new PyDeque(maxlen, PyType.DEQUE)
-                : new PyDequeSubclass(getType(), maxlen);
+        PyType kind = getType();
+        if (kind == PyType.DEQUE) {
+            return new PyDeque(maxlen, PyType.DEQUE);
+        }
+        PyObject declared = Specials.lookUp(kind, "__new__");
+        PyObject made;
+        if (declared == null) {
+            made = new PyDequeSubclass(kind, -1);
+        } else {
+            PyObject creator = declared instanceof PyClassMethod
+                    ? Descriptors.get(declared, null, kind)
+                    : declared;
+            PyObject[] withClass = {kind};
+            made = creator instanceof PyFunction plain
+                    ? plain.call(withClass, PyTuple.EMPTY)
+                    : Slots.call(creator, withClass, PyTuple.EMPTY);
+        }
+        if (!(made instanceof PyDeque deque)) {
+            throw Slots.typeError(
+                    "%s() must return a deque, not %s",
+                    kind.name(), made.getType().filedName());
+        }
+        deque.maxlen = maxlen;
+        return deque;
     }
 
     // ---------------------------------------------------------------- construction
@@ -464,18 +492,39 @@ public class PyDeque extends PyObject {
         throw Slots.typeError("unhashable type: '%s'", getType().filedName());
     }
 
+    /*
+     * The slot bodies the type dictionary's wrappers call.
+     *
+     * A subclass's `__getitem__` reaches the wrapper filed under the name before it reaches `super()`,
+     * so a wrapper that called the virtual slot would be sent straight back to the subclass. These
+     * entry points are the same bodies under names no subclass overrides; the virtual slots above them
+     * are what a plain deque and a `super()` call reach.
+     */
+
     @Override
     public PyObject length() {
+        return baseLength();
+    }
+
+    PyObject baseLength() {
         return PyInt.of(items.size());
     }
 
     @Override
     public PyObject truth() {
+        return baseTruth();
+    }
+
+    PyObject baseTruth() {
         return PyBool.of(!items.isEmpty());
     }
 
     @Override
     public PyObject getItem(PyObject key) {
+        return baseItem(key);
+    }
+
+    PyObject baseItem(PyObject key) {
         if (!Numbers.isIndex(key)) {
             throw Slots.typeError(
                     "sequence index must be integer, not '%s'", key.getType().filedName());
@@ -486,12 +535,20 @@ public class PyDeque extends PyObject {
 
     @Override
     public PyObject setItem(PyObject key, PyObject value) {
+        return baseSetItem(key, value);
+    }
+
+    PyObject baseSetItem(PyObject key, PyObject value) {
         items.set(checkedIndex(key), value);
         return PyNone.INSTANCE;
     }
 
     @Override
     public PyObject delItem(PyObject key) {
+        return baseDelItem(key);
+    }
+
+    PyObject baseDelItem(PyObject key) {
         items.remove(checkedIndex(key));
         state++;
         return PyNone.INSTANCE;
@@ -515,6 +572,10 @@ public class PyDeque extends PyObject {
 
     @Override
     public PyObject contains(PyObject value) {
+        return baseContains(value);
+    }
+
+    PyObject baseContains(PyObject value) {
         long expected = state;
         for (int i = 0; i < items.size(); i++) {
             if (Slots.compareTrue(CompareOp.EQ, items.get(i), value)) {
@@ -529,6 +590,10 @@ public class PyDeque extends PyObject {
 
     @Override
     public PyIterator iterator() {
+        return baseIterator();
+    }
+
+    PyIterator baseIterator() {
         return SequenceIterators.deque(this);
     }
 
@@ -544,6 +609,10 @@ public class PyDeque extends PyObject {
 
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
+        return baseBinaryOp(op, other);
+    }
+
+    PyObject baseBinaryOp(BinaryOp op, PyObject other) {
         if (op == BinaryOp.ADD) {
             return added(other);
         }
@@ -555,12 +624,20 @@ public class PyDeque extends PyObject {
 
     @Override
     public PyObject reflectedOp(BinaryOp op, PyObject other) {
+        return baseReflectedOp(op, other);
+    }
+
+    PyObject baseReflectedOp(BinaryOp op, PyObject other) {
         return op == BinaryOp.MUL ? repeated(Sequences.multiplier(other))
                 : PyNotImplemented.INSTANCE;
     }
 
     @Override
     public PyObject inplaceOp(BinaryOp op, PyObject other) {
+        return baseInplaceOp(op, other);
+    }
+
+    PyObject baseInplaceOp(BinaryOp op, PyObject other) {
         if (op == BinaryOp.ADD) {
             extendRight(other);
             return this;
@@ -574,6 +651,10 @@ public class PyDeque extends PyObject {
 
     @Override
     public PyObject richCompare(CompareOp op, PyObject other) {
+        return baseCompare(op, other);
+    }
+
+    PyObject baseCompare(CompareOp op, PyObject other) {
         if (!(other instanceof PyDeque deque)) {
             return PyNotImplemented.INSTANCE;
         }
@@ -583,11 +664,20 @@ public class PyDeque extends PyObject {
 
     @Override
     public boolean eq(PyObject other) {
+        return baseEq(other);
+    }
+
+    boolean baseEq(PyObject other) {
         return other instanceof PyDeque deque && items.equals(deque.items);
     }
 
     @Override
     public String repr() {
+        return baseRepr();
+    }
+
+    /** The repr text with CPython's re-entry guard around it. */
+    String baseRepr() {
         if (enteringRepr(this)) {
             return "[...]";
         }

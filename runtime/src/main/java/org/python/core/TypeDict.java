@@ -477,6 +477,9 @@ final class TypeDict {
     private static final String LIST_CLASS_GETITEM_DOC =
             "lists are generic over the type of their contents";
 
+    private static final String DEQUE_CLASS_GETITEM_DOC =
+            "deques are generic over the type of their contents";
+
     private static final String TUPLE_CLASS_GETITEM_DOC =
             "Tuples are generic over the types of their contents.\n"
                     + "\n"
@@ -893,6 +896,10 @@ final class TypeDict {
         }
         if (owner == PyType.LIST) {
             listTable(into);
+            return;
+        }
+        if (owner == PyType.DEQUE) {
+            dequeTable(into);
             return;
         }
         if (owner == PyType.TUPLE) {
@@ -2866,6 +2873,69 @@ final class TypeDict {
     }
 
     /**
+     * {@code collections.deque}'s own dictionary: the names {@code _collectionsmodule.c} files.
+     *
+     * <p>Eighteen are slots. {@code __hash__} is {@code None} for the reason a list's is: the deque is
+     * mutable, so the inherited identity hash is out of reach and {@code hash(deque())} complains about
+     * unhashability. {@code __getitem__}, {@code __setitem__} and {@code __delitem__} are the sequence
+     * protocol's three, all present because a deque supports indexing at both ends while refusing slices
+     * with the sequence-index sentence. The two in-place slots come after {@code __contains__}, and the
+     * methods a person calls follow them in {@code deque_methods}' order, with {@code __reduce__} filed
+     * between {@code popleft} and {@code remove} exactly where CPython puts it.
+     *
+     * <p>Every wrapper calls the base body rather than the virtual slot. A class written over
+     * {@code deque} reaches this row before it reaches {@code super()}, so routing a wrapper through the
+     * virtual slot would send it back to the subclass that asked; the {@code base*} entry points are the
+     * same bodies under names no subclass overrides.
+     */
+    private static void dequeTable(PyDict into) {
+        PyType owner = PyType.DEQUE;
+        Table table = new Table(owner, into);
+        table.raw("__new__", NEW_DOC, TypeDict::dequesNew);
+        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(((PyDeque) args[0]).baseRepr()));
+        table.value("__hash__", PyNone.INSTANCE);
+        table.wrapper("__getattribute__", GETATTR_DOC, TypeDict::objectGetAttribute);
+        table.wrapper("__lt__", LT_DOC, dequeComparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, dequeComparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, dequeComparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, dequeComparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, dequeComparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, dequeComparing(CompareOp.GE));
+        table.wrapper("__iter__", ITER_DOC, args -> ((PyDeque) args[0]).baseIterator());
+        table.named("__init__");
+        table.wrapper("__len__", LEN_DOC, args -> ((PyDeque) args[0]).baseLength());
+        table.wrapper("__add__", ADD_DOC, args -> ((PyDeque) args[0]).baseBinaryOp(BinaryOp.ADD, args[1]));
+        table.wrapper("__mul__", MUL_DOC, args -> ((PyDeque) args[0]).baseBinaryOp(BinaryOp.MUL, args[1]));
+        table.wrapper(
+                "__rmul__", RMUL_DOC, args -> ((PyDeque) args[0]).baseReflectedOp(BinaryOp.MUL, args[1]));
+        table.wrapper("__getitem__", GETITEM_DOC, args -> ((PyDeque) args[0]).baseItem(args[1]));
+        table.wrapper(
+                "__setitem__",
+                SETITEM_DOC,
+                args -> ((PyDeque) args[0]).baseSetItem(args[1], args[2]));
+        table.wrapper("__delitem__", DELITEM_DOC, args -> ((PyDeque) args[0]).baseDelItem(args[1]));
+        table.wrapper(
+                "__contains__", CONTAINS_DOC, args -> ((PyDeque) args[0]).baseContains(args[1]));
+        table.wrapper("__iadd__", IADD_DOC, args -> ((PyDeque) args[0]).baseInplaceOp(BinaryOp.ADD, args[1]));
+        table.wrapper(
+                "__imul__",
+                IMUL_DOC,
+                args -> ((PyDeque) args[0]).baseInplaceOp(BinaryOp.MUL, PyInt.of(Numbers.repeat(args[1]))));
+        table.named(
+                "append", "appendleft", "clear", "__copy__", "copy", "count", "extend", "extendleft",
+                "index", "insert", "pop", "popleft", "__reduce__", "remove", "__reversed__", "reverse",
+                "rotate");
+        table.genericSubscript(DEQUE_CLASS_GETITEM_DOC);
+        table.named("maxlen");
+        table.value("__doc__", docValue(owner));
+    }
+
+    /** {@code deque.__lt__} and the rest: the contents' comparison, never the virtual slot again. */
+    private static Method dequeComparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> ((PyDeque) args[0]).baseCompare(cmp, args[1]);
+    }
+
+    /**
      * {@code tuple}'s own dictionary: the twenty-one names an immutable sequence files.
      *
      * <p>Fifteen slots, and every one of them the sequence protocol's — {@code __getitem__} is the
@@ -4734,6 +4804,18 @@ final class TypeDict {
     private static PyObject listsNew(PyObject[] args, String[] kwNames, String qualified) {
         PyType kind = declaredClass(PyType.LIST, args, kwNames);
         return kind == PyType.LIST ? PyList.empty() : new PyListInstance(kind);
+    }
+
+    /**
+     * {@code deque.__new__}: the class is checked and the arguments are dropped.
+     *
+     * <p>{@code deque_new} allocates the blocks and leaves both arguments to {@code deque.__init__}, so
+     * {@code deque.__new__(deque, 'ab', 3)} is an empty, unbounded deque — the constructor is the pair,
+     * and the slot alone is only the allocation.
+     */
+    private static PyObject dequesNew(PyObject[] args, String[] kwNames, String qualified) {
+        PyType kind = declaredClass(PyType.DEQUE, args, kwNames);
+        return kind == PyType.DEQUE ? new PyDeque() : new PyDequeSubclass(kind, -1);
     }
 
     /**

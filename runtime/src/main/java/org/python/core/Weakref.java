@@ -68,6 +68,9 @@ final class Weakref {
                 || value instanceof PyBoundBuiltin
                 || value instanceof PySet
                 || value instanceof PyFrozenSet
+                // `deque` carries a weak list in the reference, which is what lets `test_deque`'s
+                // subclass take a reference to itself.
+                || value instanceof PyDeque
                 || value instanceof PyModule
                 || value instanceof PyMemoryView
                 || value instanceof PyMmap
