@@ -168,7 +168,7 @@ public class PyStr extends PyObject {
             return PyStr.of(value + text.value);
         }
         if (op == BinaryOp.MUL) {
-            return PyStr.of(repeated(other));
+            return repeated(other);
         }
         if (op == BinaryOp.MOD) {
             return Percent.format(this, other);
@@ -179,7 +179,7 @@ public class PyStr extends PyObject {
     @Override
     public PyObject reflectedOp(BinaryOp op, PyObject other) {
         // Only `__rmul__`: a str has no `__radd__`, which is why `1 + "a"` reports the int's failure.
-        return op == BinaryOp.MUL ? PyStr.of(repeated(other)) : PyNotImplemented.INSTANCE;
+        return op == BinaryOp.MUL ? repeated(other) : PyNotImplemented.INSTANCE;
     }
 
     /**
@@ -246,18 +246,23 @@ public class PyStr extends PyObject {
      * {@code str}'s own to refuse — {@code unicode_repeat} is the one sequence repeat that answers an
      * {@code OverflowError} with a sentence about the string rather than a {@code MemoryError}.
      */
-    private String repeated(PyObject times) {
+    private PyObject repeated(PyObject times) {
         long count = Sequences.multiplier(times);
+        // `unicode_repeat` returns the same string for a count of one, for an exact string only; a
+        // subclass is repeated into a plain string and never returns itself.
+        if (count == 1 && getClass() == PyStr.class) {
+            return this;
+        }
         int total =
                 Sequences.scaled(codePoints, count, "repeated string is too long");
         if (total == 0) {
-            return "";
+            return PyStr.of("");
         }
         StringBuilder out = new StringBuilder(total);
         for (long at = 0; at < count; at++) {
             out.append(value);
         }
-        return out.toString();
+        return PyStr.of(out.toString());
     }
 
     /** Code-point order, which is not {@link String#compareTo}: {@code '\U00010000' > '\uffff'}. */

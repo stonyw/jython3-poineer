@@ -130,7 +130,7 @@ public class PyBytes extends PyObject {
             return PyBytes.wrap(concat(value, octets(other)));
         }
         if (op == BinaryOp.MUL) {
-            return PyBytes.wrap(repeated(other));
+            return repeated(other);
         }
         if (op == BinaryOp.MOD) {
             return PyBytes.wrap(OctetFormat.format(value, other));
@@ -149,11 +149,16 @@ public class PyBytes extends PyObject {
      * <p>The multiplier is {@link Sequences}' to read and the length of the result is {@code bytes}' own
      * to refuse, in the one word that differs from a string's: {@code repeated bytes are too long}.
      */
-    private byte[] repeated(PyObject times) {
+    private PyObject repeated(PyObject times) {
         long count = Sequences.multiplier(times);
+        // `bytes_repeat` returns the same bytes for a count of one, for exact bytes only; a subclass
+        // is repeated into plain bytes and never returns itself.
+        if (count == 1 && getClass() == PyBytes.class) {
+            return this;
+        }
         int total = Sequences.scaled(value.length, count, "repeated bytes are too long");
         if (total == 0) {
-            return new byte[0];
+            return PyBytes.wrap(new byte[0]);
         }
         byte[] out = new byte[total];
         for (int at = 0; at < out.length; ) {
@@ -161,7 +166,7 @@ public class PyBytes extends PyObject {
                 out[at++] = b;
             }
         }
-        return out;
+        return PyBytes.wrap(out);
     }
 
     /**

@@ -92,7 +92,14 @@ public class PyTuple extends PyObject {
             return new PyTuple(joined);
         }
         if (op == BinaryOp.MUL) {
-            return new PyTuple(Sequences.multiplied(items, other));
+            // CPython's `tuple_repeat` hands back the same tuple for a count of one, but only for an
+            // exact tuple: a subclass is repeated into a plain tuple and never returns itself.
+            long times = Sequences.multiplier(other);
+            if (times == 1 && getClass() == PyTuple.class) {
+                return this;
+            }
+            PyObject[] repeated = Sequences.repeat(items, times);
+            return repeated.length == 0 ? EMPTY : new PyTuple(repeated);
         }
         return PyNotImplemented.INSTANCE;
     }
