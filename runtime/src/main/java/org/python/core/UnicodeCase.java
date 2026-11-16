@@ -2260,6 +2260,31 @@ final class UnicodeCase {
         return at < 0 ? code : SimpleLower.VALUES[at];
     }
 
+    /** How many code points have a simple lowercase mapping that differs from themselves. */
+    static int simpleLowerCount() {
+        return SimpleLower.KEYS.length;
+    }
+
+    /** The code point at one index of the simple lowercase table. */
+    static int simpleLowerKey(int index) {
+        return SimpleLower.KEYS[index];
+    }
+
+    /** The image of the code point at one index of the simple lowercase table. */
+    static int simpleLowerValue(int index) {
+        return SimpleLower.VALUES[index];
+    }
+
+    /** The sorted code points that have a simple lowercase mapping of their own. */
+    static int[] simpleLowerKeys() {
+        return SimpleLower.KEYS;
+    }
+
+    /** The sorted keys of {@code _EXTRA_CASES}. */
+    static int[] extraCaseKeys() {
+        return ExtraCases.KEYS;
+    }
+
     /** Whether {@code _sre.unicode_iscased} calls one code point cased. */
     static boolean sreCased(int code) {
         return inRanges(SreCased.RANGES, code);
