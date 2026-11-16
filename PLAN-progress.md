@@ -1598,5 +1598,5 @@ JVM 没有终端行规程：`java.io`／`java.nio` 只搬字节，没有 `struct
 `pty`／`termios`／`tty` 由 `ModuleNotFoundError` 转 `OK`，其余 294 名不变。普查须带 `PYTHONPATH=$STD:$PWD`。
 
 **八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m15s，
-26 任务：8 executed／18 up-to-date；`:harness:check` 的 smoke 12/12 PASS、surprises 0）。提交：代码一笔，
-本文件与 `PLAN.md` 一笔。
+26 任务：8 executed／18 up-to-date；`:harness:check` 的 smoke 12/12 PASS、surprises 0）。提交：代码 `90d3a8f`
+一笔，本文件与 `PLAN.md` 一笔。

@@ -1038,7 +1038,7 @@ Drivers registered with java.sql.DriverManager: none.
 
 **七、导入普查**：297 名 **234／61／2**（切片 70 为 231／64／2），**+3 恰好是 `termios`／`tty`／`pty`**，逐名 diff 无其他变动。
 
-**八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m15s；详见 `PLAN-progress.md`）。提交：代码一笔，本文件与 `PLAN-progress.md` 一笔。
+**八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m15s；详见 `PLAN-progress.md`）。提交：代码 `90d3a8f` 一笔，本文件与 `PLAN-progress.md` 一笔。
 
 ## 4. 明确不做
 
