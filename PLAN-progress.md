@@ -1233,3 +1233,81 @@ UPDATE 后 `None`、关闭后 `None`（`close→clear` 与参考同）。
 `test_memoryview` 171／124／0／27／20 与基线一致；`./gradlew check --no-watch-fs
 -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：`lastrowid` 一笔（`1e07028`），
 `DBApiType`＋六个方法一笔，PLAN 双文件一笔。
+
+## M5 切片 68 明细（度量：普查 218／77／2、25 套判据复测、5 个候选；2026-11-16）
+
+本片只测量、不改功能。探针与判据口径：`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`；
+普查脚本在父进程 `sys.path.insert(0, STD)` 后逐名 `__import__`；判据 `env PYTHONPATH=$STD:$PWD jy3
+/tmp/m5_58/run_test2.py test.test_xxx`（`PATH` 含 `$PWD/embedding/build/install/jy3/bin`）。
+`PYTHONPATH` 缺 `$STD` 时 `assert_python_ok` 子进程报 `No module named 'warnings'`，`test_fstring`／
+`test_descr` 假失败（切片 62 教训的判据侧复现）；补上后两套立即回基线。
+
+**一、普查（297 名，与切片 25 同口径）**：**218 可导入／77 不可／2 跳过**（切片 25：200／95／2）。
+净变化 +18 ＝ 新转入 19 − 新退化 1。输出 `/tmp/m5_68/imports.out`。
+
+新转入 19：`_android_support`、`_apple_support`、`_ast_unparse`、`_csv`、`_operator`、`_ssl`、`_stat`、
+`csv`、`marshal`、`mmap`、`modulefinder`、`plistlib`、`profile`、`pstats`、`pyexpat`、`ssl`、
+`statistics`、`stringprep`、`tarfile`。可定位的落地：`_csv`／`csv`（38）、`_ssl`／`ssl`（47–50）、
+`_stat`／`stat`（52）、`pyexpat`（54）、`mmap`（55）、`stringprep`（48）；其余为依赖链连带解开。
+
+新退化 1：**`configparser`** —— `configparser.py:576 | TypeError: nonempty __slots__ not supported
+for subtype of 'str'`（`class _Line(str)` 的 `__slots__ = 'clean', 'has_comments'`）。CPython 3.14.10
+接受同一脚本（`/tmp/m5_68/slot.py` → `cpython-ok x 1`），jy3 拒绝。根因 `Classes.carriesItems`
+（`Classes.java:1127`）含 `PyType.STR`，而参考 `PyUnicode_Type.tp_itemsize == 0`
+（`refs/cpython/Objects/unicodeobject.c:15837`），故 `str` 应放行、`int`／`bytes`／`tuple` 仍拒。
+归因 `32854ba`（M6-a 切片 35 的 `__slots__` 拒绝分支）。真回归，本片未修。
+
+分簇 77：缺底层 C 扩展（含纯 Python 包装）56 → `_json`、`_pickle`、`_elementtree`、`_decimal`、
+`_asyncio`、`_functools`、`_heapq`、`_codecs_*`、`_sqlite3`、`_tkinter`、`_ctypes`，包装层 `bz2`／
+`lzma`／`sqlite3`／`ctypes`／`curses`／`tkinter`／`turtle`／`cProfile`／`symtable`／`tracemalloc`／
+`pty`／`tty`；缺模块本身 3 → `_frozen_importlib`、`_frozen_importlib_external`、`pydoc`；平台专用 15
+→ `fcntl`／`grp`／`pwd`／`readline`／`syslog`／`termios`／`_scproxy`／`_posixshmem`（POSIX／macOS）
+与 `msvcrt`／`nt`／`winreg`／`winsound`／`_winapi`／`_wmi`／`_overlapped`（Windows）；缺 sys／运行时 2
+→ `site`（`sys.copyright`）、`ensurepip`（`importlib.resources`）；语义回归 1 → `configparser`。
+簇 56 ＝ 44 个 `_` 前缀 C 模块（含 `cmath`／`faulthandler`）＋ 12 个包装层。
+
+**二、25 套判据复测**（`ok = ran − fail − err − skip` 逐行校验）：
+
+| 套件 | ran | ok | fail | err | skip | 与 PLAN |
+|---|---|---|---|---|---|---|
+| test_class | 42 | 39 | 1 | 0 | 2 | 同 §3.2 |
+| test_exceptions | 112 | 94 | 4 | 1 | 13 | 同 §3.2（排除挂死例） |
+| test_builtin | 147 | −663 | 1 | 801 | 8 | 同 §3.2（subTest 记账） |
+| test_generators | 59 | 52 | 4 | 2 | 1 | 同 §3.2 |
+| test_fstring | 95 | 95 | 0 | 0 | 0 | 同 §3.2（须 `$STD`） |
+| test_types | 128 | 124 | 0 | 2 | 2 | 同 §3.2 |
+| test_descr | 163 | 147 | 4 | 4 | 8 | 同 §3.2（须 `$STD`） |
+| test_re | 166 | 129 | 21 | 12 | 4 | 同 §3.20 |
+| test_io | 675 | 515 | 82 | 58 | 20 | 同 §3.21 |
+| test_bytes | 325 | 298 | 6 | 8 | 13 | 同 §3.21 |
+| test_str | 139 | 120 | 2 | 10 | 7 | 同 §3.21（切片 64 已记 err→ok） |
+| test_memoryview | 171 | 124 | 0 | 27 | 20 | 同 §3.21 |
+| test_array | 893 | 809 | 14 | 42 | 28 | 同 §3.21 |
+| test_csv | 134 | 129 | 0 | 1 | 4 | 同 §3.21 |
+| test_tarfile | 768 | 411 | 23 | 1 | 333 | 同 §3.21 |
+| test_socket | 749 | 198 | 8 | 24 | 519 | 同 §3.21 |
+| test_ssl | 207 | 101 | 42 | 30 | 34 | 1 ok→fail（切片 61 记 102／41；已知 SNI race，fail+err=72 不变） |
+| test_os | 385 | 169 | 13 | 11 | 192 | 切片 54 记 168／12；该片自记相对切片 53 的 1 例摆动，本片复现 169／11 |
+| test_stat | 22 | 20 | 0 | 0 | 2 | 同 §3.9 |
+| test_mmap | 53 | 40 | 0 | 2 | 11 | 同 §3.21 |
+| test_deque | 82 | 80 | 1 | 0 | 1 | 同 §3.21 |
+| test_list | 68 | 64 | 1 | 2 | 1 | 同 §3.21 |
+| test_tuple | 39 | 32 | 6 | 1 | 0 | 同 §3.21 |
+| test_pyexpat | 86 | −32 | 14 | 87 | 17 | 同 §3.11（subTest 记账） |
+| test_xml_etree | 233 | 200 | 12 | 14 | 7 | 同 §3.11 |
+
+只有两处差异，均为已具名摆动：`test_ssl` 的 SNI race（ok↔fail，总数不变）、`test_os` 的 1 例
+ok↔err（切片 54 已记）。`test_str` 的改善属切片 64，不是本片变化。无真回归。
+
+**三、旧 53 名子集**：仍 **52／53**；唯一失败 `pydoc`（`pydoc.py:59 | No module named
+'importlib._bootstrap'`）。与切片 25 的 51／53→52／53 一致，无新退化。
+
+**四、候选（本片不动手）**：①CJK 编解码器族 7 名（`_multibytecodec`＋六个 `_codecs_*`；模块数最多，
+成本中高）；②导入机三名（`_frozen_importlib`／`_frozen_importlib_external`／`importlib._bootstrap`，
+同时收口 `pydoc` 与 53 子集；成本低）；③`termios`／`tty`／`pty` 3 名（`pty` 缺伪终端，实际约 2 名；
+成本中高）；④`site`＋`ensurepip` 2 名（`sys.copyright`＋`importlib.resources`；成本极低）；
+⑤`configparser` 回归修复 1 名（`carriesItems` 去掉 `STR`；成本极低，建议最先做）。备选 `cmath`；
+`_elementtree`（0 模块、开 `test_xml_etree_c` 整族但成本高）暂不列；纯加速档 0 模块不列。
+
+**五、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**
+（无功能代码改动）。
