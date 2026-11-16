@@ -48,7 +48,9 @@ public final class PyRuntime {
             {"builtins", "sys", "_ast", "_datetime", "_socket", "_io", "_tokenize", "_opcode", "_signal",
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "zlib", "array", "mmap", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
-                "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
+                "_blake2", "_codecs", "_multibytecodec", "_codecs_cn", "_codecs_hk", "_codecs_jp",
+                "_codecs_kr", "_codecs_tw", "_codecs_iso2022", "errno", "math", "time", "posix",
+                "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
                 "_csv", "_stat", "zxJDBC"};
 
@@ -398,6 +400,11 @@ public final class PyRuntime {
         }
         modules.put(PyStr.interned("errno"), errnoModule);
         modules.put(PyStr.interned("_codecs"), codecsModule);
+        // The CJK codec family. `_multibytecodec` holds the four base types and the six language
+        // modules answer `getcodec`, which is what every `encodings/*.py` in this family imports.
+        for (String cjk : MultibyteCodecModule.MODULES) {
+            modules.put(PyStr.interned(cjk), MultibyteCodecModule.newModule(cjk));
+        }
         modules.put(PyStr.interned("_operator"), operatorModule);
         modules.put(PyStr.interned("math"), mathModule);
         modules.put(PyStr.interned("time"), timeModule);
