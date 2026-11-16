@@ -1120,17 +1120,20 @@ final class Classes {
 
     /**
      * The compiled-in types whose values carry their payload after the header, so their instance size
-     * grows with the value's contents: {@code int}'s digits, the bytes of {@code bytes}, and a tuple's
-     * item pointers. {@code str} is <em>not</em> one of them: 3.14's compact unicode keeps
-     * {@code PyUnicode_Type.tp_itemsize == 0} and sizes itself through {@code tp_alloc}, which is why
-     * {@code class _Line(str): __slots__ = (...)} is accepted (gh-118767-era layout). {@code bytearray}
-     * is not one either — its octets live in a separate buffer — which is why it may be extended with
-     * slots.
+     * grows with the value's contents: {@code int}'s digits, the bytes of {@code bytes}, a tuple's item
+     * pointers, and a type's {@code PyMemberDef} array. {@code str} is <em>not</em> one of them:
+     * 3.14's compact unicode keeps {@code PyUnicode_Type.tp_itemsize == 0} and sizes itself through
+     * {@code tp_alloc}, which is why {@code class _Line(str): __slots__ = (...)} is accepted
+     * (gh-118767-era layout). {@code bytearray} is not one either — its octets live in a separate
+     * buffer — and neither are {@code float} or {@code complex}, whose values are single C structs.
+     * {@code bool} has {@code tp_itemsize == sizeof(digit)}, but is not an acceptable base, so the
+     * check never sees it; {@code memoryview} likewise has a non-zero itemsize yet is not a base.
      */
     private static boolean carriesItems(PyType type) {
         return type == PyType.INT
                 || type == PyType.BYTES
-                || type == PyType.TUPLE;
+                || type == PyType.TUPLE
+                || type == PyType.TYPE;
     }
 
     /** {@code type_set_name}: the surrogate check that runs before the null-character one. */
