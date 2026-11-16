@@ -4,6 +4,12 @@
 # working directory may be anything answering `__fspath__`; a value that does not is refused with
 # `os.fspath`'s own sentence.  `pathlib.Path` is the case the test suite exercises.
 
+import sys
+
+# 与其它语料同一份参考库：`pathlib`／`subprocess` 都是标准库模块，子进程是 `/bin/echo`。
+STD = "/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14"
+sys.path.insert(0, STD)
+
 import pathlib
 import subprocess
 
@@ -27,7 +33,18 @@ attempt("path-as-executable", lambda: subprocess.run(
     ["echo", "y"], executable=echo, capture_output=True, text=True))
 attempt("path-as-cwd", lambda: subprocess.run(
     ["/bin/echo", "z"], cwd=pathlib.Path("/tmp"), capture_output=True, text=True))
-attempt("path-check-output", lambda: subprocess.check_output(
+
+
+def checked(tag, action):
+    try:
+        value = action()
+    except Exception as exc:
+        print(tag, type(exc).__name__, exc)
+    else:
+        print(tag, type(value).__name__, repr(value))
+
+
+checked("path-check-output", lambda: subprocess.check_output(
     [echo, pathlib.Path("z")], text=True))
 
 # Non-path arguments keep `os.fspath`'s refusal, and the cwd is converted the same way.

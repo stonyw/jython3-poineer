@@ -5,6 +5,12 @@
 # clipped by `state_init` exactly as the reference clips it: negative to zero, past-the-end to the
 # length.  `json.decoder.py_scanstring` is the caller that made this observable.
 
+import sys
+
+# 与其它语料同一份参考库：`re` 是标准库模块，两侧读同一份。
+STD = "/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14"
+sys.path.insert(0, STD)
+
 import re
 
 pattern = re.compile("a+")

@@ -253,9 +253,9 @@ class FloatDictionaryTest {
                 .doesNotContain(
                         "__and__", "__or__", "__xor__", "__lshift__", "__rshift__", "__invert__", "__index__",
                         "__matmul__");
-        assertThat(Numeric.apply(BinaryOp.AND, HALF, TWO)).isSameAs(PyNotImplemented.INSTANCE);
-        assertThat(Numeric.apply(BinaryOp.LSHIFT, HALF, TWO)).isSameAs(PyNotImplemented.INSTANCE);
-        assertThat(Numeric.apply(BinaryOp.MATMUL, HALF, TWO)).isSameAs(PyNotImplemented.INSTANCE);
+        assertThat(Numeric.floatSlot(BinaryOp.AND, HALF, TWO)).isSameAs(PyNotImplemented.INSTANCE);
+        assertThat(Numeric.floatSlot(BinaryOp.LSHIFT, HALF, TWO)).isSameAs(PyNotImplemented.INSTANCE);
+        assertThat(Numeric.floatSlot(BinaryOp.MATMUL, HALF, TWO)).isSameAs(PyNotImplemented.INSTANCE);
     }
 
     /**
@@ -656,9 +656,9 @@ class FloatDictionaryTest {
         refuses("ZeroDivisionError: division by zero", () -> call(PyType.FLOAT, "__mod__", unit, ZERO));
         refuses("ZeroDivisionError: division by zero", () -> call(PyType.FLOAT, "__mod__", ZERO, ZERO));
         refuses("ZeroDivisionError: division by zero", () -> call(PyType.FLOAT, "__divmod__", unit, ZERO));
-        refuses("ZeroDivisionError: division by zero", () -> Numeric.apply(BinaryOp.TRUEDIV, ONE, ZERO));
-        refuses("ZeroDivisionError: division by zero", () -> Numeric.apply(BinaryOp.FLOORDIV, ONE, ZERO));
-        refuses("ZeroDivisionError: division by zero", () -> Numeric.apply(BinaryOp.MOD, ONE, ZERO));
+        refuses("ZeroDivisionError: division by zero", () -> Numeric.floatSlot(BinaryOp.TRUEDIV, ONE, ZERO));
+        refuses("ZeroDivisionError: division by zero", () -> Numeric.floatSlot(BinaryOp.FLOORDIV, ONE, ZERO));
+        refuses("ZeroDivisionError: division by zero", () -> Numeric.floatSlot(BinaryOp.MOD, ONE, ZERO));
 
         // The reflected half divides the other by the receiver, so it has a zero to give but never one to ask of.
         assertThat(call(PyType.FLOAT, "__rdivmod__", unit, ZERO)).isEqualTo(PyTuple.of(ZERO, ZERO));
@@ -675,7 +675,7 @@ class FloatDictionaryTest {
         assertThat(((PyFloat) call(PyType.FLOAT, "__pow__", NEG_ZERO, PyInt.of(3))).repr()).isEqualTo("-0.0");
         assertThat(((PyFloat) call(PyType.FLOAT, "__pow__", NEG_ZERO, TWO)).repr()).isEqualTo("0.0");
         assertThat(call(PyType.FLOAT, "__pow__", PyFloat.of(-2.0), THREE)).isEqualTo(PyFloat.of(-8.0));
-        assertThat(Numeric.apply(BinaryOp.POW, PyFloat.of(-2.0), PyFloat.of(0.5)))
+        assertThat(Numeric.floatSlot(BinaryOp.POW, PyFloat.of(-2.0), PyFloat.of(0.5)))
                 .isInstanceOf(PyComplex.class);
 
         refuses(
