@@ -38,6 +38,13 @@ public final class PyModuleSpec extends PyObject {
                 PyNone.INSTANCE, false));
     }
 
+    /** The spec a frozen module has: origin {@code 'frozen'}, loader {@code FrozenImporter}, no file. */
+    static PyModuleSpec frozen(String name) {
+        return new PyModuleSpec(fields(
+                PyStr.of(name), PyType.FROZEN_IMPORTER, PyStr.interned("frozen"), PyNone.INSTANCE,
+                PyNone.INSTANCE, false));
+    }
+
     /**
      * The spec a {@code .py} file has: an origin on disk and {@code has_location} set.
      *

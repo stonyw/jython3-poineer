@@ -53,9 +53,11 @@ final class ImportlibExternal {
         module.set("__doc__", PyStr.of(
                 "Access to the import machinery's file naming, as this runtime implements it."));
         module.set("__package__", PyStr.of("importlib"));
-        module.set("__loader__", BuiltinImporter.type());
-        module.set("__spec__",
-                PyModuleSpec.builtin("importlib._bootstrap_external", BuiltinImporter.type()));
+        // The reference publishes this frozen module under a name of its own, `_frozen_importlib_external`,
+        // while `importlib._bootstrap_external` is the same module object and the name its own source
+        // uses. The loader and spec say frozen rather than built-in for the same reason.
+        module.set("__loader__", PyType.FROZEN_IMPORTER);
+        module.set("__spec__", PyModuleSpec.frozen("_frozen_importlib_external"));
         module.set("MAGIC_NUMBER", PyBytes.of(MAGIC_NUMBER));
         module.set("path_sep", PyStr.of(PATH_SEP));
         module.set("path_separators", PyStr.of(PATH_SEP));

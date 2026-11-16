@@ -289,6 +289,12 @@ public final class PyRuntime {
         // `test.support.import_helper` imports it at module scope; what it asks for is answered
         // against this runtime's own module tables.
         PyModule impModule = ImpModule.newModule();
+        // The frozen half of the import machinery. `pydoc` imports it by its private name for one
+        // function, `_load`, and the reference publishes the same module object under two names:
+        // `importlib._bootstrap` and `_frozen_importlib`.
+        PyModule bootstrap = ImportlibBootstrap.newModule(
+                bootstrapExternal, importLibUtil, impModule, threadModule, weakrefModule);
+        importLib.set("_bootstrap", bootstrap);
         // `random.py` is written as `class Random(_random.Random)`, so the whole module is the base
         // type and the six rows it files.
         PyModule randomModule = RandomModule.newModule();
@@ -357,6 +363,12 @@ public final class PyRuntime {
         modules.put(PyStr.interned("importlib.util"), importLibUtil);
         modules.put(PyStr.interned("importlib.machinery"), machinery);
         modules.put(PyStr.interned("importlib._bootstrap_external"), bootstrapExternal);
+        // The three frozen names the reference files at startup. The two bootstrap names are one
+        // module object: `importlib._bootstrap.__name__` is `importlib._bootstrap` and its
+        // `__spec__.name` is `_frozen_importlib`, exactly as the reference publishes them.
+        modules.put(PyStr.interned("importlib._bootstrap"), bootstrap);
+        modules.put(PyStr.interned("_frozen_importlib"), bootstrap);
+        modules.put(PyStr.interned("_frozen_importlib_external"), bootstrapExternal);
         modules.put(PyStr.interned("zipimport"), zipImport);
         modules.put(PyStr.interned("_io"), ioModule);
         modules.put(PyStr.interned("_tokenize"), tokenizeModule);
@@ -429,6 +441,7 @@ public final class PyRuntime {
         belongTo(importLibUtil);
         belongTo(machinery);
         belongTo(bootstrapExternal);
+        belongTo(bootstrap);
         belongTo(zipImport);
         belongTo(ioModule);
         belongTo(tokenizeModule);
@@ -1012,12 +1025,43 @@ public final class PyRuntime {
             case "importlib.machinery":
                 return Importlib.newMachinery();
             case "importlib._bootstrap_external":
+            case "_frozen_importlib_external":
                 return ImportlibExternal.newModule();
+            case "importlib._bootstrap":
+            case "_frozen_importlib":
+                return rebuildBootstrap();
             case "zipimport":
                 return ZipImport.newModule();
             default:
                 return null;
         }
+    }
+
+    /**
+     * Build the frozen bootstrap module again, from the modules it holds references to.
+     *
+     * <p>{@code _bootstrap} keeps {@code _imp}, {@code _thread}, {@code _weakref}, {@code
+     * _bootstrap_external} and {@code importlib.util}'s {@code module_from_spec} in names of its own,
+     * so the rebuild reads them from the module table rather than building a second copy. A missing
+     * one means the third-party code that evicted the bootstrap also evicted its dependencies, and
+     * the answer is {@code null} — the finder reports the name missing.
+     */
+    private static PyModule rebuildBootstrap() {
+        PyObject[] parts = {
+            modules.get(PyStr.interned("importlib._bootstrap_external")),
+            modules.get(PyStr.interned("importlib.util")),
+            modules.get(PyStr.interned("_imp")),
+            modules.get(PyStr.interned("_thread")),
+            modules.get(PyStr.interned("_weakref"))
+        };
+        for (PyObject part : parts) {
+            if (!(part instanceof PyModule)) {
+                return null;
+            }
+        }
+        return ImportlibBootstrap.newModule(
+                (PyModule) parts[0], (PyModule) parts[1], (PyModule) parts[2],
+                (PyModule) parts[3], (PyModule) parts[4]);
     }
 
     /** A {@code ModuleNotFoundError} that names the module a program can read back from {@code e.name}. */
@@ -1113,6 +1157,34 @@ public final class PyRuntime {
     static PyObject existingModule(String dotted) {
         startup();
         return modules.get(PyStr.interned(dotted));
+    }
+
+    /**
+     * The {@code sys} module itself, which {@code importlib._bootstrap} keeps in a name of its own.
+     *
+     * <p>{@code sys} is built before any other module, so a bootstrap module built during startup can
+     * hold this reference rather than reach for the mapping.
+     */
+    static PyModule sysModule() {
+        startup();
+        return sysModule;
+    }
+
+    /**
+     * The interpreter's own {@code sys.modules} mapping.
+     *
+     * <p>{@code importlib._bootstrap._exec} files a module before running its body and moves the entry
+     * to the end afterwards; both writes are this table, not the attribute a program may have rebound.
+     */
+    static PyDict moduleTable() {
+        startup();
+        return modules;
+    }
+
+    /** {@code _load_unlocked} at Java level: the loader's work for a spec, which is {@link #load}. */
+    static PyObject loadSpec(PyModuleSpec spec) {
+        startup();
+        return load(spec);
     }
 
     /** Install a finder, in order of preference: the first that answers wins. */
