@@ -1233,6 +1233,48 @@ JUnit runtime 749／embedding 577 全绿，`:harness:check` 的 smoke 12/12 PASS
 JUnit 汇总 runtime 749／embedding 577（0 失败 0 错误 0 跳过），`:harness:check` 的 smoke 12/12 PASS、
 surprises 0。提交：代码 `380e933`，本文件与 `PLAN-progress.md` 一笔。
 
+### 3.31 M5 切片 75：打包四个便宜的小项（2026-11-16）
+
+四个互不相关的缺口，各按参考实现、各带语料、各自提交：
+
+**一、`sys.set_int_max_str_digits`／`get_int_max_str_digits`**：状态只留一处（`Numbers.maxStrDigits`，
+默认 4300），int→str 走 `Numbers.decimal`（`PyInt.repr`、`Formats` 的十进制、`_json` 的值与 key），
+str→int 走 `Constructors.decodeInteger` 与 `_json` 扫描器；两侧检查都排在字面量校验之后，与
+`_PyLong_FromString` 同一位点，二进制基数（2/4/8/16/32）豁免。文案照 `Objects/longobject.c`：to-str
+无 `value has N digits`，to-int 有；`set_int_max_str_digits` 非 0 且小于 640 报
+`ValueError: maxdigits must be >= 640 or 0 for unlimited`（任务书写的 `threshold must be 0 or >= 640`
+与 3.14.10 实测不符，按参考），超出 C `int` 先由 clinic 的参数转换报
+`OverflowError: Python int too large to convert to C int`（任务书的 `exceeds the limit of 2147483647
+digits` 在 3.14.10 源码中不存在）。`sys.flags.int_max_str_digits` 随 set 就地更新。判据 `test_json`：
+`TestPyDecode.test_limit_int` 与 `TestCDecode.test_limit_int` 由此转 ok，`test_decode` 同过。
+
+**二、`re` 的 `pos`／`endpos`**：`PySrePattern` 的 `clamp` 改收 `long`，扫描方法先 `Numbers.size`
+（Py_ssize_t 校验，超范围报 `OverflowError: Python int too large to convert to C ssize_t`）再夹到
+`[0, len]`；转换排在 `subject()` 之前，与 clinic「参数转换先于函数体」一致。
+`TestPyScanstring.test_overflow`／`TestCScanstring.test_overflow` 由 `JSONDecodeError` 转 ok。
+
+**三、`subprocess` 的 PathLike**：`PosixSubprocessModule.text()` 先 `Open.fspath`（即
+`PyOS_FSPath`），参数向量与 cwd 因此接受 `pathlib.Path`，非路径对象的文案与 `os.fspath` 同句。
+`test_jsonlines_from_file` 两例仍 exit 3：它们走 `-m` 入口，属 CLI 面缺口，本切片具名不修。
+
+**四、数值二元槽的分派顺序**：删除 `Numeric.apply` 的融合升格，每个类型按参考 `binary_op1` 的槽
+语义作答——`int`／`bool` 走 `integerSlot`（只接 `PyLong_Check`）、`float` 走 `floatSlot`（int/float，
+complex decline）、`complex` 走 `complexSlot`（全部数值）。反射槽以表达式原顺序接收 `(v, w)`，故
+`(2.5).__rtruediv__(1)` 是 `1 / 2.5`。`1 / MyFloat(...)` 因此走 `MyFloat.__rtruediv__`，`test_statistics`
+由 400／399／1 变为 **400／400／0／0／0**。回归逐数与基线一致：`test_types` 128／124／0／2／2、
+`test_descr` 163／147／4／4／8、`test_class` 42／39／1／0／2、`test_builtin` 147／−663／1／801／8。
+
+**语料**：`39_int_max_str_digits.py`、`40_re_ssize_args.py`、`41_subprocess_pathlike.py`、
+`42_numeric_slot_order.py` 均已登记 `Jy3LauncherTest.m5Corpus()`，jy3 与 3.14.10 **逐字节相同**。
+40／41 初版靠外部 `PYTHONPATH` 才 import 得到 `re`／`pathlib`，门禁（清空 `PYTHONPATH`）抓到后改为
+与 36–38 同形：语料自己把参考标准库插进 `sys.path`。
+
+**门禁**：`env -u PYTHONPATH ./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false`
+**BUILD SUCCESSFUL**（7m52s，26 任务：5 executed／21 up-to-date），JUnit 汇总 runtime 749／embedding 581
+（0 失败 0 错误 0 跳过），`:harness:check` 的 smoke 12/12 PASS、surprises 0。提交：`882a238`（项 1）、
+`49f4381`（项 2）、`c59b781`（项 3）、`dc78a6b`（项 4）四笔代码，语料与 `FloatDictionaryTest` 的
+槽位写法一笔，本文件与 `PLAN-progress.md` 一笔。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

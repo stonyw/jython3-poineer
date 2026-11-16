@@ -1887,3 +1887,77 @@ surprises 0。提交：代码 `4568400`、`869d3c8`、`beeffb1`、`6a306df` 四�
 （0 失败 0 错误 0 跳过），`:harness:check` 的 smoke 12/12 PASS、surprises 0。
 
 提交：代码 `380e933`，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 75 明细（四个小项；2026-11-16）
+
+四个互不相关的缺口打成一包，各自按参考行为实现、各自带语料与提交。口径同切片 73／74：
+`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`，
+判据 `env PYTHONPATH=$STD:$PWD jy3 /tmp/m5_58/run_test2.py test.test_XXX`。
+
+**一、`sys.set_int_max_str_digits`／`get_int_max_str_digits`**
+
+- 参考位点：`Python/sysmodule.c` 的 `sys_set_int_max_str_digits_impl`（clinic 参数是 C `int`）与
+  `_PySys_SetIntMaxStrDigits`（阈值 640 与写回 `sys.flags`）；`Objects/longobject.c` 的两句
+  `_MAX_STR_DIGITS_ERROR_FMT_TO_STR`／`_TO_INT`，闸门在 `_PyLong_FromString` 的字面量校验之后、
+  只对非二进制基数（2/4/8/16/32 豁免）。
+- 实现：`Numbers` 收一份状态 `maxStrDigits`（默认 4300）与两个方向的检查——`decimal(BigInteger)`
+  供 `PyInt.repr`、`Formats` 的十进制、`_json` 的值与 dict key；`checkParsedDigits(base, digits)` 供
+  `Constructors.decodeInteger` 与 `_json` 扫描器。to-str 文案不含 `value has N digits`，to-int 含，
+  两句都带 `use sys.set_int_max_str_digits() to increase the limit`。
+- `set_int_max_str_digits`：非 0 且 <640 报 `ValueError: maxdigits must be >= 640 or 0 for unlimited`
+  （任务书的 `threshold must be 0 or >= 640` 与 3.14.10 实跑不符，按参考）；超出 C `int` 由 clinic 的
+  `int` 转换先报 `OverflowError: Python int too large to convert to C int`（任务书的
+  `exceeds the limit of 2147483647 digits` 在 3.14.10 源码中不存在）；设置后就地更新
+  `sys.flags.int_max_str_digits`。
+- 判据：`test_json` 的 `TestPyDecode.test_limit_int` 与 `TestCDecode.test_limit_int` 转 ok，
+  `test_decode` 同过。
+
+**二、`re` 的 `pos`／`endpos`**
+
+- 参考位点：clinic 声明 `pos: Py_ssize_t = 0, endpos: Py_ssize_t = sys.maxsize`，转换先于函数体；
+  `state_init` 把两个位置夹到 `[0, len]`。
+- 实现：`PySrePattern.clamp` 改收 `long`；扫描方法先 `Numbers.size`（复用既有的 Py_ssize_t 校验，
+  超范围报 `OverflowError: Python int too large to convert to C ssize_t`）再夹取；转换排在
+  `subject()` 之前。
+- 判据：`TestPyScanstring.test_overflow`／`TestCScanstring.test_overflow` 由 `JSONDecodeError` 转 ok。
+
+**三、`subprocess` 接受 `pathlib.Path`**
+
+- 参考位点：`_posixsubprocess.c` 用 `PyUnicode_FSConverter` 处理参数向量与 cwd，即 `PyOS_FSPath`；
+  environment 已由 `subprocess.py` 自己编码，无需转换。
+- 实现：`PosixSubprocessModule.text()` 先 `Open.fspath`，再判 `str`／`bytes`；非路径对象的拒绝与
+  `os.fspath` 同句（`expected str, bytes or os.PathLike object, not X`）。
+- 判据：`test_jsonlines_from_file` 两例仍 exit 3——它们走 `-m` 入口，是 CLI 面缺口，本切片具名不修。
+
+**四、数值二元槽的分派顺序**
+
+- 根因：`Numeric.apply` 把 int 与 `PyFloat` 子类直接按 float 升格，`1 / MyFloat(...)` 因此不经过
+  `MyFloat.__rtruediv__`。
+- 参考位点：`Objects/abstract.c` 的 `binary_op1`——先看左槽，除非右类型是左类型的真子类；槽函数以
+  表达式原顺序接收 `(v, w)`。`long_*` 只接 `PyLong_Check`，`float_*` 经 `CONVERT_TO_DOUBLE` 接
+  int/float，`complex_*` 接受全部数值，其余 decline。
+- 实现：删除 `Numeric.apply`；`PyInt`／`PyBool` 走 `integerSlot`，`PyFloat` 走 `floatSlot`，`PyComplex`
+  走 `complexSlot`；反射入口把原操作数顺序传下去（`reflectedOp` → `slot(op, other, this)`），代码里
+  注明「反射槽仍按 `slotw(v, w)`」。`Builtins.pow` 的非模路径同步改为 `integerSlot`。
+- 判据：`test_statistics` **400／400／0／0／0**（切片 74 为 400／399／1／0／0）。
+- 回归逐数与基线一致：`test_types` 128／124／0／2／2、`test_descr` 163／147／4／4／8、
+  `test_class` 42／39／1／0／2、`test_builtin` 147／−663／1／801／8。
+
+**五、语料与门禁**
+
+- `39_int_max_str_digits.py`（默认值、set 六种值、str／repr／f-string／format／%d／hex、int() 多基数、
+  4300／4301 边界、0 关闭）、`40_re_ssize_args.py`（±2⁶³、2⁶³−1、findall／finditer、夹取、坏 subject、
+  float 参数）、`41_subprocess_pathlike.py`（Path 作 args[0]／参数／executable／cwd／check_output、
+  非路径参数的 TypeError）、`42_numeric_slot_order.py`（MyFloat 的 `__rtruediv__`／`__rsub__`、Plain
+  子类、complex 互算、直接调用反射方法、bool+float、huge int 溢出）。四份均已登记
+  `Jy3LauncherTest.m5Corpus()`，与参考 3.14.10 **逐字节相同**。
+- 门禁第一次跑到 `:embedding:test` 抓到 40／41 失败：语料初版依赖外部 `PYTHONPATH` 才能 import
+  `re`／`pathlib`，而门禁清空该变量。改为与 36–38 同形（语料自己 `sys.path.insert(0, STD)`），并把
+  41 的 `check_output` 断言改成确定性打印。另 `FloatDictionaryTest` 四处 `Numeric.apply` 调用随
+  `apply` 删除改为 `floatSlot`。
+- `env -u PYTHONPATH ./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` **BUILD SUCCESSFUL**
+  （7m52s，26 任务：5 executed／21 up-to-date），JUnit 汇总 runtime 749／embedding 581（0 失败 0 错误
+  0 跳过），`:harness:check` 的 smoke 12/12 PASS、surprises 0。
+
+**六、提交**：代码 `882a238`（项 1）、`49f4381`（项 2）、`c59b781`（项 3）、`dc78a6b`（项 4）；
+语料 40／41 与 `FloatDictionaryTest` 的收尾一笔；本文件与 `PLAN.md` 一笔。
