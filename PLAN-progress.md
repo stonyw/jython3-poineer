@@ -1131,3 +1131,17 @@
 **十、判据**：`test_memoryview` 171／124／0／27／20。联动与基线逐项同：`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_array` 893／809／14／42／28。语料探针（构造拒绝、切片／shape／strides／cast、release 后 25 入口、比较与哈希、导出计数、array／mmap、bytes-like）与参考逐行同，仅两处不可比：released-repr 的进程地址、`hash(b"abc")` 的种子（未实现 `PYTHONHASHSEED`；`hash(mv) == hash(内容)` 契约成立）。回归九套不变：`test_str` 139／120／2／10／7（ok +1／err −1，`str(memoryview(b'..'), 'latin-1')` 由 err 转 ok，改善）、`test_re` 166／129／21／12／4、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_socket` 749／198／8／24／519、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1。
 
 **十一、提交**：64a（`sys.getrefcount` 临时垫片、元组键三句、`str` 解码）、64b（哈希／hex／比较）、64c（撤垫片、重入检查、`writeFloat`、pickle 拒绝）、64d（pickle 拒绝移进 `reduceRecipe`）、64e（mmap 导出者与语料）；本文件与 `PLAN.md` 一笔。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+
+## M5 切片 65 明细（`_sqlite3` 盘点：停在「新增第三方依赖」决策点）
+
+**一、现状实测**：`import _sqlite3` → `ModuleNotFoundError: No module named '_sqlite3'`；`import sqlite3` 断在 `sqlite3/dbapi2.py:27` 的 `from _sqlite3 import *`。`test.test_sqlite3` 不是 0 ran：`test/test_sqlite3/__init__.py:4` 的 `import_helper.import_module('_sqlite3')` 抛 `SkipTest`，整包在收集阶段跳过、无 RESULT 行；包规模 10 模块／504 个 test 方法（`test_dbapi` 205／`test_userfunctions` 64／`test_transactions` 48／`test_types` 48／`test_regression` 38／`test_hooks` 32／`test_factory` 28／`test_cli` 18／`test_backup` 15／`test_dump` 8）。参考 `sqlite_version` 3.54.1；`_sqlite3` 公开名 196、`Connection` 42、`Cursor` 15、`Row` 1。
+
+**二、JVM 侧证据**：`DriverManager.getDrivers()` = 0；`Class.forName("org.sqlite.JDBC")` → `ClassNotFoundException`；JDK（Temurin 25.0.5，仓库 `.java-version` 21.0.12.1、构建 `release=21`）只有 `java.sql`／`java.sql.rowset` API 模块；`~/.gradle/caches`（1.0 GiB）与 `~/.m2` 下 `*sqlite*` 命中 0；`libs.versions.toml` 只有 junit／assertj；仓库无 SQLite jar。系统层 `/usr/bin/sqlite3` 3.51.0、SDK `libsqlite3.tbd`，均为进程外二进制。仓库 `mavenCentral()`，无离线开关。
+
+**三、结论**：不是「JVM 没有 SQLite」那么绝对，而是**没有内置实现／内置驱动／缓存驱动，但有成熟第三方 JDBC 驱动可引**——前缀是「需要新增第三方依赖」。按用户指令停在此处：未改 build 文件、未加依赖、未写 DB-API 替身。
+
+**四、选项**：A `org.xerial:sqlite-jdbc:3.54.1.0`（Apache-2.0，12,132,578 B≈11.6 MiB 单 jar，内嵌 SQLite 3.54.1 与参考一致，含 Mac aarch64/x86_64 原生库，slf4j-api 为 optional 无传递依赖；首次构建需联网一次，绝对离线需把 jar 入库 `libs/`）。本机 JDK 25 实测 `jdbc:sqlite::memory:` 可用、读出 `sqlite_version 3.54.1`，但打印 `System::load` restricted-method 警告，运行器需 `--enable-native-access=ALL-UNNAMED`。B JDK FFM 绑系统 `libsqlite3`：零新依赖，但 `--release 21` 下 FFM 是 preview，且系统 3.51.0 ≠ 参考 3.54.1。C 进程外 CLI：不是 DB-API，排除。
+
+**五、若选 A 的现实（预估，未实施）**：`dbapi2` 是 `from _sqlite3 import *`，一旦可导入就是 504 例全亮，没有「只跑最小面」的中间态；错误消息 JDBC 形如 `[SQLITE_CONSTRAINT_PRIMARYKEY] ... (UNIQUE constraint failed: t.x)`，括号内为 SQLite errmsg（已验证 `NOT NULL`／`no such table`／`no such column` 可提取），对不上者具名；绑定个数与关闭后操作由 Python 面先判、可给参考原文（JDBC 侧分别是 `ArrayIndexOutOfBoundsException` 与 `The database has been closed`）；异常层用 `SQLiteException#getResultCode()` 的 primary code 映射（19 → `IntegrityError`）。建议落地时按 `test_dbapi` → `test_types` → `test_transactions` 分簇，先出基线再修。
+
+**六、提交**：仅文档与 PLAN 双文件；无代码改动，故未重跑 `./gradlew check`（当前树与 5a7ff6d 全绿时完全相同）。

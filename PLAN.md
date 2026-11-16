@@ -718,12 +718,26 @@ tuple／str／bytes 的数值可以靠抄 CPython 的 C 结构常数“算”出
 
 **十一、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交五笔：64a（`sys.getrefcount` 临时垫片、元组键三句、`str` 解码走 `bufferIfAny`）、64b（哈希缓存与导出保护、`hex` 临时导出、比较按值）、64c（撤垫片、重入检查、`writeFloat`、pickle 拒绝）、64d（pickle 拒绝从表行移进 `reduceRecipe`）、64e（mmap 导出者与语料）；本文件与 `PLAN-progress.md` 一笔。
 
+### 3.22 M5 切片 65：`_sqlite3` 盘点——实现前缀是「新增第三方依赖」，停在决策点（2026-11-16）
+
+**一、盘点（证据全文见 `docs/sqlite3-inventory.md`）**。①`import _sqlite3` → `ModuleNotFoundError: No module named '_sqlite3'`；`import sqlite3` 断在 `sqlite3/dbapi2.py:27` 的 `from _sqlite3 import *`。②`test.test_sqlite3` 不是 0 ran，而是整个包在收集时被跳过：`test/test_sqlite3/__init__.py:4` 的 `import_helper.import_module('_sqlite3')` 抛 `SkipTest`；包规模 10 模块／**504 个 test 方法**（`test_dbapi` 205 最大）。③参考 `sqlite_version` 3.54.1；`_sqlite3` 公开名 196、`Connection` 42、`Cursor` 15、`Row` 1。④JVM 侧：`DriverManager.getDrivers()` = **0**，`Class.forName("org.sqlite.JDBC")` → `ClassNotFoundException`，JDK 仅有 `java.sql`／`java.sql.rowset` API 模块；`~/.gradle/caches`（1.0 GiB）与 `~/.m2` 下 `*sqlite*` 命中 **0**；项目内无 SQLite jar。⑤系统有 `/usr/bin/sqlite3` 3.51.0 与 SDK 的 `libsqlite3.tbd`，但那是进程外二进制。
+
+**二、结论**：不是「JVM 没有 SQLite」那么绝对——**没有内置实现、没有内置驱动、没有缓存驱动，但有成熟第三方 JDBC 驱动可引**。前缀是「有驱动但需要新增第三方依赖」，按用户指令停在此处：未改 `build.gradle.kts`／`libs.versions.toml`，未加依赖，未写任何 DB-API 替身。
+
+**三、选项（待决策）**：A `org.xerial:sqlite-jdbc:3.54.1.0`——Apache-2.0，**12,132,578 B（约 11.6 MiB）**单 jar，内嵌 SQLite **3.54.1**（与参考一致），含 macOS arm64／x86_64 等原生库，`slf4j-api` 为 optional 故无传递依赖；仓库缓存里没有，**首次构建需联网一次**，之后离线可用（绝对离线可把 jar 放进仓库 `libs/`，需同意入库 11.6 MiB 二进制）。本机 JDK 25 实测可连 `jdbc:sqlite::memory:` 并读出 `sqlite_version 3.54.1`，但会打印 `System::load` 的 restricted-method 警告，运行器需 `--enable-native-access=ALL-UNNAMED`。B 用 FFM 绑系统 `libsqlite3`：零新依赖，但项目 `--release 21` 下 FFM 仍是 preview，需升 target 或 `--enable-preview`，且本机系统 SQLite 3.51.0 ≠ 参考 3.54.1。C 进程外调 CLI：不是 DB-API，排除。
+
+**四、若选 A 的现实**：JDBC 只给 `Connection`/`PreparedStatement`/`ResultSet`，DB-API 的形状（`text_factory`、`row_factory`、`detect_types`、`isolation_level`、`Row`/`Blob`/`Backup`/`hooks`）与 196 个名字都要自己搭；`dbapi2` 是 `from _sqlite3 import *`，所以一旦可导入就是 504 例全亮，不存在「只跑最小面」的中间态。错误消息 JDBC 形如 `[SQLITE_CONSTRAINT_PRIMARYKEY] ... (UNIQUE constraint failed: t.x)`，括号内是 SQLite `errmsg`，可逐条裁剪（已验证 `NOT NULL`／`no such table`／`no such column` 可提取），不会全部逐字节，对不上者具名；绑定个数与关闭后操作这两句由我们在 Python 面先判，可给参考原文。异常层用 `SQLiteException#getResultCode()` 的 primary code 映射（19 → `IntegrityError`）。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；
 `_ctypes`；`_tkinter`；`nt`/`msvcrt`/`_winapi`/`_overlapped`/`winsound`/`_wmi`；`_interpreters`/
 `_interpchannels`/`_remote_debugging`；`readline`/`_curses`/`termios`/`syslog` 视平台按需；
 `_pickle.PickleBuffer`（切片 64 具名：缺这个 C 模块 API，`pickle.PickleBuffer` 因此不存在）。
+
+`_sqlite3`／`sqlite3` **不在此列**，但也不在已做之列：JVM 无内置 SQLite 实现与驱动，实现前缀是
+「新增第三方依赖」（`org.xerial:sqlite-jdbc:3.54.1.0`，Apache-2.0，11.6 MiB，内嵌 SQLite 3.54.1），
+盘点与选项见 §3.22 与 `docs/sqlite3-inventory.md`；**决策前不实现、不造假**。
 
 三处 JVM 结构性硬墙，不造值、不垫常量：**`sys.getrefcount`**（JVM 无引用计数，切片 64 曾以常量 1
 试过并撤回；`test_memoryview` 的 20 例引用计数断言如实留 err）；**weakref 回调时刻**（`WeakReference`
