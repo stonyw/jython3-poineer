@@ -1107,3 +1107,27 @@
 **五、回归六套**（最终二进制，口径与切片 62 相同；`test_bytes` 用 `/tmp/m5_59/run_bytes.py` 的 `_testlimitedcapi` 垫片，其余用 `/tmp/m5_58/run_test2.py`）：`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_str` 139／119／2／11／7、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_socket` 749／198／8／24／519——六项与基线逐项相同，无回归。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
 
 **六、提交**：`_sre` 一族与 `test_case_helpers` 一笔，`re.IGNORECASE` 重写一笔，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 64 明细（`test_memoryview`：171／124／0／27／20，修前 171／103／18／30／20）
+
+**一、分簇与去向**（按 traceback 共同落点，先修最大可修簇 B）：A 引用计数断言 20（`test_getitem` 6／`test_setitem_writable` 6／`test_setitem_readonly` 3／`test_getbuffer` 3／`test_refs` 2）→ JVM 结构性硬墙，20 err；B 哈希与导出保护 15（`test_hash` 3／`test_hash_use_after_free` 6／`test_hex_use_after_free` 6）→ 15 ok；C 比较 4（`test_compare` 3／`test_boolean_format` 1）→ 4 ok；D pickle 1（`test_pickle`）→ 1 ok；E released 后重入 1（`test_use_released_memory`）→ 1 ok；F weakref 6 → JVM 结构性硬墙，6 err；G `PickleBuffer` 1（`test_picklebuffer_reference_loop`）→ 缺模块 API，1 err。27 err 即 A 20＋F 6＋G 1，逐条 traceback 已核。
+
+**二、B 哈希与导出保护**：`hashComputed`／`storedHash` 照 CPython 头部语义——首次算成后 forever 作答，released 后仍答；未算过且 released → `ValueError`；writable → `ValueError`；格式只认 `B`／`b`／`c`。算前把导出计数临时 +1 再调 `obj.__hash__`，`E.__hash__` 里 `mv.release()` 因此得 `BufferError`；`hex` 同法包住 `PyBytes.hexadecimal`，分隔符 `__len__` 里的 `release()` 同样被拒。
+
+**三、C 比较**：非 memoryview 分支改走 `PyObject_GetBuffer` 语义（任意导出者，含 `array`／`mmap`；取不到回 `NotImplemented`），形状不等即 False，同格式逐元素比值；`'?'` 按真假比而非按字节比（`test_boolean_format`）。
+
+**四、pickle 两条分开**：①`test_pickle` 是**我们拒得不对**——原先协议 0／1 拒、协议 ≥2 却经 `__newobj__` 成功；参考的拒绝来自类型 reduce slot（`memory_reduce`），与协议无关。已修。②`test_picklebuffer_reference_loop` 是**我们没有 `_pickle.PickleBuffer`**（`pickle.py` 只有 `try: from _pickle import PickleBuffer`），属缺 C 模块 API，具名不做。
+
+**五、一处走错的方向（已改）**：pickle 第一版把 `__reduce__`／`__reduce_ex__` 写进 `memoryview` 方法表，`test_pickle` 绿但 m3 语料 `166_memoryview_readonly_methods.py` 变红——参考 `memoryview.__dict__` 41 行，表行变 43 行。`memory_reduce` 挂在 `tp_reduce` slot、不在类型字典里。改法：撤表行，`reduceRecipe` 开头按 `instanceof PyMemoryView` 拒绝，`__dict__` 回 41 行，语料 diff 归零。另一处走错并被撤回的是 `sys.getrefcount` 垫片，见下条。
+
+**六、A 引用计数：垫片语义与撤除**（用户点名必须交代）：垫片返回**常量 1**，不是任何可观测计数——JVM 无引用计数；`PyMemoryView` 自己的 `exports` 是导出数（`__buffer__` 租约），与“多少个引用”不是一回事，不能顶。被喂的断言是 `test_memoryview` 五处 `assertEqual(sys.getrefcount(...), oldrefcount)`（`test_getitem`／`test_setitem_readonly`／`test_setitem_writable`／`test_getbuffer`（`m` 与 `b` 各一）／`test_refs`），形式都是“操作前后不变”，恒 1 自然全过。垫片在位时实测 ok 142；撤掉后 124，A 簇 20 例如实回 err。垫片已从 `PyRuntime` 删除，`sys.getrefcount` 现为 `AttributeError`。PLAN §3.21 与 §4 两处均具名硬墙。
+
+**七、E 重入**：按参考落点补 `check()`——`getItem` 索引分支、`tupleItem`／`assignTuple` 单元素与多维、`assignSlice` 在 `windowOf` 后、`writeElement` 的 `'?'` 与整数分支、`writeFloat`（`Numbers.floatOf` 新增 `__float__`）。`m[:MyIndex()]` 读切片不检查，与参考同。顺带 `str(mv, encoding)` 改走 `bufferIfAny` + `Decoder.decode`。
+
+**八、F weakref 硬墙**：`Weakref.java` 用 `java.lang.ref.WeakReference`，回收时刻由 JVM GC 决定、不保证发生，`del m` 后回调无法保证触发；6 例留 err，不造时机。
+
+**九、mmap 互操作补口**：语料对拍发现 `memoryview(mmap)` 仍报 `TypeError: a bytes-like object is required`。补 `of`／`fromFlags` 的 `PyMmap` 分支：`(len,)`、`format 'B'`、`itemsize 1`、`readonly` 仅 `ACCESS_READ`、`.obj` 是 map；`octetAt`／`writeOctet` 各一支（写入经 `copyIn`）。语料 `160_memoryview_first.py` 追加匿名映射一段（形状／格式／只读位／写入／release 后／close 后构造），与参考逐字节同。**具名偏差**：view 不钉住映射——`close()` 成功、后续读报 `ValueError: mmap closed or invalid`；参考以导出计数拒绝 `close()`（`BufferError: cannot close exported pointers exist`）。偏差注在 `PyMmap.viewLength`。
+
+**十、判据**：`test_memoryview` 171／124／0／27／20。联动与基线逐项同：`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_array` 893／809／14／42／28。语料探针（构造拒绝、切片／shape／strides／cast、release 后 25 入口、比较与哈希、导出计数、array／mmap、bytes-like）与参考逐行同，仅两处不可比：released-repr 的进程地址、`hash(b"abc")` 的种子（未实现 `PYTHONHASHSEED`；`hash(mv) == hash(内容)` 契约成立）。回归九套不变：`test_str` 139／120／2／10／7（ok +1／err −1，`str(memoryview(b'..'), 'latin-1')` 由 err 转 ok，改善）、`test_re` 166／129／21／12／4、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_socket` 749／198／8／24／519、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1。
+
+**十一、提交**：64a（`sys.getrefcount` 临时垫片、元组键三句、`str` 解码）、64b（哈希／hex／比较）、64c（撤垫片、重入检查、`writeFloat`、pickle 拒绝）、64d（pickle 拒绝移进 `reduceRecipe`）、64e（mmap 导出者与语料）；本文件与 `PLAN.md` 一笔。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
