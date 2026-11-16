@@ -52,7 +52,7 @@ public final class PyRuntime {
                 "_codecs_kr", "_codecs_tw", "_codecs_iso2022", "errno", "math", "time", "posix", "termios",
                 "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
-                "_csv", "_stat", "zxJDBC"};
+                "_csv", "_stat", "_symtable", "zxJDBC"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -342,6 +342,9 @@ public final class PyRuntime {
         // line discipline, so the module answers the errno the reference's own ioctl gives here and
         // refuses the terminal itself by name: see `TermiosModule`.
         PyModule termiosModule = TermiosModule.newModule();
+        // The raw symbol-table entries `symtable.py` wraps. The parser is the compiler's, so the tree
+        // crosses the compiler seam as text; see `SymtableModule` and `SourceCompiler#symtable`.
+        PyModule symtableModule = SymtableModule.newModule();
         // The C half of `stat`: the constants `stat.py` falls back on, whose macOS values differ from
         // the Python ones, and `filemode`, which the fallback spells in Python. `stat.py` imports it
         // last with `from _stat import *`, so these values win when the module exists.
@@ -420,6 +423,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("contextvars"), contextvarsWrapper);
         modules.put(PyStr.interned("posix"), posixModule);
         modules.put(PyStr.interned("termios"), termiosModule);
+        modules.put(PyStr.interned("_symtable"), symtableModule);
         modules.put(PyStr.interned("_stat"), statModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
         modules.put(PyStr.interned("gc"), gcModule);
@@ -1639,6 +1643,35 @@ public final class PyRuntime {
     /** The level {@code -O} and {@code -OO} asked for, which is also {@code sys.flags.optimize}. */
     public static int optimizeLevel() {
         return commandLine.optimize();
+    }
+
+    /**
+     * Parse one unit and answer its symbol table, which {@code _symtable.symtable} rebuilds.
+     *
+     * <p>The compiler owns the parser, so this crosses the same seam: the answer is the line-oriented
+     * text {@link SourceCompiler#symtable} describes, never an object the front end defined.
+     */
+    static String symtableText(String source, String fileName, String mode) {
+        if (sourceCompiler == null) {
+            throw Slots.notImplemented("symtable() needs a compiler (setSourceCompiler)");
+        }
+        try {
+            return sourceCompiler.symtable(source, fileName, mode);
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
+    }
+
+    /** Parse bytes the way {@link #symtableText} parses text, encoding declaration and all. */
+    static String symtableBytes(byte[] source, String fileName, String mode) {
+        if (sourceCompiler == null) {
+            throw Slots.notImplemented("symtable() needs a compiler (setSourceCompiler)");
+        }
+        try {
+            return sourceCompiler.symtableBytes(source, fileName, mode);
+        } catch (SourceRefused refused) {
+            throw refused.python();
+        }
     }
 
     /** Compile one expression with the installed compiler, which is what {@code eval()} runs. */

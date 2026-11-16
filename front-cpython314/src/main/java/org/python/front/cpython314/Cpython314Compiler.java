@@ -140,6 +140,23 @@ public final class Cpython314Compiler {
             def _jy3_complex(real, imag):
                 return complex(float.fromhex(real), float.fromhex(imag))
 
+            # The symbol table `_symtable` publishes is a tree of entries, and the runtime rebuilds the
+            # tree from this text.  One header line carries the three counts, then come the symbols,
+            # the varnames and the children in the order the reference keeps them.
+            def _jy3_b64(text):
+                return base64.b64encode(text.encode("utf-8", "surrogatepass")).decode("ascii")
+
+            def write_symtable(entry, out):
+                out.append("B\\t%d\\t%d\\t%d\\t%s\\t%d\\t%d\\t%d\\n" % (
+                    entry.type, entry.lineno, entry.nested, _jy3_b64(entry.name),
+                    len(entry.symbols), len(entry.varnames), len(entry.children)))
+                for name, flags in entry.symbols.items():
+                    out.append("S\\t%s\\t%d\\n" % (_jy3_b64(name), flags))
+                for name in entry.varnames:
+                    out.append("V\\t%s\\n" % _jy3_b64(name))
+                for child in entry.children:
+                    write_symtable(child, out)
+
             payload_kind, payload, file_name, code_kind = (
                 sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
             flags, optimize, feature_version = map(int, sys.argv[5:8])
@@ -162,27 +179,36 @@ public final class Cpython314Compiler {
                     source = eval(text, namespace)
                 elif payload_kind == "b":
                     source = base64.b64decode(payload)
+                elif payload_kind == "t":
+                    # A str source stays a str: `_symtable` must see text, not text encoded behind an
+                    # encoding declaration it would then obey.
+                    source = payload
                 else:
                     source = payload.encode("utf-8")
-                options = {"dont_inherit": True}
-                if optimize != -1:
-                    options["optimize"] = optimize
-                if feature_version != -1:
-                    options["_feature_version"] = feature_version
-                if code_kind.startswith("ast-"):
-                    options["flags"] = flags | ast.PyCF_ONLY_AST
-                    inside = code_kind[4:]
-                else:
-                    if flags:
-                        options["flags"] = flags
-                    inside = code_kind
                 # The parser raises `SyntaxWarning` itself, so a successful compile can carry warnings
                 # the same way it carries bytes.  `catch_warnings(record=True)` keeps every filter the
                 # process was started with -- an ignored warning stays ignored -- and collects what
                 # would have been printed, which is what the runtime replays where compile() was
-                # called.
-                with warnings.catch_warnings(record=True) as raised:
-                    result = compile(source, file_name, inside, **options)
+                # called.  `_symtable.symtable` runs the same parser and raises the same warnings.
+                if code_kind.startswith("symtable-"):
+                    import _symtable
+                    with warnings.catch_warnings(record=True) as raised:
+                        result = _symtable.symtable(source, file_name, code_kind[9:])
+                else:
+                    options = {"dont_inherit": True}
+                    if optimize != -1:
+                        options["optimize"] = optimize
+                    if feature_version != -1:
+                        options["_feature_version"] = feature_version
+                    if code_kind.startswith("ast-"):
+                        options["flags"] = flags | ast.PyCF_ONLY_AST
+                        inside = code_kind[4:]
+                    else:
+                        if flags:
+                            options["flags"] = flags
+                        inside = code_kind
+                    with warnings.catch_warnings(record=True) as raised:
+                        result = compile(source, file_name, inside, **options)
                 if raised:
                     sys.stderr.write("JY3-WARNINGS\\n")
                     for warning in raised:
@@ -198,7 +224,11 @@ public final class Cpython314Compiler {
                                 str(warning.message).encode("utf-8", "surrogatepass")
                             ).decode("ascii")))
                     sys.stderr.write("JY3-WARNINGS-END\\n")
-                if isinstance(result, ast.AST):
+                if code_kind.startswith("symtable-"):
+                    entries = []
+                    write_symtable(result, entries)
+                    sys.stdout.buffer.write("".join(entries).encode("ascii"))
+                elif isinstance(result, ast.AST):
                     sys.stdout.buffer.write(write(result).encode("utf-8", "surrogatepass"))
                 else:
                     sys.stdout.buffer.write(marshal.dumps(result))
@@ -330,6 +360,16 @@ public final class Cpython314Compiler {
                     return Cpython314Compiler.rebuildAst(
                             tree, fileName, mode, flags, optimize, featureVersion);
                 }
+
+                @Override
+                public String symtable(String source, String fileName, String mode) {
+                    return Cpython314Compiler.symtable(source, fileName, mode);
+                }
+
+                @Override
+                public String symtableBytes(byte[] source, String fileName, String mode) {
+                    return Cpython314Compiler.symtableBytes(source, fileName, mode);
+                }
             };
 
     /** The compiled unit plus the name CPython gave its code object, which is also {@code __file__}. */
@@ -442,6 +482,31 @@ public final class Cpython314Compiler {
     }
 
     /**
+     * Parse {@code source} and answer its symbol table, in the line-oriented text
+     * {@link SourceCompiler#symtable} describes.
+     *
+     * <p>Text keeps the {@code str} path: the reference hands a {@code str} to the symtable builder
+     * without looking for an encoding declaration, and the same source sent as bytes would be decoded
+     * again under whatever declaration it carries.
+     */
+    public static String symtable(String source, String fileName, String mode) {
+        if (source.indexOf('\0') >= 0) {
+            throw nullByteRefusal();
+        }
+        return new String(
+                run("t", source, fileName, "symtable-" + mode, 0, -1, -1),
+                StandardCharsets.US_ASCII);
+    }
+
+    /** Parse bytes the way {@link #symtable} parses text, leaving the encoding declaration to the decoder. */
+    public static String symtableBytes(byte[] source, String fileName, String mode) {
+        String payload = Base64.getEncoder().encodeToString(source);
+        return new String(
+                run("b", payload, fileName, "symtable-" + mode, 0, -1, -1),
+                StandardCharsets.US_ASCII);
+    }
+
+    /**
      * Compile a tree the caller already holds, written as the constructor text
      * {@link #parseAst} answers.
      *
@@ -523,19 +588,24 @@ public final class Cpython314Compiler {
         // process that would fail to start. Bytes sources take the base-64 route and keep the
         // reference's own answer.
         if ("s".equals(payloadKind) && payload.indexOf('\0') >= 0) {
-            throw new CompilationRefused(
-                    "SyntaxError: source code string cannot contain null bytes",
-                    "SyntaxError",
-                    "source code string cannot contain null bytes",
-                    null,
-                    SourceRefused.ABSENT,
-                    SourceRefused.ABSENT,
-                    null,
-                    SourceRefused.ABSENT,
-                    SourceRefused.ABSENT);
+            throw nullByteRefusal();
         }
         return MarshalReader.readCode(
                 run(payloadKind, payload, fileName, codeKind, flags, optimize, featureVersion), 0);
+    }
+
+    /** The refusal CPython gives a source string holding a NUL, with no position to point at. */
+    private static CompilationRefused nullByteRefusal() {
+        return new CompilationRefused(
+                "SyntaxError: source code string cannot contain null bytes",
+                "SyntaxError",
+                "source code string cannot contain null bytes",
+                null,
+                SourceRefused.ABSENT,
+                SourceRefused.ABSENT,
+                null,
+                SourceRefused.ABSENT,
+                SourceRefused.ABSENT);
     }
 
     /**
@@ -567,13 +637,14 @@ public final class Cpython314Compiler {
     /**
      * Whether the payload <em>is</em> the text the answer belongs to.
      *
-     * <p>Only two kinds qualify: a source string and the base-64 of a byte string. The other two hand the
-     * driver something that merely names the text — a file path, or the path of a freshly written tree —
-     * and a path can be written again with different contents between two calls, so remembering an answer
-     * under it would hand the old text's code back for the new text.
+     * <p>Only three kinds qualify: a source string, the base-64 of a byte string, and the text handed to
+     * the symtable builder. The other two hand the driver something that merely names the text — a file
+     * path, or the path of a freshly written tree — and a path can be written again with different
+     * contents between two calls, so remembering an answer under it would hand the old text's code back
+     * for the new text.
      */
     private static boolean cacheable(String payloadKind, String payload) {
-        return ("s".equals(payloadKind) || "b".equals(payloadKind))
+        return ("s".equals(payloadKind) || "b".equals(payloadKind) || "t".equals(payloadKind))
                 && payload.length() <= CACHEABLE_PAYLOAD;
     }
 

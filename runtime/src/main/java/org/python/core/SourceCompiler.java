@@ -116,4 +116,23 @@ public interface SourceCompiler {
             int flags,
             int optimize,
             int featureVersion);
+
+    /**
+     * Parse one unit and answer the symbol table the reference compiler built for it.
+     *
+     * <p>{@code _symtable} hands Python a tree of raw entries, and the runtime rebuilds that tree from
+     * this text. Each entry writes one {@code B} line —
+     * {@code B<TAB>type<TAB>lineno<TAB>nested<TAB>base64(name)<TAB>symbols<TAB>varnames<TAB>children} —
+     * followed by that many {@code S} lines ({@code S<TAB>base64(name)<TAB>flags}), that many
+     * {@code V} lines ({@code V<TAB>base64(name)}) and then its children, each written the same way.
+     * Names are UTF-8 and then base64, so every line is ASCII and a name cannot carry the tab that
+     * separates the fields. The order of the symbols, the varnames and the children is the reference's
+     * own, because {@code get_identifiers()} publishes the dictionary's order.
+     *
+     * @param mode {@code exec}, {@code eval} or {@code single}, as {@code _symtable.symtable} takes it
+     */
+    String symtable(String source, String fileName, String mode);
+
+    /** Parse bytes as {@link #symtable} parses text, leaving the encoding declaration to the decoder. */
+    String symtableBytes(byte[] source, String fileName, String mode);
 }
