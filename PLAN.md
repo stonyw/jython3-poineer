@@ -1199,6 +1199,40 @@ SNI race 的摆动区间。回归须带 `PYTHONPATH=$STD:$PWD`：不带时 `scri
 JUnit runtime 749／embedding 577 全绿，`:harness:check` 的 smoke 12/12 PASS、surprises 0。
 提交：`4568400`、`869d3c8`、`beeffb1`、`6a306df` 四笔代码，本文件与 `PLAN-progress.md` 一笔。
 
+### 3.30 M5 切片 74：`_statistics`——一个函数，不是 `_sum`（2026-11-16）
+
+§3.3 第 8 行原写「纯加速（`_statistics._sum` 一类）」，核对参考后修正口径：`Modules/_statisticsmodule.c`
+只导出 `_normal_dist_inv_cdf` 一个符号；`_sum` 是 `Lib/statistics.py` 里的纯 Python 函数（自带
+`start` 参数与整数／`Fraction` 精确累加），从不经过 C 模块。`statistics.py` 的唯一引用点是文件末尾的
+`try: from _statistics import _normal_dist_inv_cdf / except ImportError: pass`，`NormalDist.inv_cdf` 与
+`quantiles` 一族因此走 C 加速。口径同切片 73。
+
+**一、实现路径**（`runtime/src/main/java/org/python/core/StatisticsModule.java` 新建；`PyRuntime` 的
+`BUILTIN_MODULE_NAMES`、模块表与 `belongTo` 各加 `_statistics`）：Wichura AS241 的三段式与三组系数逐字
+照参考；表面 `__doc__`、函数 doc 与 `__text_signature__`、关键字与个数拒绝文案、
+`PyFloat_AsDouble` 的接受面（`Fraction`／`Decimal` 走 `__float__`、字符串拒绝）、`p<=0 || p>=1` 与
+分母为零的 `ValueError: inv_cdf undefined for these parameters` 全部逐字。
+
+**二、数值口径的两处发现**
+
+1. 参考二进制（Homebrew 3.14.10／arm64／clang）开了 FP contraction：`0.180625 - q*q` 编成一条
+   `fmsub`，每个多项式级都是 `fmadd`。普通乘加在 p=0.99 等点差 1–2 ulp；改用 `Math.fma`（含末尾
+   `x*sigma + mu`）复刻后，3000 组随机＋网格输入上的纯 Python 模型与参考二进制 0 mismatch。
+2. libm `log` 边界：Java `Math.log` 与 macOS libm 在约 7%（2569/34999）输入上差 1 ulp，故 215 行
+   语料中 p=0.99 的 3 行差 2 ulp；与切片 33 的 `float pow` 同类，属平台 libm 边界而非本模块缺陷。
+
+**三、判据**：`test_statistics` 参考 **400 ran／400 ok／0 fail／0 err／0 skip**，jy3
+**400／399／1／0／0**。唯一 fail 是 `TestHarmonicMean.test_types_conserved`：`harmonic_mean` 内部的
+`1 / MyFloat(...)` 在 jy3 由 `Numeric.apply` 直接升成 `float`，参考走 `MyFloat.__rtruediv__` 返回
+`MyFloat`——是 int 真除法的反射方法优先级缺口，在 `_statistics` 之外，本切片具名不修。
+
+**四、回归、普查与门禁**：14 套与切片 73 逐项相同（含 `test_csv` 134／130／0／0／4 与 `test_ssl`
+101／34）；普查 297 名为 **238 可导入／57 不可／2 跳过**（切片 73：237／58／2），逐名 diff 只
+`_statistics` 一行由 `ModuleNotFoundError` 转 `OK`；`./gradlew check --no-watch-fs
+-Dorg.gradle.vfs.watch=false` **BUILD SUCCESSFUL**（7m21s，26 任务：8 executed／18 up-to-date），
+JUnit 汇总 runtime 749／embedding 577（0 失败 0 错误 0 跳过），`:harness:check` 的 smoke 12/12 PASS、
+surprises 0。提交：代码 `380e933`，本文件与 `PLAN-progress.md` 一笔。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

@@ -1799,3 +1799,91 @@ None`、无 `__all__`；26 个常量逐个同值；`type(top)` 为 `<class 'symt
 -Dorg.gradle.vfs.watch=false` **BUILD SUCCESSFUL**（7m15s，26 任务：9 executed／17 up-to-date），
 JUnit 汇总 runtime 749／embedding 577（0 失败 0 错误 0 跳过），`:harness:check` 的 smoke 12/12 PASS、
 surprises 0。提交：代码 `4568400`、`869d3c8`、`beeffb1`、`6a306df` 四笔，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 74 明细（`_statistics`；2026-11-16）
+
+一个模块：`_statistics`（本切片新实现的 Java 内建模块）。口径同切片 73：
+`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`，
+判据 `env PYTHONPATH=$STD:$PWD jy3 /tmp/m5_58/run_test2.py test.test_statistics`。
+
+**一、参考面核对（修正 §3.3 第 8 行的假设）**
+
+- `refs/cpython/Modules/_statisticsmodule.c` 只有一个 `PyMethodDef`：`_normal_dist_inv_cdf`
+  （METH_FASTCALL，`_PyArg_NoKeywords` + 个数检查 + 三次 `PyFloat_AsDouble`）。**没有 `_sum`**。
+- `refs/cpython/Lib/statistics.py` 的唯一引用点在文件末尾：`try: from _statistics import
+  _normal_dist_inv_cdf / except ImportError: pass`；`_sum(values, start=0)` 是纯 Python（`_exact_ratio`
+  与 `Fraction`／浮点补偿），`harmonic_mean` 调 `_sum(w / x if w else 0 ...)`，`start` 只在
+  `statistics._sum` 自己的签名里，与 C 模块无关。
+- 模块 `__doc__ == 'Accelerators for the statistics module.\n'`；函数的 clinic 表无正文，故
+  `__doc__ is None`、`__text_signature__ == '($module, p, mu, sigma, /)'`。
+
+**二、实现**（`runtime/src/main/java/org/python/core/StatisticsModule.java` 新建；`PyRuntime` 的
+`BUILTIN_MODULE_NAMES`、`modules.put`、`belongTo` 各加 `_statistics`）
+
+- Wichura AS241 三支（`|q|<=0.425`；`r=sqrt(-log(r))` 后 `r<=5`；`r>5`）与 N1／D1、N2／D2、N3／D3
+  三组系数逐字照参考。
+- 参数面：先拒关键字（`_statistics._normal_dist_inv_cdf() takes no keyword arguments`），再拒个数
+  （`_normal_dist_inv_cdf expected 3 arguments, got N`，clinic 的句子、无括号），转换走 `PyFloat_AsDouble`
+  （`must be real number, not <tp_name>`）。
+- 边界：`p<=0 || p>=1`、各支分母为 0，统一 `ValueError: inv_cdf undefined for these parameters`。
+
+**三、表面探针**（`/tmp/m5_74/probe.py`，两侧 diff 只剩 p=0.99 一行）
+
+`dir(_statistics)` 只多一名 `_normal_dist_inv_cdf`；模块 doc、函数的 `__module__`／`__name__`／
+`__qualname__`／`__text_signature__`／`__doc__` 两侧同；接受 `int`／`bool`／`float`／自定义
+`__float__`／`Fraction`／`Decimal`（含 `Decimal("NaN")`），拒绝 `complex`／`str`／`None`／
+`__float__` 返回非浮点的对象；关键字三种形态、个数 0／2／4、边界 p=0／1／负／>1 的错误文案；
+`NormalDist(100, 15).inv_cdf(0.95) == 124.67280440427207` 两侧同，且
+`statistics._normal_dist_inv_cdf.__module__ == '_statistics'` 两侧同（加速路真的接上）。
+
+**四、数值口径的两处发现**
+
+1. **FP contraction**：反汇编参考的 `__statistics__normal_dist_inv_cdf` 可见 `fmsub`／`fmadd`
+   （15 个 fmadd，第二支被 SIMD 化成双通道 `fmla.2d`，num 与 den 同步求值）。初版普通乘加在
+   p=0.99 等处差 1–2 ulp；改用 `Math.fma` 复刻（`r = Math.fma(-q, q, 0.180625)`、每个多项式级
+   `Math.fma(prev, r, c)`、末尾 `Math.fma(x, sigma, mu)`）后，纯 Python 模型在 3000 组随机＋网格
+   输入上与参考二进制 **0 mismatch**。
+2. **libm `log` 边界**：Java `Math.log`（及 `StrictMath.log`）与 macOS libm 在 2569/34999（约 7%）
+   输入上差 1 ulp（例 `log(0.010000000000000009)`：C `-4.605170185988091`，Java
+   `-4.6051701859880900`）。Newton 补偿反而放大到 15996 mismatch，放弃。后果是 215 行语料
+   （70 个 p × 3 组 mu/sigma）中 p=0.99 的 3 行差 2 ulp，其余 212 行逐字节相同。
+
+**五、`test_statistics` 对拍与唯一 fail 的归因**
+
+参考 **400 ran／400 ok／0 fail／0 err／0 skip**；jy3 **400／399／1／0／0**。唯一 fail 为
+`TestHarmonicMean.test_types_conserved`：`harmonic_mean` 内 `1 / MyFloat(...)` 在 jy3 返回 `float`，
+参考返回 `MyFloat`。根因在 `Numeric.apply`：`int` 与 `PyFloat` 子类相遇时直接按 float 升格（`isNumber`
+用 `instanceof PyFloat`），而参考 `int.__truediv__` 对非 `PyLong` 返回 `NotImplemented`，随后调用
+`MyFloat.__rtruediv__`。脚本 `/tmp/m5_74/hmean.py` 实测：`mean` 两侧都是 `MyFloat`，`geometric_mean`
+两侧都是 `float`，只有 `1 / MyFloat` 一处不同。属 `_statistics` 之外的真缺口，本切片具名不修。
+
+**六、回归**（口径同切片 73；`test_bytes` 用 `/tmp/m5_59/run_bytes.py`）
+
+| 套 | ran | ok | fail | err | skip | 对比 |
+|---|---|---|---|---|---|---|
+| test_io | 675 | 516 | 82 | 57 | 20 | 同 |
+| test_bytes | 325 | 298 | 6 | 8 | 13 | 同 |
+| test_str | 139 | 120 | 2 | 10 | 7 | 同 |
+| test_memoryview | 171 | 124 | 0 | 27 | 20 | 同 |
+| test_array | 893 | 809 | 14 | 42 | 28 | 同 |
+| test_re | 166 | 129 | 21 | 12 | 4 | 同 |
+| test_csv | 134 | 130 | 0 | 0 | 4 | 同 |
+| test_tarfile | 768 | 411 | 23 | 1 | 333 | 同 |
+| test_socket | 749 | 198 | 8 | 24 | 519 | 同 |
+| test_ssl | 207 | 101 | 42 | 30 | 34 | 同（SNI race 区间内） |
+| test_os | 385 | 169 | 13 | 11 | 192 | 同 |
+| test_descr | 163 | 147 | 4 | 4 | 8 | 同 |
+| test_class | 42 | 39 | 1 | 0 | 2 | 同 |
+| test_types | 128 | 124 | 0 | 2 | 2 | 同 |
+
+**七、普查**：用切片 73 的同一脚本 `/tmp/s25_imports.py`（父进程 `sys.path.insert(0, STD)`，名字清单
+`/tmp/s25_stdlib_names.txt`）得到 **238 可导入／57 不可／2 跳过**（切片 73：237／58／2），逐名 diff 只有
+`_statistics` 一行由 `ModuleNotFoundError` 转 `OK`；`_json`／`json`／`statistics` 均 `OK`。附注：若只是
+`PYTHONPATH=refs/cpython/Lib` 而不把 `STD` 放进 `sys.path`，`pydoc`（`TypeError`）与 `ensurepip`
+（`ModuleNotFoundError`）会被多算成失败，得到 236／59／2——那是口径差异，不是回归，故以旧脚本为准。
+
+**八、门禁**：`env -u PYTHONPATH ./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false`
+**BUILD SUCCESSFUL**（7m21s，26 任务：8 executed／18 up-to-date），JUnit 汇总 runtime 749／embedding 577
+（0 失败 0 错误 0 跳过），`:harness:check` 的 smoke 12/12 PASS、surprises 0。
+
+提交：代码 `380e933`，本文件与 `PLAN.md` 一笔。
