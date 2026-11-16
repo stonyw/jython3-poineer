@@ -148,14 +148,21 @@ final class PySrePattern extends PyObject {
         return matcher;
     }
 
-    private static int clamp(BigInteger value, int length) {
-        if (value.signum() <= 0) {
+    /**
+     * {@code state_init}'s clipping of a {@code Py_ssize_t} position into the subject.
+     *
+     * <p>The conversion to {@code Py_ssize_t} has already happened — {@link Numbers#size} refused a
+     * value too wide for the word — so what is left is the reference's own two comparisons, which
+     * pull a negative position to zero and one past the end back to the length.
+     */
+    private static int clamp(long position, int length) {
+        if (position <= 0) {
             return 0;
         }
-        if (value.compareTo(BigInteger.valueOf(length)) >= 0) {
+        if (position >= length) {
             return length;
         }
-        return value.intValue();
+        return (int) position;
     }
 
     /**
@@ -200,10 +207,14 @@ final class PySrePattern extends PyObject {
     private PyObject match(PyObject[] args, String[] kwNames, int kind) {
         String plain = kind == 0 ? "match" : kind == 1 ? "fullmatch" : "search";
         Arguments.between(plain, args, kwNames, 1, 3);
+        // The reference's clinic converts pos and endpos to Py_ssize_t before the body runs, so a
+        // value too wide for the word is refused before the subject is looked at.
+        long start = args.length > 1 ? Numbers.size(args[1]) : 0;
+        long stop = args.length > 2 ? Numbers.size(args[2]) : Long.MAX_VALUE;
         String text = subject(args[0]);
         int length = text.codePointCount(0, text.length());
-        int pos = args.length > 1 ? clamp(Numbers.asIndex(args[1]), length) : 0;
-        int endpos = args.length > 2 ? clamp(Numbers.asIndex(args[2]), length) : length;
+        int pos = clamp(start, length);
+        int endpos = clamp(stop, length);
         if (endpos < pos) {
             return PyNone.INSTANCE;
         }
@@ -218,10 +229,12 @@ final class PySrePattern extends PyObject {
 
     private PyObject findall(PyObject[] args, String[] kwNames) {
         Arguments.between("findall", args, kwNames, 1, 3);
+        long start = args.length > 1 ? Numbers.size(args[1]) : 0;
+        long stop = args.length > 2 ? Numbers.size(args[2]) : Long.MAX_VALUE;
         String text = subject(args[0]);
         int length = text.codePointCount(0, text.length());
-        int pos = args.length > 1 ? clamp(Numbers.asIndex(args[1]), length) : 0;
-        int endpos = args.length > 2 ? clamp(Numbers.asIndex(args[2]), length) : length;
+        int pos = clamp(start, length);
+        int endpos = clamp(stop, length);
         PyList out = PyList.empty();
         if (endpos < pos) {
             return out;
@@ -265,10 +278,12 @@ final class PySrePattern extends PyObject {
 
     private PyObject finditer(PyObject[] args, String[] kwNames) {
         Arguments.between("finditer", args, kwNames, 1, 3);
+        long start = args.length > 1 ? Numbers.size(args[1]) : 0;
+        long stop = args.length > 2 ? Numbers.size(args[2]) : Long.MAX_VALUE;
         String text = subject(args[0]);
         int length = text.codePointCount(0, text.length());
-        int pos = args.length > 1 ? clamp(Numbers.asIndex(args[1]), length) : 0;
-        int endpos = args.length > 2 ? clamp(Numbers.asIndex(args[2]), length) : length;
+        int pos = clamp(start, length);
+        int endpos = clamp(stop, length);
         List<PyObject> out = new ArrayList<>();
         if (endpos >= pos) {
             Matcher matcher = bound(text, pos, endpos);
