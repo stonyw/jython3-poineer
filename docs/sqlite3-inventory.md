@@ -3,6 +3,11 @@
 > 结论先行：**JVM 没有内置 SQLite 实现，也没有已缓存的驱动；但有一个成熟的第三方 JDBC 驱动可用，
 > 其内嵌 SQLite 版本与参考 3.14.10 完全一致。**因此实现前缀是「需要新增第三方依赖」，本轮停在这里，
 > 未改动任何 build 文件，也未写任何 DB-API 替身。选项见 §4，等待决策。
+>
+> **路线更新（M5 切片 66）**：用户已决定**不实现 `_sqlite3`／`sqlite3`**，改按 Jython 2 的 `zxJDBC`
+> ——一层 Java 把任意 JDBC 驱动封装成 DB-API 2.0，驱动 jar 由用户自行放进运行时 Classpath，
+> 不做 SQL 方言适配。本文档保留为切片 65 的盘点记录；§4 的选项与 §5 的预估不再执行，
+> 实现见 `PLAN.md` §3.23。
 
 盘点依据均为本机实测（2026-11-16），命令与原文如下。
 
@@ -73,8 +78,9 @@ JDK 只提供 API 模块 `java.sql`、`java.sql.rowset`，**不含任何驱动�
 不是「JVM 没有 SQLite」这么绝对：JVM **没有内置实现、没有内置驱动、没有缓存驱动**，
 但**可以引入一个纯 Java + 内嵌原生库的 JDBC 驱动**（下一节实测）。所以前缀是
 「有驱动但需要新增第三方依赖」。按指令停在此处：不改 build 文件、不写假 DB-API。
+（切片 66 起路线改为 zxJDBC，`_sqlite3`／`sqlite3` 不实现——见文首「路线更新」。）
 
-## 4. 选项（需要你选一个）
+## 4. 选项（历史记录；切片 66 已改为 zxJDBC，不再执行）
 
 ### A. 引入 `org.xerial:sqlite-jdbc:3.54.1.0`（推荐）
 
@@ -108,7 +114,7 @@ dup org.sqlite.SQLiteException | [SQLITE_CONSTRAINT_PRIMARYKEY] A PRIMARY KEY co
 不是 DB-API：BLOB、类型亲和、`text_factory`、事务状态、错误码、`detect_types` 都无法对齐，
 等于用一个壳子骗测试。不做。
 
-## 5. 若选 A：最小真实面与风险（预估，未实施）
+## 5. 若选 A：最小真实面与风险（历史预估，未执行）
 
 - **驱动之上仍是真活**：JDBC 只给 `Connection`/`PreparedStatement`/`ResultSet`，DB-API 的形状
   （`connect` 参数、`cursor` 工厂、`row_factory`、`text_factory`、`detect_types`、`isolation_level`、

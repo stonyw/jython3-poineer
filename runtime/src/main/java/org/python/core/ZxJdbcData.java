@@ -2,8 +2,6 @@ package org.python.core;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.sql.Blob;
-import java.sql.Clob;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -134,16 +132,18 @@ final class ZxJdbcData {
                 }
             case Types.BLOB:
                 {
-                    Blob value = set.getBlob(column);
-                    return value == null ? PyNone.INSTANCE : PyBytes.of(value.getBytes(1, (int) value.length()));
+                    // Jython 2 hands the java.sql.Blob back as a PyJavaInstance. There is no Java bridge
+                    // here to make one useful, so the bytes are read out instead — and through getBytes,
+                    // which is what drivers such as sqlite-jdbc implement where getBlob is refused.
+                    byte[] value = set.getBytes(column);
+                    return value == null ? PyNone.INSTANCE : PyBytes.of(value);
                 }
             case Types.CLOB:
             case Types.NCLOB:
                 {
-                    Clob value = set.getClob(column);
-                    return value == null
-                            ? PyNone.INSTANCE
-                            : PyStr.of(value.getSubString(1, (int) value.length()));
+                    // The same choice for a Clob: Jython 2 returns the object, this returns its text.
+                    String value = set.getString(column);
+                    return value == null ? PyNone.INSTANCE : PyStr.of(value);
                 }
             case Types.OTHER:
             case Types.JAVA_OBJECT:

@@ -1145,3 +1145,47 @@
 **五、若选 A 的现实（预估，未实施）**：`dbapi2` 是 `from _sqlite3 import *`，一旦可导入就是 504 例全亮，没有「只跑最小面」的中间态；错误消息 JDBC 形如 `[SQLITE_CONSTRAINT_PRIMARYKEY] ... (UNIQUE constraint failed: t.x)`，括号内为 SQLite errmsg（已验证 `NOT NULL`／`no such table`／`no such column` 可提取），对不上者具名；绑定个数与关闭后操作由 Python 面先判、可给参考原文（JDBC 侧分别是 `ArrayIndexOutOfBoundsException` 与 `The database has been closed`）；异常层用 `SQLiteException#getResultCode()` 的 primary code 映射（19 → `IntegrityError`）。建议落地时按 `test_dbapi` → `test_types` → `test_transactions` 分簇，先出基线再修。
 
 **六、提交**：仅文档与 PLAN 双文件；无代码改动，故未重跑 `./gradlew check`（当前树与 5a7ff6d 全绿时完全相同）。
+
+## M5 切片 66 明细（路线改为 zxJDBC：JDBC 之上的 DB-API 2.0）
+
+**一、路线与参考**：不做 `_sqlite3`／`sqlite3`，改按 Jython 2 的 zxJDBC。参考为纯 Java 的
+`refs/jython-2.7/src/com/ziclix/python/sql/`（`Lib/` 无对应 Python 面）。模块面按它移植：
+`apilevel="2.0"`、`threadsafety=1`、`paramstyle="qmark"`；`connect`／`connectx`／`lookup`；
+`Connection`（`close`／`commit`／`rollback`／`cursor(dynamic, rsType, rsConcur)`／`nativesql`／
+`autocommit`／上下文管理器）与 `Cursor`（`execute`／`executemany`／`fetchone`／`fetchmany`／
+`fetchall`／`next`／迭代／`arraysize`／`description`／`rowcount`／`lastrowid`／`warnings`／
+`connection`）；七个辅助与 `java.sql.Types` 反射常量、四个别名、`sqltype`；十个异常按 DB-API 2.0
+层次（`Warning`／`Error` 挂 `Exception`，`InterfaceError`／`DatabaseError` 挂 `Error`，其余挂
+`DatabaseError`）。
+
+**二、实现**：新增 `ZxJdbcModule`／`PyZxConnection`／`PyZxCursor`／`ZxJdbcData`／`PyJavaObject`
+（`runtime/src/main/java/org/python/core/`），在 `PyRuntime.BUILTIN_MODULE_NAMES` 与
+`builtinModule` 注册。静态 fetch 同 `StaticFetch`：执行后一次读完并关闭 `ResultSet`，`rowcount`
+为查询行数（`dynamic=1` 计已取数）；`executemany` 逐行执行。绑定按值分派（`None`／`bool`／
+`int`／`float`／`str`／`bytes`／`PyJavaObject`），其余抛 `ProgrammingError`；列按驱动声明的
+`Types` 读取。构建文件与仓库均未加驱动依赖。
+
+**三、驱动缺席实测**（无 jar）：`zxJDBC.connect("jdbc:sqlite::memory:")` → `InterfaceError`，原文为
+`Cannot open a JDBC connection to "jdbc:sqlite::memory:": no usable driver was found. ... Driver class
+tried: "org.sqlite.JDBC": not found (java.lang.ClassNotFoundException: org.sqlite.JDBC). Drivers
+registered with java.sql.DriverManager: none.`（完整分行见 `PLAN.md` §3.23）。显式 `driver=` 同样
+带 `ClassNotFoundException` 原文；不静默、无假驱动。
+
+**四、端到端**（仅测试 Classpath：`/tmp/sqlite-jdbc-3.54.1.0.jar`，未入库）：建表、插入、
+`?` 绑定、`executemany`、`fetchone`／`fetchmany`／`fetchall`、`commit`／`rollback`、`rowcount`、
+`description` 全通过；`UNIQUE` → `IntegrityError`（`[SQLCode: 19], [SQLState: null]`），缺表 →
+`OperationalError`（`[SQLCode: 1]`）；`None`／`str`／`bytes`／`Date`／`Timestamp` 读写正确；
+`with connection`／`with cursor`、`for row in cursor`、关闭后 `cursor is closed`／
+`connection is closed` 均成立。形状脚本另验 `connectx`／`lookup`／`select ?`／坏参数 TypeError。
+
+**五、与 Jython 2 的具名差异**：`Date`／`Time`／`Timestamp` 是 `PyJavaObject`（无 Java 桥）；
+常量是普通 `int`（Jython 2 为 `DBApiType` 子类）；`lookup` 返回 `PyJavaObject(Driver)`；
+BLOB／CLOB 读成 `bytes`／`str`（Jython 2 返回 `java.sql.Blob`／`Clob`）；未提供 `nextset`／
+`scroll`／`prepare`／`callproc`／`write`／`setinputsizes`／`setoutputsize`、`rownumber`／
+`updatecount`／`softspace`／`datahandler` 与 `Statement`／`DataHandler` 公开层；SQL 失败默认
+`OperationalError`（Jython 2 默认 `Error`）；`threadsafety=1` 但无锁；`lastrowid` 恒 `None`。
+
+**六、判据与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑
+**BUILD SUCCESSFUL**。提交两笔：66a（模块骨架、无驱动错误路径与端到端修正），66b（文档：
+`PLAN.md` §3.22 路线更新＋§3.23、`PLAN-progress.md`、`docs/sqlite3-inventory.md` 结论）。
+

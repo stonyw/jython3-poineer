@@ -20,7 +20,7 @@ import java.sql.Statement;
  * the tenth row has already run the first nine — the driver's own behaviour, not a batch that was
  * rewritten here.
  */
-final class PyZxCursor extends PyObject {
+final class PyZxCursor extends PyIterator {
 
     private static final Members TABLE = Members.of(ZxJdbcModule.CURSOR_TYPE);
 
@@ -38,11 +38,14 @@ final class PyZxCursor extends PyObject {
                 .add("fetchmany", "fetchmany(size=arraysize) -> a list of rows.", (self, args, kwNames) -> ((PyZxCursor) self).fetchmany(args, kwNames))
                 .add("fetchall", "fetchall() -> all remaining rows.", (self, args, kwNames) -> ((PyZxCursor) self).fetchall(args, kwNames))
                 .add("__enter__", "The cursor itself.", (self, args, kwNames) -> self)
+                .add("__next__", "The next row; StopIteration at the end.", (self, args, kwNames) -> ((PyZxCursor) self).stepped(args, kwNames))
+                .add("next", "Jython 2's name for __next__.", (self, args, kwNames) -> ((PyZxCursor) self).stepped(args, kwNames))
                 .add(
                         "__exit__",
                         "Close the cursor.",
                         (self, args, kwNames) -> {
-                            ((PyZxCursor) self).close(args, kwNames);
+                            ZxJdbcModule.arity("__exit__", ZxJdbcModule.positional(args, kwNames), 3, 3);
+                            ((PyZxCursor) self).close(new PyObject[0], new String[0]);
                             return PyNone.INSTANCE;
                         })
                 .addField("arraysize", "The default number of rows fetchmany() reads.", self -> PyInt.of(((PyZxCursor) self).arraysize))
@@ -232,6 +235,25 @@ final class PyZxCursor extends PyObject {
         ensureOpen();
         if (rows == null || position >= rows.size()) {
             return PyNone.INSTANCE;
+        }
+        PyObject row = rows.getItem(PyInt.of(position));
+        position++;
+        fetched(1);
+        return row;
+    }
+
+    /** Jython 2's {@code next()}: {@code fetchone}, with {@code StopIteration} at the end. */
+    private PyObject stepped(PyObject[] args, String[] kwNames) {
+        ZxJdbcModule.arity("next", ZxJdbcModule.positional(args, kwNames), 0, 0);
+        return super.stepped();
+    }
+
+    /** {@code FOR_ITER}'s step: the next row, or null at the end. */
+    @Override
+    public PyObject nextOrNull() {
+        ensureOpen();
+        if (rows == null || position >= rows.size()) {
+            return null;
         }
         PyObject row = rows.getItem(PyInt.of(position));
         position++;

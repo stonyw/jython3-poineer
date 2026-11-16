@@ -268,7 +268,7 @@ final class ZxJdbcModule {
             } catch (Throwable missing) {
                 attempt = "not found (" + describe(missing) + ")";
                 if (driver != null) {
-                    throw PyRaise.raise(INTERFACE_ERROR, driverMissing(driver, missing));
+                    throw PyRaise.raise(INTERFACE_ERROR, noDriverMessage(url, driver, attempt));
                 }
             }
         }

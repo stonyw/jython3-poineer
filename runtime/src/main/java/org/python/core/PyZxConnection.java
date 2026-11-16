@@ -38,7 +38,8 @@ final class PyZxConnection extends PyObject {
                         "__exit__",
                         "Close the connection.",
                         (self, args, kwNames) -> {
-                            ((PyZxConnection) self).close(args, kwNames);
+                            ZxJdbcModule.arity("__exit__", ZxJdbcModule.positional(args, kwNames), 3, 3);
+                            ((PyZxConnection) self).close(new PyObject[0], new String[0]);
                             return PyNone.INSTANCE;
                         })
                 .addField(

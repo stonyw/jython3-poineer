@@ -728,6 +728,33 @@ tuple／str／bytes 的数值可以靠抄 CPython 的 C 结构常数“算”出
 
 **四、若选 A 的现实**：JDBC 只给 `Connection`/`PreparedStatement`/`ResultSet`，DB-API 的形状（`text_factory`、`row_factory`、`detect_types`、`isolation_level`、`Row`/`Blob`/`Backup`/`hooks`）与 196 个名字都要自己搭；`dbapi2` 是 `from _sqlite3 import *`，所以一旦可导入就是 504 例全亮，不存在「只跑最小面」的中间态。错误消息 JDBC 形如 `[SQLITE_CONSTRAINT_PRIMARYKEY] ... (UNIQUE constraint failed: t.x)`，括号内是 SQLite `errmsg`，可逐条裁剪（已验证 `NOT NULL`／`no such table`／`no such column` 可提取），不会全部逐字节，对不上者具名；绑定个数与关闭后操作这两句由我们在 Python 面先判，可给参考原文。异常层用 `SQLiteException#getResultCode()` 的 primary code 映射（19 → `IntegrityError`）。
 
+**五、路线更新（M5 切片 66，同日）**：用户决定**不实现 `_sqlite3`／`sqlite3`**，改按 **Jython 2 的 zxJDBC** 做——一层 Java 把任意 JDBC 驱动封装成标准 DB-API 2.0，驱动 jar 由用户自行放进运行时 Classpath，不做 SQL 方言适配。因此上面的选项 A 与 §四的预估**不再执行**，`_sqlite3`／`sqlite3` 不进入实现队列；实现与实测见 §3.23，盘点记录保留在 `docs/sqlite3-inventory.md`。
+
+### 3.23 M5 切片 66：zxJDBC——JDBC 之上的 DB-API 2.0（2026-11-16）
+
+**一、参考面（`refs/jython-2.7/src/com/ziclix/python/sql/`）**。Jython 2 的 zxJDBC 是纯 Java 实现（`Lib/` 下没有 `zxJDBC.py`），模块名、类名与常量均按它移植：`apilevel="2.0"`、`threadsafety=1`、`paramstyle="qmark"`；`connect`／`connectx`／`lookup`；`Connection` 的 `close`／`commit`／`rollback`／`cursor(dynamic=0, rsType=None, rsConcur=None)`／`nativesql`／`autocommit`／`__enter__`／`__exit__`；`Cursor` 的 `close`／`execute(sql[, params[, bindings[, maxRows]]])`／`executemany`／`fetchone`／`fetchmany`／`fetchall`／`next`／迭代／`__enter__`／`__exit__` 与字段 `arraysize`／`description`／`rowcount`／`lastrowid`／`warnings`／`connection`；七个辅助 `Date`／`Time`／`Timestamp`／`DateFromTicks`／`TimeFromTicks`／`TimestampFromTicks`／`Binary`；SQL 常量反射 `java.sql.Types` 与 `java.sql.ResultSet`，别名 `ROWID=OTHER`（1111）、`NUMBER=NUMERIC`（2）、`STRING=VARCHAR`（12）、`DATETIME=TIMESTAMP`（93），`sqltype` 由值反查名字；十个异常按 DB-API 2.0 层次挂接（`Warning`／`Error` 挂 `Exception`——Jython 2 挂 `StandardError`，Python 3 无此类故上移一层；`InterfaceError`／`DatabaseError` 挂 `Error`，其余七个挂 `DatabaseError`）。
+
+**二、实现**（`runtime/src/main/java/org/python/core/`，`ZxJdbcModule`／`PyZxConnection`／`PyZxCursor`／`ZxJdbcData`／`PyJavaObject`）。模块经 `PyRuntime.BUILTIN_MODULE_NAMES` + `builtinModule` 注册，`import zxJDBC` 即可用。静态 fetch 与 Jython 2 的 `StaticFetch` 同形：`execute` 后一次读完 `ResultSet` 并关闭，`rowcount` 是查询行数（`dynamic=1` 时改计已取行数），`executemany` 逐行执行。参数绑定按 Python 值分派：`None`→`setObject(null)`、`bool`→`setBoolean`、`int`→`setLong`／超 64 位走 `setBigDecimal`、`float`→`setDouble`、`str`→`setString`、`bytes`→`setBytes`、`PyJavaObject`→`setObject(原值)`；其余类型抛 `ProgrammingError`。列读取按驱动声明的 `Types` 分派，日期／时间／时间戳返回包裹的 `java.sql` 值，二进制与 BLOB 返回 `bytes`。
+
+**三、驱动缺席路径（实测原文，无 jar）**：`zxJDBC.connect("jdbc:sqlite::memory:")` 抛 `InterfaceError`，消息为
+
+```
+Cannot open a JDBC connection to "jdbc:sqlite::memory:": no usable driver was found.
+Put the driver's jar on the classpath - for a "jdbc:sqlite:" URL that is
+sqlite-jdbc (org.xerial:sqlite-jdbc), for example as -cp sqlite-jdbc-3.x.x.jar
+on the jy3 command line, or beside jy3.jar.
+Driver class tried: "org.sqlite.JDBC": not found (java.lang.ClassNotFoundException: org.sqlite.JDBC).
+Drivers registered with java.sql.DriverManager: none.
+```
+
+显式 `driver=` 找不到类时同样抛 `InterfaceError` 并带上 `ClassNotFoundException` 原文；不静默、不内置假驱动。构建文件未改（`build.gradle.kts`／`libs.versions.toml` 均无 diff），仓库中无 jar。
+
+**四、端到端（仅测试 Classpath，`/tmp/sqlite-jdbc-3.54.1.0.jar`，未入库）**：建表、插入、`?` 绑定、`executemany`、`commit`／`rollback`、`fetchone`／`fetchmany`／`fetchall`、`rowcount`、`description` 全通过；`UNIQUE` 冲突得到 `IntegrityError`（`... [SQLCode: 19], [SQLState: null]`），缺表得到 `OperationalError`（`[SQLCode: 1]`），`None`／`str`／`bytes`／日期／时间戳绑定读回正确；`with connection`／`with cursor`、`for row in cursor`、关闭后 `cursor is closed`／`connection is closed` 均成立。
+
+**五、与 Jython 2 的具名差异**：①`Date`／`Time`／`Timestamp` 返回 `PyJavaObject` 包裹值（Jython 2 是 `PyJavaInstance`；jy3 无 Java 桥，`PyJavaObject` 只提供 `str`/`repr`）；②类型常量是普通 `int`（Jython 2 的 `DBApiType` 是 `int` 子类）；③`lookup` 返回 `PyJavaObject(Driver)`；④BLOB／CLOB 读成 `bytes`／`str`（Jython 2 返回 `java.sql.Blob`／`Clob` 对象，此处无桥可用）；⑤未提供 `cursor.nextset`／`scroll`／`prepare`／`callproc`／`write`／`setinputsizes`／`setoutputsize`、`rownumber`／`updatecount`／`softspace`／`datahandler` 与 `Statement`／`DataHandler` 公开层；⑥SQL 失败默认映射 `OperationalError`（Jython 2 默认 `Error`），映射表见 `ZxJdbcModule.sqlException`；⑦`threadsafety=1` 但无锁保护（与进程单线程口径一致）；⑧`lastrowid` 恒 `None`（与 Jython 2 基类一致，驱动不回生成键时不猜）。
+
+**六、判据**：无驱动路径与形状脚本（`apilevel`／`threadsafety`／`paramstyle`、异常层次、别名、`sqltype`、七个辅助、上下文管理器、迭代、关闭后操作）全部按参考面输出；端到端脚本全通过；`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（见 `PLAN-progress.md`）。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；
@@ -735,9 +762,9 @@ Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C
 `_interpchannels`/`_remote_debugging`；`readline`/`_curses`/`termios`/`syslog` 视平台按需；
 `_pickle.PickleBuffer`（切片 64 具名：缺这个 C 模块 API，`pickle.PickleBuffer` 因此不存在）。
 
-`_sqlite3`／`sqlite3` **不在此列**，但也不在已做之列：JVM 无内置 SQLite 实现与驱动，实现前缀是
-「新增第三方依赖」（`org.xerial:sqlite-jdbc:3.54.1.0`，Apache-2.0，11.6 MiB，内嵌 SQLite 3.54.1），
-盘点与选项见 §3.22 与 `docs/sqlite3-inventory.md`；**决策前不实现、不造假**。
+`_sqlite3`／`sqlite3` **不做**：用户已定路线（切片 66）改为 Jython 2 的 `zxJDBC`——JDBC 之上
+的 DB-API 2.0，驱动 jar 由用户放进运行时 Classpath，不做 SQL 方言适配。盘点见 §3.22 与
+`docs/sqlite3-inventory.md`，实现与实测见 §3.23；不写 `_sqlite3`，也不内置任何驱动或假对象。
 
 三处 JVM 结构性硬墙，不造值、不垫常量：**`sys.getrefcount`**（JVM 无引用计数，切片 64 曾以常量 1
 试过并撤回；`test_memoryview` 的 20 例引用计数断言如实留 err）；**weakref 回调时刻**（`WeakReference`
