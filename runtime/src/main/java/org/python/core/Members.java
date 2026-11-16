@@ -131,6 +131,9 @@ final class Members {
             Map.entry(PyType.CSV_DIALECT, CsvModule.CsvDialect.class),
             Map.entry(PyType.CSV_READER, CsvModule.CsvReader.class),
             Map.entry(PyType.CSV_WRITER, CsvModule.CsvWriter.class),
+            // `_json.make_scanner` files six read-only fields, which are askable through the type
+            // before `json` has made the scanner it keeps as `scan_once`.
+            Map.entry(PyType.JSON_SCANNER, JsonModule.Scanner.class),
             // Both cursors a range hands out declare the same three rows, over two bodies, so one class
             // files both tables — and `range_iterator.__setstate__` is askable before a cursor exists.
             Map.entry(PyType.RANGE_ITERATOR, RangeIterators.class),

@@ -3,18 +3,18 @@ package org.python.core;
 import java.util.Arrays;
 
 /**
- * {@code _json}: the three string-level accelerators {@code json} takes when the C extension is present.
+ * {@code _json}: the accelerators {@code json} takes when the C extension is present.
  *
- * <p>Only the pieces {@code json.decoder} and {@code json.encoder} reach for by name are here: the
- * scanner that reads one JSON string, and the two escapers that write one. {@code make_scanner},
- * {@code make_encoder} and their two types are not built yet, so {@code json} keeps using its Python
- * scanner and encoder while the two escapers and {@code scanstring} come from this module.
+ * <p>The pieces {@code json.decoder} and {@code json.encoder} reach for by name are here: the scanner
+ * that reads one JSON document, the two escapers that write one string, and {@code scanstring}.
+ * {@code make_encoder} and its type are not built yet.
  *
  * <p>The bodies are transliterations of {@code Modules/_json.c}: {@code scanstring_unicode},
- * {@code escape_unicode} and {@code ascii_escape_unicode}. Positions are counted in code points the way
- * {@code PyUnicode_GET_LENGTH} counts them, so a string holding an astral character or a lone surrogate
- * reports the index the reference would, and the text a reader gets back keeps those lone surrogates
- * rather than replacing them.
+ * {@code scanner_new}, {@code scanner_call}, {@code scan_once_unicode}, the object, array, number and
+ * constant readers, {@code escape_unicode} and {@code ascii_escape_unicode}. Positions are counted in
+ * code points the way {@code PyUnicode_GET_LENGTH} counts them, so a string holding an astral character
+ * or a lone surrogate reports the index the reference would, and the text a reader gets back keeps
+ * those lone surrogates rather than replacing them.
  */
 final class JsonModule {
 
@@ -66,7 +66,418 @@ final class JsonModule {
                         .filedWith(PyNativeFunction.METH_O));
         module.set("scanstring",
                 new PyNativeFunction("scanstring", JsonModule::scanstring).documented(SCANSTRING_DOC));
+        // `_json_exec` adds the two types after the three method rows, and the scanner is the first.
+        module.set("make_scanner", PyType.JSON_SCANNER);
         return module;
+    }
+
+    // --- the scanner -------------------------------------------------------------------------
+
+    /** The one parameter {@code make_scanner} takes, in the reference's {@code kwlist}. */
+    private static final String[] MAKE_SCANNER_PARAMETERS = {"context"};
+
+    /** The two parameters {@code scan_once} takes, in the reference's {@code kwlist}. */
+    private static final String[] SCAN_ONCE_PARAMETERS = {"string", "idx"};
+
+    /**
+     * {@code scanner_new}: read the six settings off the decoder's context and keep them.
+     *
+     * <p>Every read is a plain {@code PyObject_GetAttrString}, so a context missing one of the names
+     * fails with that attribute's own {@code AttributeError} and nothing is built.
+     */
+    static PyObject makeScanner(PyObject[] args, String[] kwNames) {
+        PyObject context = parseArguments("make_scanner", args, kwNames, MAKE_SCANNER_PARAMETERS)[0];
+        boolean strict = Slots.truth(Slots.getAttr(context, "strict"));
+        return new Scanner(
+                strict,
+                Slots.getAttr(context, "object_hook"),
+                Slots.getAttr(context, "object_pairs_hook"),
+                Slots.getAttr(context, "parse_float"),
+                Slots.getAttr(context, "parse_int"),
+                Slots.getAttr(context, "parse_constant"));
+    }
+
+    /**
+     * {@code PyArg_ParseTupleAndKeywords} for a row whose parameters are all required.
+     *
+     * <p>The reference's old parser checks the total first, then fills its parameters in order and
+     * reports the first one nothing arrived for, and only then looks at what is left over. That order is
+     * visible: {@code scan_once(x=1)} complains that {@code string} is missing rather than that
+     * {@code x} is unexpected.
+     */
+    private static PyObject[] parseArguments(
+            String function, PyObject[] args, String[] kwNames, String[] names) {
+        int most = names.length;
+        if (args.length > most) {
+            throw Slots.typeError(
+                    "%s() takes at most %d argument%s (%d given)",
+                    function, most, most == 1 ? "" : "s", args.length);
+        }
+        int keywords = kwNames == null ? 0 : kwNames.length;
+        int positional = args.length - keywords;
+        PyObject[] values = new PyObject[most];
+        boolean[] used = new boolean[keywords];
+        for (int i = 0; i < most; i++) {
+            if (i < positional) {
+                values[i] = args[i];
+            } else {
+                for (int k = 0; k < keywords; k++) {
+                    if (names[i].equals(kwNames[k])) {
+                        values[i] = args[positional + k];
+                        used[k] = true;
+                        break;
+                    }
+                }
+            }
+            if (values[i] == null) {
+                throw Slots.typeError(
+                        "%s() missing required argument '%s' (pos %d)", function, names[i], i + 1);
+            }
+        }
+        for (int k = 0; k < keywords; k++) {
+            if (!used[k]) {
+                throw Slots.typeError(
+                        "%s() got an unexpected keyword argument '%s'", function, kwNames[k]);
+            }
+        }
+        return values;
+    }
+
+    /** {@code _json.Scanner}: one decoder's settings and the {@code scan_once} body over them. */
+    static final class Scanner extends PyObject {
+
+        final boolean strict;
+        final PyObject objectHook;
+        final PyObject objectPairsHook;
+        final PyObject parseFloat;
+        final PyObject parseInt;
+        final PyObject parseConstant;
+
+        Scanner(
+                boolean strict,
+                PyObject objectHook,
+                PyObject objectPairsHook,
+                PyObject parseFloat,
+                PyObject parseInt,
+                PyObject parseConstant) {
+            super(PyType.JSON_SCANNER);
+            this.strict = strict;
+            this.objectHook = objectHook;
+            this.objectPairsHook = objectPairsHook;
+            this.parseFloat = parseFloat;
+            this.parseInt = parseInt;
+            this.parseConstant = parseConstant;
+        }
+
+        @Override
+        public PyObject getAttr(String name) {
+            return Members.find(this, name);
+        }
+
+        @Override
+        public boolean isCallable() {
+            return true;
+        }
+
+        /** {@code scanner_call}: {@code scan_once(string, idx)}, which answers {@code (value, next)}. */
+        @Override
+        public PyObject call(PyObject[] args, PyTuple kwNames) {
+            PyObject[] values = parseArguments(
+                    "scan_once", args, PyBoundMethod.keywordNames(kwNames), SCAN_ONCE_PARAMETERS);
+            long start = Numbers.size(values[1]);
+            if (!(values[0] instanceof PyStr string)) {
+                throw Slots.typeError(
+                        "first argument must be a string, not %.80s",
+                        values[0].getType().filedName());
+            }
+            int[] text = string.getValue().codePoints().toArray();
+            if (start < 0) {
+                throw Slots.valueError("idx cannot be negative");
+            }
+            if (start >= text.length) {
+                throw stopIteration(start);
+            }
+            Cursor next = new Cursor();
+            PyObject value = scanOnce(PyDict.empty(), text, (int) start, next);
+            return PyTuple.of(value, PyInt.of(next.value));
+        }
+
+        /** The reference's default object repr, which quotes {@code tp_name} rather than the bare name. */
+        @Override
+        public String repr() {
+            return "<" + getType().filedName() + " object at 0x"
+                    + Long.toHexString(System.identityHashCode(this)) + ">";
+        }
+
+        /** {@code scan_once_unicode}. */
+        private PyObject scanOnce(PyDict memo, int[] text, int idx, Cursor next) {
+            int length = text.length;
+            if (idx < 0) {
+                throw Slots.valueError("idx cannot be negative");
+            }
+            if (idx >= length) {
+                throw stopIteration(idx);
+            }
+            switch (text[idx]) {
+                case '"': {
+                    StringScan scan = scanString(text, idx + 1, strict);
+                    next.value = scan.next();
+                    return scan.value();
+                }
+                case '{':
+                    return parseObject(memo, text, idx + 1, next);
+                case '[':
+                    return parseArray(memo, text, idx + 1, next);
+                case 'n':
+                    if (idx + 3 < length
+                            && text[idx + 1] == 'u' && text[idx + 2] == 'l' && text[idx + 3] == 'l') {
+                        next.value = idx + 4;
+                        return PyNone.INSTANCE;
+                    }
+                    break;
+                case 't':
+                    if (idx + 3 < length
+                            && text[idx + 1] == 'r' && text[idx + 2] == 'u' && text[idx + 3] == 'e') {
+                        next.value = idx + 4;
+                        return PyBool.TRUE;
+                    }
+                    break;
+                case 'f':
+                    if (idx + 4 < length
+                            && text[idx + 1] == 'a' && text[idx + 2] == 'l'
+                            && text[idx + 3] == 's' && text[idx + 4] == 'e') {
+                        next.value = idx + 5;
+                        return PyBool.FALSE;
+                    }
+                    break;
+                case 'N':
+                    if (idx + 2 < length && text[idx + 1] == 'a' && text[idx + 2] == 'N') {
+                        return parseConstant("NaN", idx, next);
+                    }
+                    break;
+                case 'I':
+                    if (idx + 7 < length
+                            && text[idx + 1] == 'n' && text[idx + 2] == 'f' && text[idx + 3] == 'i'
+                            && text[idx + 4] == 'n' && text[idx + 5] == 'i'
+                            && text[idx + 6] == 't' && text[idx + 7] == 'y') {
+                        return parseConstant("Infinity", idx, next);
+                    }
+                    break;
+                case '-':
+                    if (idx + 8 < length
+                            && text[idx + 1] == 'I' && text[idx + 2] == 'n' && text[idx + 3] == 'f'
+                            && text[idx + 4] == 'i' && text[idx + 5] == 'n'
+                            && text[idx + 6] == 'i' && text[idx + 7] == 't'
+                            && text[idx + 8] == 'y') {
+                        return parseConstant("-Infinity", idx, next);
+                    }
+                    break;
+                default:
+                    break;
+            }
+            return matchNumber(text, idx, next);
+        }
+
+        /** {@code _parse_object_unicode}: a dict, or the list a pairs hook takes, or the hook's answer. */
+        private PyObject parseObject(PyDict memo, int[] text, int idx, Cursor next) {
+            int end = text.length - 1;
+            boolean pairs = objectPairsHook != PyNone.INSTANCE;
+            PyObject result = pairs ? PyList.of() : PyDict.empty();
+            idx = whitespace(text, idx, end);
+            if (idx > end || text[idx] != '}') {
+                while (true) {
+                    if (idx > end || text[idx] != '"') {
+                        throw decodeError(
+                                "Expecting property name enclosed in double quotes", text, idx);
+                    }
+                    StringScan scan = scanString(text, idx + 1, strict);
+                    PyObject key = scan.value();
+                    PyObject known = memo.get(key);
+                    if (known == null) {
+                        memo.put(key, key);
+                    } else {
+                        key = known;
+                    }
+                    idx = scan.next();
+                    idx = whitespace(text, idx, end);
+                    if (idx > end || text[idx] != ':') {
+                        throw decodeError("Expecting ':' delimiter", text, idx);
+                    }
+                    idx = whitespace(text, idx + 1, end);
+                    Cursor after = new Cursor();
+                    PyObject value = scanOnce(memo, text, idx, after);
+                    if (pairs) {
+                        ((PyList) result).add(PyTuple.of(key, value));
+                    } else {
+                        ((PyDict) result).put(key, value);
+                    }
+                    idx = after.value;
+                    idx = whitespace(text, idx, end);
+                    if (idx <= end && text[idx] == '}') {
+                        break;
+                    }
+                    if (idx > end || text[idx] != ',') {
+                        throw decodeError("Expecting ',' delimiter", text, idx);
+                    }
+                    int comma = idx;
+                    idx = whitespace(text, idx + 1, end);
+                    if (idx <= end && text[idx] == '}') {
+                        throw decodeError("Illegal trailing comma before end of object", text, comma);
+                    }
+                }
+            }
+            next.value = idx + 1;
+            if (pairs) {
+                return Slots.call(objectPairsHook, new PyObject[] {result}, null);
+            }
+            if (objectHook != PyNone.INSTANCE) {
+                return Slots.call(objectHook, new PyObject[] {result}, null);
+            }
+            return result;
+        }
+
+        /** {@code _parse_array_unicode}: always a list, which no hook can change. */
+        private PyObject parseArray(PyDict memo, int[] text, int idx, Cursor next) {
+            int end = text.length - 1;
+            PyList result = PyList.of();
+            idx = whitespace(text, idx, end);
+            if (idx > end || text[idx] != ']') {
+                while (true) {
+                    Cursor after = new Cursor();
+                    PyObject value = scanOnce(memo, text, idx, after);
+                    result.add(value);
+                    idx = after.value;
+                    idx = whitespace(text, idx, end);
+                    if (idx <= end && text[idx] == ']') {
+                        break;
+                    }
+                    if (idx > end || text[idx] != ',') {
+                        throw decodeError("Expecting ',' delimiter", text, idx);
+                    }
+                    int comma = idx;
+                    idx = whitespace(text, idx + 1, end);
+                    if (idx <= end && text[idx] == ']') {
+                        throw decodeError("Illegal trailing comma before end of array", text, comma);
+                    }
+                }
+            }
+            if (idx > end || text[idx] != ']') {
+                throw decodeError("Expecting value", text, end);
+            }
+            next.value = idx + 1;
+            return result;
+        }
+
+        /** {@code _parse_constant}: the hook's answer, and the index just past the constant. */
+        private PyObject parseConstant(String constant, int idx, Cursor next) {
+            PyObject value = Slots.call(parseConstant, new PyObject[] {PyStr.of(constant)}, null);
+            next.value = idx + constant.length();
+            return value;
+        }
+
+        /** {@code _match_number_unicode}: an int, a float, or whatever the custom hook answers. */
+        private PyObject matchNumber(int[] text, int start, Cursor next) {
+            int end = text.length - 1;
+            int idx = start;
+            boolean isFloat = false;
+            if (text[idx] == '-') {
+                idx++;
+                if (idx > end) {
+                    throw stopIteration(start);
+                }
+            }
+            if (text[idx] >= '1' && text[idx] <= '9') {
+                idx++;
+                while (idx <= end && isDigit(text[idx])) {
+                    idx++;
+                }
+            } else if (text[idx] == '0') {
+                // A leading zero is the whole integer part: `01` is `0` and then extra data.
+                idx++;
+            } else {
+                throw stopIteration(start);
+            }
+            if (idx < end && text[idx] == '.' && isDigit(text[idx + 1])) {
+                isFloat = true;
+                idx += 2;
+                while (idx <= end && isDigit(text[idx])) {
+                    idx++;
+                }
+            }
+            if (idx < end && (text[idx] == 'e' || text[idx] == 'E')) {
+                int exponentStart = idx;
+                idx++;
+                if (idx < end && (text[idx] == '-' || text[idx] == '+')) {
+                    idx++;
+                }
+                while (idx <= end && isDigit(text[idx])) {
+                    idx++;
+                }
+                if (isDigit(text[idx - 1])) {
+                    isFloat = true;
+                } else {
+                    // The `e` and its sign are not part of the number after all.
+                    idx = exponentStart;
+                }
+            }
+            PyObject custom = isFloat
+                    ? (parseFloat != PyType.FLOAT ? parseFloat : null)
+                    : (parseInt != PyType.INT ? parseInt : null);
+            String source = new String(text, start, idx - start);
+            PyObject value;
+            if (custom != null) {
+                value = Slots.call(custom, new PyObject[] {PyStr.of(source)}, null);
+            } else if (isFloat) {
+                value = PyFloat.of(Double.parseDouble(source));
+            } else {
+                value = PyInt.of(new java.math.BigInteger(source));
+            }
+            next.value = idx;
+            return value;
+        }
+
+        /** {@code IS_WHITESPACE}: space, tab, newline and carriage return, and nothing else. */
+        private static int whitespace(int[] text, int idx, int end) {
+            while (idx <= end) {
+                int c = text[idx];
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                    break;
+                }
+                idx++;
+            }
+            return idx;
+        }
+
+        private static boolean isDigit(int c) {
+            return c >= '0' && c <= '9';
+        }
+
+        /** {@code raise_stop_iteration}: the index itself is the exception's value. */
+        private static PyRaise stopIteration(long idx) {
+            // The index has to arrive through the class's initialiser, which is what fills
+            // `StopIteration.value`; `json.decoder` reads it back out of that field.
+            return PyRaise.of((PyBaseException) Slots.call(
+                    ExceptionTypes.STOP_ITERATION, new PyObject[] {PyInt.of(idx)}, null));
+        }
+    }
+
+    /** The index just past the value a reader stopped at. */
+    private static final class Cursor {
+        int value;
+    }
+
+    /** A decoded JSON string and the index just past its closing quote. */
+    private record StringScan(PyStr value, int next) {
+    }
+
+    static {
+        Members scanner = Members.of(PyType.JSON_SCANNER);
+        scanner.addField("strict", "strict", self -> PyBool.of(((Scanner) self).strict));
+        scanner.addField("object_hook", "object_hook", self -> ((Scanner) self).objectHook);
+        scanner.addField("object_pairs_hook", null, self -> ((Scanner) self).objectPairsHook);
+        scanner.addField("parse_float", "parse_float", self -> ((Scanner) self).parseFloat);
+        scanner.addField("parse_int", "parse_int", self -> ((Scanner) self).parseInt);
+        scanner.addField("parse_constant", "parse_constant", self -> ((Scanner) self).parseConstant);
     }
 
     /**
@@ -98,6 +509,12 @@ final class JsonModule {
 
     /** {@code scanstring_unicode}, over the code points of one {@code str}. */
     private static PyObject scan(int[] text, int end, boolean strict) {
+        StringScan scan = scanString(text, end, strict);
+        return PyTuple.of(scan.value(), PyInt.of(scan.next()));
+    }
+
+    /** The string behind a closing quote, and the index just past it. */
+    private static StringScan scanString(int[] text, int end, boolean strict) {
         int begin = end - 1;
         CodePoints out = new CodePoints();
         while (true) {
@@ -117,7 +534,7 @@ final class JsonModule {
 
             if (c == '"' && out.isEmpty()) {
                 // Fast path for the simple case: no escape has been seen, so the answer is the slice.
-                return PyTuple.of(PyStr.of(new String(text, end, next - end)), PyInt.of(next + 1));
+                return new StringScan(PyStr.of(new String(text, end, next - end)), next + 1);
             }
             if (c != '"' && c != '\\') {
                 throw decodeError("Unterminated string starting at", text, begin);
@@ -201,7 +618,7 @@ final class JsonModule {
             }
             out.add(c);
         }
-        return PyTuple.of(PyStr.of(out.text()), PyInt.of(end));
+        return new StringScan(PyStr.of(out.text()), end);
     }
 
     /** {@code py_encode_basestring}: {@code escape_unicode}, a METH_O row. */

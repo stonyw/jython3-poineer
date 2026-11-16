@@ -936,6 +936,16 @@ public class PyType extends PyObject {
     public static final PyType CSV_WRITER = builtin("writer").withoutNew().filedUnder("_csv.writer");
 
     /**
+     * {@code _json.make_scanner}: the type {@code json.decoder} keeps as its {@code scan_once}.
+     *
+     * <p>The module files the type under the name {@code make_scanner}, but its own name is
+     * {@code Scanner}, which is what {@code type(...)} and every repr report. It is constructible —
+     * calling it runs {@code scanner_new} over a decoder context — and each value is callable in turn.
+     */
+    public static final PyType JSON_SCANNER =
+            builtin("Scanner").filedUnder("_json.Scanner").documented("JSON scanner object");
+
+    /**
      * {@code types.CapsuleType}'s sentence, which wraps a C pointer a program cannot open.
      *
      * <p>It carries no argument table, so {@code __text_signature__} is {@code None} and the whole text
