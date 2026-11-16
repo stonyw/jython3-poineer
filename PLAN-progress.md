@@ -1685,3 +1685,117 @@ None`、无 `__all__`；26 个常量逐个同值；`type(top)` 为 `<class 'symt
 与 `symtable` 两行由 `ModuleNotFoundError` 转 `OK`，其余 295 名不变。`./gradlew check --no-watch-fs
 -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m25s，26 任务：8 executed／18 up-to-date；
 `:harness:check` 的 smoke 12/12 PASS、surprises 0）。提交：代码 `ce01ee2` 一笔，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 73 明细（`_json`；2026-11-16）
+
+一个模块：`_json`（`json` 的 C 加速器）。口径同切片 72：
+`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`，
+判据 `env PYTHONPATH=$STD:$PWD jy3 /tmp/m5_58/run_test2.py test.test_xxx`。
+
+**一、实现路径**（`runtime/src/main/java/org/python/core/JsonModule.java` 新建；`PyType` 增
+`JSON_SCANNER`／`JSON_ENCODER`；`Members` 两处映射；`Constructors.instantiate` 两条工厂；`PyRuntime`
+的 `BUILTIN_MODULE_NAMES` 与模块表各加 `_json`）
+
+1. **五个函数**逐字照 `refs/cpython/Modules/_json.c`：`scanstring(string, end, strict=True)`、
+   `encode_basestring(string)`、`encode_basestring_ascii(string)`、`make_scanner(...)`、
+   `make_encoder(...)`。参数面用参考的旧解析器顺序（`scanstring` 先查个数、再按序填参、最后看多余
+   关键字），`make_encoder` 的 `"OOOOUUppp"` 与九个参数名逐字；`TypeError` 文案照
+   `PyArg_ParseTupleAndKeywords` 的 `%.200s` 形态。
+2. **两个类型**按参考 `tp_name` 命名：`make_scanner` 返回 `_json.Scanner`（六个只读 member：
+   `strict`、`object_hook`、`object_pairs_hook`、`parse_float`、`parse_int`、`parse_constant`）；
+   `make_encoder` 返回 `_json.Encoder`（八个：`markers`、`default`、`encoder`、`indent`、
+   `key_separator`、`item_separator`、`sort_keys`、`skipkeys`）。参考不把两个类型挂成模块属性，
+   此处同样不挂。
+3. **扫描器**与 `scanstring` 共用一段扫描；`scan_once` 的 `(value, end)` 与参考逐字节一致，
+   `strict` 的 `Invalid control character at` / `Invalid \escape` 文案同源。
+4. **编码器**移植 `encoder_listencode_obj`／`_list`／`_dict`：v1 的 `"OOOOUUppp"` 逐参转换、
+   markers 用对象身份作键并跨 `default` 生效、缩进缓存按参考的奇偶两格布局（`2k` 是换行+缩进、
+   `2k-1` 是分隔符+换行）、`sort_keys` 与 dict 子类走 `items()` + `list.sort()`、`skipkeys` 与
+   非字符串键的 `TypeError` 逐字、非有限浮点报 `Out of range float values are not JSON compliant: …`。
+5. **提交**：`4568400`（`scanstring` 与两个字符串转义函数）、`869d3c8`（`make_scanner`／
+   `Scanner`）、`beeffb1`（`make_encoder`／`Encoder`）、`6a306df`（收口修正，见下）。
+
+**二、收口修正**（`6a306df`，`test_json` 首跑 136／56／32／1 → 153／52／19／1，共 17 例转绿）
+
+1. **IntEnum 按基类槽写值**：`json.dumps(IntEnum)` 与数值键两处改走 `PyLong_Type.tp_repr` 的语义
+   （`integer.getValue()`），不再走类的 `__repr__`；`test_enum` 的 C／Py 两路 2 F + 2 E 转绿。
+2. **`float.__repr__` 不再回派发**：`TypeDict` 的 float 表改注册 `floatRepr`，按值格式化；非 float
+   接收者的文案 `descriptor '__repr__' requires a 'float' object but received a 'str'` 同参考。
+   `json.encoder._floatstr` 的 `float.__repr__(o)` 因此对 float 枚举给出 `2.718281`，又 2 F + 2 E 转绿。
+3. **编码失败注解**：补三处 `_PyErr_FormatNote`——`when serializing %T object`（`default` 的返回值
+   再编码失败）、`when serializing %T item %zd`（列表）、`when serializing %T item %R`（字典）；
+   `%T` 用 `obj.getType().filedName()`，注解逐层追加、最内层在前。`test_default.test_bad_default`、
+   `test_fail.test_not_serializable`、`test_recursion` 三例共 5 E 转绿；顶层不可序列化对象仍不带
+   `__notes__`（参考同）。
+4. **列表长度逐轮重读**：`listencodeList` 收 `IntSupplier`（`list::size`／`items::size`／
+   `tuple::size`），循环里每轮重读，照 `PySequence_Fast_GET_SIZE` 的 gh-142831 口径；编码期间
+   `default` 删短列表不再越界（`test_encode_mutated`）。
+
+**三、顺带修掉的三处非 `_json` 缺陷**
+
+1. `Itertools` 的 `groupby` 标记对象原是无参 `PyObject()`（`type` 为 null），`sameKey` 比较即 NPE，
+   让 `test_tool.test_colors` 把整套打断（退出 70）；改 `new PyObject(PyType.OBJECT)`。
+2. `float.__repr__`（见上）。
+3. `dict.__eq__` 一族改走 `dictComparing`（entries 比较）：`OrderedDict.__eq__` 以
+   `dict.__eq__(self, other)` 开头，原实现回派发到 `OrderedDict.__eq__` 直至递归上限；
+   `test_decode`／`test_unicode` 的 `object_pairs_hook` 4 E 转绿。
+
+**四、表面**（`/tmp/m5_73/exports2.py`，两侧 `diff` 空）
+
+- `dir(_json)` 五名：`encode_basestring`、`encode_basestring_ascii`、`make_encoder`、`make_scanner`、
+  `scanstring`；模块 `__doc__ == 'json speedups\n'`、无 `__all__`。
+- `type(make_scanner(JSONDecoder()))` 为 `_json.Scanner`、`type(make_encoder(...))` 为 `_json.Encoder`
+  （`__module__`／`__name__`／doc 首行两侧同）。
+- 五个函数的 `__doc__` 与 `__text_signature__`（`scanstring(string, end, strict=True)`、
+  `encode_basestring(string)`、`encode_basestring_ascii(string)`、`make_scanner(...)`、
+  `make_encoder(...)`）逐字同；两个类型的成员表逐项同。
+- `json` 的五个引用点全落到 `_json`：`decoder.c_scanstring`、`scanner.c_make_scanner`、
+  `encoder.c_make_encoder`、`encoder.c_encode_basestring`、`encoder.c_encode_basestring_ascii`
+  （`is` 为真）；`json.dumps`／`loads` 的加速路实际在跑。
+
+**五、行为对拍**：三份语料与 `python3.14 -S` 逐字节相同——编码器 `/tmp/enc_corpus.py` 91 行
+（参数面全套、缩进 `None`／`0`／`1`／`4`／`'\t'`／`''`／`'--'`、separators 三组、`sort_keys`（含
+混合类型 `TypeError`）、`skipkeys`、浮点/常量/整数键、NaN／±Infinity（含 `allow_nan=False` 与作
+键）、自定义 `default`／`encoder`（含返回 bytes／None）、列表/字典/`default` 循环、`check_circular=False`、
+深浅 15/50 层、`ensure_ascii` 与转义、直接 `Encoder` 的自定义缩进起始层、markers 清理、dict 子类
+`items()` 覆写／排序、编码期增删列表），扫描器 `/tmp/json_scanner_corpus.py` 277 行，基础面
+`/tmp/json_corpus.py` 93 行。
+
+**六、`test_json` 判据与逐条归因**（`/tmp/m5_73/json_jy.txt` vs `json_ref.txt`）
+
+参考 **225 ran／224 ok／0 fail／0 err／1 skip**；jy3 **225／153／52／19／1**。参考的 1 skip 是
+`TestCEncodeBasestringAscii.test_overflow`（`not enough memory: 8589934592.0G`），jy3 同款 skip。
+71 条不绿全部在 `_json` 之外：
+
+| 归因 | 条数 | 具体 |
+|---|---|---|
+| `-m` 未实现（runpy 墙） | 50 F + 16 E | `test_tool.TestMain`／`TestTool`：`colors`（16×2 F，`jy3 -m json.tool` 退出 3）、`broken_pipe`／`help_flag`／`infile_outfile`／`infile_stdout`／`non_ascii_infile`／`sort_keys_flag`／`writing_in_place`／`ensure_ascii_default`（各 2 F）；E 为 12 条子进程 `CalledProcessError` + 4 条输出文件未生成导致的清理 `FileNotFoundError` |
+| `subprocess` 不受理 `pathlib.Path` | 2 E | `test_tool.*.test_jsonlines_from_file`（`TypeError: expected str or bytes, not PosixPath`） |
+| `sys.set_int_max_str_digits` 未落地 | 2 F | `test_decode.TestCDecode`／`TestPyDecode.test_limit_int`（`ValueError not raised`） |
+| `re` 的 `pos` 未按 `ssize_t` 校验 | 1 E | `test_scanstring.TestPyScanstring.test_overflow`（参考 `OverflowError`，此处 `JSONDecodeError` 带 `column 9223372036854775808`） |
+
+**七、回归**（口径同切片 72；`test_bytes` 用 `/tmp/m5_59/run_bytes.py test.test_bytes`，须带
+`PYTHONPATH=$STD:$PWD`）：
+
+| 套 | ran | ok | fail | err | skip | 对比 |
+|---|---|---|---|---|---|---|
+| test_io | 675 | 516 | 82 | 57 | 20 | 同 |
+| test_bytes | 325 | 298 | 6 | 8 | 13 | 同 |
+| test_str | 139 | 120 | 2 | 10 | 7 | 同 |
+| test_memoryview | 171 | 124 | 0 | 27 | 20 | 同 |
+| test_array | 893 | 809 | 14 | 42 | 28 | 同 |
+| test_re | 166 | 129 | 21 | 12 | 4 | 同 |
+| test_csv | 134 | **130** | 0 | **0** | 4 | 改善（+1 ok／−1 err；三次重跑稳定，切片 72 未留逐例日志，无法指名那条 err） |
+| test_tarfile | 768 | 411 | 23 | 1 | 333 | 同 |
+| test_socket | 749 | 198 | 8 | 24 | 519 | 同 |
+| test_ssl | 207 | 101 | 42 | 30 | 34 | 同（切片 72 记的 100／35 是已知 SNI race 的另一端） |
+| test_os | 385 | 169 | 13 | 11 | 192 | 同 |
+| test_descr | 163 | 147 | 4 | 4 | 8 | 同 |
+| test_class | 42 | 39 | 1 | 0 | 2 | 同 |
+| test_types | 128 | 124 | 0 | 2 | 2 | 同 |
+
+**八、普查与门禁**：普查（297 名）**237 可导入／58 不可／2 跳过**（切片 72：236／59／2），逐名 diff
+只有 `_json` 一行由 `ModuleNotFoundError` 转 `OK`。`./gradlew check --no-watch-fs
+-Dorg.gradle.vfs.watch=false` **BUILD SUCCESSFUL**（7m15s，26 任务：9 executed／17 up-to-date），
+JUnit 汇总 runtime 749／embedding 577（0 失败 0 错误 0 跳过），`:harness:check` 的 smoke 12/12 PASS、
+surprises 0。提交：代码 `4568400`、`869d3c8`、`beeffb1`、`6a306df` 四笔，本文件与 `PLAN.md` 一笔。
