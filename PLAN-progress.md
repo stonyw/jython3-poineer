@@ -1394,3 +1394,123 @@ __init__.py:7 | cannot import name 'resources' from 'importlib' (unknown locatio
 
 **六、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
 提交：`0ff0779`、`type` 槽位一笔、`18b156e`、`852766a`、PLAN 双文件一笔。
+
+## M5 切片 70 明细（CJK 编解码器族：`_multibytecodec` 与六个 `_codecs_*`；2026-11-16）
+
+七个模块：`_multibytecodec`、`_codecs_cn`、`_codecs_hk`、`_codecs_jp`、`_codecs_kr`、`_codecs_tw`、
+`_codecs_iso2022`。口径同切片 69：`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`，
+判据 `env PYTHONPATH=$STD:$PWD jy3 /tmp/m5_58/run_test2.py test.test_xxx`。
+
+**一、实现路径**（`runtime/src/main/java/org/python/core/MultibyteCodecModule.java` 新建，
+`PyRuntime` 注册 7 个模块名）
+
+参考是 `Modules/cjkcodecs` 下的 C 表；本运行时没有那些表，但 JDK 有字符集，于是**映射用 JDK、协议自己写**：
+walk 序列、错误区间（按**码点**计）、`(result, 消耗数)` 二元组、增量与流四类、`getstate`／`setstate`
+的字节布局都照 `multibytecodec.c` 重写。16 个 codec 分三路：
+
+1. **13 个直接落 JDK 字符集**：`gb2312`→GB2312、`gbk`→GBK、`gb18030`→GB18030、`big5`／`cp950`→Big5、
+   `big5hkscs`→Big5-HKSCS、`shift_jis`→Shift_JIS、`cp932`→windows-31j、`euc_jp`→EUC-JP、`euc_kr`→EUC-KR、
+   `cp949`→x-windows-949、`johab`→x-Johab、`iso2022_jp_2`→ISO-2022-JP-2。
+2. **3 个有跨调用状态的写成手写状态机**：`hz`（`~{`／`~}`／`~~`，7-bit 装 8-bit 表）、`iso2022_jp`
+   （`ESC ( B`／`ESC ( J`／`ESC $ B`／`ESC $ @` 四转义，JIS X 0201 Roman 的 `0x5C`／`0x7E` 表成
+   `\u00a5`／`\u203e`）、`iso2022_kr`（`ESC $ ) C` + SO/SI），底层表仍取 JDK 的 GB2312／EUC-JP／EUC-KR。
+3. **8 个无 JDK 等价物**：`shift_jis_2004`／`euc_jis_2004`／`euc_jisx0213`／`shift_jisx0213`／
+   `iso2022_jp_1`／`iso2022_jp_2004`／`iso2022_jp_3`／`iso2022_jp_ext`，`getcodec` 如实念参考在没有该
+   codec 时的那句 `LookupError: no such codec is supported.`，`import encodings.<名>` 如实失败。**不是桩**：
+   没有假表、假值。
+
+`_multibytecodec` 只导出 `MultibyteIncrementalEncoder`／`MultibyteIncrementalDecoder`／
+`MultibyteStreamReader`／`MultibyteStreamWriter`／`__create_codec`，与参考一样**不**导出 `MultibyteCodec`；
+Stream 两类型自己不写 read/write，交给 `codecs.StreamReader`／`StreamWriter`（参考是 C 实现，此处 MRO 与
+字段口径一致）。`__create_codec` 收 capsule，本运行时无 capsule，故任何实参都走参考那条
+`ValueError: argument type invalid`。
+
+状态与字节布局的实测修正（本切片新发现，均按参考对拍逐字节复刻）：编码器 `getstate` = `[pendingLen]
+[pending UTF-8 ≤8][state.c 8 字节]` 的小端整数；解码器 = `(pending, int)`；`iso2022_jp` 的 `ESC $ B` 与
+`ESC $ @` 在参考里各留 `0xC2`／`0xC0`（`state.c[0]`），且 ENCODER_INIT 只设 G0=G1='B'、G2 留 0 而
+DECODER_INIT 设 G0=G1=G2='B'，`getstate` 因此能读出实例是编还是解——`storeMode` 只写 `c[0]`、保留
+`c[1..7]`；`\u00a5`／`\u203e` 编码走 `ESC ( J`（`jpDesignate` 的 Roman 路径）。这三处修完 `jp-dec-states`
+与 `jp-yen` 两侧逐字节相同，`iso2022_jp` 的 enc 表差由 8 降到 4。
+
+**二、表面**（`/tmp/m5_70/surface.py`）：7 模块的 `dir()`、类型身份、`__module__`／`__qualname__`、25 次
+`getcodec` 回答，两侧 `diff` **只有 16 行** = 8 个缺口 codec × 2 行（参考真 codec，jy3 念 LookupError）。
+16 个 `encodings.<codec>` 子模块全部可导入且 `getregentry()` 成功。唯一具名偏差：`iso2022_jp_2` 交给 JDK 的
+ISO-2022-JP-2，**增量状态不跨调用**（参考会把 `ESC $ ( C` 之后的 G2 designation 留到下一次调用）。
+
+**三、行为对拍**（`/tmp/cjk_behavior.py`，30 行）：覆盖 `getstate`／`setstate` 五类拒绝（非 int／非 tuple／
+长度≠2／`pending buffer too large`／`illegal state argument`）、hz 增量与空 flush、gbk astral 的
+replace／ignore／backslashreplace 错误区间（`'a\U0001f600b'.encode('gbk','replace')` → `b'a?b'`）、
+`iso2022_jp_2` 的 CJK 与希腊字母、jp 流读写与 JIS X 0201 Roman（`'\u00a5\u203e\u3042'.encode('iso2022_jp')`
+→ `b'\x1b(J\\~\x1b$B$"\x1b(B'`）；两侧 `diff` 只剩 **4 行**（2 项 × 2 行），全是 `iso2022_jp_2` 的 JDK
+表缺口：U+00AD 参考走 JIS X 0212（`ESC $( C 21 29`）、本运行时拒绝；`ESC . A`／`ESC N`（G2／SS2）解码
+参考接受、本运行时拒绝。
+共享的 `ErrorHandlers.replace` 经核对**未改**：参考 ENCODE 分支产生 `slen` 个 `?`（`slen` 是出错切片的
+**字符**数），既有实现正确；早前 `a??b` 是错误区间按 UTF-16 单元计，修的是 `encodeError` 的码点换算。
+
+**四、逐 codec 表差实测**（`/tmp/cmp_detail.sh`；BMP 63,488 个码位各编一次，合法双/三/四字节序列各解一次，
+`<` 参考、`>` jy3）：
+
+| codec | enc 差／总数 | dec 差／总数 | 首个差例（参考 → jy3） |
+|---|---|---|---|
+| `gb2312` | 0／63488 | 0／33024 | — |
+| `hz` | 0／63488 | 0／33024 | — |
+| `johab` | 0／63488 | 34／33024 | `84 41`：`'\u3000'` → `'ㄱ'` |
+| `shift_jis` | 4／63488 | 2／33024 | `81 5c`：`'―'` → `'—'`；U+2014 参考拒、jy3 编成 `815c` |
+| `big5` | 6／63488 | 10／33024 | U+02CD `a1c5` → 拒；`a1 5a`：`'╴'` → `'＿'` |
+| `cp950` | 100／63488 | 116／33024 | U+02AF `a1c2` → 拒；`a1 45`：`'‧'` → `'•'` |
+| `big5hkscs` | 10114／63488 | 166／33024 | U+02CD `a1c5` → 拒；`87 7a` 参考拒、jy3 认 |
+| `gbk` | 4302／63488 | 4464／33024 | U+20AC 参考拒 → `a2e3`；U+2295 `a892` → 拒 |
+| `gb18030` | 76／1112064 | 56／109824 | U+1E3F `8135f437` → `a8bc`；`a6 d9`：`'\ue78d'` → `'︐'` |
+| `cp932` | 780／63488 | 3688／33024 | `80`：`b'\x80'` → 拒；`a0`：`'\uf8f0'` → 拒 |
+| `euc_jp` | 6／63488 | 6／57600 | `a1 bd`：`'―'` → `'—'`；U+2014 参考拒、jy3 编成 `a1bd` |
+| `iso2022_jp` | 4／63488 | 0／33024 | U+2014 参考拒、jy3 编成 `ESC $ B 21 3D`；U+2015 反过来 |
+| `iso2022_jp_2` | 11526／63488 | 516／33024 | U+00AD：`ESC $( C 21 29 ESC ( B` → 拒；`0E` 参考原样交出 `'\x0e'`、JDK 当移位吞掉 |
+| `euc_kr` | 17708／63488 | 4／33024 | U+AC02：`a4d4a4a1a4bfa4a2`（参考把一个音节拆成五个）→ 拒；U+327E 参考拒 → `a2e8` |
+| `cp949` | 376／63488 | 376／33024 | `e0 00` 私用区参考拒；`c9 a1` 参考拒、jy3 认 |
+| `iso2022_kr` | 2／63488 | 0／33024 | U+327E 参考拒 → `ESC $ ) C 0E 22 68 0F` |
+
+成因两类，没有一处假值：①JDK 与参考的**厂商表不同**（GBK 欧元、cp932 的 NEC/IBM 扩展行与 `0x80`／
+`0xA0`／`0xFD..0xFF`、euc_kr 的音节分解、johab 的 `0x84` 行、HKSCS 组合对、JIS X 0208 的 `21 3D` 一格
+两边认 `U+2014`／`U+2015` 不同）；②JDK 的 ISO-2022-JP-2 无 JIS X 0212、G2/SS2，且把孤立 `0x0E`／`0x0F`
+当移位吞掉而参考原样交出。JIS X 0201 Roman 不受影响：只有 `0x5C`／`0x7E` 两格不同，按参考
+`CHARSET_JISX0201_R` 手写，故 `\u00a5`／`\u203e` 与参考逐字节相同。
+
+**五、判据** `test_multibytecodec`：参考 39／39／0／0／1（skip 为 `_testcapi`），jy3 **39／19／0／19／1**。
+19 err 四类：
+
+1. **16 条 `LookupError: no such codec is supported.`**——`test_decode_unicode`×2、`test_errorcallback_custom_ignore`、
+   `test_getstate_returns_expected_value`、`test_nullcoding`、`test_state_methods_with_buffer_state`、
+   `test_stateful`、`test_stateful_keep_buffer`、`test_str_decode`、`test_nonbmp_pair_modifier`×6，
+   全部落在上表 8 个缺口 codec。
+2. `test_iso2022_jp_g0`（U+00AD 走 JIS X 0212）与 `test_g2`（SS2/G2）——与第三节 2 行同一根因。
+3. `test_nonbmp_pair_modifier(big5hkscs)`：`'\u00ca\u0304'` 组合对，JDK Big5-HKSCS 无该映射。
+4. `test_utf_8`：`'NoneType' object is not callable`——`codecs.lookup('utf-8')` 先命中内建的 17 个
+   `CodecInfo`（`streamreader`／`streamwriter` 为 `None`），参考先走 `encodings.search_function`。
+   **具名缺口**：`_codecs.lookup` 的查表顺序；修它须先做 `charmap` 家族（`encodings.cp1252` 依赖），
+   否则改顺序会让 `cp1252` 从能编解码退回查不到，故留到 charmap 切片。
+
+**六、回归**（口径同切片 69；`test_bytes` 用 `/tmp/m5_59/run_bytes.py` 垫片）：
+
+| 套 | ran | ok | fail | err | skip | 对比 |
+|---|---|---|---|---|---|---|
+| `test_io` | 675 | **516** | 82 | **57** | 20 | ok +1／err −1：`test_multibyte_seek_and_tell`（cp932 文本流）转 ok，本切片改善 |
+| `test_bytes` | 325 | 298 | 6 | 8 | 13 | 同 |
+| `test_str` | 139 | 120 | 2 | 10 | 7 | 同 |
+| `test_memoryview` | 171 | 124 | 0 | 27 | 20 | 同 |
+| `test_array` | 893 | 809 | 14 | 42 | 28 | 同 |
+| `test_re` | 166 | 129 | 21 | 12 | 4 | 同 |
+| `test_csv` | 134 | 129 | 0 | 1 | 4 | 同 |
+| `test_tarfile` | 768 | 411 | 23 | 1 | 333 | 同 |
+| `test_socket` | 749 | 198 | 8 | 24 | 519 | 同 |
+| `test_ssl` | 207 | 100 | 42 | 30 | 35 | 已知 SNI race（同一套在 101／34 与 100／35 间摆） |
+| `test_os` | 385 | 169 | 13 | 11 | 192 | 同 |
+| `test_descr` | 163 | 147 | 4 | 4 | 8 | 同 |
+| `test_class` | 42 | 39 | 1 | 0 | 2 | 同 |
+| `test_types` | 128 | 124 | 0 | 2 | 2 | 同 |
+
+**七、普查（297 名）**：**231 可导入／64 不可／2 跳过**（切片 69：224／71／2），+7 恰好是本切片 7 个
+模块，无其他名变动。注意普查须带 `PYTHONPATH=$STD:$PWD`：不带时启动 `sysPath` 空导致
+`importlib.__path__=['importlib']`，`ensurepip` 会假报不可导入。
+
+**八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+提交：代码 `1f8ce2f` 一笔，本文件与 `PLAN.md` 一笔。
