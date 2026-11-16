@@ -651,6 +651,20 @@ tuple／str／bytes 的数值可以靠抄 CPython 的 C 结构常数“算”出
 
 **七、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：代码一笔（导出计数、bytes-like 入口、`bytes(bytearray)` 与 partition 的两种半），本文件与 `PLAN-progress.md` 一笔。
 
+### 3.19 M5 切片 62：Unicode 完整大小写映射（SpecialCasing 全表）（2026-11-16）
+
+**一、表从参考落地**。新增 `runtime/src/main/java/org/python/core/UnicodeCase.java`，四张完整映射表由参考 3.14.10 逐码点实测生成：`lower` 1460 键（1 个多字）、`upper` 1552（102 个多字，`ß`→`SS`）、`title` 1479（48 个多字，`Ǆ`→`ǅ`）、`fold` 1557（104 个多字，`ﬁ`→`fi`）。表外的码位映射到自身，因此不依赖运行 JDK 的 Unicode 版本（toolchain Java 21＝Unicode 15，参考 Unicode 16）。同文件另带四张实测属性区间：`Cased` 4578 个码位／159 段、`Case_Ignorable` 2749／452、`Uppercase` 1978／656、`Lowercase` 2569／675。
+
+**二、条件映射按参考只做 Final_Sigma**。参考 `lower_ucs4` 只调用 `handle_capital_sigma`；`After_Soft_Dotted`、`More_Above`、`Not_Before_Dot`、`After_I` 是土耳其语／立陶宛语 tailoring，`str` 流程不应用。实测：`'I'.lower()`→`i`、`'İ'.lower()`→`i̇`、`'ı'.upper()`→`I`、`'I\u0300'.lower()`→`i\u0300`、`'I\u0307'.lower()`→`i\u0307`。Final_Sigma 的前后扫描使用实测出的 `Cased`／`Case_Ignorable`；两表有交集（`U+02B0` 既是 `Lm` 又带 `Other_Lowercase`），分别用 `('a'+c+'a').title()` 末字符与 `'ΑΣ'+c+'1'`／`'ΑΣ'+c+'Α'` 的 sigma 结果生成。
+
+**三、入口接线**：`lower`／`upper`／`title`／`capitalize`／`swapcase`／`casefold` 全走 `UnicodeCase`；`casefold` 直接查折叠表；`swapcase` 用实测 Upper／Lower 属性；`title` 是 `do_title` 原样（不跳 case-ignorable，`"they're".title()`→`"They'Re"`）；`capitalize` 首码位 title、其余 lower，final sigma 读整串。`isidentifier` 用 XID、`iskeyword` 在 `keyword` 模块，均不依赖大小写归一。
+
+**四、对拍全部 0 差异**：单码位 1,114,112×6 入口（6,684,672 行）、`'a'+chr(c)+'a'` 全量×6、`chr(c)+'Σ'` 与 `'Σ'+chr(c)` 各全量×6，均与参考逐行相同；259 行专项语料（`'ΑΣ'`→`ας`、`'ΑΣΑ'`→`ασα`、`'ΑΣ.'`、`'Σ'`、`İ/I/ı`、希腊／土耳其／立陶宛／荷兰 IJ、软点＋组合符号、`ẞ`、`ﬁ`、`Ǆ/ǅ/ǆ`、`"they're"`）相同。
+
+**五、判据与回归**：`test_str` 修前修后 139／119／2／11／7（失败集合不变），slice 60 记的 `test_capitalize`／`test_casefold`／`test_lower`／`test_swapcase`／`test_title` 仍在 ok；`test_unicodedata` 61／37／4／20／0（fail／err 均为缺属性，与大小写无关）。`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_array` 893／809／14／42／28、`test_memoryview` 171／103／18／30／20、`test_socket` 749／198／8／24／519、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1，与基线逐项相同。`idna`／`stringprep`／`re` 模块尚未落地，三组依赖它们的对拍暂缺，已在 `PLAN-progress.md` 具名记下。
+
+**六、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：代码一笔（`UnicodeCase` 新表与 `PyStr` 六个入口），本文件与 `PLAN-progress.md` 一笔。
+
 ## 4. 明确不做
 
 Python 子类化 Java / JavaAdapter、`.class` 导出（D3 后置）；CPython C-API 扩展模块兼容（numpy 等）；

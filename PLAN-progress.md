@@ -1069,3 +1069,23 @@
 顺手收掉：`test_setslice`、`test_extended_set_del_slice`、`test_from_mutating_list`×2。残留 14 = 既有具名项：子类 copy／pickle 6、`check_encoding_errors` 2、`free_after_iterating` 2、`%c`／`test_mod` 2、`del_expand` 的 `getsizeof` 1、`test_custom` 1。
 
 **八、回归九套与门禁**（最终二进制）：`test_pyexpat` 86／47／14／87／17、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／102／41／30／34（fail＋err 71，与基线同；ok 多 1 是 `ThreadedTests.test_recv_into_buffer_protocol_len` 转正——`bytes(bytearray 子类)` 不再走迭代，也就不会问那个会拒的 `__len__`）、`test_mmap` 53／40／0／2／11，外加 `test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1——无一项越出基线。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：代码一笔，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 62 明细：Unicode 完整大小写映射（SpecialCasing 全表）
+
+**一、表按参考 3.14.10 全量落地**。新增 `runtime/src/main/java/org/python/core/UnicodeCase.java`，四张完整映射表由参考解释器逐码点实测生成（不是从 Java 的 Unicode 数据借）：`lower` 1460 个键（其中 1 个多字映射，`İ`→`i̇`）、`upper` 1552（102 个多字，`ß`→`SS`）、`title` 1479（48 个多字，`ß`→`Ss`、`Ǆ`→`ǅ`）、`fold` 1557（104 个多字，`ﬁ`→`fi`、`ẞ`→`ss`）。没有出现的码位就是映射到自身，所以查表结果与参考逐字相同，不再依赖运行 JDK 的 Unicode 版本（编译 toolchain 是 Java 21＝Unicode 15，参考是 Unicode 16）。
+
+**二、条件映射按参考实测，只有 Final_Sigma 一条**。`refs/cpython/Objects/unicodeobject.c` 的 `lower_ucs4` 只调用 `handle_capital_sigma`；`After_Soft_Dotted`、`More_Above`、`Not_Before_Dot`、`After_I` 属于土耳其语／立陶宛语的 locale tailoring，参考的 `str` 流程根本不应用。实测确认：`'I'.lower()`→`i`、`'İ'.lower()`→`i̇`（无条件映射）、`'ı'.upper()`→`I`、`'I\u0300'.lower()`→`i\u0300`（不是立陶宛语的 `i\u0307\u0300`）、`'I\u0307'.lower()`→`i\u0307`。因此本片不额外发明这四条，凡是参考没做的都不做。Final_Sigma 的前后扫描使用从参考实测出的两个属性表：`Cased` 4578 个码位（159 段）、`Case_Ignorable` 2749 个（452 段）；两表有交集（如 `U+02B0` 既是 `Lm` 又带 `Other_Lowercase`），所以不能用一个减另一个推出来，分别用 `('a'+c+'a').title()` 末字符与 `'ΑΣ'+c+'1'`／`'ΑΣ'+c+'Α'` 的 sigma 结果实测生成。
+
+**三、入口接线**：`lower`／`upper`／`title`／`capitalize`／`swapcase`／`casefold` 全部改走 `UnicodeCase`；`casefold` 直接查折叠表，不再「先 lower 再补表」；`swapcase` 用实测的 `Uppercase`（1978 个码位／656 段）与 `Lowercase`（2569／675 段）属性，不用 `Character.isUpperCase`，避免 JDK 版本差异。`title` 是 `do_title` 原样：前一个码位 `Cased` 就 lower，否则 title；不跳 case-ignorable，所以 `"they're".title()` 是 `"They'Re"`。`capitalize` 首码位 title、其余 lower，final sigma 读整串（`'AΣ'.capitalize()`→`'Aς'`）。`str.isidentifier` 用 XID 规则、`keyword.iskeyword` 在 `keyword` 模块，均不依赖大小写归一，未改。
+
+**四、对拍（本片主要工作，全部 0 差异）**：
+- 单码位全量 1,114,112 个×6 入口（`lower`／`upper`／`title`／`capitalize`／`swapcase`／`casefold`）＝ 6,684,672 行，与参考逐行相同；
+- 三字组合 `'a'+chr(c)+'a'` 全量 1,114,112 个×6 入口，相同；
+- `chr(c)+'Σ'` 与 `'Σ'+chr(c)` 各 1,114,112 个×6 入口，专门覆盖 Final_Sigma 前后扫描，相同；
+- 259 行专项语料（`'ΑΣ'`→`ας`、`'ΑΣΑ'`→`ασα`、`'ΑΣ.'`→`ας.`、单 `'Σ'`→`σ`、`'İ'`／`'I'`／`'ı'`、希腊／土耳其／立陶宛／荷兰 IJ、软点＋组合符号、`ẞ`、`ﬁ`、`Ǆ/ǅ/ǆ`、`"they're"`）与参考逐行相同。
+
+**五、未能跑的部分**：运行时还没有 `re`、`stringprep`、`encodings.idna` 模块，`idna` 往返、`stringprep.map_table_b2`、`casefold` 与 `re.IGNORECASE` 一致性三项目前 import 就失败，不是大小写结果。`test_encodings` 的 idna 段与 `test_ssl` 依赖 idna 的例同样因缺模块无法形成对照，留到 idna／re 落地后补。
+
+**六、判据**：`test_str` 修前修后都是 **139／119／2／11／7**（本片把 slice 60 的部分实现换成全表，失败集合不变）；slice 60 记的 5 例 `test_capitalize`、`test_casefold`、`test_lower`、`test_swapcase`、`test_title` 仍在 ok 里，逐项探针均与参考相同。`test_unicodedata` 61／37／4／20／0（4 个 fail 与 20 个 err 都是缺属性／缺模块，与大小写无关，修前修后不变）。
+
+**七、回归**：`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_array` 893／809／14／42／28、`test_memoryview` 171／103／18／30／20、`test_socket` 749／198／8／24／519、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1——与基线逐项相同。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：代码一笔，本文件与 `PLAN.md` 一笔。
