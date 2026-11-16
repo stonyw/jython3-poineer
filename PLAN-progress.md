@@ -1514,3 +1514,89 @@ replace／ignore／backslashreplace 错误区间（`'a\U0001f600b'.encode('gbk',
 
 **八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
 提交：代码 `1f8ce2f` 一笔，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 71 明细（`termios`／`tty`／`pty`；2026-11-16）
+
+三模块：`termios`（本切片新实现）、`tty`／`pty`（纯 Python，此前因 `termios` 缺失而 `ModuleNotFoundError`）。
+口径同切片 70：`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`，
+判据 `env PYTHONPATH=$STD:$PWD jy3 /tmp/m5_58/run_test2.py test.test_xxx`。
+
+**一、实现路径**（`runtime/src/main/java/org/python/core/TermiosModule.java` 新建；`ExceptionTypes` 增
+`TERMIOS_ERROR`；`PyRuntime` 的 `BUILTIN_MODULE_NAMES` 与构造／注册表各加一项）
+
+JVM 没有终端行规程：`java.io`／`java.nio` 只搬字节，没有 `struct termios`，本运行时也无 JNI／JNA。
+于是按参考在本机能观测到的边界逐条复刻：
+
+1. **197 个常量**按参考实测值写入，超 `int` 的（`FIOASYNC = 2147772029` 等）用 `long`；`_POSIX_VDISABLE`
+   在内，模块没有 `__all__`（参考也没有）。
+2. **`error`** 是 `child("error", EXCEPTION)`：`Exception` 直接子类、不是 `OSError`，`args` 为 `(errno, text)`，
+   `__doc__` 为 `None`。
+3. **八个函数**照 `Modules/termios.c` + `clinic/termios.c.h`：`METH_O` 三个
+   （`tcgetattr`／`tcdrain`／`tcgetwinsize`）念 `termios.tcgetattr() takes exactly one argument (0 given)`；
+   `METH_FASTCALL` 五个先拒关键字（`termios.tcsetattr() takes no keyword arguments`）再数参数
+   （`tcsetattr expected 3 arguments, got 0`，不带模块前缀）。`PyObject_AsFileDescriptor` 四种回答照抄
+   （int 直取；负数 `ValueError('file descriptor cannot be a negative integer (-1)')`；无 `fileno`
+   `TypeError('argument must be an int, or have a fileno() method.')`；`fileno()` 回非 int
+   `TypeError('fileno() returned a non-integer')`）。结构顺序也照参考：`tcsetattr` 7 元素 list →
+   ioctl → 逐项 `PyLong_AsLong` → cc 20 元素；`tcsetwinsize` 两元素序列 → 两项转 long → ioctl。
+4. **非 tty 的 errno 按本机 CPython 3.14.10 实测**：closed／`9999`／`2**31-1`／socket → `(9, Bad file
+   descriptor)`；`/dev/null`（`os.open` 与 `open()` 两条路径，后者按句柄路径识别）→ `(19, Operation not
+   supported by device)`；管道／普通文件／其余 fd → `(25, Inappropriate ioctl for device)`；`2**31`／
+   `2**100` → `OverflowError('Python int too large to convert to C int')`。
+5. **真实终端具名缺口**：`fd < 3 && System.console() != null`（与 `os.isatty` 同一判据）统一
+   `NotImplementedError: the tty line discipline is not implemented`；不返回任何伪造属性。cc 的两句校验
+   文案因此不可达（非 tty 上 ioctl 先失败），一并具名而不是假装实现。
+
+**二、表面**（`/tmp/m5_71/probe2.py`）：`dir(termios)` 与参考只差 `__file__`（内建模块通行差异，`math`／
+`zlib` 同样没有），`__spec__.origin` 为 `built-in`；197 个常量逐个同值；八个函数的 `__text_signature__`
+与 `__doc__` 逐字相同；`error.__bases__ == (Exception,)`、`__doc__ is None`；`_POSIX_VDISABLE` 在、`CC`
+／`IFLAG`／`VEOF` 那类只属于 `tty.py` 的名字不在。
+
+**三、行为对拍**：`probe3_jy.py`（errno／`fileno` 四种回答／结构文案／`error` 形态／五个 doc）两侧 **0 行差**；
+`probe2.py` 只差 `__file__`／`__spec__` 两行；`probe.py`（常量、非 tty 回答、`tty` 表面、参考真 pty 属性）
+**9 行差全在 pty 段**（`pty-openpty OK (14,15)` 与后面 7 行属性和 `tty.setraw` 结果）。
+
+**四、`tty` 与 `pty`**：`tty` 纯 Python 可用——`CC, IFLAG, OFLAG, CFLAG, LFLAG, ISPEED, OSPEED = range(7)`、
+`__all__` 原样；`cfmakeraw`／`cfmakecbreak` 对 7 元素 list 原地改并返回同一对象（`cflag` 变 768，与参考
+逐值相同）。`setraw`／`setcbreak` 要真 tty，落在上面的缺口。`pty` 可导入，`openpty()` 因 `os.openpty`
+不存在而走参考源码自己的 `/dev/ptyXY` 回退，最终念 `OSError: out of pty devices`——是 `Lib/pty.py` 在无
+`os.openpty` 平台上的真实行为，不是桩。JDK 无成对 pty 原语，本运行时无 JNA／JNI（`build.gradle` 无该
+依赖），故 `os.openpty` 与真实 pty 一并具名。
+
+**五、判据**（参考 → jy3）：
+
+| 套 | 参考 ran／ok／fail／err／skip | jy3 | 差额 |
+|---|---|---|---|
+| `test_termios` | 21／20／0／0／1 | 21／**3**／0／0／**18** | 18 skip 全 `need os.openpty()`；3 ok 是 `TestModule.test_constants`／`test_ioctl_constants`／`test_exception` |
+| `test_tty` | 4／4／0／0／0 | 4／0／0／0／**4** | 4 例全 `need os.openpty()` |
+| `test_pty` | 6／6／0／0／0 | 6／**1**／0／**4**／1 | 3 err `out of pty devices`（`test_fork`／`test_master_read`／`test_spawn_doesnt_hang`）；1 err `test__copy_to_each` = `os.get_blocking()` 对 socket fd 念 EBADF；1 skip `test_openpty` |
+
+`test__copy_to_each` 是既有 fd 表分工所致：socket 编号在 socket 层自己的表里，`Fds` 只认文件描述符，
+`os.get_blocking(sock.fileno())` 不认它（`os.read` 在同一 fd 上则是阻塞等待）。修它要改 `Fds` 与 socket
+层的边界，会推翻「socket fd 在 `Fds.isOpen` 为 false」这条既有对齐，与本切片无关，故具名不动。
+
+**六、回归**（口径同切片 70；`test_bytes` 用 `/tmp/m5_59/run_bytes.py test.test_bytes`）：
+
+| 套 | ran | ok | fail | err | skip | 对比 |
+|---|---|---|---|---|---|---|
+| test_io | 675 | **516** | 82 | **57** | 20 | 同（串行批量那轮 515／58，单跑两次均 516／57 且 err 名单相同） |
+| test_bytes | 325 | 298 | 6 | 8 | 13 | 同 |
+| test_str | 139 | 120 | 2 | 10 | 7 | 同 |
+| test_memoryview | 171 | 124 | 0 | 27 | 20 | 同 |
+| test_array | 893 | 809 | 14 | 42 | 28 | 同 |
+| test_re | 166 | 129 | 21 | 12 | 4 | 同 |
+| test_csv | 134 | 129 | 0 | 1 | 4 | 同 |
+| test_tarfile | 768 | 411 | 23 | 1 | 333 | 同 |
+| test_socket | 749 | 198 | 8 | 24 | 519 | 同 |
+| test_ssl | 207 | 101 | 42 | 29 | 35 | 已知 SNI race（切片 70 记 100／30） |
+| test_os | 385 | 169 | 13 | 11 | 192 | 同 |
+| test_descr | 163 | 147 | 4 | 4 | 8 | 同 |
+| test_class | 42 | 39 | 1 | 0 | 2 | 同 |
+| test_types | 128 | 124 | 0 | 2 | 2 | 同 |
+
+**七、普查（297 名）**：**234 可导入／61 不可／2 跳过**（切片 70：231／64／2）。逐名 diff 只有三行变动：
+`pty`／`termios`／`tty` 由 `ModuleNotFoundError` 转 `OK`，其余 294 名不变。普查须带 `PYTHONPATH=$STD:$PWD`。
+
+**八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m15s，
+26 任务：8 executed／18 up-to-date；`:harness:check` 的 smoke 12/12 PASS、surprises 0）。提交：代码一笔，
+本文件与 `PLAN.md` 一笔。
