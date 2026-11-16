@@ -1186,6 +1186,7 @@ BLOB／CLOB 读成 `bytes`／`str`（Jython 2 返回 `java.sql.Blob`／`Clob`）
 `OperationalError`（Jython 2 默认 `Error`）；`threadsafety=1` 但无锁；`lastrowid` 恒 `None`。
 
 **六、判据与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑
-**BUILD SUCCESSFUL**。提交两笔：66a（模块骨架、无驱动错误路径与端到端修正），66b（文档：
-`PLAN.md` §3.22 路线更新＋§3.23、`PLAN-progress.md`、`docs/sqlite3-inventory.md` 结论）。
+**BUILD SUCCESSFUL**（7m20s，26 tasks）。提交两笔：66a（模块骨架与无驱动错误路径）、66b（BLOB/CLOB
+读写、游标迭代与 `__exit__`、显式驱动错误路径，以及文档：`PLAN.md` §3.22 路线更新＋§3.23、
+`PLAN-progress.md`、`docs/sqlite3-inventory.md` 结论）。
 
