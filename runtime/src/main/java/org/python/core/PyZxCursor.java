@@ -161,10 +161,12 @@ final class PyZxCursor extends PyIterator {
                 }
                 hasResult = plain.execute(sql);
             } else {
-                PreparedStatement prepared =
-                        rsType == 0
-                                ? owner.jdbc().prepareStatement(sql)
-                                : owner.jdbc().prepareStatement(sql, rsType, rsConcur);
+                PreparedStatement prepared;
+                if (rsType != 0) {
+                    prepared = owner.jdbc().prepareStatement(sql, rsType, rsConcur);
+                } else {
+                    prepared = preparedForKeys(sql);
+                }
                 statement = prepared;
                 if (maxRows > 0) {
                     prepared.setMaxRows(maxRows);
@@ -174,9 +176,61 @@ final class PyZxCursor extends PyIterator {
             }
             int updateCount = hasResult ? -1 : statement.getUpdateCount();
             read(hasResult ? statement.getResultSet() : null, updateCount);
+            // Jython 2's updateAttributes() asks the handler for a row id after every execution.
+            lastrowid = generatedKey(statement);
             collectWarnings();
         } catch (SQLException failure) {
             throw ZxJdbcModule.sqlException(failure);
+        }
+    }
+
+    /**
+     * Prepares a statement that asks the driver for generated keys, falling back to a plain one.
+     *
+     * <p>{@code RETURN_GENERATED_KEYS} is the JDBC 3.0 door Jython 2's {@code RowIdHandler} reached
+     * through a driver-specific reflection call; a driver that refuses the flag still runs the SQL,
+     * and {@link #generatedKey} then reports {@code None} as the reference's base handler does.
+     */
+    private PreparedStatement preparedForKeys(String sql) throws SQLException {
+        try {
+            return owner.jdbc().prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+        } catch (SQLException unsupported) {
+            return owner.jdbc().prepareStatement(sql);
+        }
+    }
+
+    /**
+     * The row id the driver reports for the statement just run, or {@code None}.
+     *
+     * <p>Jython 2's {@code DataHandler.getRowId} answers {@code None} unless a driver-specific handler
+     * knows a better method, and every failure in {@code RowIdHandler} falls back to that. Here the
+     * general JDBC equivalent is tried instead: the first column of {@code getGeneratedKeys()}, when
+     * the driver returns a row. Nothing is made up when it does not.
+     */
+    private static PyObject generatedKey(Statement executed) {
+        if (executed == null) {
+            return PyNone.INSTANCE;
+        }
+        try (ResultSet keys = executed.getGeneratedKeys()) {
+            if (keys == null || !keys.next()) {
+                return PyNone.INSTANCE;
+            }
+            Object value = keys.getObject(1);
+            if (value == null) {
+                return PyNone.INSTANCE;
+            }
+            if (value instanceof java.math.BigInteger big) {
+                return PyInt.of(big);
+            }
+            if (value instanceof Number number) {
+                return PyInt.of(number.longValue());
+            }
+            if (value instanceof byte[] bytes) {
+                return PyBytes.of(bytes);
+            }
+            return PyStr.of(value.toString());
+        } catch (SQLException | RuntimeException unsupported) {
+            return PyNone.INSTANCE;
         }
     }
 
