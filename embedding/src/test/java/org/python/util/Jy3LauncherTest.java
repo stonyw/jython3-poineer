@@ -616,7 +616,8 @@ class Jy3LauncherTest {
                 "37_command_line_options.py",
                 "38_generator_frame_locals.py",
                 "39_int_max_str_digits.py",
-                "40_re_ssize_args.py");
+                "40_re_ssize_args.py",
+                "41_subprocess_pathlike.py");
     }
 
     private static List<String> m3Corpus() {

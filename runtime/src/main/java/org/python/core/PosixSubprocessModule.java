@@ -386,14 +386,24 @@ final class PosixSubprocessModule {
         throw Slots.typeError("expected a list or tuple, not %s", sequence.getType().name());
     }
 
+    /**
+     * One argument as text, the way {@code PyUnicode_FSConverter} reads it.
+     *
+     * <p>{@code fork_exec} converts the argument vector and the working directory with that
+     * converter, so anything declaring {@code __fspath__} — {@code pathlib.Path} above all — is
+     * accepted wherever a str or bytes would be. The environment reaches here already encoded by
+     * {@code subprocess.py}, so it needs no conversion of its own.
+     */
     private static String text(PyObject value) {
-        if (value instanceof PyStr str) {
+        PyObject path = Open.fspath(value);
+        if (path instanceof PyStr str) {
             return str.getValue();
         }
-        if (value instanceof PyBytes bytes) {
+        if (path instanceof PyBytes bytes) {
             return new String(bytes.getValue(), StandardCharsets.UTF_8);
         }
-        throw Slots.typeError("expected str or bytes, not %s", value.getType().name());
+        throw Slots.typeError(
+                "expected str, bytes or os.PathLike object, not %s", Slots.argumentName(value));
     }
 
     private static int number(PyObject value) {
