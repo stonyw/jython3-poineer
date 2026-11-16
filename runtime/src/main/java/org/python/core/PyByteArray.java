@@ -1,7 +1,11 @@
 package org.python.core;
 
+import java.lang.ref.WeakReference;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * Python's {@code bytearray}: a mutable run of octets.
@@ -30,6 +34,46 @@ public class PyByteArray extends PyObject {
 
     /** Buffer exports outstanding; a run with any cannot move, see {@link #resize}. */
     private int exports;
+
+    /** The leases of the views still exporting this run, held weakly, or null when none ever was. */
+    private List<WeakReference<Lease>> leases;
+
+    /**
+     * One run handed to the views that read it.
+     *
+     * <p>CPython keeps the export count on the exporter and gives it back from the view's deallocator.
+     * A Java object has no deallocator, so the count is given back when the <em>lease</em> — the thing
+     * every view sharing the buffer holds — is no longer reachable, which {@link #exported} asks the
+     * collector about. {@code release()} gives it back at once, or, when another view still holds the
+     * lease, leaves the export until that last view is done, as {@code memoryview_release} does.
+     */
+    static final class Lease {
+
+        private final WeakReference<PyByteArray> owner;
+
+        /** How many views hold this lease; the last one to let go hands the buffer back. */
+        private int holders;
+
+        private boolean closed;
+
+        Lease(PyByteArray owner) {
+            this.owner = new WeakReference<>(owner);
+        }
+
+        void take() {
+            holders++;
+        }
+
+        void drop() {
+            if (!closed && --holders <= 0) {
+                closed = true;
+                PyByteArray run = owner.get();
+                if (run != null) {
+                    run.endLease(this);
+                }
+            }
+        }
+    }
 
     PyByteArray(PyType kind, byte[] value, int allocated) {
         super(kind);
@@ -72,6 +116,60 @@ public class PyByteArray extends PyObject {
         exports--;
     }
 
+    /**
+     * A lease for a view that will read this run, already counted as an export.
+     *
+     * <p>The caller {@link Lease#take() takes} it once per view it hands the lease to, and
+     * {@link Lease#drop() drops} it from each view's {@code release()}; a view that is only dropped
+     * leaves the lease to the collector, which is what gives the buffer back in CPython's
+     * deallocator.
+     */
+    Lease lease() {
+        Lease made = new Lease(this);
+        exports++;
+        if (leases == null) {
+            leases = new ArrayList<>();
+        }
+        leases.add(new WeakReference<>(made));
+        return made;
+    }
+
+    private void endLease(Lease lease) {
+        exports--;
+        if (leases != null) {
+            for (Iterator<WeakReference<Lease>> entries = leases.iterator(); entries.hasNext(); ) {
+                if (entries.next().get() == lease) {
+                    entries.remove();
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether a buffer is still exported, giving back the leases of views the collector has cleared.
+     *
+     * <p>CPython's refcount gives a dropped view's buffer back the moment the view dies. Java has no
+     * such hook, so a lease is only known to be dead after a collection: one is asked for here, and
+     * every lease it cleared is given back. A view still reachable keeps its export and this answers
+     * true, which is the {@code BufferError} case.
+     */
+    private boolean exported() {
+        if (exports == 0) {
+            return false;
+        }
+        if (leases != null && !leases.isEmpty()) {
+            System.gc();
+            for (Iterator<WeakReference<Lease>> entries = leases.iterator(); entries.hasNext(); ) {
+                if (entries.next().get() == null) {
+                    entries.remove();
+                    exports--;
+                }
+            }
+        }
+        return exports > 0;
+    }
+
     int size() {
         return value.length;
     }
@@ -86,6 +184,23 @@ public class PyByteArray extends PyObject {
     }
 
     // --- allocation -------------------------------------------------------------------
+
+    /**
+     * Runs {@code body} while this bytearray is exported, so that anything it calls back into — an
+     * {@code __index__}, a {@code __buffer__}, a {@code __len__} — that tries to resize the bytearray
+     * gets {@code BufferError} instead of moving the run under the caller.
+     */
+    static <T> T whileExported(PyObject self, java.util.function.Supplier<T> body) {
+        if (self instanceof PyByteArray run) {
+            run.beginExport();
+            try {
+                return body.get();
+            } finally {
+                run.endExport();
+            }
+        }
+        return body.get();
+    }
 
     /**
      * Makes room for {@code requested} octets, keeping at least the old ones.
@@ -104,7 +219,7 @@ public class PyByteArray extends PyObject {
             // not stop them. `b''.clear()` and `b.resize(len(b))` land here too.
             return;
         }
-        if (exports > 0) {
+        if (exported()) {
             // A buffer handed out still points into this run: CPython's `bytes_resize` refuses rather
             // than move the array out from under it, and `bytearray_join` does exactly this — the
             // separator is exported while the iterable is walked, so an iterable that clears the
@@ -188,9 +303,13 @@ public class PyByteArray extends PyObject {
             setSlice((PySlice) key, item);
             return PyNone.INSTANCE;
         }
-        int at = Slices.index(
-                key, () -> value.length, "bytearray", "bytearray index out of range");
-        value[at] = octetOf(item);
+        // `bytearray_ass_subscript` reads the value before it reads the length, because the value's
+        // `__index__` is arbitrary code that may resize this bytearray (gh-91153).
+        BigInteger index = Numbers.index(key, "bytearray");
+        byte octet = octetOf(item);
+        int at = Numbers.wrapIndex(
+                key, index, value.length, "bytearray index out of range");
+        value[at] = octet;
         return PyNone.INSTANCE;
     }
 
@@ -210,7 +329,7 @@ public class PyByteArray extends PyObject {
 
     @Override
     public PyObject contains(PyObject item) {
-        return PyBytes.containsOctets(value, item);
+        return whileExported(this, () -> PyBytes.containsOctets(value, item));
     }
 
     @Override
@@ -657,6 +776,22 @@ public class PyByteArray extends PyObject {
      * integers.
      */
     private PyObject extended(PyObject source) {
+        if (PyMemoryView.supportsBuffer(source)) {
+            // `bytearray_extend` reads a buffer whole and then inserts it at the length the bytearray
+            // had when the call started; a `__buffer__` that grows or shrinks the run moves the tail
+            // rather than the insertion point (gh-153578).
+            int lo = value.length;
+            byte[] tail = PyMemoryView.bufferIfAny(source).clone();
+            int size = value.length;
+            int at = Math.min(lo, size);
+            byte[] out = new byte[size + tail.length];
+            System.arraycopy(value, 0, out, 0, at);
+            System.arraycopy(tail, 0, out, at, tail.length);
+            System.arraycopy(value, at, out, at + tail.length, size - at);
+            resize(out.length);
+            System.arraycopy(out, 0, value, 0, out.length);
+            return PyNone.INSTANCE;
+        }
         byte[] tail;
         if (source instanceof PyBytes bytes) {
             tail = bytes.getValue();
@@ -780,7 +915,9 @@ public class PyByteArray extends PyObject {
             return PyByteArray.of(repeated(other));
         }
         if (op == BinaryOp.MOD) {
-            return PyByteArray.of(OctetFormat.format(value, other));
+            // `bytearray_remainder` formats through the exported buffer; a `__repr__` that clears the
+            // format must not free it underneath.
+            return whileExported(this, () -> PyByteArray.of(OctetFormat.format(value, other)));
         }
         return PyNotImplemented.INSTANCE;
     }
@@ -873,6 +1010,13 @@ public class PyByteArray extends PyObject {
             throw Slots.typeError(
                     "can assign only bytes, buffers, or iterables of ints in range(0, 256)");
         }
+        // A buffer that is not one of the two strings — a memoryview, an array, an object with
+        // `__buffer__` — is read whole rather than walked, which is what `PyByteArray_FromObject`
+        // does with anything `PyObject_CheckBuffer` accepts.
+        byte[] buffered = PyMemoryView.bufferIfAny(source);
+        if (buffered != null) {
+            return buffered;
+        }
         PyIterator iterator;
         try {
             iterator = Slots.iterator(source);
@@ -897,17 +1041,41 @@ public class PyByteArray extends PyObject {
 
     private void setSlice(PySlice slice, PyObject source) {
         Slices.Range range = Slices.of(slice, value.length);
-        byte[] content = assignedOctets(source);
+        byte[] content;
+        if (source instanceof PyByteArray run && run != this) {
+            content = run.raw().clone();
+        } else {
+            // `bytearray_ass_subscript` refuses a number or a str before it converts, and converting
+            // anything else may resize this bytearray, so the slice is resolved a second time against
+            // the length the conversion left behind (gh-91153).
+            content = assignedOctets(source);
+            range = Slices.of(slice, value.length);
+        }
+        // Make sure b[5:2] = ... inserts before 5, not before 2.
+        int start = range.start();
+        int stop = range.stop();
+        int step = range.step();
+        if ((step < 0 && start < stop) || (step > 0 && start > stop)) {
+            stop = start;
+        }
         int size = value.length;
-        if (range.step() == 1) {
-            int start = range.start();
-            int stop = range.stop();
+        if (step == 1) {
             byte[] out = new byte[size - (stop - start) + content.length];
             System.arraycopy(value, 0, out, 0, start);
             System.arraycopy(content, 0, out, start, content.length);
             System.arraycopy(value, stop, out, start + content.length, size - stop);
             resize(out.length);
             System.arraycopy(out, 0, value, 0, out.length);
+            return;
+        }
+        if (content.length == 0) {
+            // A deletion through an extended slice refuses to move the run even when it selects
+            // nothing, because `_canresize` runs before the empty-slice shortcut.
+            requireUnpinned();
+            if (range.count() == 0) {
+                return;
+            }
+            deleteIndices(range);
             return;
         }
         if (content.length != range.count()) {
@@ -922,11 +1090,20 @@ public class PyByteArray extends PyObject {
 
     private void deleteSlice(PySlice slice) {
         Slices.Range range = Slices.of(slice, value.length);
+        if (range.step() != 1) {
+            // `_canresize` answers before the empty-slice shortcut, so `del b[::2]` refuses a run
+            // with an export even when the slice selects nothing; the step-one path never gets there.
+            requireUnpinned();
+        }
+        if (range.count() > 0) {
+            deleteIndices(range);
+        }
+    }
+
+    /** Drops the indices {@code range} selects, closing the gaps left behind. */
+    private void deleteIndices(Slices.Range range) {
         int count = range.count();
         int size = value.length;
-        if (count == 0) {
-            return;
-        }
         boolean[] dropped = new boolean[size];
         for (int i = 0; i < count; i++) {
             dropped[range.at(i)] = true;
@@ -938,6 +1115,13 @@ public class PyByteArray extends PyObject {
             }
         }
         resize(size - count);
+    }
+
+    /** {@code _canresize}: a run with a buffer outstanding cannot move, whatever the write wants. */
+    private void requireUnpinned() {
+        if (exported()) {
+            throw Slots.bufferError("Existing exports of data: object cannot be re-sized");
+        }
     }
 
     /** {@code bytearray * n}, which fails as a memory request and not as an oversized repetition. */

@@ -56,6 +56,18 @@ final class PyBytesSubclass extends PyBytes {
 
     // --- calls ---------------------------------------------------------------------------
 
+    /** {@code len(self)}: a class-declared {@code __len__} wins over the octet count. */
+    @Override
+    public PyObject length() {
+        if (Specials.defines(getType(), "__len__")) {
+            PyObject answer = Specials.invoke(this, "__len__");
+            if (!Slots.declined(answer)) {
+                return answer;
+            }
+        }
+        return super.length();
+    }
+
     @Override
     public PyObject call(PyObject[] args, PyTuple kwNames) {
         return SubclassValue.call(this, args, kwNames);

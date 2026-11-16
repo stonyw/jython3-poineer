@@ -276,6 +276,10 @@ final class OctetFormat {
             throw Slots.typeError(
                     "__bytes__ returned non-bytes (type %s)", answer.getType().filedName());
         }
+        byte[] buffered = PyMemoryView.bufferIfAny(value);
+        if (buffered != null) {
+            return buffered;
+        }
         throw Slots.typeError(
                 "%%b requires a bytes-like object, or an object that implements __bytes__, not '%s'",
                 value.getType().filedName());

@@ -1027,3 +1027,45 @@
 **七、回归九套**（最终二进制）：`test_pyexpat` 86／47／14／87／17（`ok -32` 为 subTest 记账，`SUCCESSES` 47）、`test_xml_etree` 233／200／12／14／7（首跑 199／13 是 `BadElementTest.test_deeply_nested_deepcopy` 的 JVM 栈深摆动——切片 54 已具名，重跑回 12）、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_io` 675／514／83／58／20（ok 多 2、err 少 2，不越基线）、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／101／41／30／35（fail＋err 71，与基线同）、`test_mmap` 53／40／0／2／11——无一项越出基线。
 
 **八、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL in 7m**（26 个任务，9 executed、17 up-to-date）。提交：60a「bytes/bytearray 未改动路径与 fromhex/`__bytes__` 交回 exact 类型」、60b「str 的身份、大小写与 format_map 按 3.14.10 收敛」、60c「bytes() 先认 exact bytes，再对任意值问 `__bytes__`」、60d「bytes() 的 `__bytes__` 询问先于缺 encoding 的抱怨」四笔代码，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 61 明细：buffer 导出计数与 bytes-like 的唯一入口（2026-11-16）
+
+**一、要建的四件事**：承切片 60 的两簇（12 ＋ 16 = 28 例）同根——JVM 没有 `Py_buffer` 导出计数，`memoryview`／`array` 没接进 bytes-like 读取。本片不做字面量套件的零敲碎打，只做这个缺口本身。
+
+**二、导出计数**：[PyByteArray.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyByteArray.java) 在 `exports` 之上加 `Lease`：一个租约一把 `holders` 计数，视图们共享同一份；`exported()` 先把已被回收的租约还回去再答（JVM 没有析构，`memoryview` 被丢弃却不 `release()` 时只能问 collector——这是与参考的具名偏差，不是仿造时间线）；`resize()` 与 `requireUnpinned()` 都问它，文案逐字 `BufferError: Existing exports of data: object cannot be re-sized`。因此导出期的 `append`／`extend`／`insert`／`pop`／`remove`／`clear`／`+=`／`*=`／切片赋值与删除、`del` 全部拒绝。
+
+**三、可见性与唯一入口**：[PyMemoryView.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyMemoryView.java) 的 `ownsByteArrayExport` 换成共享 `Lease`（`copied`／`cast`／`toreadonly`／切片／`__buffer__` 都 `takeLease`，`release`／`__release_buffer__`／作废都 `dropLease`）；`memoryview(mv)` 的副本不再把父视图钉住（实测 copy 不阻塞父的 `release()`），但两份共享租约，底层 `bytearray` 仍不可 resize；`memoryview` 读时看底层、`bytes`／`bytearray` 的方法在建视图那一刻持有导出，两种行为分开。`supportsBuffer`／`bufferIfAny`／`bufferOctets` 是「问导出者要字节」的唯一答案，`bytes()`／`bytearray()`／`join`／`split` 分隔符／`strip` 族参数／`fromhex`／`%b`／`%s` 全部走它。
+
+**四、重入与变异**：[PyByteArray.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyByteArray.java) 的 `whileExported` 包住搜索、`contains` 与 `%`（`bytearray_mod_lock_held` 的 `ob_exports++`）；`setItem` 先转换值再按新长度钳（gh-91153，`__index__` 在转换里清空就停）；`extended` 走 buffer（gh-153578）；`setSlice` 重新钳并补 `stop=start`；扩展写／删在空切片快捷之前先问 `_canresize`（参考也是先问再看切片是否为空）；`assignedOctets` 走 `PyMemoryView.bufferIfAny`。[PyBytes.java](file:///Users/stony/qoder/jython3-poineer/runtime/src/main/java/org/python/core/PyBytes.java) 的 `join` 对 `PyList` 取快照并在后复查尺寸（`RuntimeError`，gh-151295），`partition`／`rpartition` 按 `STRINGLIB_MUTABLE` 分两半：不可变接收者中间放原分隔符对象，可变接收者三份都复制成 `bytearray`。
+
+**五、语料对拍**：`/tmp/m5_61/corpus.py` 114 行四组——A 导出期九种 resize 尝试、B 导出者被改后的视图可见性、C `memoryview`／`array` 进 12 个 bytes-like 位置、D 重入变异（Evil `__buffer__`、`EvilIndex`、`extend`／`setslice`／`join`／`bytes(list)`／`%a` 清 fmt／`hex` sep 的 `__len__`），与参考 3.14.10 逐字节 **0 diff**。
+
+**六、修前修后**（最终二进制）：
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `test_bytes` | 325／266／21／25／13 | **325／298／6／8／13** |
+| `test_io` | 675／514／83／58／20 | **675／515／82／58／20**（`PyIOTest.test_array_writes` 转 ok，无新失败） |
+| `test_array` | 893／809／14／42／28 | 893／809／14／42／28 |
+| `test_memoryview` | 171／103／18／30／20 | 171／103／18／30／20 |
+
+`test_io` 首版曾多出 17 个 err：`FileIO.readall` 的 `memoryview(result)[n:]` 这种临时视图从不 `release()`，导出计数把 `_pyio` 读文件全线打死；`Lease` 的回收路径（`exported()` 先清死租约）把它修回，ok 由 514 升到 515。
+
+**七、28 例逐条去向**（另 4 例同片收掉，46 → 14）：
+
+| 组 | 例 | 修前 | 修后 |
+|---|---|---|---|
+| 导出期 resize | `test_resize_forbidden`、`test_search_methods_reentrancy_raises_buffererror` 及 `[count]`／`[find]`／`[index]`／`[rfind]`／`[rindex]`（7） | `BufferError not raised` | 全过 |
+| 回调改下标 | `test_mutating_index [tp_as_mapping]`／`[tp_as_sequence]` | `IndexError not raised` | 全过 |
+| `%` 清格式串 | `test_mod_concurrent_mutation` | `BufferError not raised` | 过 |
+| `hex` sep 的 `__len__` | `test_hex_use_after_free` | 未报 `BufferError`／结果不符 | 过 |
+| 切片赋值回调 resize | `test_setslice_reentrant_resize` | `BufferError not raised` | 过 |
+| `fromhex` 收 `memoryview`／`array` | `BytesTest.test_fromhex` 3 ＋ `ByteArrayTest.test_fromhex` 3 | `fromhex() argument…`／类型不符 | 全过 |
+| `join` 收 view | `BytesTest.test_join` ＋ `ByteArrayTest.test_join` | `expected a bytes-like object, memoryview found` | 全过 |
+| `join` 并发改 buffer | `test_join_concurrent_buffer_mutation` 4 | `BufferError not raised` | 全过 |
+| `strip` 收 `bytearray` | `BytesTest.test_strip_bytearray` ＋ `ByteArrayTest.test_strip_bytearray` | buffer 参数未接 | 全过 |
+| `split`／`rsplit` 收 `bytearray` | `AssortedBytesTest.test_split_bytearray`／`test_rsplit_bytearray` | buffer 参数未接 | 全过 |
+
+顺手收掉：`test_setslice`、`test_extended_set_del_slice`、`test_from_mutating_list`×2。残留 14 = 既有具名项：子类 copy／pickle 6、`check_encoding_errors` 2、`free_after_iterating` 2、`%c`／`test_mod` 2、`del_expand` 的 `getsizeof` 1、`test_custom` 1。
+
+**八、回归九套与门禁**（最终二进制）：`test_pyexpat` 86／47／14／87／17、`test_xml_etree` 233／200／12／14／7、`test_xml_etree_c` 251／200／12／14／25、`test_socket` 749／198／8／24／519、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_ssl` 207／102／41／30／34（fail＋err 71，与基线同；ok 多 1 是 `ThreadedTests.test_recv_into_buffer_protocol_len` 转正——`bytes(bytearray 子类)` 不再走迭代，也就不会问那个会拒的 `__len__`）、`test_mmap` 53／40／0／2／11，外加 `test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1——无一项越出基线。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：代码一笔，本文件与 `PLAN.md` 一笔。

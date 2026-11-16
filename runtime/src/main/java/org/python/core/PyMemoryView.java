@@ -82,7 +82,9 @@ public final class PyMemoryView extends PyObject {
 
     /** Set when this view is the one holding the array's export count, so {@code release} gives it back. */
     private boolean ownsArrayExport;
-    private boolean ownsByteArrayExport;
+
+    /** The lease over a bytearray every view of the same run shares, or null for bytes and arrays. */
+    private PyByteArray.Lease lease;
 
     /** The views {@code __buffer__} exported from this one and that are still alive. */
     private final List<PyMemoryView> exports = new ArrayList<>();
@@ -196,10 +198,32 @@ public final class PyMemoryView extends PyObject {
 
     /** The basic view a bytearray exports: writable, one octet per element, counted on the run. */
     private static PyMemoryView exported(PyByteArray run) {
-        run.beginExport();
         PyMemoryView view = basic(run, run.size(), false);
-        view.ownsByteArrayExport = true;
+        view.takeLease(run.lease());
         return view;
+    }
+
+    /**
+     * Share {@code leased} with one more view.
+     *
+     * <p>Every header over the same bytearray holds the lease — a slice, a cast, a read-only twin, a
+     * copy — so the run stays pinned until the last of them is released or dropped, exactly as the
+     * reference's per-buffer count does.
+     */
+    private void takeLease(PyByteArray.Lease leased) {
+        if (leased != null) {
+            lease = leased;
+            lease.take();
+        }
+    }
+
+    /** Give this view's share back, handing the run out when this was the last holder. */
+    private void dropLease() {
+        if (lease != null) {
+            PyByteArray.Lease held = lease;
+            lease = null;
+            held.drop();
+        }
     }
 
     /** An independent header over the same run, with the same format and shape. */
@@ -213,10 +237,12 @@ public final class PyMemoryView extends PyObject {
                 shape.clone(),
                 strides.clone(),
                 readonly);
-        // The reference counts this as another export of the header it was taken from, so releasing
-        // the parent while the copy lives is refused, and the bytearray's own export is only given
-        // back once the parent is released.
-        exports.add(copy);
+        // A copy is another header over the same buffer, not an export of this header: releasing the
+        // parent while the copy lives is allowed, and the bytearray stays pinned by the lease both
+        // views share.
+        if (lease != null) {
+            copy.takeLease(lease);
+        }
         return copy;
     }
 
@@ -278,8 +304,12 @@ public final class PyMemoryView extends PyObject {
         if (product * width != total) {
             throw Slots.typeError("memoryview: product(shape) * itemsize != buffer size");
         }
-        return new PyMemoryView(
+        PyMemoryView nextView = new PyMemoryView(
                 exporter, obj, offset, destination, width, next, cStrides(next, width), readonly);
+        if (lease != null) {
+            nextView.takeLease(lease);
+        }
+        return nextView;
     }
 
     /** The shape argument of {@code cast}, read element by element through the index protocol. */
@@ -362,7 +392,7 @@ public final class PyMemoryView extends PyObject {
      * object the source reported.
      */
     PyMemoryView toReadonly() {
-        return new PyMemoryView(
+        PyMemoryView next = new PyMemoryView(
                 exporter,
                 obj,
                 offset,
@@ -371,6 +401,10 @@ public final class PyMemoryView extends PyObject {
                 shape.clone(),
                 strides.clone(),
                 true);
+        if (lease != null) {
+            next.takeLease(lease);
+        }
+        return next;
     }
 
     /**
@@ -413,6 +447,9 @@ public final class PyMemoryView extends PyObject {
                 new PyMemoryView(
                         exporter, this, offset, nextFormat, itemsize, nextShape, nextStrides, readonly);
         exports.add(exported);
+        if (lease != null) {
+            exported.takeLease(lease);
+        }
         return exported;
     }
 
@@ -434,6 +471,7 @@ public final class PyMemoryView extends PyObject {
             throw Slots.valueError("memoryview's buffer has already been released");
         }
         view.released = true;
+        view.dropLease();
         return PyNone.INSTANCE;
     }
 
@@ -462,10 +500,7 @@ public final class PyMemoryView extends PyObject {
             ((PyArray) exporter).releaseBuffer();
             ownsArrayExport = false;
         }
-        if (ownsByteArrayExport) {
-            ((PyByteArray) exporter).endExport();
-            ownsByteArrayExport = false;
-        }
+        dropLease();
         released = true;
     }
 
@@ -482,6 +517,7 @@ public final class PyMemoryView extends PyObject {
     /** Marks the view released from outside, which is what an exporter's row does. */
     void markReleased() {
         released = true;
+        dropLease();
     }
 
     /**
@@ -1422,6 +1458,42 @@ public final class PyMemoryView extends PyObject {
         throw notBytesLike(value);
     }
 
+    /** Whether {@code value} can hand out a buffer, natively or through {@code __buffer__}. */
+    static boolean supportsBuffer(PyObject value) {
+        return value instanceof PyBytes
+                || value instanceof PyByteArray
+                || value instanceof PyArray
+                || value instanceof PyMemoryView
+                || value instanceof PyMmap
+                || Specials.lookUp(value.getType(), "__buffer__") != null;
+    }
+
+    /**
+     * The octets of any native exporter, or of an object that answers {@code __buffer__}; null when the
+     * value exports no buffer at all. This is the one entry every "bytes-like" position goes through,
+     * so a memoryview, an array and a Java-side mmap are read the same way a bytes is.
+     */
+    static byte[] bufferIfAny(PyObject value) {
+        if (!supportsBuffer(value)) {
+            return null;
+        }
+        if (value instanceof PyBytes
+                || value instanceof PyByteArray
+                || value instanceof PyArray
+                || value instanceof PyMemoryView
+                || value instanceof PyMmap) {
+            return bufferOctets(value);
+        }
+        PyObject view = Specials.invoke(value, "__buffer__", PyInt.of(0));
+        try {
+            return bufferOctets(view);
+        } finally {
+            if (Specials.lookUp(value.getType(), "__release_buffer__") != null) {
+                Specials.invoke(value, "__release_buffer__", view);
+            }
+        }
+    }
+
     /** The buffer protocol's refusal, in the word-for-word form {@code PyObject_GetBuffer} uses. */
     private static PyRaise notBytesLike(PyObject value) {
         return Slots.typeError(
@@ -1462,8 +1534,12 @@ public final class PyMemoryView extends PyObject {
         nextShape[0] = window.count();
         nextStrides[0] = strides[0] * window.step();
         int nextOffset = (int) (offset + window.start() * strides[0]);
-        return new PyMemoryView(
+        PyMemoryView next = new PyMemoryView(
                 exporter, obj, nextOffset, format, itemsize, nextShape, nextStrides, readonly);
+        if (lease != null) {
+            next.takeLease(lease);
+        }
+        return next;
     }
 
     private Window windowOf(PySlice key) {

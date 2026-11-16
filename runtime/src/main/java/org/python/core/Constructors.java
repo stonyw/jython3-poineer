@@ -1,5 +1,6 @@
 package org.python.core;
 
+import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
@@ -1421,16 +1422,12 @@ final class Constructors {
         if (value instanceof PyMemoryView view) {
             return view.toBytes("C");
         }
-        List<PyObject> items = fromIterator(value);
-        byte[] out = new byte[items.size()];
-        for (int i = 0; i < out.length; i++) {
-            BigInteger item = Numbers.asIndex(items.get(i));
-            if (item.signum() < 0 || item.compareTo(BYTE_LIMIT) > 0) {
-                throw Slots.valueError("bytes must be in range(0, 256)");
-            }
-            out[i] = item.byteValue();
+        // A bytearray is copied from its run, not walked: `PyBytes_FromObject` reads
+        // `PyByteArray_GET_SIZE`, so a subclass whose `__len__` raises still converts.
+        if (value instanceof PyByteArray run) {
+            return PyBytes.wrap(run.raw().clone());
         }
-        return PyBytes.wrap(out);
+        return PyBytes.wrap(fromIterator(value));
     }
 
     /**
@@ -1580,7 +1577,7 @@ final class Constructors {
      * refused by its class and not as {@code 'float' object is not iterable}: {@code bytes(1.5)} says
      * {@code cannot convert 'float' object to bytes}.
      */
-    private static List<PyObject> fromIterator(PyObject value) {
+    private static byte[] fromIterator(PyObject value) {
         PyIterator iterator;
         try {
             iterator = Slots.iterator(value);
@@ -1591,12 +1588,18 @@ final class Constructors {
             throw Slots.typeError(
                     "cannot convert '%s' object to bytes", value.getType().name());
         }
-        List<PyObject> out = new ArrayList<>(Slots.lengthHint(value, 8));
-        PyObject item;
-        while ((item = iterator.nextOrNull()) != null) {
-            out.add(item);
+        // Each item is converted as it is reached rather than after the walk, because its `__index__`
+        // is arbitrary code that may change the iterable — `bytes(a)` with an item that clears `a`
+        // stops there, and one that appends keeps the walk going (gh-91153).
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Slots.lengthHint(value, 8));
+        for (PyObject item = iterator.nextOrNull(); item != null; item = iterator.nextOrNull()) {
+            BigInteger number = Numbers.asIndex(item);
+            if (number.signum() < 0 || number.compareTo(BYTE_LIMIT) > 0) {
+                throw Slots.valueError("bytes must be in range(0, 256)");
+            }
+            out.write(number.byteValue());
         }
-        return out;
+        return out.toByteArray();
     }
 
     /**

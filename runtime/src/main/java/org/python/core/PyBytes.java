@@ -274,13 +274,13 @@ public class PyBytes extends PyObject {
     private static final Members METHODS = Members.of(PyType.BYTES)
             .addNoArgument("capitalize", PyBytes::capitalized)
             .add("center", (self, args, kwNames) -> padded(self, args, kwNames, "center", true, true))
-            .add("count", (self, args, kwNames) -> {
+            .add("count", (self, args, kwNames) -> PyByteArray.whileExported(self, () -> {
                 legacy(self, "count", args, kwNames, 1, 3);
                 byte[] text = octets(self);
                 int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
                 int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
                 return PyInt.of(occurrences(text, octetOrRun(args[0]), from, to));
-            })
+            }))
             .add("decode", (self, args, kwNames) -> {
                 PyObject[] parameters =
                         Arguments.parameters(
@@ -301,9 +301,11 @@ public class PyBytes extends PyObject {
             .addClassNamed(
                     "fromhex",
                     (type, args, kwNames) -> fromHexadecimal(type, args, kwNames, false))
-            .add("hex", (self, args, kwNames) -> hexadecimal(
+            // `bytearray_hex` exports the run before `sep` is converted, because computing its
+            // length can call back into Python and clear the bytearray (gh-143195).
+            .add("hex", (self, args, kwNames) -> PyByteArray.whileExported(self, () -> hexadecimal(
                     octets(self),
-                    Arguments.parameters("hex", args, kwNames, HEX, HEX_DEFAULTS, 0)))
+                    Arguments.parameters("hex", args, kwNames, HEX, HEX_DEFAULTS, 0))))
             .add("index", (self, args, kwNames) -> search(self, args, kwNames, "index", false, true))
             .addNoArgument("isalnum", self -> PyBool.of(allOf(octets(self), PyBytes::isAlnum)))
             .addNoArgument("isalpha", self -> PyBool.of(allOf(octets(self), PyBytes::isAlpha)))
@@ -910,6 +912,10 @@ public class PyBytes extends PyObject {
         if (value instanceof PyByteArray b) {
             return b.raw();
         }
+        byte[] buffered = PyMemoryView.bufferIfAny(value);
+        if (buffered != null) {
+            return buffered;
+        }
         throw Slots.typeError("a bytes-like object is required, not '%s'", value.getType().name());
     }
 
@@ -930,6 +936,10 @@ public class PyBytes extends PyObject {
             return b.raw();
         }
         if (!Numbers.isIndex(value)) {
+            byte[] buffered = PyMemoryView.bufferIfAny(value);
+            if (buffered != null) {
+                return buffered;
+            }
             throw Slots.typeError(
                     "argument should be integer or bytes-like object, not '%s'",
                     value.getType().filedName());
@@ -962,15 +972,19 @@ public class PyBytes extends PyObject {
      */
     private static PyObject search(PyObject self, PyObject[] args, String[] kwNames, String name,
             boolean right, boolean raises) {
-        legacy(self, name, args, kwNames, 1, 3);
-        byte[] text = octets(self);
-        int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
-        int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
-        int found = first(text, octetOrRun(args[0]), from, to, right);
-        if (found < 0 && raises) {
-            throw Slots.valueError("subsection not found");
-        }
-        return PyInt.of(found);
+        // `bytearray_find` exports its own run before the needle is converted, so a needle whose
+        // `__index__` or `__buffer__` resizes the bytearray gets the buffer error (gh-142560).
+        return PyByteArray.whileExported(self, () -> {
+            legacy(self, name, args, kwNames, 1, 3);
+            byte[] text = octets(self);
+            int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
+            int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
+            int found = first(text, octetOrRun(args[0]), from, to, right);
+            if (found < 0 && raises) {
+                throw Slots.valueError("subsection not found");
+            }
+            return PyInt.of(found);
+        });
     }
 
     /**
@@ -983,23 +997,28 @@ public class PyBytes extends PyObject {
      */
     private static PyObject edge(PyObject self, PyObject[] args, String[] kwNames, String name,
             boolean prefix) {
-        legacy(self, name, args, kwNames, 1, 3);
-        byte[] text = octets(self);
-        int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
-        int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
-        // Not even the empty prefix matches a range that is not one.
-        boolean none = from > to;
-        if (args[0] instanceof PyTuple candidates) {
-            for (PyObject candidate : candidates.elements()) {
-                byte[] part = run(candidate);
-                if (!none && matches(text, from, to, part, prefix)) {
-                    return PyBool.TRUE;
+        // `_bytearray_with_buffer` holds an export while the prefix is converted, so a prefix whose
+        // `__buffer__` clears the bytearray gets the buffer error rather than a match against octets
+        // that moved.
+        return PyByteArray.whileExported(self, () -> {
+            legacy(self, name, args, kwNames, 1, 3);
+            byte[] text = octets(self);
+            int from = args.length > 1 ? Sequences.searchFrom(args[1], text.length) : 0;
+            int to = args.length > 2 ? Sequences.searchStop(args[2], text.length) : text.length;
+            // Not even the empty prefix matches a range that is not one.
+            boolean none = from > to;
+            if (args[0] instanceof PyTuple candidates) {
+                for (PyObject candidate : candidates.elements()) {
+                    byte[] part = run(candidate);
+                    if (!none && matches(text, from, to, part, prefix)) {
+                        return PyBool.TRUE;
+                    }
                 }
+                return PyBool.FALSE;
             }
-            return PyBool.FALSE;
-        }
-        byte[] single = firstArgument(args[0], name);
-        return PyBool.of(!none && matches(text, from, to, single, prefix));
+            byte[] single = bufferOrNamed(args[0], name);
+            return PyBool.of(!none && matches(text, from, to, single, prefix));
+        });
     }
 
     /**
@@ -1007,16 +1026,14 @@ public class PyBytes extends PyObject {
      * the tuple's elements are refused by the buffer protocol, this one names the method and leaves
      * the type unquoted.
      */
-    private static byte[] firstArgument(PyObject value, String name) {
-        if (value instanceof PyBytes b) {
-            return b.value;
+    private static byte[] bufferOrNamed(PyObject value, String name) {
+        byte[] buffered = PyMemoryView.bufferIfAny(value);
+        if (buffered == null) {
+            throw Slots.typeError(
+                    "%s first arg must be bytes or a tuple of bytes, not %s",
+                    name, value.getType().name());
         }
-        if (value instanceof PyByteArray b) {
-            return b.raw();
-        }
-        throw Slots.typeError(
-                "%s first arg must be bytes or a tuple of bytes, not %s",
-                name, value.getType().name());
+        return buffered;
     }
 
     /**
@@ -1028,11 +1045,15 @@ public class PyBytes extends PyObject {
      */
     private static PyObject split(PyObject self, PyObject[] args, String[] kwNames, String name,
             boolean right) {
-        PyObject[] parameters =
-                Arguments.parameters(name, args, kwNames, SEPARATOR, SEPARATOR_DEFAULTS, 0);
-        long maxsplit = Numbers.size(parameters[1]);
-        byte[] separator = parameters[0] == PyNone.INSTANCE ? null : run(parameters[0]);
-        return pieces(self, octets(self), separator, maxsplit, right);
+        // `bytearray_split` exports the run before the separator is converted so that a separator
+        // whose `__buffer__` resizes the bytearray gets the buffer error.
+        return PyByteArray.whileExported(self, () -> {
+            PyObject[] parameters =
+                    Arguments.parameters(name, args, kwNames, SEPARATOR, SEPARATOR_DEFAULTS, 0);
+            long maxsplit = Numbers.size(parameters[1]);
+            byte[] separator = parameters[0] == PyNone.INSTANCE ? null : run(parameters[0]);
+            return pieces(self, octets(self), separator, maxsplit, right);
+        });
     }
 
     /** {@code strip}, {@code lstrip} and {@code rstrip}: an alphabet of octets, or none. */
@@ -1062,16 +1083,33 @@ public class PyBytes extends PyObject {
                 throw Slots.typeError("can only join an iterable");
             }
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            PyIterator iterator = Slots.iterator(parts);
-            for (int at = 0; ; at++) {
-                PyObject item = iterator.nextOrNull();
-                if (item == null) {
-                    break;
+            if (parts instanceof PyList list) {
+                // `PySequence_Fast` hands back the list itself, so every item is read from the live list
+                // and the size is compared with the one the join started with: an item whose
+                // `__buffer__` resizes the list is a RuntimeError rather than a short result.
+                int count = list.size();
+                for (int at = 0; at < count; at++) {
+                    if (at > 0) {
+                        out.writeBytes(separator);
+                    }
+                    out.writeBytes(segment(list.at(at), at));
+                    if (list.size() != count) {
+                        throw Slots.runtimeError("sequence changed size during iteration");
+                    }
                 }
-                if (at > 0) {
-                    out.writeBytes(separator);
+            } else {
+                // Anything else is materialised before any item is converted, as `PySequence_Fast` does.
+                List<PyObject> items = new ArrayList<>();
+                PyIterator source = Slots.iterator(parts);
+                for (PyObject item = source.nextOrNull(); item != null; item = source.nextOrNull()) {
+                    items.add(item);
                 }
-                out.writeBytes(segment(item, at));
+                for (int at = 0; at < items.size(); at++) {
+                    if (at > 0) {
+                        out.writeBytes(separator);
+                    }
+                    out.writeBytes(segment(items.get(at), at));
+                }
             }
             return answer(self, out.toByteArray());
         } finally {
@@ -1083,8 +1121,9 @@ public class PyBytes extends PyObject {
 
     /** An item of {@code join}'s iterable, refused with the position it was reached at. */
     private static byte[] segment(PyObject item, int at) {
-        if (item instanceof PyBytes || item instanceof PyByteArray) {
-            return run(item);
+        byte[] buffered = PyMemoryView.bufferIfAny(item);
+        if (buffered != null) {
+            return buffered;
         }
         throw Slots.typeError(
                 "sequence item %d: expected a bytes-like object, %s found",
@@ -1112,7 +1151,11 @@ public class PyBytes extends PyObject {
         }
         return PyTuple.of(
                 answer(self, Arrays.copyOfRange(text, 0, at)),
-                answer(self, Arrays.copyOfRange(text, at, at + separator.length)),
+                // A mutable receiver copies all three parts: `stringlib_partition` under
+                // `STRINGLIB_MUTABLE` puts the separator's octets in a fresh bytearray. An immutable
+                // one hands back the separator object itself, whatever it was — a bytes, a subclass,
+                // a bytearray or a view of one.
+                self instanceof PyByteArray ? answer(self, separator) : argument,
                 answer(self, Arrays.copyOfRange(text, at + separator.length, text.length)));
     }
 
@@ -1759,6 +1802,10 @@ public class PyBytes extends PyObject {
         }
         if (source instanceof PyBytes || source instanceof PyByteArray) {
             return hexadecimalDigits(octets(source));
+        }
+        byte[] buffered = PyMemoryView.bufferIfAny(source);
+        if (buffered != null) {
+            return hexadecimalDigits(buffered);
         }
         throw Slots.typeError(
                 "fromhex() argument must be str or bytes-like, not %s", source.getType().name());
