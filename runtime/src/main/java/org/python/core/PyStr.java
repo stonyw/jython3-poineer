@@ -2,10 +2,8 @@ package org.python.core;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -397,9 +395,7 @@ public class PyStr extends PyObject {
      * name every Python programmer knows.
      */
     private static final Members METHODS = Members.of(PyType.STR)
-            .addNoArgument("capitalize", self -> PyStr.of(capitalize(text(self), false)))
-            // Python's casefold is Unicode's full case folding: lower everything, then expand the
-            // characters whose lowercase form is more than one letter. Java stops at the first half.
+            .addNoArgument("capitalize", self -> PyStr.of(capitalize(text(self))))
             .addNoArgument("casefold", self -> PyStr.of(caseFold(text(self))))
             .add("center", (self, args, kwNames) -> align(self, args, kwNames, "center", Side.CENTER))
             .add("count", (self, args, kwNames) -> {
@@ -502,8 +498,8 @@ public class PyStr extends PyObject {
             .add("strip", (self, args, kwNames) -> trim(self, args, kwNames, "strip", true, true))
             .addNoArgument("swapcase", self -> PyStr.of(swapCase(text(self))))
             .add("translate", (self, args, kwNames) -> translated(self, args, kwNames))
-            .addNoArgument("title", self -> PyStr.of(capitalize(text(self), true)))
-            .addNoArgument("upper", self -> PyStr.of(text(self).toUpperCase(Locale.ROOT)))
+            .addNoArgument("title", self -> PyStr.of(titleText(text(self))))
+            .addNoArgument("upper", self -> PyStr.of(upperText(text(self))))
             .addOne("zfill", (self, width) -> zeroFilled(self, text(self), Numbers.size(width)))
             // The three names CPython files after the methods a person calls, in the dictionary rather than
             // among them. `__format__` is what a `format()` call reaches, and answers through the same
@@ -1432,112 +1428,61 @@ public class PyStr extends PyObject {
     }
 
     /**
-     * {@code capitalize} and {@code title}, which differ only in how many word starts there are.
-     * A start goes through its full upper or title mapping, so {@code 'ß'} becomes {@code Ss}, and
-     * the rest of its word is lowered as a substring so that a multi-character lower mapping still
-     * applies. A code point whose title form is itself a multi-character sequence — the digraphs —
-     * keeps its single-character form, which is the one place this is not CPython.
+     * {@code capitalize}: the first code point through its full title mapping, the rest through
+     * their full lowercase mappings.
+     *
+     * <p>{@code unicode_capitalize_impl} is this and nothing else, so the tail's final-sigma test
+     * reads the whole string rather than the tail: {@code 'A\u03a3'.capitalize()} ends in
+     * {@code '\u03c2'}.
      */
-    private static String capitalize(String text, boolean everyWord) {
+    private static String capitalize(String text) {
         if (text.isEmpty()) {
             return text;
         }
-        if (!everyWord) {
-            int first = text.codePointAt(0);
-            return titleHead(first)
-                    + lowerText(text, Character.charCount(first), text.length());
-        }
-        StringBuilder out = new StringBuilder(text.length());
-        int at = 0;
-        boolean previousAlphabetic = false;
-        while (at < text.length()) {
+        int first = text.codePointAt(0);
+        StringBuilder out = new StringBuilder(text.length() + 2);
+        out.append(UnicodeCase.title(first));
+        for (int at = Character.charCount(first); at < text.length(); ) {
             int code = text.codePointAt(at);
-            int next = at + Character.charCount(code);
-            if (!Character.isAlphabetic(code)) {
-                out.appendCodePoint(code);
-                previousAlphabetic = false;
-                at = next;
-                continue;
-            }
-            int end = next;
-            while (end < text.length() && Character.isAlphabetic(text.codePointAt(end))) {
-                end += Character.charCount(text.codePointAt(end));
-            }
-            out.append(previousAlphabetic
-                    ? lowerText(text, at, end)
-                    : titleHead(code) + lowerText(text, next, end));
-            previousAlphabetic = true;
-            at = end;
+            out.append(lowerOne(text, at, code));
+            at += Character.charCount(code);
         }
         return out.toString();
     }
 
-    /** The title form of one code point: a full mapping, then its own tail lower-cased. */
-    private static String titleHead(int code) {
-        // Georgian mkhedruli letters carry an uppercase mapping but no titlecase mapping, and a title
-        // moves only on the titlecase mapping: `'\u10D0'.title()` is itself while `.upper()` is
-        // `'\u1C90'`. Java reports no title mapping for them either; only the uppercase fallback
-        // below would move them, so they keep their own form here.
-        if (code >= 0x10D0 && code <= 0x10FA || code >= 0x10FD && code <= 0x10FF) {
-            return String.valueOf(Character.toChars(code));
-        }
-        // A letter already in its title form keeps it: Java answers toTitleCase with the same code
-        // point, and the fallback below would then read its uppercase form (ǅ -> Ǆ).
-        if (Character.isTitleCase(code)) {
-            return String.valueOf(Character.toChars(code));
-        }
-        int title = Character.toTitleCase(code);
-        String one = String.valueOf(Character.toChars(code));
-        String special = specialTitle(code);
-        if (special != null) {
-            return special;
-        }
-        String mapped = title != code
-                ? String.valueOf(Character.toChars(title))
-                : one.toUpperCase(Locale.ROOT);
-        int head = mapped.codePointAt(0);
-        int after = Character.charCount(head);
-        return mapped.substring(0, after) + mapped.substring(after).toLowerCase(Locale.ROOT);
-    }
-
     /**
-     * The title mappings that are neither a simple title mapping nor the uppercase expansion with a
-     * lowercased tail.
+     * {@code title}: a code point whose predecessor was cased is lowered, and every other one takes
+     * its full title mapping.
      *
-     * <p>These ten are the SpecialCasing title entries Java's uppercase cannot be bent into: the
-     * ligature apostrophe keeps its capital N, and the Greek letters with a ypogegrammeni keep the
-     * combining iota where uppercase spells the spacing one.
+     * <p>That is {@code do_title}'s whole rule, and it is not a reading of word boundaries: the
+     * apostrophe is uncased, so {@code "they're".title()} is {@code "They'Re"}. Case-ignorable
+     * characters are not stepped over here the way the final-sigma test steps over them.
      */
-    private static String specialTitle(int code) {
-        return switch (code) {
-            case 0x0149 -> "\u02BCN";
-            case 0x1FB2 -> "\u1FBA\u0345";
-            case 0x1FB4 -> "\u0386\u0345";
-            case 0x1FB7 -> "\u0391\u0342\u0345";
-            case 0x1FC2 -> "\u1FCA\u0345";
-            case 0x1FC4 -> "\u0389\u0345";
-            case 0x1FC7 -> "\u0397\u0342\u0345";
-            case 0x1FF2 -> "\u1FFA\u0345";
-            case 0x1FF4 -> "\u038F\u0345";
-            case 0x1FF7 -> "\u03A9\u0342\u0345";
-            default -> null;
-        };
+    private static String titleText(String text) {
+        StringBuilder out = new StringBuilder(text.length() + 2);
+        boolean previousCased = false;
+        for (int at = 0; at < text.length(); ) {
+            int code = text.codePointAt(at);
+            out.append(previousCased ? lowerOne(text, at, code) : UnicodeCase.title(code));
+            previousCased = UnicodeCase.isCased(code);
+            at += Character.charCount(code);
+        }
+        return out.toString();
     }
 
-    /** {@code swapcase}, which like {@code capitalize} uses the full one-way mappings. */
+    /** {@code swapcase}: an uppercase code point is lowered, a lowercase one upper-cased. */
     private static String swapCase(String text) {
         StringBuilder out = new StringBuilder(text.length());
         for (int at = 0; at < text.length(); ) {
             int code = text.codePointAt(at);
-            int next = at + Character.charCount(code);
-            String one = String.valueOf(Character.toChars(code));
-            // A titlecase letter is neither of the two cases CPython switches between, even though
-            // Java's one-way mappings do move it; the two property tables are what it tests.
-            out.append(Character.isTitleCase(code) ? one
-                    : Character.toLowerCase(code) != code
-                    ? lowerOne(text, at, code)
-                    : one.toUpperCase(Locale.ROOT));
-            at = next;
+            if (UnicodeCase.isUpper(code)) {
+                out.append(lowerOne(text, at, code));
+            } else if (UnicodeCase.isLower(code)) {
+                out.append(UnicodeCase.upper(code));
+            } else {
+                out.appendCodePoint(code);
+            }
+            at += Character.charCount(code);
         }
         return out.toString();
     }
@@ -1739,120 +1684,39 @@ public class PyStr extends PyObject {
     }
 
     /**
-     * {@code casefold}: Unicode's full case folding.
+     * {@code casefold}: Unicode's full case folding, asked one code point at a time.
      *
-     * <p>Lowercasing already answers the folding for most characters; the keys below are the ones
-     * where it does not, which is three groups. The Greek letters with a ypogegrammeni fold into a
-     * base vowel plus iota (and {@code ς} folds to {@code σ}), the Cherokee pairs fold toward the
-     * uppercase code points rather than toward their lowercase, and the ligatures, letterlike
-     * symbols and a few Latin letters expand or move sideways. The table was read from the reference
-     * interpreter's {@code str.casefold} over every code point, so it is exactly this Unicode version.
+     * <p>This is {@code do_casefold}: the generated folded table, which is not simply the lowercase
+     * mapping. The Cherokee pairs fold toward their uppercase code points, {@code ſ} folds to
+     * {@code s}, and the ligatures expand, all of which the table in {@link UnicodeCase} carries.
      */
     private static String caseFold(String text) {
-        String lowered = lowerText(text);
-        StringBuilder out = null;
-        for (int at = 0; at < lowered.length(); ) {
-            int code = lowered.codePointAt(at);
-            int next = at + Character.charCount(code);
-            int found = Arrays.binarySearch(CASE_FOLD_KEYS, code);
-            if (found < 0) {
-                if (out != null) {
-                    out.appendCodePoint(code);
-                }
-                at = next;
-                continue;
-            }
-            if (out == null) {
-                out = new StringBuilder(lowered.length() + 2).append(lowered, 0, at);
-            }
-            out.append(CASE_FOLD_VALUES[found]);
-            at = next;
+        StringBuilder out = new StringBuilder(text.length());
+        for (int at = 0; at < text.length(); ) {
+            int code = text.codePointAt(at);
+            out.append(UnicodeCase.fold(code));
+            at += Character.charCount(code);
         }
-        return out == null ? lowered : out.toString();
+        return out.toString();
     }
 
-    /**
-     * The pair this table is looked up by: one code point and the full case folding it gets.
-     */
-    private static final int[] CASE_FOLD_KEYS = {
-        0x00B5, 0x00DF, 0x0149, 0x017F, 0x01F0, 0x0345, 0x0390, 0x03B0, 0x03C2, 0x03D0, 0x03D1,
-        0x03D5, 0x03D6, 0x03F0, 0x03F1, 0x03F5, 0x0587, 0x13F8, 0x13F9, 0x13FA, 0x13FB, 0x13FC,
-        0x13FD, 0x1C80, 0x1C81, 0x1C82, 0x1C83, 0x1C84, 0x1C85, 0x1C86, 0x1C87, 0x1C88, 0x1E96,
-        0x1E97, 0x1E98, 0x1E99, 0x1E9A, 0x1E9B, 0x1E9E, 0x1F50, 0x1F52, 0x1F54, 0x1F56, 0x1F80,
-        0x1F81, 0x1F82, 0x1F83, 0x1F84, 0x1F85, 0x1F86, 0x1F87, 0x1F88, 0x1F89, 0x1F8A, 0x1F8B,
-        0x1F8C, 0x1F8D, 0x1F8E, 0x1F8F, 0x1F90, 0x1F91, 0x1F92, 0x1F93, 0x1F94, 0x1F95, 0x1F96,
-        0x1F97, 0x1F98, 0x1F99, 0x1F9A, 0x1F9B, 0x1F9C, 0x1F9D, 0x1F9E, 0x1F9F, 0x1FA0, 0x1FA1,
-        0x1FA2, 0x1FA3, 0x1FA4, 0x1FA5, 0x1FA6, 0x1FA7, 0x1FA8, 0x1FA9, 0x1FAA, 0x1FAB, 0x1FAC,
-        0x1FAD, 0x1FAE, 0x1FAF, 0x1FB2, 0x1FB3, 0x1FB4, 0x1FB6, 0x1FB7, 0x1FBC, 0x1FBE, 0x1FC2,
-        0x1FC3, 0x1FC4, 0x1FC6, 0x1FC7, 0x1FCC, 0x1FD2, 0x1FD3, 0x1FD6, 0x1FD7, 0x1FE2, 0x1FE3,
-        0x1FE4, 0x1FE6, 0x1FE7, 0x1FF2, 0x1FF3, 0x1FF4, 0x1FF6, 0x1FF7, 0x1FFC, 0xAB70, 0xAB71,
-        0xAB72, 0xAB73, 0xAB74, 0xAB75, 0xAB76, 0xAB77, 0xAB78, 0xAB79, 0xAB7A, 0xAB7B, 0xAB7C,
-        0xAB7D, 0xAB7E, 0xAB7F, 0xAB80, 0xAB81, 0xAB82, 0xAB83, 0xAB84, 0xAB85, 0xAB86, 0xAB87,
-        0xAB88, 0xAB89, 0xAB8A, 0xAB8B, 0xAB8C, 0xAB8D, 0xAB8E, 0xAB8F, 0xAB90, 0xAB91, 0xAB92,
-        0xAB93, 0xAB94, 0xAB95, 0xAB96, 0xAB97, 0xAB98, 0xAB99, 0xAB9A, 0xAB9B, 0xAB9C, 0xAB9D,
-        0xAB9E, 0xAB9F, 0xABA0, 0xABA1, 0xABA2, 0xABA3, 0xABA4, 0xABA5, 0xABA6, 0xABA7, 0xABA8,
-        0xABA9, 0xABAA, 0xABAB, 0xABAC, 0xABAD, 0xABAE, 0xABAF, 0xABB0, 0xABB1, 0xABB2, 0xABB3,
-        0xABB4, 0xABB5, 0xABB6, 0xABB7, 0xABB8, 0xABB9, 0xABBA, 0xABBB, 0xABBC, 0xABBD, 0xABBE,
-        0xABBF, 0xFB00, 0xFB01, 0xFB02, 0xFB03, 0xFB04, 0xFB05, 0xFB06, 0xFB13, 0xFB14, 0xFB15,
-        0xFB16, 0xFB17,
-    };
-
-    private static final String[] CASE_FOLD_VALUES = {
-        "\u03BC", "\u0073\u0073", "\u02BC\u006E", "\u0073", "\u006A\u030C", "\u03B9",
-        "\u03B9\u0308\u0301", "\u03C5\u0308\u0301", "\u03C3", "\u03B2", "\u03B8", "\u03C6",
-        "\u03C0", "\u03BA", "\u03C1", "\u03B5", "\u0565\u0582", "\u13F0", "\u13F1", "\u13F2",
-        "\u13F3", "\u13F4", "\u13F5", "\u0432", "\u0434", "\u043E", "\u0441", "\u0442", "\u0442",
-        "\u044A", "\u0463", "\uA64B", "\u0068\u0331", "\u0074\u0308", "\u0077\u030A",
-        "\u0079\u030A", "\u0061\u02BE", "\u1E61", "\u0073\u0073", "\u03C5\u0313",
-        "\u03C5\u0313\u0300", "\u03C5\u0313\u0301", "\u03C5\u0313\u0342", "\u1F00\u03B9",
-        "\u1F01\u03B9", "\u1F02\u03B9", "\u1F03\u03B9", "\u1F04\u03B9", "\u1F05\u03B9",
-        "\u1F06\u03B9", "\u1F07\u03B9", "\u1F00\u03B9", "\u1F01\u03B9", "\u1F02\u03B9",
-        "\u1F03\u03B9", "\u1F04\u03B9", "\u1F05\u03B9", "\u1F06\u03B9", "\u1F07\u03B9",
-        "\u1F20\u03B9", "\u1F21\u03B9", "\u1F22\u03B9", "\u1F23\u03B9", "\u1F24\u03B9",
-        "\u1F25\u03B9", "\u1F26\u03B9", "\u1F27\u03B9", "\u1F20\u03B9", "\u1F21\u03B9",
-        "\u1F22\u03B9", "\u1F23\u03B9", "\u1F24\u03B9", "\u1F25\u03B9", "\u1F26\u03B9",
-        "\u1F27\u03B9", "\u1F60\u03B9", "\u1F61\u03B9", "\u1F62\u03B9", "\u1F63\u03B9",
-        "\u1F64\u03B9", "\u1F65\u03B9", "\u1F66\u03B9", "\u1F67\u03B9", "\u1F60\u03B9",
-        "\u1F61\u03B9", "\u1F62\u03B9", "\u1F63\u03B9", "\u1F64\u03B9", "\u1F65\u03B9",
-        "\u1F66\u03B9", "\u1F67\u03B9", "\u1F70\u03B9", "\u03B1\u03B9", "\u03AC\u03B9",
-        "\u03B1\u0342", "\u03B1\u0342\u03B9", "\u03B1\u03B9", "\u03B9", "\u1F74\u03B9",
-        "\u03B7\u03B9", "\u03AE\u03B9", "\u03B7\u0342", "\u03B7\u0342\u03B9", "\u03B7\u03B9",
-        "\u03B9\u0308\u0300", "\u03B9\u0308\u0301", "\u03B9\u0342", "\u03B9\u0308\u0342",
-        "\u03C5\u0308\u0300", "\u03C5\u0308\u0301", "\u03C1\u0313", "\u03C5\u0342",
-        "\u03C5\u0308\u0342", "\u1F7C\u03B9", "\u03C9\u03B9", "\u03CE\u03B9", "\u03C9\u0342",
-        "\u03C9\u0342\u03B9", "\u03C9\u03B9", "\u13A0", "\u13A1", "\u13A2", "\u13A3", "\u13A4",
-        "\u13A5", "\u13A6", "\u13A7", "\u13A8", "\u13A9", "\u13AA", "\u13AB", "\u13AC", "\u13AD",
-        "\u13AE", "\u13AF", "\u13B0", "\u13B1", "\u13B2", "\u13B3", "\u13B4", "\u13B5", "\u13B6",
-        "\u13B7", "\u13B8", "\u13B9", "\u13BA", "\u13BB", "\u13BC", "\u13BD", "\u13BE", "\u13BF",
-        "\u13C0", "\u13C1", "\u13C2", "\u13C3", "\u13C4", "\u13C5", "\u13C6", "\u13C7", "\u13C8",
-        "\u13C9", "\u13CA", "\u13CB", "\u13CC", "\u13CD", "\u13CE", "\u13CF", "\u13D0", "\u13D1",
-        "\u13D2", "\u13D3", "\u13D4", "\u13D5", "\u13D6", "\u13D7", "\u13D8", "\u13D9", "\u13DA",
-        "\u13DB", "\u13DC", "\u13DD", "\u13DE", "\u13DF", "\u13E0", "\u13E1", "\u13E2", "\u13E3",
-        "\u13E4", "\u13E5", "\u13E6", "\u13E7", "\u13E8", "\u13E9", "\u13EA", "\u13EB", "\u13EC",
-        "\u13ED", "\u13EE", "\u13EF", "\u0066\u0066", "\u0066\u0069", "\u0066\u006C",
-        "\u0066\u0066\u0069", "\u0066\u0066\u006C", "\u0073\u0074", "\u0073\u0074", "\u0574\u0576",
-        "\u0574\u0565", "\u0574\u056B", "\u057E\u0576", "\u0574\u056D",
-    };
-
-    /** {@code lower()}: each code point's lowercase mapping, with the final-sigma rule. */
+    /** {@code lower()}: each code point's full lowercase mapping, with the final-sigma rule. */
     private static String lowerText(String text) {
-        return lowerText(text, 0, text.length());
-    }
-
-    /**
-     * The lowercase mapping of {@code text[from, to)}, with CPython's final-sigma rule.
-     *
-     * <p>Σ becomes ς only when a cased letter precedes it and none follows, both scans skipping
-     * case-ignorable characters. The rule reads the whole string rather than the slice, which is why
-     * {@code capitalize} and {@code title} hand their tails here instead of lowering a substring:
-     * {@code 'A\u0345\u03a3'.capitalize()} must end in ς even though the tail alone has no cased
-     * letter before the sigma.
-     */
-    private static String lowerText(String text, int from, int to) {
-        StringBuilder out = new StringBuilder(to - from);
-        for (int at = from; at < to; ) {
+        StringBuilder out = new StringBuilder(text.length());
+        for (int at = 0; at < text.length(); ) {
             int code = text.codePointAt(at);
             out.append(lowerOne(text, at, code));
+            at += Character.charCount(code);
+        }
+        return out.toString();
+    }
+
+    /** {@code upper()}: each code point's full uppercase mapping. */
+    private static String upperText(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        for (int at = 0; at < text.length(); ) {
+            int code = text.codePointAt(at);
+            out.append(UnicodeCase.upper(code));
             at += Character.charCount(code);
         }
         return out.toString();
@@ -1863,22 +1727,22 @@ public class PyStr extends PyObject {
         if (code == '\u03A3' && isFinalSigma(text, at)) {
             return "\u03C2";
         }
-        return String.valueOf(Character.toChars(code)).toLowerCase(Locale.ROOT);
+        return UnicodeCase.lower(code);
     }
 
     /**
-     * CPython's {@code is_final_sigma}: a cased letter before the sigma, no cased letter after it,
-     * with case-ignorable characters stepped over in both directions.
+     * CPython's {@code handle_capital_sigma}: a cased letter before the sigma and no cased letter
+     * after it, with case-ignorable characters stepped over in both directions.
      */
     private static boolean isFinalSigma(String text, int at) {
         boolean casedBefore = false;
         for (int i = at; i > 0; ) {
             int code = text.codePointBefore(i);
             i -= Character.charCount(code);
-            if (isCaseIgnorable(code)) {
+            if (UnicodeCase.isCaseIgnorable(code)) {
                 continue;
             }
-            casedBefore = isCased(code);
+            casedBefore = UnicodeCase.isCased(code);
             break;
         }
         if (!casedBefore) {
@@ -1887,40 +1751,12 @@ public class PyStr extends PyObject {
         for (int i = at + Character.charCount('\u03A3'); i < text.length(); ) {
             int code = text.codePointAt(i);
             i += Character.charCount(code);
-            if (isCaseIgnorable(code)) {
+            if (UnicodeCase.isCaseIgnorable(code)) {
                 continue;
             }
-            return !isCased(code);
+            return !UnicodeCase.isCased(code);
         }
         return true;
-    }
-
-    /** Unicode's {@code Cased} property: the three cased categories and the other-cased letters. */
-    private static boolean isCased(int code) {
-        return Character.isLowerCase(code)
-                || Character.isUpperCase(code)
-                || Character.isTitleCase(code);
-    }
-
-    /**
-     * Unicode's {@code Case_Ignorable} property: marks, format characters, modifier letters and
-     * modifier symbols, plus the punctuation UAX #29 files under {@code MidLetter},
-     * {@code MidNumLet} and {@code Single_Quote}.
-     */
-    private static boolean isCaseIgnorable(int code) {
-        int type = Character.getType(code);
-        if (type == Character.NON_SPACING_MARK
-                || type == Character.ENCLOSING_MARK
-                || type == Character.FORMAT
-                || type == Character.MODIFIER_LETTER
-                || type == Character.MODIFIER_SYMBOL) {
-            return true;
-        }
-        return switch (code) {
-            case 0x0027, 0x002E, 0x003A, 0x00B7, 0x0387, 0x05F4, 0x2018, 0x2019,
-                 0x2024, 0x2027, 0xFE13, 0xFE52, 0xFE55, 0xFF07, 0xFF0E, 0xFF1A -> true;
-            default -> false;
-        };
     }
 
     /**
