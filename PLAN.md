@@ -134,6 +134,10 @@ M3 的切片 1–N 与 M4 的切片 107–127 是历史编号，保持原样、�
 
 终端行规程三模块已在切片 71 落地（§3.27）：`termios` 的 197 个常量、`error` 类型形态、八个函数的参数解析与非 tty 描述符上的 errno 边界全部按参考实测定值，`tty` 作为纯 Python 模块直接可用；具名缺口是真实终端上的行规程（统一 `NotImplementedError`，JVM 无 termios 结构、无 JNI）、`os.openpty`／`pty.openpty`（JDK 无成对 pty，`pty.openpty()` 如实走参考源码的 `/dev/ptyXY` 回退并念 `OSError: out of pty devices`），以及 `os.get_blocking`／`os.read` 不认 socket 编号（socket 走自己的表，见 §3.27 第五节）。
 
+`_symtable` 与其上的 `symtable` 已在切片 72 落地（§3.28）：编译前端本就是参考 CPython 3.14 的子进程，直接让参考的
+`_symtable.symtable` 产出整棵树并跨 seam 回传，故 `symtable.py` 指的八个只读字段全是参考自己的值，不做任何重写或估算。
+唯一不可能相同的是 `id`（参考是 C 指针，本运行时是自增计数器，语义保持「正数、树内唯一、不透明」），已在 §3.28 具名。
+
 **列为明确不做、不占切片号的**：`test_os` 余下的 spawn 家族（`fork`／`exec`／`posix_spawn`／`subprocess` 的 spawn 路径），理由见 §3.2.1 第 5 条；`test_os` 里 chmod 特殊位与 `st_*` 字段的用例，理由见第 6、7 条。
 
 ### 3.4 M5 切片 47：`_ssl` 盘点与最小真实面
@@ -1039,6 +1043,75 @@ Drivers registered with java.sql.DriverManager: none.
 **七、导入普查**：297 名 **234／61／2**（切片 70 为 231／64／2），**+3 恰好是 `termios`／`tty`／`pty`**，逐名 diff 无其他变动。
 
 **八、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**（7m15s；详见 `PLAN-progress.md`）。提交：代码 `90d3a8f` 一笔，本文件与 `PLAN-progress.md` 一笔。
+
+### 3.28 M5 切片 72：`_symtable`／`symtable`——把编译器自己的树原样交回来（2026-11-16）
+
+两个模块：`_symtable`（本切片新实现的 Java 模块）与 `symtable`（参考标准库纯 Python，此前因 `_symtable` 缺失而
+`ModuleNotFoundError`）。口径同切片 71（`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`，
+判据 `env PYTHONPATH=$STD:$PWD jy3 /tmp/m5_58/run_test2.py test.test_xxx`）。
+
+**一、先测清的问题**：参考 `Modules/symtablemodule.c` 里 `_symtable.symtable(source, filename, startstr, /)` 只是一层
+薄壳——`_Py_SourceAsString` 收源码、`PyUnicode_FSDecoder` 收文件名，然后调编译器的 `Py_SymtableStringObjectFlags`
+建出 `PySTEntry_Type`（`tp_name = "symtable entry"`）的树；问题（`get_type()`／`lookup()`／`get_symbols()`／
+`get_children()` 一族）全在 `Lib/symtable.py` 里。本运行时的前端是 Stage A——子进程跑参考 CPython 3.14 的 driver，
+所以这棵树**本来就是参考自己算出来的**：不必在 Java 里重写符号表分析，也不需要估任何标志位。
+
+**二、实现路径**（`runtime/src/main/java/org/python/core/SymtableModule.java` 新建；`SourceCompiler` 增
+`symtable`／`symtableBytes` 两个方法与格式 javadoc；`Cpython314Compiler` 的 driver 增 `write_symtable` 与
+`symtable-<mode>` 的 codeKind；`PyRuntime` 增 seam 包装 `symtableText`／`symtableBytes`，`BUILTIN_MODULE_NAMES` 与
+模块表各加一项）
+
+- 前端把树写成 ASCII 制表符行：`B` 头（`type`／`lineno`／`nested`／base64 名字／三个计数）、`S` 符号（base64 名字
+  + flags）、`V` varname（base64 名字），随后按 children 递归；名字用 base64 是为了让含制表符或空格的标识符、
+  `'.0'`／`'.format'` 这类编译器生成的名字都不需要转义。序列化保留参考的插入顺序，`get_identifiers()` 暴露的正是
+  `symbols` 的 dict 顺序。
+- 源码按参考分两条路：str 走新的 payload kind `t`（保持 str，**不**先编码成 UTF-8），bytes／bytearray／memoryview
+  走既有的 `b`（base64），让参考的解码器自己读 encoding cookie——两侧语义因此与参考一致（`bytes-cookie` 探针命中
+  `Ž` 这个非 ASCII 标识符，与参考同）。
+- 运行时把行重建为 `Entry extends PyObject`，类型 `PyType.builtin("symtable entry").withoutNew()`（不可实例化、
+  `__module__` 为 `builtins`、不挂进 `builtins`）；八个只读字段用 `Members.of(ENTRY).addField(...)` 按 CPython
+  member 表顺序 `id, name, symbols, varnames, children, nested, type, lineno` 声明；`repr()` 照 `ste_repr` 打印
+  `<symtable entry top(4), line 0>`。26 个常量按 `Include/internal/pycore_symtable.h` 逐个同值。
+- 参数错误全部按实测文案：无关键字（`_symtable.symtable() takes no keyword arguments`）、个数（`symtable expected 3
+  arguments, got 0`）、源类型（`symtable() arg 1 must be a string or bytes object`）、文件名三态（`expected str,
+  bytes or os.PathLike object, not int/NoneType` 与 `expected X.__fspath__() to return str or bytes, not Y`）、
+  startstr（`symtable() argument 3 must be str, not None`，Clinic 对 None 的特判）与三模式（`symtable() arg 3 must
+  be 'exec' or 'eval' or 'single'`）。str 源含 NUL 时前端在起子进程前就拒，形态与参考的 `SyntaxError: source code
+  string cannot contain null bytes` 相同（args 只有一条消息）。
+
+**三、表面**（`/tmp/m5_72/probe.py`／`probe2.py`）：模块 dict 顺序与参考一致（`__name__, __doc__, __package__,
+__loader__, __spec__, symtable`, 常量…），`__doc__ is None`、无 `__all__`；26 个常量逐个同值；`type(top)` 是
+`<class 'symtable entry'>`、`__module__ == 'builtins'`、`__doc__ is None`、`dir()` 含八个成员；`copy`／`pickle`
+两个方向的报错见下面的具名偏差。
+
+**四、行为对拍**：`probe3.py`（`symtable.py` 的公开面：`get_type`／`get_name`／`get_lineno`／`get_id`／
+`get_children`／`lookup`／`get_symbols`／`get_identifiers`／`is_optimized`／`is_nested`／`get_parameters`／
+`get_locals`／`get_globals`／`get_frees`／`get_nonlocals`／`get_methods`／`isinstance` 关系／`Symbol` 的 `repr`、
+相等与 `hash`、`KeyError` 形态）两侧 **stdout 0 行差**（`DeprecationWarning` 的 stdout／stderr 交错顺序不同，属
+缓冲差异，分离流后逐行相同）。`probe.py` 只差 `id` 的数值；`probe2.py` 的差异全部落在下面三条具名偏差里。
+
+**五、具名偏差**（都不影响 `test_symtable`，且不是本切片新造的语义）：
+
+1. `id` 是自增计数器（1、2、3…），不是 C 指针。语义保持「正数、树内唯一、不透明」，`repr` 按参考格式打印；
+   参考因对象释放后内存复用会出现两个表同 id，本运行时的编号单调，不假装地址，也不复制那个不可复现的现象。
+2. `_symtable.symtable.__module__` 为 `None`（参考为 `_symtable`）——既有全局偏差：内建函数不记所属模块，
+   `termios.tcgetattr` 同样。
+3. `type(top).__dict__` 不含 `__repr__`，`copy.copy`／`pickle` 的报错文案与参考不同——既有全局偏差：内建类型的
+   字典不发布 slot wrapper，扩展类型的 copy／pickle 协议未对齐。本切片不为它加特例。
+
+**六、判据**：`test_symtable` **36 ran／36 ok／0 fail／0 err／0 skip**（参考 36／36）。`test_id` 只断言 `> 0`，
+`test_symtable_entry_repr` 用 `get_id()` 的返回值拼期望串，故计数器满足两者。
+
+**七、回归**（口径同切片 71）：14 套与 `test_bytes` 逐项与切片 71 相同（`test_io` 675／516／82／57／20、
+`test_array` 893／809／14／42／28、`test_csv` 134／129／0／1／4、`test_socket` 749／198／8／24／519、
+`test_os` 385／169／13／11／192、`test_descr` 163／147／4／4／8 等）；`test_ssl` 207／100／42／30／35 落在已知
+SNI race 的摆动区间。回归须带 `PYTHONPATH=$STD:$PWD`：不带时 `script_helper` 起子进程会因 `sys.path` 空而让
+`test_array.MiscTest.test_does_not_crash_on_broken_imports` 之类的派生用例假失败（实测 808／15）。
+
+**八、普查与门禁**：297 名 **236 可导入／59 不可／2 跳过**（切片 71：234／61／2），**+2 恰好是 `_symtable`／
+`symtable`**，逐名 diff 无其他变动。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑
+**BUILD SUCCESSFUL**（7m25s；详见 `PLAN-progress.md`）。提交：代码 `ce01ee2` 一笔，本文件与
+`PLAN-progress.md` 一笔。
 
 ## 4. 明确不做
 
