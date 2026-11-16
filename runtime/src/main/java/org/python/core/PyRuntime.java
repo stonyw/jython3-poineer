@@ -66,6 +66,8 @@ public final class PyRuntime {
 
     private static PyDict builtins;
     private static PyModule sysModule;
+    /** The namespace {@code sys.flags} names, kept so a setter can update a member in place. */
+    private static PyNamespace sysFlags;
     private static PyModule main;
     private static PyStream stdout;
     private static PyStream stderr;
@@ -146,16 +148,6 @@ public final class PyRuntime {
      * another.
      */
     private static int recursionLimit = 1000;
-
-    /**
-     * What {@code sys.get_int_max_str_digits} answers and {@code sys.set_int_max_str_digits} replaces.
-     *
-     * <p>The reference bounds how many digits a decimal integer may convert to and from text; this
-     * runtime converts without a bound, so it reports 0 — the reference's own spelling for "no limit"
-     * — and keeps whatever a program sets for the benefit of the code that reads it back. The bound is
-     * therefore bookkeeping here in the same way the recursion limit is, and the milestone notes say so.
-     */
-    private static int maxStrDigits = 0;
 
     /**
      * The pair {@code sys.get_asyncgen_hooks} answers and {@code sys.set_asyncgen_hooks} replaces.
@@ -1808,8 +1800,7 @@ public final class PyRuntime {
      * are unconditionally UTF-8 here, so {@code -X utf8} asks for what already holds. {@code
      * context_aware_warnings} stays 0, which is what {@code _py_warnings} reads to decide whether
      * {@code catch_warnings} keeps its filters in a context variable or in the global list.
-     * {@code int_max_str_digits} is 0, the reference's spelling for "no limit", because this runtime
-     * enforces none.
+     * {@code int_max_str_digits} reports the decimal digit limit the runtime enforces.
      */
     private static PyNamespace flags() {
         PyNamespace namespace = new PyNamespace();
@@ -1830,7 +1821,7 @@ public final class PyRuntime {
         namespace.set("utf8_mode", PyInt.of(1));
         namespace.set("warn_default_encoding", PyInt.of(0));
         namespace.set("safe_path", PyBool.FALSE);
-        namespace.set("int_max_str_digits", PyInt.of(0));
+        namespace.set("int_max_str_digits", PyInt.of(Numbers.maxStrDigits()));
         namespace.set("context_aware_warnings", PyInt.of(0));
         // 3.14's `threading` reads this at import time; threads are refused rather than inherited, so
         // the switch that would carry a context into them is off.
@@ -2072,7 +2063,7 @@ public final class PyRuntime {
         // `_py_warnings` reads both at module scope: the flags to choose between the context-variable
         // and the global filter list, and the option list to replay `-W` switches. It replays them
         // itself, which is why the strings are handed over verbatim rather than interpreted here.
-        sys.set("flags", flags());
+        sys.set("flags", sysFlags = flags());
         // `importlib._bootstrap_external.cache_from_source` branches on this; with `None` there is no
         // `-X pycache_prefix` redirect, so the cache sits in `__pycache__` beside its source.
         sys.set("pycache_prefix", PyNone.INSTANCE);
@@ -2268,11 +2259,10 @@ public final class PyRuntime {
                         + "This limit prevents infinite recursion from causing an overflow of the C\n"
                         + "stack and crashing Python.  The highest possible limit is platform-\n"
                         + "dependent."));
-        // `test.test_decimal` saves and restores this around its long-digit cases. No conversion here is
-        // bounded, so the value is kept and handed back rather than acted on; 0 is the spelling both
-        // sides use for "no limit".
+        // Both directions of decimal int/str conversion read this limit; `test.test_decimal` and
+        // `test_json` save and restore it around their long-digit cases.
         sys.set("get_int_max_str_digits", noArguments(
-                "get_int_max_str_digits", () -> PyInt.of(maxStrDigits),
+                "get_int_max_str_digits", () -> PyInt.of(Numbers.maxStrDigits()),
                 "get_int_max_str_digits($module, /)\n"
                         + "--\n"
                         + "\n"
@@ -2294,7 +2284,10 @@ public final class PyRuntime {
                                 throw Slots.valueError(
                                         "maxdigits must be >= 640 or 0 for unlimited");
                             }
-                            maxStrDigits = digits;
+                            Numbers.setMaxStrDigits(digits);
+                            // `sys.flags.int_max_str_digits` is the same setting seen through the
+                            // namespace, which the reference updates in place.
+                            sysFlags.set("int_max_str_digits", PyInt.of(digits));
                             return PyNone.INSTANCE;
                         })
                 .documented("set_int_max_str_digits($module, maxdigits, /)\n"

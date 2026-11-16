@@ -522,6 +522,6 @@ public class PyInt extends PyObject {
 
     @Override
     public String repr() {
-        return value.toString();
+        return Numbers.decimal(value);
     }
 }

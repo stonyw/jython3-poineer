@@ -492,4 +492,68 @@ final class Numbers {
     static String asText(PyObject o) {
         return o instanceof PyStr s ? s.getValue() : null;
     }
+
+    // --- the decimal digit limit -----------------------------------------------------------
+
+    /** The reference's default for {@code sys.get_int_max_str_digits}. */
+    private static final int DEFAULT_MAX_STR_DIGITS = 4300;
+
+    /**
+     * {@code interp->long_state.max_str_digits}: the largest decimal digit run int/str conversion
+     * allows, or zero for no limit.
+     *
+     * <p>The reference keeps this beside its thread state and reads it in both directions: a decimal
+     * conversion longer than the limit is refused rather than computed. Only non-binary bases are
+     * bounded — {@code hex}, {@code oct} and base 16 literals convert any size — and only the decimal
+     * spelling of a number, which is why the same value can be written as hex without complaint.
+     */
+    private static int maxStrDigits = DEFAULT_MAX_STR_DIGITS;
+
+    static int maxStrDigits() {
+        return maxStrDigits;
+    }
+
+    static void setMaxStrDigits(int digits) {
+        maxStrDigits = digits;
+    }
+
+    /**
+     * The reference's to-str refusal: the limit is named but the value is not, because deciding how many
+     * digits a value has is the very thing the limit exists to avoid.
+     */
+    private static PyRaise tooManyDigitsToStr(int max) {
+        return Slots.valueError(
+                "Exceeds the limit (%d digits) for integer string conversion; "
+                        + "use sys.set_int_max_str_digits() to increase the limit",
+                max);
+    }
+
+    /** The to-int refusal, which can count the digits because it was handed them. */
+    private static PyRaise tooManyDigitsToInt(int max, int digits) {
+        return Slots.valueError(
+                "Exceeds the limit (%d digits) for integer string conversion: value has %d digits; "
+                        + "use sys.set_int_max_str_digits() to increase the limit",
+                max, digits);
+    }
+
+    /** {@code long_to_decimal_string_internal}'s decimal spelling of a value, bounded by the limit. */
+    static String decimal(BigInteger value) {
+        int max = maxStrDigits;
+        if (max > 0 && value.abs().toString().length() > max) {
+            throw tooManyDigitsToStr(max);
+        }
+        return value.toString();
+    }
+
+    /**
+     * {@code _PyLong_FromString}'s bound, asked after the literal has validated and for a non-binary
+     * base only: a power-of-two base reads linearly whatever its length.
+     */
+    static void checkParsedDigits(int base, int digits) {
+        int max = maxStrDigits;
+        boolean binary = Integer.bitCount(base) == 1;
+        if (max > 0 && !binary && digits > max) {
+            throw tooManyDigitsToInt(max, digits);
+        }
+    }
 }

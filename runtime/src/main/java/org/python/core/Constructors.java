@@ -814,6 +814,7 @@ final class Constructors {
         }
         BigInteger out = BigInteger.ZERO;
         BigInteger baseValue = BigInteger.valueOf(actual);
+        int digits = 0;
         boolean any = false;
         boolean previousUnderscore = false;
         while (at < end) {
@@ -832,11 +833,15 @@ final class Constructors {
             }
             out = out.multiply(baseValue).add(BigInteger.valueOf(digit));
             any = true;
+            digits++;
             previousUnderscore = false;
         }
         if (!any) {
             return null;
         }
+        // The literal has validated, so the digit limit is asked now, in the same place the reference
+        // asks it: a bad literal is still an invalid literal however many digits it has.
+        Numbers.checkParsedDigits(actual, digits);
         return negative ? out.negate() : out;
     }
 

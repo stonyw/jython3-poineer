@@ -179,7 +179,7 @@ final class Formats {
         }
         String raw;
         if (type.isEmpty() || "d".equals(type) || "n".equals(type)) {
-            raw = n.abs().toString();
+            raw = Numbers.decimal(n.abs());
         } else if ("b".equals(type)) {
             raw = n.abs().toString(2);
         } else if ("o".equals(type)) {

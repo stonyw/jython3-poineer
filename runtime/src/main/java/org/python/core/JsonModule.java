@@ -536,6 +536,9 @@ final class JsonModule {
             } else if (isFloat) {
                 value = PyFloat.of(Double.parseDouble(source));
             } else {
+                // `PyLong_FromString`: the C scanner's decimal path is bounded by the digit limit
+                // just as `int()` is, so an over-long JSON integer is the same ValueError.
+                Numbers.checkParsedDigits(10, source.length() - (source.charAt(0) == '-' ? 1 : 0));
                 value = PyInt.of(new java.math.BigInteger(source));
             }
             next.value = idx;
@@ -700,7 +703,7 @@ final class JsonModule {
             } else if (obj instanceof PyInt integer) {
                 // `PyLong_Type.tp_repr(obj)` in the reference: the int slot, not the class's
                 // `__repr__`, so an `IntEnum` member is written as its value.
-                out.append(integer.getValue());
+                out.append(Numbers.decimal(integer.getValue()));
             } else if (obj instanceof PyFloat floating) {
                 out.append(encodeFloat(floating));
             } else if (obj instanceof PyList list) {
@@ -893,7 +896,7 @@ final class JsonModule {
                 // Before the int branch: True and False are 1 and 0 as keys, but they spell differently.
                 keystr = PyStr.of(encodedConst(key));
             } else if (key instanceof PyInt integer) {
-                keystr = PyStr.of(integer.getValue().toString());
+                keystr = PyStr.of(Numbers.decimal(integer.getValue()));
             } else if (skipKeys) {
                 return;
             } else {
