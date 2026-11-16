@@ -32,11 +32,12 @@ import org.python.front.cpython314.Cpython314Compiler;
  * <p>M1 status: a script, a {@code -c} command and stdin all run end to end — Stage A compiles, the
  * interpreter executes, {@code sys.argv} is what the script sees. M2 put the JVM on the other side of
  * that same script, so {@code import java.util} is an ordinary import now, and changed nothing about the
- * options below. The option surface is therefore small, and every omission is reported rather than
- * quietly ignored: {@code -m} needs {@code runpy} on top of the import system, {@code -O} needs
- * {@code __debug__} to mean something to the code object, {@code -b} needs a {@code BytesWarning} at
- * the comparison site, and the interactive prompt needs a terminal, a line editor and a read-eval-print
- * loop, which the native frontend milestone owns. Those exit 3, which the harness records as
+ * options below. {@code -m} runs through the library's own {@code runpy}, so a module and a package's
+ * {@code __main__} are entered the way the reference enters them. The option surface is still small,
+ * and every omission is reported rather than quietly ignored: {@code -O} needs {@code __debug__} to
+ * mean something to the code object, {@code -b} needs a {@code BytesWarning} at the comparison site,
+ * and the interactive prompt needs a terminal, a line editor and a read-eval-print loop, which the
+ * native frontend milestone owns. Those exit 3, which the harness records as
  * {@code NOT_IMPLEMENTED}.
  *
  * <p>Two options carry a payload. {@code -W} is stored verbatim in {@code sys.warnoptions}, because the
@@ -95,6 +96,7 @@ public final class jy3 {
             PROGRAM + " [option] ... [-c cmd | -m mod | file | -] [arg] ...\n"
                     + "Options and arguments:\n"
                     + "-c cmd : program read from string\n"
+                    + "-m mod : run library module as a script (terminates option list)\n"
                     + "-h     : print this help message and exit\n"
                     + "-V     : print the version and exit\n"
                     + "-W arg : warning control; the argument goes to `warnings` verbatim\n"
@@ -102,7 +104,7 @@ public final class jy3 {
                     + "-      : program read from stdin\n"
                     + "\n"
                     + "Accepted: -B -E -I -S -s -q -u -W arg -X utf8 -X dev -X faulthandler\n"
-                    + "Not implemented yet: -b and -bb (BytesWarning); -m mod (runpy); -O and -OO"
+                    + "Not implemented yet: -b and -bb (BytesWarning); -O and -OO"
                     + " (`__debug__` in the code object); -X keys other than the three above;"
                     + " the interactive prompt (M5)\n";
 
@@ -145,6 +147,7 @@ public final class jy3 {
     /** Parse the command line, compile whatever it names, run it. Returns the exit status. */
     private static int run(String[] args) {
         String command = null;
+        String module = null;
         boolean stdin = false;
         int at = 0;
         List<String> warnOptions = new ArrayList<>();
@@ -210,8 +213,9 @@ public final class jy3 {
                     if (!argumentExpected(option, args, at)) {
                         return USAGE_ERROR;
                     }
-                    return notImplemented(
-                            "-m module", "running a module needs runpy, which comes after the finder");
+                    module = args[at + 1];
+                    at += 2;
+                    break options;
                 }
                 case "-W" -> {
                     // The string is kept exactly as it was written, because `warnings` parses it: the
@@ -351,6 +355,19 @@ public final class jy3 {
             operands.add(args[i]);
         }
 
+        if (module != null) {
+            // `-m` puts the working directory on `sys.path[0]` — the absolute one, because the module
+            // is found from wherever the program was started rather than from where a script lives.
+            start(importPath(workingDirectory()));
+            // `sys.argv` is the switch plus the program's arguments: the module name is not an element
+            // of it, because `runpy` writes the module's own origin into slot 0.
+            PyRuntime.setArgv("-m", operands);
+            // The reference's `__main__` exists before any program runs, and `runpy` writes the module
+            // into that very dictionary rather than making a new one.
+            PyRuntime.mainModule();
+            int status = runModule(module);
+            return interactive ? interact(optimize, status) : status;
+        }
         if (command != null) {
             start(importPath(""));
             PyRuntime.setArgv("-c", operands);
@@ -565,6 +582,47 @@ public final class jy3 {
         Cpython314Compiler.Compiled compiled =
                 Cpython314Compiler.compileFile(test, PyRuntime.optimizeLevel());
         return execute(compiled.code(), compiled.fileName());
+    }
+
+    /**
+     * {@code -m}: run a module the way {@code runpy} does, which is the only implementation there is.
+     *
+     * <p>The reference's {@code pymain_run_module} does not find the module itself: it imports
+     * {@code runpy} and calls {@code _run_module_as_main(name, alter_argv=True)}, so package handling,
+     * {@code __spec__} and {@code __package__}, the {@code No module named pkg.__main__} sentence and the
+     * {@code Error while finding module specification} prefix all come from one place — the library's own
+     * {@code runpy.py}, which this runtime already runs. The two failures to reach that entry point are
+     * the reference's own two lines, word for word.
+     *
+     * <p>The call itself is left to raise: an uncaught error is reported by the ordinary handler above,
+     * which is what {@code pymain_exit_err_print} does after {@code pymain_run_module} comes back empty.
+     */
+    private static int runModule(String name) {
+        PyObject runpy;
+        try {
+            runpy = PyRuntime.importModule("runpy");
+        } catch (PyRaise missing) {
+            write("Could not import runpy module\n");
+            throw missing;
+        }
+        PyObject entry;
+        try {
+            entry = Slots.getAttr(runpy, "_run_module_as_main");
+        } catch (PyRaise missing) {
+            write("Could not access runpy._run_module_as_main\n");
+            throw missing;
+        }
+        Slots.call(entry, new PyObject[] {PyStr.of(name), PyBool.TRUE}, null);
+        return PASSED;
+    }
+
+    /** The working directory as {@code -m}'s {@code sys.path[0]} spells it: resolved, absolute. */
+    private static String workingDirectory() {
+        try {
+            return Path.of("").toRealPath().toString();
+        } catch (IOException unreadable) {
+            return System.getProperty("user.dir", ".");
+        }
     }
 
     private static int notImplemented(String what, String why) {

@@ -61,6 +61,8 @@ final class Fds {
         private int length;
         private boolean writerClosed;
         private boolean readerClosed;
+        /** Run when the reading end goes, which is how a child is told nobody reads it any more. */
+        private Runnable readerClosedHook;
     }
 
     /**
@@ -322,6 +324,7 @@ final class Fds {
             return;
         }
         Pipe pipe = slot.pipe;
+        Runnable hook = null;
         synchronized (pipe) {
             if (slot.writable) {
                 pipe.writerClosed = true;
@@ -329,8 +332,34 @@ final class Fds {
                 pipe.readerClosed = true;
                 pipe.start = 0;
                 pipe.length = 0;
+                hook = pipe.readerClosedHook;
             }
             pipe.notifyAll();
+        }
+        if (hook != null) {
+            hook.run();
+        }
+    }
+
+    /**
+     * Arranges for {@code hook} to run the moment the reading end of this pipe is closed.
+     *
+     * <p>A child process whose output is being pumped into the pipe has its own pipe on the other side
+     * of the pump; closing that one with the reader is what makes the child's next write fail with
+     * {@code EPIPE}, the way it does in the reference, where the child holds the pipe itself.
+     */
+    static void onReaderClosed(int fd, Runnable hook) {
+        Slot slot = peek(fd);
+        if (slot == null || slot.pipe == null) {
+            return;
+        }
+        boolean alreadyClosed;
+        synchronized (slot.pipe) {
+            slot.pipe.readerClosedHook = hook;
+            alreadyClosed = slot.pipe.readerClosed;
+        }
+        if (alreadyClosed) {
+            hook.run();
         }
     }
 

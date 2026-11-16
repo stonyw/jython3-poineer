@@ -1,8 +1,8 @@
 package org.python.core;
 
+import java.io.IOException;
 import java.io.InputStream;
-import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
+import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -131,7 +131,7 @@ public final class PyStream extends PyIterator {
                     + " as input to seek(), to\nrestore a previous stream position.";
 
     private final String name;
-    private final PrintStream out;
+    private final OutputStream out;
 
     /**
      * {@code self->buffer}: the layer under the text, which {@code __init__} replaces.
@@ -299,10 +299,13 @@ public final class PyStream extends PyIterator {
      * @param autoFlush whether the descriptor is drained on every newline, which is what a terminal
      *     gets and a pipe does not
      */
-    PyStream(String name, PrintStream target, int fd, String errors, boolean autoFlush) {
+    PyStream(String name, OutputStream target, int fd, String errors, boolean autoFlush) {
         super(TYPE);
         this.name = name;
-        this.out = new PrintStream(target, autoFlush, StandardCharsets.UTF_8);
+        // The bytes go to the descriptor as they are encoded: a `PrintStream` here would swallow the
+        // failure of a write, and the reference reports that failure as the `OSError` the descriptor
+        // answered with — a pipe whose reader has gone is `BrokenPipeError`.
+        this.out = target;
         this.buffer = null;
         this.raw = null;
         this.errors = errors;
@@ -412,10 +415,31 @@ public final class PyStream extends PyIterator {
             return;
         }
         byte[] octets = Encoder.encode(text, encoderName(), errors).getValue();
-        out.write(octets, 0, octets.length);
+        try {
+            out.write(octets, 0, octets.length);
+        } catch (IOException refusal) {
+            throw descriptorFailure(refusal);
+        }
         if (sig) {
             encoderAtStart = false;
         }
+    }
+
+    /**
+     * What a failed write to a descriptor is in Python: the message the operating system gave, with the
+     * number it gave it under. Java hands the write failure back as an exception whose message is the C
+     * library's {@code strerror}, so this reads that rather than pretending every failure is the same one.
+     */
+    private static PyRaise descriptorFailure(IOException refusal) {
+        String reason = refusal.getMessage();
+        if (reason != null && reason.contains("Broken pipe")) {
+            // `EPIPE`: the reader of the pipe is gone. This is the one failure `json.tool` hands to
+            // `SystemExit` as its own exit status, so it has to arrive with its number.
+            return PyRaise.of(PyOSError.create(
+                    ExceptionTypes.BROKEN_PIPE_ERROR,
+                    new PyObject[] {PyInt.of(32), PyStr.of("Broken pipe")}));
+        }
+        return Slots.osError("%s", reason == null ? "writing error" : reason);
     }
 
     /**
@@ -461,10 +485,19 @@ public final class PyStream extends PyIterator {
     }
 
     public void flush() {
+        if (closed) {
+            // `flush_std_files` skips a stream that is closed, and a stream whose close already failed
+            // is closed: the failure was reported by that close, not again here on the way out.
+            return;
+        }
         if (buffer != null) {
             askBuffer("flush", new PyObject[0]);
         } else if (out != null) {
-            out.flush();
+            try {
+                out.flush();
+            } catch (IOException refusal) {
+                throw descriptorFailure(refusal);
+            }
         }
     }
 
@@ -1318,10 +1351,15 @@ public final class PyStream extends PyIterator {
             flushFailure = failure;
         }
         PyRaise closeFailure = null;
-        try {
-            askBuffer("close", new PyObject[0]);
-        } catch (PyRaise failure) {
-            closeFailure = failure;
+        if (buffer != null) {
+            // A stream this runtime built for `sys` has no layer under it to close: its buffer is the
+            // descriptor a row below would otherwise be asked to close, and there is none until the
+            // program asks for `sys.stdout.buffer` itself. Closing it is the flush and the flag.
+            try {
+                askBuffer("close", new PyObject[0]);
+            } catch (PyRaise failure) {
+                closeFailure = failure;
+            }
         }
         if (!reading()) {
             closed = true;

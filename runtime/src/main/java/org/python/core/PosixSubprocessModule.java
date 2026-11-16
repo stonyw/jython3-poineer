@@ -272,15 +272,25 @@ final class PosixSubprocessModule {
         }
     }
 
-    /** Carries what the child writes into the pipe end the parent will read. */
+    /**
+     * Carries what the child writes into the pipe end the parent will read.
+     *
+     * <p>The reference hands the child the pipe itself, so when the parent closes its reading end the
+     * child's own next write fails with {@code EPIPE}. Here a pump thread sits between the two, and the
+     * same moment has to close the child's side too — otherwise the pump would keep draining output
+     * nobody wants, and the child would never learn its reader is gone.
+     */
     private static void pumpFromChild(InputStream source, int fd) {
         Thread thread = new Thread(() -> {
             byte[] buffer = new byte[8192];
             try (InputStream in = source) {
                 int read;
                 while ((read = in.read(buffer)) != -1) {
-                    Fds.writeQuietly(fd, Arrays.copyOf(buffer, read));
+                    Fds.write(fd, Arrays.copyOf(buffer, read));
                 }
+            } catch (PyRaise refusal) {
+                // The parent closed its end, so this is where the child's stream is closed with it; the
+                // try-with-resources above does that.
             } catch (IOException ignored) {
                 // The child went away mid-stream; end-of-file is the same answer.
             } finally {
@@ -288,6 +298,13 @@ final class PosixSubprocessModule {
             }
         }, "jy3-child-output");
         thread.setDaemon(true);
+        Fds.onReaderClosed(fd, () -> {
+            try {
+                source.close();
+            } catch (IOException ignored) {
+                // A stream that is already gone is what this call was asking for.
+            }
+        });
         thread.start();
     }
 

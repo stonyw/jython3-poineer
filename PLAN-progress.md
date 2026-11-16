@@ -1961,3 +1961,53 @@ surprises 0。提交：代码 `4568400`、`869d3c8`、`beeffb1`、`6a306df` 四�
 
 **六、提交**：代码 `882a238`（项 1）、`49f4381`（项 2）、`c59b781`（项 3）、`dc78a6b`（项 4）；
 语料 40／41 与 `FloatDictionaryTest` 的收尾一笔；本文件与 `PLAN.md` 一笔。
+
+## M5 切片 76 明细（`-m` 运行模块入口与 `runpy`；2026-11-16）
+
+**一、入口怎么接（不新写 finder）**
+
+- 参考位点：`pymain_run_module`（`Modules/main.c:736`）只取 `runpy._run_module_as_main` 并
+  `call(modname, True)`；`config_update_argv`（`Python/initconfig.c:3273`）在 `-m` 时把 argv 从
+  模块名起切片并强制 `argv[0]="-m"`；`_PyPathConfig_ComputeSysPath0` 让 `sys.path[0]` 是
+  getcwd 的真实路径；`runpy._run_module_as_main` 写的是启动时就存在的 `__main__.__dict__`。
+- 实现：`jy3.java` 选项表加 `-m`（结束选项表），分支里 `start(importPath(workingDirectory()))`、
+  `PyRuntime.setArgv("-m", operands)`、`PyRuntime.mainModule()`、`runModule(name)` 调
+  `runpy._run_module_as_main(name, True)`。三次试错都在这里：首版漏建 `__main__`（`KeyError`）、
+  首版把模块名放进 `sys.argv`（参考里它被覆写掉）、`workingDirectory()` 用 `toRealPath()` 才与
+  getcwd 的 `/private/tmp` 拼写一致。
+- 结果：普通模块、包、缺 `pkg.__main__`、缺模块四形态的文案与返回码全部照参考；无新增 finder 代码。
+
+**二、`json.tool` 的 `test_broken_pipe_error`（两层根因）**
+
+- 第一层：`PyRuntime.startup()` 用 `PrintStream` 包 fd 1／2，写失败被吞。改成直接持
+  `FileOutputStream(FileDescriptor.out/err)`；`PyStream.writeTextToDescriptor`／`flush` 把
+  `IOException` 的 message 按 C `strerror` 读出来，`Broken pipe` → `BrokenPipeError(32)`，其余
+  `Slots.osError(...)`。`flush()` 在流已关闭时直接返回（`flush_std_files` 跳过已关闭文件），
+  否则退出时的收尾会把 `SystemExit(32)` 盖成异常。
+- 第二层（第一层修完才暴露）：`subprocess` 的 stdout 是「Java 管道 + 泵线程」，父端关读端后泵仍
+  在把子进程输出往一根没人读的 Fds 管道里 `writeQuietly`，子进程收不到 EPIPE。`Fds` 加
+  `onReaderClosed(fd, hook)`（读端 close 时在锁外运行，已关则立刻跑）；`pumpFromChild` 注册
+  「关闭子进程 stdio 流」并改用 `Fds.write`。父端一关，子进程的 OS 写端就没了，`json.tool` 的写
+  失败因此真的到达 Python 层。
+- 判据：`test_json` **225／224／0／0／1**（修前 50 fail＋16 err），与参考基准一致。
+
+**三、`test_runpy` 基线（只记录，不追求全绿）**
+
+- jy3 **40 ran／17 ok／7 fail／16 err**；参考 **40／40／0／0／0**。
+- 7 fail 全在 `TestExit`：未捕获 `KeyboardInterrupt` 参考以 `raise(SIGINT)` 自杀（returncode
+  `-2`），jy3 报 130；stdin 一例另叠「无参数、stdin 非 tty 时按脚本执行」的入口缺口。
+- 16 err：10 `RunModuleTestCase` ＋ 6 `RunPathTestCase`，共同落点是 import 不写 `.pyc`，test 的
+  `make_legacy_pyc`／`__cached__` 分支 `FileNotFoundError`；另含 zip import 与 `marshal` 读
+  code object 两例。顺带补 `sys.dont_write_bytecode`（初值随 `-B`），只补 API，不宣称字节码落盘。
+
+**四、语料、回归、普查与门禁**
+
+- `43_m_run_module.py` 登记 `Jy3LauncherTest.m5Corpus()`，与参考 3.14.10 逐字节相同：模块／包／
+  缺模块／缺 `__main__`／`sys.exit(3)`／`-m` 与 `-c` 的选项表顺序／缺模块名／`json.tool` 正常跑／
+  先关读端后 `json.tool` 的 32。
+- 回归逐数与基线相同：`test_types` 128／124／0／2／2、`test_descr` 163／147／4／4／8、
+  `test_class` 42／39／1／0／2、`test_builtin` 147／−663／1／801／8、`test_re` 166／129／21／12／4、
+  `test_statistics` 400／400／0／0／0。普查 297 名 **238／57／2**（与切片 74 相同）。
+- `env -u PYTHONPATH ./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` **BUILD
+  SUCCESSFUL**（8m5s，26 任务：9 executed／17 up-to-date），JUnit 汇总 runtime 749／embedding 582
+  （0 失败 0 错误 0 跳过），smoke 12/12、surprises 0。

@@ -2,7 +2,6 @@ package org.python.core;
 
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
-import java.io.PrintStream;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -232,10 +231,10 @@ public final class PyRuntime {
         // fail. `reconfigure` already writes this same pair into the two writable streams when it is
         // asked without an `errors`, which is why its corpora agreed before this line did.
         stdout = new PyStream("<stdout>",
-                new PrintStream(new FileOutputStream(FileDescriptor.out)), 1,
+                new FileOutputStream(FileDescriptor.out), 1,
                 "strict", System.console() != null);
         stderr = new PyStream("<stderr>",
-                new PrintStream(new FileOutputStream(FileDescriptor.err)), 2,
+                new FileOutputStream(FileDescriptor.err), 2,
                 "backslashreplace", true);
         // `input` reads this one, and `PyFile_GetLine` asks it for a line rather than the descriptor.
         stdin = new PyStream("<stdin>", System.in, 0, "strict");
@@ -2064,6 +2063,9 @@ public final class PyRuntime {
         // and the global filter list, and the option list to replay `-W` switches. It replays them
         // itself, which is why the strings are handed over verbatim rather than interpreted here.
         sys.set("flags", sysFlags = flags());
+        // The live flag `-B` sets, which a program may flip; `sys.flags` keeps the value the process
+        // started with, exactly as the reference's read-only snapshot does.
+        sys.set("dont_write_bytecode", PyBool.of(commandLine.dontWriteBytecode()));
         // `importlib._bootstrap_external.cache_from_source` branches on this; with `None` there is no
         // `-X pycache_prefix` redirect, so the cache sits in `__pycache__` beside its source.
         sys.set("pycache_prefix", PyNone.INSTANCE);
