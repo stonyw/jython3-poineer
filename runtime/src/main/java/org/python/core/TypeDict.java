@@ -3037,12 +3037,12 @@ final class TypeDict {
         table.raw("__new__", NEW_DOC, TypeDict::dictsNew);
         table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
         table.value("__hash__", PyNone.INSTANCE);
-        table.wrapper("__lt__", LT_DOC, comparing(CompareOp.LT));
-        table.wrapper("__le__", LE_DOC, comparing(CompareOp.LE));
-        table.wrapper("__eq__", EQ_DOC, comparing(CompareOp.EQ));
-        table.wrapper("__ne__", NE_DOC, comparing(CompareOp.NE));
-        table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
-        table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
+        table.wrapper("__lt__", LT_DOC, dictComparing(CompareOp.LT));
+        table.wrapper("__le__", LE_DOC, dictComparing(CompareOp.LE));
+        table.wrapper("__eq__", EQ_DOC, dictComparing(CompareOp.EQ));
+        table.wrapper("__ne__", NE_DOC, dictComparing(CompareOp.NE));
+        table.wrapper("__gt__", GT_DOC, dictComparing(CompareOp.GT));
+        table.wrapper("__ge__", GE_DOC, dictComparing(CompareOp.GE));
         table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
         table.wrapper("__init__", INIT_DOC, TypeDict::dictInit);
         table.wrapper("__or__", OR_DOC, TypeDict::merged);
@@ -3360,7 +3360,7 @@ final class TypeDict {
         PyType owner = PyType.FLOAT;
         Table table = new Table(owner, into);
         table.raw("__new__", NEW_DOC, TypeDict::floatsNew);
-        table.wrapper("__repr__", REPR_DOC, args -> PyStr.of(args[0].repr()));
+        table.wrapper("__repr__", REPR_DOC, TypeDict::floatRepr);
         table.wrapper("__hash__", HASH_DOC, args -> PyInt.of(args[0].hash()));
         table.wrapper("__lt__", LT_DOC, floatComparing(CompareOp.LT));
         table.wrapper("__le__", LE_DOC, floatComparing(CompareOp.LE));
@@ -4513,6 +4513,22 @@ final class TypeDict {
     }
 
     /**
+     * {@code float.__repr__(x)}: the double's text, not the receiver's own {@code __repr__}.
+     *
+     * <p>{@code float_repr} formats the value, so a class written under {@code float} that overrides
+     * {@code __repr__} still gets the plain number from the unbound base method — which is what
+     * {@code json.encoder._floatstr}'s {@code float.__repr__(o)} relies on for a {@code float} enum.
+     */
+    private static PyObject floatRepr(PyObject[] args) {
+        if (!(args[0] instanceof PyFloat value)) {
+            throw Slots.typeError(
+                    "descriptor '__repr__' requires a 'float' object but received a '%s'",
+                    args[0].getType().filedName());
+        }
+        return PyStr.of(PyFloat.format(value.getValue()));
+    }
+
+    /**
      * {@code long_new} over a {@code tp_new_wrapper}: the class gates, then clinic's own argument table.
      *
      * <p>The arguments after the class reach the constructor rather than the vectorcall fast path, which is
@@ -5136,6 +5152,25 @@ final class TypeDict {
      */
     private static Method comparing(CompareOp cmp) {
         return (args, kwNames, qualified) -> args[0].richCompare(cmp, args[1]);
+    }
+
+    /**
+     * {@code dict_richcompare} as an unbound method: the mapping's comparison, whatever a subclass wrote.
+     *
+     * <p>{@code OrderedDict.__eq__} starts with {@code dict.__eq__(self, other)}, so the base method must
+     * answer from the entries rather than dispatch back through {@code __eq__} — otherwise the two call
+     * each other until the recursion limit.
+     */
+    private static Method dictComparing(CompareOp cmp) {
+        return (args, kwNames, qualified) -> {
+            if (args[0] instanceof PyDict dict) {
+                return dict.richCompare(cmp, args[1]);
+            }
+            if (args[0] instanceof PyDictInstance instance) {
+                return instance.entries().richCompare(cmp, args[1]);
+            }
+            return args[0].richCompare(cmp, args[1]);
+        };
     }
 
     /** {@code sq_concat}, and {@code sq_repeat} in the same shape: the forward slot of the receiver. */

@@ -138,7 +138,7 @@ final class Itertools {
     }
 
     /** {@code groupby}'s "no group yet" marker: a key can never be this object. */
-    private static final PyObject NO_GROUP = new PyObject() {
+    private static final PyObject NO_GROUP = new PyObject(PyType.OBJECT) {
         @Override
         public String repr() {
             return "<no group>";

@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.function.IntFunction;
+import java.util.function.IntSupplier;
 
 /**
  * {@code _json}: the accelerators {@code json} takes when the C extension is present.
@@ -151,6 +152,33 @@ final class JsonModule {
                 Slots.truth(values[6]),
                 Slots.truth(values[7]),
                 Slots.truth(values[8]));
+    }
+
+    /**
+     * CPython's {@code _PyErr_FormatNote}: one more line of context on an exception already on its way
+     * out, recorded as {@code add_note} would record it.
+     *
+     * <p>The reference formats the line and calls {@code add_note}, dropping the note if that call fails;
+     * a note that cannot be recorded must not replace the error it was describing, so failures here are
+     * swallowed too.
+     */
+    private static void addNote(PyRaise raised, String note) {
+        try {
+            PyBaseException value = raised.value();
+            PyObject found = Slots.findAttr(value, "__notes__");
+            PyList notes;
+            if (found == null) {
+                notes = PyList.empty();
+                Slots.setAttr(value, "__notes__", notes);
+            } else if (found instanceof PyList list) {
+                notes = list;
+            } else {
+                return;
+            }
+            notes.add(PyStr.of(note));
+        } catch (RuntimeException ignored) {
+            // the original error is the one worth reporting
+        }
     }
 
     /**
@@ -670,16 +698,18 @@ final class JsonModule {
             } else if (obj instanceof PyStr string) {
                 out.append(encodeString(string));
             } else if (obj instanceof PyInt integer) {
-                out.append(integer.repr());
+                // `PyLong_Type.tp_repr(obj)` in the reference: the int slot, not the class's
+                // `__repr__`, so an `IntEnum` member is written as its value.
+                out.append(integer.getValue());
             } else if (obj instanceof PyFloat floating) {
                 out.append(encodeFloat(floating));
             } else if (obj instanceof PyList list) {
-                listencodeList(out, obj, list.size(), list::at, level, cache);
+                listencodeList(out, obj, list::size, list::at, level, cache);
             } else if (obj instanceof PyListInstance list) {
                 PyList items = list.entries();
-                listencodeList(out, obj, items.size(), items::at, level, cache);
+                listencodeList(out, obj, items::size, items::at, level, cache);
             } else if (obj instanceof PyTuple tuple) {
-                listencodeList(out, obj, tuple.size(), tuple::at, level, cache);
+                listencodeList(out, obj, tuple::size, tuple::at, level, cache);
             } else if (obj instanceof PyDict dict) {
                 listencodeDict(out, obj, dict, true, level, cache);
             } else if (obj instanceof PyDictInstance dict) {
@@ -701,7 +731,12 @@ final class JsonModule {
                 memo.put(ident, obj);
             }
             PyObject replacement = Slots.call(defaultFn, new PyObject[] {obj}, null);
-            listencodeObj(out, replacement, level, cache);
+            try {
+                listencodeObj(out, replacement, level, cache);
+            } catch (PyRaise raised) {
+                addNote(raised, "when serializing " + obj.getType().filedName() + " object");
+                throw raised;
+            }
             if (ident != null) {
                 memo.remove(ident);
             }
@@ -711,11 +746,11 @@ final class JsonModule {
         private void listencodeList(
                 StringBuilder out,
                 PyObject seq,
-                int size,
+                IntSupplier size,
                 IntFunction<PyObject> at,
                 int level,
                 ArrayList<String> cache) {
-            if (size == 0) {
+            if (size.getAsInt() == 0) {
                 out.append("[]");
                 return;
             }
@@ -735,11 +770,21 @@ final class JsonModule {
                 separator = getItemSeparator(level, cache);
                 writeNewlineIndent(out, level, cache);
             }
-            for (int i = 0; i < size; i++) {
+            for (int i = 0; i < size.getAsInt(); i++) {
                 if (i > 0) {
                     out.append(separator);
                 }
-                listencodeObj(out, at.apply(i), level, cache);
+                try {
+                    listencodeObj(out, at.apply(i), level, cache);
+                } catch (PyRaise raised) {
+                    addNote(
+                            raised,
+                            "when serializing "
+                                    + seq.getType().filedName()
+                                    + " item "
+                                    + i);
+                    throw raised;
+                }
             }
             if (ident != null) {
                 memo.remove(ident);
@@ -848,7 +893,7 @@ final class JsonModule {
                 // Before the int branch: True and False are 1 and 0 as keys, but they spell differently.
                 keystr = PyStr.of(encodedConst(key));
             } else if (key instanceof PyInt integer) {
-                keystr = PyStr.of(integer.repr());
+                keystr = PyStr.of(integer.getValue().toString());
             } else if (skipKeys) {
                 return;
             } else {
@@ -866,7 +911,17 @@ final class JsonModule {
             }
             out.append(encodeString(keystr));
             out.append(keySeparatorText());
-            listencodeObj(out, value, level, cache);
+            try {
+                listencodeObj(out, value, level, cache);
+            } catch (PyRaise raised) {
+                addNote(
+                        raised,
+                        "when serializing "
+                                + dct.getType().filedName()
+                                + " item "
+                                + key.repr());
+                throw raised;
+            }
         }
 
         /** {@code create_indent_cache}: one entry, the newline for the level the caller started at. */
