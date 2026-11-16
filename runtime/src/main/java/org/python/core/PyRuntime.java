@@ -52,7 +52,7 @@ public final class PyRuntime {
                 "_codecs_kr", "_codecs_tw", "_codecs_iso2022", "errno", "math", "time", "posix", "termios",
                 "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
-                "_csv", "_stat", "_symtable", "_json", "zxJDBC"};
+                "_csv", "_stat", "_symtable", "_json", "_statistics", "zxJDBC"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -355,6 +355,9 @@ public final class PyRuntime {
         // `json` takes `scanstring` and the two escapers from `_json` when it is importable and keeps
         // its Python scanner and encoder until `make_scanner` and `make_encoder` exist here.
         PyModule jsonModule = JsonModule.newModule();
+        // The one accelerator `statistics.py` reaches for at the end of the file, replacing its own
+        // Wichura approximation when the import succeeds.
+        PyModule statisticsModule = StatisticsModule.newModule();
         // The two modules `subprocess` imports: the C fork/exec half, which this runtime answers over
         // ProcessBuilder, and the readiness call `selectors` needs before `communicate` can loop.
         PyModule posixSubprocessModule = PosixSubprocessModule.newModule();
@@ -404,6 +407,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_struct"), structModule);
         modules.put(PyStr.interned("_csv"), csvModule);
         modules.put(PyStr.interned("_json"), jsonModule);
+        modules.put(PyStr.interned("_statistics"), statisticsModule);
         modules.put(PyStr.interned("binascii"), binasciiModule);
         modules.put(PyStr.interned("zlib"), zlibModule);
         for (PyModule hashlibModule : hashlibModules) {
@@ -495,6 +499,7 @@ public final class PyRuntime {
         belongTo(posixModule);
         belongTo(csvModule);
         belongTo(jsonModule);
+        belongTo(statisticsModule);
         belongTo(collectionsModule);
         belongTo(gcModule);
     }
