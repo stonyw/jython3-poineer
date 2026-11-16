@@ -1090,3 +1090,20 @@
 **六、判据**：`test_str` 修前修后都是 **139／119／2／11／7**（本片把 slice 60 的部分实现换成全表，失败集合不变）；slice 60 记的 5 例 `test_capitalize`、`test_casefold`、`test_lower`、`test_swapcase`、`test_title` 仍在 ok 里，逐项探针均与参考相同。`test_unicodedata` 61／37／4／20／0（4 个 fail 与 20 个 err 都是缺属性／缺模块，与大小写无关，修前修后不变）。
 
 **七、回归**：`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_array` 893／809／14／42／28、`test_memoryview` 171／103／18／30／20、`test_socket` 749／198／8／24／519、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_mmap` 53／40／0／2／11、`test_list` 68／64／1／2／1、`test_tuple` 39／32／6／1／0、`test_deque` 82／80／1／0／1——与基线逐项相同。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：代码一笔，本文件与 `PLAN.md` 一笔。
+
+## M5 切片 63 明细：`re` 的大小写折叠与 cased 判定接到自己的表上（2026-11-16）
+
+**一、`_sre` 一族按参考判据改掉（第一笔）**：`UnicodeCase` 追加 `SimpleLower`（1460 键，`_sre.unicode_tolower` 的像）、`SreCased`（扁平 inclusive 区间对）、`ExtraCases`（`re._casefix._EXTRA_CASES` 50 键）三张表，均由参考 3.14.10 全码点扫描生成（`gen_tables.py`）。`SreModule.unicode_tolower` 改走 `simpleLower`（`unicode_tolower(0x130) == ord('i')`），`unicode_iscased` 改走 `sreCased`；判据是「simple lower 或 simple upper 与自身不同」，`'ª'`／`'º'`／`'ĸ'` 从此 False，`'ß'`／`'İ'` 仍 True。3.14 的 `_sre` 只注册 `unicode_iscased`／`unicode_tolower`／`ascii_iscased`／`ascii_tolower`，任务书里的 `unicode_isalpha` 在该版本不存在，无法也不需要对齐。
+
+**二、`re.IGNORECASE` 不再借 Java 折叠（第二笔）**：`SreRegex.compile` 撤掉 `CASE_INSENSITIVE|UNICODE_CASE`，翻译器按 `_compiler.py` 的 `SRE_FLAG_IGNORECASE` 在编译期展开——字面量取 `simple_lower`＋`extras` 的前像类，字符类逐元素 `fixup` 后取前像，范围取 lower 像∪extras 的前像，否定类取补集，类别在 simple lower 下不变；ASCII 走 `ascii_lower` 且无 extras；`\x`／`\u`／`\U`／`\N`／八进制转义同折叠；`(?i:…)`／`(?-i:…)` 只改翻译器状态；回引用写成 `(?iu:\k<gN>)`（bytes 为 `(?i:…)`）。`*`／`+`／`?`／`|` 在折叠模式下按操作符直出（这一条修掉了 `import logging` 在 `validation_pattern` 上的崩溃）。`compile()` 的注释一并改写。
+
+**三、`test_re` 逐条去向**（166 例）：修前（切片 62 记录）ok 127／fail 25／err 12／skip 4 → 第一笔后 126／24／12／4 → 本片完成 **129／21／12／4**。`test_case_helpers` 由 fail 转 ok；`test_ignore_case`、`test_ignore_case_set`、`test_ignore_case_range` 由 fail 转 ok（这是第一笔之后 fail 24→21 的三条）。任务书点名的 IGNORECASE 子测试全部与参考同解：`fullmatch('ß','ẞ',re.I)` True、希腊三写（`θ/ϑ/Θ`、`σ/ς/Σ`）、`İ/I/ı`（`(?i)i` 配 `İ`／`ı` 的参考口径）、`K`／开尔文、`Ω/ω/Ω-ohm`、`Å/Å-ring/Å-angstrom`、`s/ſ`。剩余 21 fail／12 err 与大小写无关：lookahead 捕获、`\Z`／`\z`、递归组、`re.DEBUG` 输出、`repr` flags、错误类型、`test_re_tests` 外部脚本等。
+
+**四、对拍（全部 0 差异）**：
+- `_sre` 四列（`unicode_iscased`／`unicode_tolower`／`ascii_iscased`／`ascii_tolower`）在 2981 个需特殊处理的码位（`lower`／`upper`／`title`／`casefold` 任一与自身不同，或出现在 `_EXTRA_CASES`）上逐行相同；这些码位之外的 iscased 按构造为 False、tolower 为恒等，全码点结论由此闭合。
+- IGNORECASE 与 `str.lower`／`casefold`／`upper` 的一致性表 166 行（含全部多字映射与 `_EXTRA_CASES` 成员，`ß`／`ẞ`、希腊三写、`İ/I/ı`、`K`／开尔文、`Ω/ω`／欧姆、`Å/Å`／埃、`s/ſ`、`σ/ς/Σ`）逐行相同。
+- 专项探针 48 行（字面量、类、否定类、范围、`re.A`、bytes、scoped、`\x41`／`\101`／`\u00df`、回引用、`\d\w\s`、Deseret）逐行相同；`(?u)`／`(?a)`／`(?ai)` scoped 7 行相同。
+
+**五、回归六套**（最终二进制，口径与切片 62 相同；`test_bytes` 用 `/tmp/m5_59/run_bytes.py` 的 `_testlimitedcapi` 垫片，其余用 `/tmp/m5_58/run_test2.py`）：`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_str` 139／119／2／11／7、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_socket` 749／198／8／24／519——六项与基线逐项相同，无回归。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+
+**六、提交**：`_sre` 一族与 `test_case_helpers` 一笔，`re.IGNORECASE` 重写一笔，本文件与 `PLAN.md` 一笔。

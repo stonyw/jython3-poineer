@@ -651,6 +651,18 @@ tuple／str／bytes 的数值可以靠抄 CPython 的 C 结构常数“算”出
 
 **七、门禁与提交**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：代码一笔（导出计数、bytes-like 入口、`bytes(bytearray)` 与 partition 的两种半），本文件与 `PLAN-progress.md` 一笔。
 
+### 3.20 M5 切片 63：`re` 的大小写折叠与 cased 判定接到自己的表上（2026-11-16）
+
+**一、`_sre` 一族按参考判据改掉**。`UnicodeCase` 追加三张由参考 3.14.10 全码点实测生成的表：`SimpleLower` 1460 键（`_sre.unicode_tolower` 的像，`İ`→`i`；不是 JDK 的 `Character.toLowerCase`）、`SreCased`（扁平 inclusive 区间对，来自 `_sre.unicode_iscased`）、`ExtraCases`（`re._casefix._EXTRA_CASES`，50 键，`0x69→0x131`、`0x73→0x17f`、`0x3c2↔0x3c3`、`0xfb05↔0xfb06` 等）。`SreModule.unicode_tolower` 走 `simpleLower`，`unicode_iscased` 走 `sreCased`——判据是「simple lower 或 simple upper 与自身不同」，所以 `ª`／`º`／`ĸ` 等 Other_Lowercase 不再是 cased（原先 `Character.isLowerCase` 一族把约 95 个码位算错）。3.14 的 `_sre` 只暴露 `unicode_iscased`／`unicode_tolower`／`ascii_iscased`／`ascii_tolower`，**没有 `unicode_isalpha`**；`str.title` 用的 Unicode `Cased` 与 `_sre` 的 iscased 是两套定义，仍分表存放。
+
+**二、`re.IGNORECASE` 不再借 Java 的折叠**。`SreRegex.compile` 不再传 `CASE_INSENSITIVE|UNICODE_CASE`（Java 的折叠是单向的，`ß` 模式配不上 `ẞ`），改由翻译器按参考 `_compiler.py` 的 `SRE_FLAG_IGNORECASE` 在编译期展开：cased 字面量 `c` 译成前像类 `{t : simple_lower(t) ∈ {simple_lower(c)} ∪ extras(simple_lower(c))}`；字符类逐元素 `fixup`（lower）后取前像，范围取 `lower_image([a,b]) ∪ extras` 的前像；否定类取补集；类别（`\d`／`\w`／`\s`）在 simple lower 下不变，原样保留；ASCII 模式用 `ascii_lower` 且无 extras。`\x`／`\u`／`\U`／`\N`／八进制转义同走这条折叠，`(?i:…)`／`(?-i:…)` 只改翻译器状态；唯一仍借 Java 的是回引用，写成 `(?iu:\k<gN>)`（bytes 为 `(?i:…)`）。`*`／`+`／`?`／`|` 这类共享语法在折叠模式下按操作符原样输出，集合内容一律写成 `\x{…}` 或显式类，避免 Java 的元字符与集合交并语义介入。
+
+**三、`test_re` 逐条去向**（166 例）：修前 ok 127／fail 25／err 12／skip 4（切片 62 记录）→ 第一笔后 126／24／12／4 → 本片完成 **129／21／12／4**（合计 166）。`test_case_helpers` 由 fail 转 ok（`_sre.unicode_iscased` 对 `ª`／`º`／`ĸ` 与 0..0x1000 全部码位、Deseret、`İ` 的期望一致）；`test_ignore_case`、`test_ignore_case_set`、`test_ignore_case_range` 由 fail 转 ok。剩余 21 fail／12 err 均与大小写无关：Java 引擎语义（lookahead 捕获、`\Z` 与 `\z`、递归组、`re.DEBUG` 输出）、`repr` 的 flags、错误类型、`test_re_tests` 的外部脚本等。
+
+**四、语料对拍**（与参考 3.14.10 逐字节 `diff`，均 0 行）：①`_sre` 表在 2981 个需特殊处理的码位（`lower`／`upper`／`title`／`casefold` 任一与自身不同，或出现在 `_EXTRA_CASES`）上四列（`unicode_iscased`／`unicode_tolower`／`ascii_iscased`／`ascii_tolower`）全同；表外码位按构造即恒等/False。②IGNORECASE 与 `str.lower`／`casefold`／`upper` 的一致性表 166 行（含全部多字映射与 `_EXTRA_CASES` 成员，`ß`／`ẞ`、希腊三写、`İ/I/ı`、`K`／开尔文、`Ω/ω`／欧姆、`Å/Å`／埃、`s/ſ`、`σ/ς/Σ`）全同。③专项探针 48 行（字面量、类、否定类、范围、`re.A`、bytes、scoped、转义、回引用、类别、Deseret）全同；`(?u)`／`(?a)`／`(?ai)` 的 scoped 行为 7 行全同。
+
+**五、回归六套与门禁**（最终二进制）：`test_bytes` 325／298／6／8／13、`test_io` 675／515／82／58／20、`test_str` 139／119／2／11／7、`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_socket` 749／198／8／24／519——六项与基线逐项相同，无回归。`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：`_sre` 一族一笔，`re.IGNORECASE` 一笔，本文件与 `PLAN-progress.md` 一笔。
+
 ### 3.19 M5 切片 62：Unicode 完整大小写映射（SpecialCasing 全表）（2026-11-16）
 
 **一、表从参考落地**。新增 `runtime/src/main/java/org/python/core/UnicodeCase.java`，四张完整映射表由参考 3.14.10 逐码点实测生成：`lower` 1460 键（1 个多字）、`upper` 1552（102 个多字，`ß`→`SS`）、`title` 1479（48 个多字，`Ǆ`→`ǅ`）、`fold` 1557（104 个多字，`ﬁ`→`fi`）。表外的码位映射到自身，因此不依赖运行 JDK 的 Unicode 版本（toolchain Java 21＝Unicode 15，参考 Unicode 16）。同文件另带四张实测属性区间：`Cased` 4578 个码位／159 段、`Case_Ignorable` 2749／452、`Uppercase` 1978／656、`Lowercase` 2569／675。
