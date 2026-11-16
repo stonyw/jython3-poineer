@@ -55,7 +55,7 @@ final class SreModule {
                 (args, kwNames) -> PyBool.of(iscased(codePoint("unicode_iscased", args, kwNames)))));
         module.set("unicode_tolower", new PyNativeFunction("unicode_tolower",
                 (args, kwNames) -> PyInt.of(
-                        Character.toLowerCase(codePoint("unicode_tolower", args, kwNames)))));
+                        UnicodeCase.simpleLower(codePoint("unicode_tolower", args, kwNames)))));
         module.set("ascii_iscased", new PyNativeFunction("ascii_iscased",
                 (args, kwNames) -> PyBool.of(asciiCased(codePoint("ascii_iscased", args, kwNames)))));
         module.set("ascii_tolower", new PyNativeFunction("ascii_tolower",
@@ -69,10 +69,16 @@ final class SreModule {
         return Numbers.asIndex(args[0]).intValue();
     }
 
+    /**
+     * Whether a code point is cased, in the sense {@code sre.c} uses.
+     *
+     * <p>This is not Unicode's {@code Cased} property and not Java's
+     * {@code isLowerCase}/{@code isUpperCase} pair: the reference asks whether the simple lowercase
+     * or the simple uppercase mapping differs from the character itself, so {@code 'ª'} (whose only
+     * case relation is Other_Lowercase) is not cased while {@code 'ß'} is.
+     */
     private static boolean iscased(int codePoint) {
-        return Character.isUpperCase(codePoint)
-                || Character.isLowerCase(codePoint)
-                || Character.isTitleCase(codePoint);
+        return UnicodeCase.sreCased(codePoint);
     }
 
     private static boolean asciiCased(int codePoint) {
