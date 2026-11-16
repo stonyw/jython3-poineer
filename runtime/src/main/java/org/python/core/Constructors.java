@@ -225,6 +225,9 @@ final class Constructors {
         if (type == PyType.JSON_SCANNER) {
             return JsonModule.makeScanner(args, keywordNames);
         }
+        if (type == PyType.JSON_ENCODER) {
+            return JsonModule.makeEncoder(args, keywordNames);
+        }
         if (type == PyType.STRUCT) {
             return StructModule.compile(args, keywordNames);
         }

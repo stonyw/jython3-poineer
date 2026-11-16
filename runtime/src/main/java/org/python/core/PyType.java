@@ -946,6 +946,18 @@ public class PyType extends PyObject {
             builtin("Scanner").filedUnder("_json.Scanner").documented("JSON scanner object");
 
     /**
+     * {@code _json.make_encoder}: the type {@code json.encoder} keeps as its {@code _iterencode}.
+     *
+     * <p>Its doc is the signature line the reference generated for it, which is its whole docstring;
+     * {@code __text_signature__} itself is {@code None}. The members stop at {@code skipkeys} — the
+     * encoder keeps {@code allow_nan} privately, so it is not askable.
+     */
+    public static final PyType JSON_ENCODER = builtin("Encoder")
+            .filedUnder("_json.Encoder")
+            .documented("Encoder(markers, default, encoder, indent, key_separator, "
+                    + "item_separator, sort_keys, skipkeys, allow_nan)");
+
+    /**
      * {@code types.CapsuleType}'s sentence, which wraps a C pointer a program cannot open.
      *
      * <p>It carries no argument table, so {@code __text_signature__} is {@code None} and the whole text
