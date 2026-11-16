@@ -143,6 +143,9 @@ public final class PyMemoryView extends PyObject {
         if (value instanceof PyArray array) {
             return exported(array);
         }
+        if (value instanceof PyMmap map) {
+            return exported(map);
+        }
         if (value instanceof PyBytes octets) {
             return basic(octets, octets.size(), true);
         }
@@ -175,6 +178,12 @@ public final class PyMemoryView extends PyObject {
         }
         if (value instanceof PyArray array) {
             return exported(array);
+        }
+        if (value instanceof PyMmap map) {
+            if ((flags & WRITABLE) != 0 && map.viewReadOnly()) {
+                throw Slots.bufferError("Object is not writable.");
+            }
+            return exported(map);
         }
         throw Slots.typeError(
                 "memoryview: a bytes-like object is required, not '%s'",
@@ -215,6 +224,20 @@ public final class PyMemoryView extends PyObject {
         PyMemoryView view = basic(run, run.size(), false);
         view.takeLease(run.lease());
         return view;
+    }
+
+    /**
+     * The basic view an mmap exports: format {@code B}, one octet per element, read-only only under
+     * {@code ACCESS_READ}, and {@code .obj} the map itself.
+     *
+     * <p>The mapping is not pinned by the export — the JVM gives no handle to hold open — so this view
+     * neither counts an export on the map nor gives one back on {@code release}. See
+     * {@code PyMmap#viewLength} for the deviation from CPython's {@code BufferError} on close.
+     */
+    private static PyMemoryView exported(PyMmap map) {
+        int length = map.viewLength();
+        return new PyMemoryView(
+                map, map, 0, "B", 1, new long[] {length}, new long[] {1}, map.viewReadOnly());
     }
 
     /**
@@ -1264,6 +1287,9 @@ public final class PyMemoryView extends PyObject {
         if (exporter instanceof PyArray array) {
             return array.byteAt(index) & 0xff;
         }
+        if (exporter instanceof PyMmap map) {
+            return map.viewOctetAt(index);
+        }
         return ((PyBytes) exporter).byteAt(index) & 0xff;
     }
 
@@ -1271,6 +1297,10 @@ public final class PyMemoryView extends PyObject {
     private void writeOctet(long at, int value) {
         if (exporter instanceof PyArray array) {
             array.setByteAt((int) at, (byte) value);
+            return;
+        }
+        if (exporter instanceof PyMmap map) {
+            map.viewWriteOctet((int) at, (byte) value);
             return;
         }
         ((PyByteArray) exporter).raw()[(int) at] = (byte) value;

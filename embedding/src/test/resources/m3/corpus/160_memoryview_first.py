@@ -114,3 +114,20 @@ for name in ("__new__", "__repr__", "__len__"):
     print("slot", name, repr(member.__text_signature__), repr(member.__doc__))
 for name in filled[3:-1]:
     print("field", name, repr(memoryview.__dict__[name].__doc__))
+
+
+# --- an mmap exports a buffer too ------------------------------------------------------------
+
+import mmap
+
+mapping = mmap.mmap(-1, 4)
+window = memoryview(mapping)
+print("mmap-facts", window.shape, window.strides, window.itemsize, window.format,
+      window.ndim, window.readonly, window.obj is mapping)
+print("mmap-truth", bytes(window))
+window[0] = ord("Z")
+print("mmap-write", bytes(window), mapping[0:1])
+window.release()
+attempt("mmap-released", lambda: window.tobytes())
+mapping.close()
+attempt("mmap-closed", lambda: memoryview(mapping))

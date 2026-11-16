@@ -312,6 +312,39 @@ class PyMmap extends PyObject {
         return out;
     }
 
+    // --- the buffer a memoryview takes --------------------------------------------------
+
+    /**
+     * The length of the buffer {@code memoryview(m)} acquires; a closed map refuses it with the
+     * sentence every other operation on a closed map uses.
+     *
+     * <p>Nothing is pinned by the export: the JVM gives no handle on a mapping to hold open, so a view
+     * that outlives {@code close()} refuses its next read instead of keeping the map alive. CPython
+     * counts the export and refuses the {@code close} with {@code BufferError} instead; the PLAN names
+     * this as a deviation.
+     */
+    int viewLength() {
+        open();
+        return mapLength;
+    }
+
+    /** {@code ACCESS_READ} exports a read-only buffer; the other two modes let a view write through. */
+    boolean viewReadOnly() {
+        return access == ACCESS_READ;
+    }
+
+    /** One octet, for a view's reads. */
+    int viewOctetAt(int index) {
+        open();
+        return octetAt(index);
+    }
+
+    /** One octet, for a view's writes. */
+    void viewWriteOctet(int index, byte value) {
+        open();
+        copyIn(index, new byte[] {value}, 0, 1);
+    }
+
     // --- methods -----------------------------------------------------------------------
 
     static PyObject read(PyObject[] args, String[] kwNames) {
