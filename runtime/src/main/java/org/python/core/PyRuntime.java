@@ -49,7 +49,7 @@ public final class PyRuntime {
                 "_string", "_types", "_weakref", "itertools", "_thread", "atexit", "_imp", "_random",
                 "_struct", "binascii", "zlib", "array", "mmap", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "_multibytecodec", "_codecs_cn", "_codecs_hk", "_codecs_jp",
-                "_codecs_kr", "_codecs_tw", "_codecs_iso2022", "errno", "math", "time", "posix",
+                "_codecs_kr", "_codecs_tw", "_codecs_iso2022", "errno", "math", "time", "posix", "termios",
                 "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
                 "_csv", "_stat", "zxJDBC"};
@@ -338,6 +338,10 @@ public final class PyRuntime {
         // The filesystem and environment calls `os` re-exports, and the one container `collections`
         // cannot import without: `contextlib` imports `deque` from there at module scope.
         PyModule posixModule = PosixModule.newModule();
+        // The terminal line-discipline calls `tty.py` and `pty.py` are written against. The JVM has no
+        // line discipline, so the module answers the errno the reference's own ioctl gives here and
+        // refuses the terminal itself by name: see `TermiosModule`.
+        PyModule termiosModule = TermiosModule.newModule();
         // The C half of `stat`: the constants `stat.py` falls back on, whose macOS values differ from
         // the Python ones, and `filemode`, which the fallback spells in Python. `stat.py` imports it
         // last with `from _stat import *`, so these values win when the module exists.
@@ -415,6 +419,7 @@ public final class PyRuntime {
         modules.put(PyStr.interned("_contextvars"), contextvarsModule);
         modules.put(PyStr.interned("contextvars"), contextvarsWrapper);
         modules.put(PyStr.interned("posix"), posixModule);
+        modules.put(PyStr.interned("termios"), termiosModule);
         modules.put(PyStr.interned("_stat"), statModule);
         modules.put(PyStr.interned("_collections"), collectionsModule);
         modules.put(PyStr.interned("gc"), gcModule);
