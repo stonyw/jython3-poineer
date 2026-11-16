@@ -1120,13 +1120,15 @@ final class Classes {
 
     /**
      * The compiled-in types whose values carry their payload after the header, so their instance size
-     * grows with the value's contents: {@code int}'s digits, a string's code points, the bytes of
-     * {@code bytes}, and a tuple's item pointers. {@code bytearray} is not one of them — its octets live
-     * in a separate buffer — which is why it may be extended with slots.
+     * grows with the value's contents: {@code int}'s digits, the bytes of {@code bytes}, and a tuple's
+     * item pointers. {@code str} is <em>not</em> one of them: 3.14's compact unicode keeps
+     * {@code PyUnicode_Type.tp_itemsize == 0} and sizes itself through {@code tp_alloc}, which is why
+     * {@code class _Line(str): __slots__ = (...)} is accepted (gh-118767-era layout). {@code bytearray}
+     * is not one either — its octets live in a separate buffer — which is why it may be extended with
+     * slots.
      */
     private static boolean carriesItems(PyType type) {
         return type == PyType.INT
-                || type == PyType.STR
                 || type == PyType.BYTES
                 || type == PyType.TUPLE;
     }
