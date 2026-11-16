@@ -1311,3 +1311,86 @@ ok↔err（切片 54 已记）。`test_str` 的改善属切片 64，不是本片
 
 **五、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**
 （无功能代码改动）。
+
+## M5 切片 69 明细（清回归与小项：`configparser`、导入机三名、`site`／`ensurepip`；2026-11-16）
+
+口径同切片 68：`STD=/opt/homebrew/Cellar/python@3.14/3.14.10/Frameworks/Python.framework/Versions/3.14/lib/python3.14`；
+判据 `env PYTHONPATH=$STD:$PWD jy3 /tmp/m5_58/run_test2.py test.test_xxx`。
+
+**一、`configparser` 回归（`0ff0779`）**
+
+修前：`configparser TypeError configparser.py:576 | nonempty __slots__ not supported for subtype of 'str'`。
+修后：`configparser OK`；`test_configparser` jy3 **383／378／0／0／5**，CPython 3.14.10 `run=383 skipped=5
+Result: SUCCESS`；25 行语料 `cmp` **BYTE-IDENTICAL**。
+
+`Classes.carriesItems` 去掉 `PyType.STR`（参考 `PyUnicode_Type.tp_itemsize == 0`）。同类普查：`str`／
+`float`／`complex`／`bytearray`／`list`／`dict`／`set`／`frozenset`／`array.array` 参考 =0 且接受（jy3 同）；
+`bytes`／`tuple`／`int` 非零且拒（jy3 同）；`bool`／`memoryview` 非零但非基类（两边同句拒）；`type` =
+`sizeof(PyMemberDef)`（`typeobject.c:6752`）拒 —— **jy3 修前误放行，第二处错判，单独一笔**补 `PyType.TYPE`
+后与参考同句 `nonempty __slots__ not supported for subtype of 'type'`。`test_builtin` 147／−663／1／801／8、
+`test_descr` 163／147／4／4／8 均与切片 68 逐数不变。
+
+**二、导入机三名（`18b156e`）**
+
+修前：`_frozen_importlib`／`_frozen_importlib_external` → `No module named '_frozen_importlib'`；
+`pydoc` → `pydoc.py:59 | No module named 'importlib._bootstrap'`。修后三者 `OK`，`/tmp/scan120.py`
+= **TOTAL 53 of 53**（52／53 → 53／53）。
+
+形态照参考：`importlib._bootstrap` 与 `_frozen_importlib` 同一对象（`__name__='importlib._bootstrap'`、
+`__spec__.name='_frozen_importlib'`、`__package__='importlib'`、loader `FrozenImporter`、origin `'frozen'`）；
+`importlib._bootstrap_external` 与 `_frozen_importlib_external` 同理。`ImportlibBootstrap` 交回 `sys`／`_imp`／
+`_thread`／`_weakref`／`_bootstrap_external`／`BuiltinImporter`／`FrozenImporter`／`ModuleSpec`／
+`module_from_spec`／`spec_from_loader`，以及 `pydoc` 用到的 `_load` 与 `_load_unlocked`／`_exec`／
+`_load_backward_compatible`／`_find_spec`／`_find_and_load`／`_find_and_load_unlocked`／`_gcd_import`／
+`_sanity_check`／`_calc___package__`／`_resolve_name`／`_handle_fromlist`／`_call_with_frames_removed`／
+`_new_module`。具名缺口：`_ModuleLock`／`_get_module_lock`／`_lock_unlock_module`、`_setup`、`_install`／
+`_install_external_importers`、`_bootstrap_inner`、`_bootstrap_external` 的 C 加速钩子。23 个属性与身份
+输出与参考逐项一致；唯一行为差异 `pydoc.locate('os.path')` 参考 `(frozen)`、jy3 `posixpath` 源文件。
+
+**三、`site` 与 `ensurepip`（`852766a`）**
+
+修前：`site AttributeError site.py:450 | module 'sys' has no attribute 'copyright'`；`ensurepip ImportError
+__init__.py:7 | cannot import name 'resources' from 'importlib' (unknown location)`。修后两者与
+`importlib.resources` 均 `OK`。
+
+1. `sys.copyright` 照参考 `repr` 实测原文补齐（四段，无尾随换行）。
+2. `PyRuntime.importlibSearchPath()` 扫 `sys.path` 找真正含 `importlib/__init__.py` 的目录；
+   `jy3.runFile` 改先 `start(...)` 再 `setArgv(...)`（原顺序让 `importlib.__path__` 用默认空路径）。
+3. `site` 语料 3 处具名差异：①`USER_BASE`／`USER_SITE` = `~/.local/...` vs 参考 `~/Library/Python/3.14/...`
+   （`sys._framework` 为空）；②`PREFIXES` = `['/opt/homebrew','','']` vs 参考三项真实路径，
+   `getsitepackages()` 1 条 vs 2 条（`sys.prefix`／`exec_prefix` 空串；`PREFIXES[0]` 与用户态不一致，
+   根因未定位，属安装元数据）；③`ensurepip.version()` `FileNotFoundError: Can't open orphan path` vs `'26.2.2'`。
+4. `ensurepip.version()` 链条：`importlib.resources` → `_adapters.SpecPath` 无 path → `CompatibilityFiles`／
+   `OrphanPath`（loader 无 `get_resource_reader`）；参考路径需 `importlib.readers.FileReader` ←
+   `importlib.abc` ← `_bootstrap_external._LoaderBasics`／`FileLoader`／`SourceLoader`／`PathFinder`，
+   `importlib.abc` 实测仍断在 `_bootstrap_external.PathFinder`。具名不补。
+
+**四、普查（297 名）**：**224 可导入／71 不可／2 跳过**（切片 68：218／77／2）。新增 6：`_frozen_importlib`、
+`_frozen_importlib_external`、`configparser`、`ensurepip`、`pydoc`、`site`；无新增失败。
+输出 `/tmp/m5_69/imports_final.out`。
+
+**五、14 套复测**：
+
+| 套件 | ran | ok | fail | err | skip | 与切片 68 |
+|---|---|---|---|---|---|---|
+| test_io | 675 | 515 | 82 | 58 | 20 | 同 |
+| test_bytes | 325 | 292 | 6 | 14 | 13 | 记 298／6／8／13；见下口径差 |
+| test_str | 139 | 120 | 2 | 10 | 7 | 同 |
+| test_memoryview | 171 | 124 | 0 | 27 | 20 | 同 |
+| test_array | 893 | 809 | 14 | 42 | 28 | 同 |
+| test_re | 166 | 129 | 21 | 12 | 4 | 同 |
+| test_csv | 134 | 129 | 0 | 1 | 4 | 同 |
+| test_tarfile | 768 | 411 | 23 | 1 | 333 | 同 |
+| test_socket | 749 | 198 | 8 | 24 | 519 | 同 |
+| test_ssl | 207 | 100 | 42 | 30 | 35 | 记 101／42／30／34；ok−1／skip+1（SNI race） |
+| test_os | 385 | 169 | 13 | 11 | 192 | 同 |
+| test_descr | 163 | 147 | 4 | 4 | 8 | 同 |
+| test_class | 42 | 39 | 1 | 0 | 2 | 同 |
+| test_types | 128 | 124 | 0 | 2 | 2 | 同 |
+
+`test_bytes` 6 例差额全为 `_testlimitedcapi` 桩缺 `sequence_getitem`／`sequence_setitem`／`sequence_delitem`
+的 subTest；带桩 `run_test3.py` 复测的 14 err 与 `/tmp/m5_58/test_bytes.log`（15:00）的
+`failures=6, errors=14, skipped=13` 逐条相同，切片 68 的 8 err 属另一次口径，不是回归。
+
+**六、门禁**：`./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。
+提交：`0ff0779`、`type` 槽位一笔、`18b156e`、`852766a`、PLAN 双文件一笔。
