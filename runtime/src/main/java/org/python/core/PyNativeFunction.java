@@ -93,6 +93,16 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     private final PyType declaring;
 
     /**
+     * The row's {@code PyMethodDef} flags, which is the second way CPython builds a
+     * {@code __text_signature__}: a body registered {@code METH_O} and documented with a sentence
+     * rather than a clinic table still answers {@code ($self, object, /)}.
+     *
+     * <p>Zero for a body whose arguments arrive as a vectorcall, because a row with neither
+     * {@code METH_NOARGS} nor {@code METH_O} has no table to invent.
+     */
+    private final int flags;
+
+    /**
      * The module whose dictionary holds this function, or {@code null} for a member of a type.
      *
      * <p>CPython's {@code PyModule_AddFunctions} makes the module {@code m_self}, and a {@code METH_O}
@@ -110,7 +120,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
     private PyObject module;
 
     public PyNativeFunction(String name, Body body) {
-        this(name, body, null, null, null, false, null, false);
+        this(name, body, null, null, null, false, null, false, 0);
     }
 
     private PyNativeFunction(
@@ -121,7 +131,8 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
             PyType declaredBy,
             boolean onType,
             PyType declaring,
-            boolean method) {
+            boolean method,
+            int flags) {
         super(
                 onType && receiver == null
                         ? PyType.CLASS_METHOD_DESCRIPTOR
@@ -134,6 +145,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
         this.onType = onType;
         this.declaring = declaring;
         this.method = method;
+        this.flags = flags;
     }
 
     /**
@@ -144,7 +156,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * module function or a class method and is filed by the factory below or by {@link Members}.
      */
     public static PyNativeFunction method(String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, null, false, null, true);
+        return new PyNativeFunction(name, body, null, null, null, false, null, true, 0);
     }
 
     /**
@@ -154,7 +166,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * {@code bool.from_bytes} are two objects naming two different classes over one body.
      */
     static PyNativeFunction onType(PyType owner, String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, null, true, owner, false);
+        return new PyNativeFunction(name, body, null, null, null, true, owner, false, 0);
     }
 
     /**
@@ -165,17 +177,28 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
      * that names it.
      */
     static PyNativeFunction declaredBy(PyType owner, String name, Body body) {
-        return new PyNativeFunction(name, body, null, null, owner, false, null, false);
+        return new PyNativeFunction(name, body, null, null, owner, false, null, false, 0);
     }
 
     /** This method read through {@code owner}, with the receiver already attached to it. */
     PyNativeFunction withReceiver(PyObject owner) {
-        return keeping(new PyNativeFunction(name, body, owner, doc, declaredBy, onType, declaring, method));
+        return keeping(new PyNativeFunction(name, body, owner, doc, declaredBy, onType, declaring, method, flags));
     }
 
     /** This function answering {@code __doc__} with {@code text} rather than with {@code None}. */
     PyNativeFunction documented(String text) {
-        return keeping(new PyNativeFunction(name, body, receiver, text, declaredBy, onType, declaring, method));
+        return keeping(new PyNativeFunction(name, body, receiver, text, declaredBy, onType, declaring, method, flags));
+    }
+
+    /**
+     * This function carrying the {@code PyMethodDef} flags its row was registered with.
+     *
+     * <p>Only {@code __text_signature__} reads them, and only for a row whose sentence has no clinic
+     * table above it; the call itself takes its arguments the way the body always did.
+     */
+    PyNativeFunction filedWith(int rowFlags) {
+        return keeping(
+                new PyNativeFunction(name, body, receiver, doc, declaredBy, onType, declaring, method, rowFlags));
     }
 
     /**
@@ -351,7 +374,7 @@ public final class PyNativeFunction extends PyObject implements Descriptors.Prot
             // built-in's sentence, so the table's `__doc__` and its `__text_signature__` agree whatever
             // sentence was transcribed and whichever half of it a person asks for.
             case "__doc__" -> docOf(name, doc);
-            case "__text_signature__" -> signatureOf(name, doc);
+            case "__text_signature__" -> signatureOf(name, doc, flags);
             // `m_module`: the module whose table files this function sets it, and every method a read
             // makes — bound or declared by a type — answers None, as CPython's methodobject.c does.
             case "__module__" -> module != null ? module : PyNone.INSTANCE;
