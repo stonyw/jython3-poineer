@@ -4,6 +4,8 @@ import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.math.BigInteger;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -1187,6 +1189,32 @@ public final class PyRuntime {
         return load(spec);
     }
 
+    /**
+     * The directories {@code importlib.__path__} carries: the standard library's own {@code importlib}
+     * package, so its submodules this runtime does not build — {@code importlib.abc},
+     * {@code importlib.resources} — are found on disk.
+     *
+     * <p>The reference's {@code importlib} is a package executed from {@code importlib/__init__.py},
+     * and its {@code __path__} is that one directory. This runtime builds the package object instead,
+     * so the directory has to be worked out: every {@code sys.path} entry that holds an
+     * {@code importlib/__init__.py}. When none does, the relative spelling {@code ["importlib"]} is
+     * kept and the submodules stay missing, which is the honest answer for a run with no standard
+     * library.
+     */
+    static PyList importlibSearchPath() {
+        List<PyObject> found = new ArrayList<>();
+        for (String directory : sysPath) {
+            Path root = Path.of(directory.isEmpty() ? "." : directory, "importlib");
+            if (Files.isRegularFile(root.resolve("__init__.py"))) {
+                found.add(PyStr.of(root.toString()));
+            }
+        }
+        if (found.isEmpty()) {
+            found.add(PyStr.of("importlib"));
+        }
+        return PyList.of(found.toArray(new PyObject[0]));
+    }
+
     /** Install a finder, in order of preference: the first that answers wins. */
     public static synchronized void addModuleFinder(ModuleFinder finder) {
         startup();
@@ -1917,6 +1945,26 @@ public final class PyRuntime {
         return os;
     }
 
+    /**
+     * The text {@code sys.copyright} carries, transcribed from the reference's {@code COPYRIGHT}.
+     *
+     * <p>{@code site.setcopyright} hands this string to {@code builtins.copyright}, whose
+     * {@code _Printer} writes it out verbatim; 3.14.10's own {@code repr(sys.copyright)} is the source
+     * of these four paragraphs, with no trailing newline.
+     */
+    private static final String COPYRIGHT =
+            "Copyright (c) 2001 Python Software Foundation.\n"
+                    + "All Rights Reserved.\n"
+                    + "\n"
+                    + "Copyright (c) 2000 BeOpen.com.\n"
+                    + "All Rights Reserved.\n"
+                    + "\n"
+                    + "Copyright (c) 1995-2001 Corporation for National Research Initiatives.\n"
+                    + "All Rights Reserved.\n"
+                    + "\n"
+                    + "Copyright (c) 1991-1995 Stichting Mathematisch Centrum, Amsterdam.\n"
+                    + "All Rights Reserved.";
+
     private static PyModule buildSys() {
         PyModule sys = new PyModule("sys");
         // COPY_SYS_ATTR gives the three standard files a second name each, and the second name is the
@@ -1951,6 +1999,9 @@ public final class PyRuntime {
         // own string always carries one, and without it `platform.python_implementation()` raises, which
         // `wsgiref.simple_server` — imported by `test.test_asyncio.utils` — hits at module scope.
         sys.set("version", PyStr.of(pythonVersion() + " (Jython3 on the JVM) [Java]"));
+        // `site.setcopyright` copies this into `builtins.copyright` at import time, which is what
+        // `site` reads before it can finish and what `copyright` prints.
+        sys.set("copyright", PyStr.of(COPYRIGHT));
         sys.set("executable", PyStr.of(executable()));
         sys.set("prefix", PyStr.of(System.getProperty("jy3.prefix", "")));
         sys.set("base_prefix", PyStr.of(System.getProperty("jy3.prefix", "")));

@@ -30,9 +30,10 @@ final class Importlib {
         PyModule module = new PyModule("importlib");
         module.set("__doc__", PyStr.of("A pure Python implementation of import."));
         module.set("__package__", PyStr.of("importlib"));
-        // A package is a name with a search path; this one's `__path__` is never searched, because
-        // every submodule it has is built here rather than found on disk.
-        PyList path = PyList.of(PyStr.of("importlib"));
+        // A package is a name with a search path; the reference's is the standard library's own
+        // `importlib` directory, because its submodules live in files. This runtime answers three of
+        // them itself and leaves `__path__` pointing at the directory for the rest.
+        PyList path = PyRuntime.importlibSearchPath();
         module.set("__path__", path);
         module.set("__loader__", BuiltinImporter.type());
         PyModuleSpec spec = PyModuleSpec.builtin("importlib", BuiltinImporter.type());

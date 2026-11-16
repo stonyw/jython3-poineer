@@ -406,8 +406,12 @@ public final class jy3 {
                     + "': [Errno 2] No such file or directory\n");
             return USAGE_ERROR;
         }
-        PyRuntime.setArgv(operands.get(0), operands.subList(1, operands.size()));
+        // After `start`, like the other three program forms: `setArgv` brings the runtime up, and a
+        // startup that happens before `setSysPath` builds `sys.path` from the empty default — which
+        // is what a script run would otherwise get for `importlib.__path__` and every other name
+        // derived from the search path.
         start(importPath(scriptDirectory(script)));
+        PyRuntime.setArgv(operands.get(0), operands.subList(1, operands.size()));
         Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(script, optimize);
         int status = execute(compiled.code(), compiled.fileName());
         return interactive ? interact(optimize, status) : status;
