@@ -40,6 +40,12 @@ final class PyZxCursor extends PyIterator {
                 .add("__enter__", "The cursor itself.", (self, args, kwNames) -> self)
                 .add("__next__", "The next row; StopIteration at the end.", (self, args, kwNames) -> ((PyZxCursor) self).stepped(args, kwNames))
                 .add("next", "Jython 2's name for __next__.", (self, args, kwNames) -> ((PyZxCursor) self).stepped(args, kwNames))
+                .add("scroll", "scroll(value[, mode='relative']) -> None.", (self, args, kwNames) -> ((PyZxCursor) self).scroll(args, kwNames))
+                .add("nextset", "nextset() is not supported by this layer.", (self, args, kwNames) -> ((PyZxCursor) self).nextset(args, kwNames))
+                .add("prepare", "prepare() is not supported by this layer.", (self, args, kwNames) -> ((PyZxCursor) self).prepare(args, kwNames))
+                .add("callproc", "callproc(name[, params[, bindings[, maxRows]]]) -> None.", (self, args, kwNames) -> ((PyZxCursor) self).callproc(args, kwNames))
+                .add("setinputsizes", "A no-op, as DB-API 2.0 allows.", (self, args, kwNames) -> ((PyZxCursor) self).setinputsizes(args, kwNames))
+                .add("setoutputsize", "A no-op, as DB-API 2.0 allows.", (self, args, kwNames) -> ((PyZxCursor) self).setoutputsize(args, kwNames))
                 .add(
                         "__exit__",
                         "Close the cursor.",
@@ -142,6 +148,105 @@ final class PyZxCursor extends PyIterator {
         for (PyObject row = params.nextOrNull(); row != null; row = params.nextOrNull()) {
             executeOnce(sql, row, 0);
         }
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * Jython 2's {@code StaticFetch.scroll}: move the read position within the buffered rows.
+     *
+     * <p>The modes and both messages are the reference's own — {@code relative} counts from where the
+     * cursor is, {@code absolute} from the first row, an unknown mode is a {@code ProgrammingError},
+     * and a position outside the rows is an {@code IndexError}.
+     */
+    private PyObject scroll(PyObject[] args, String[] kwNames) {
+        int positional = ZxJdbcModule.positional(args, kwNames);
+        noKeywords("scroll", kwNames);
+        ZxJdbcModule.arity("scroll", positional, 1, 2);
+        ensureOpen();
+        int value = ZxJdbcModule.integer(args[0]);
+        String mode = positional > 1 ? Slots.str(args[1]) : "relative";
+        int target;
+        if (mode.equals("relative")) {
+            target = position + value;
+        } else if (mode.equals("absolute")) {
+            target = value;
+        } else {
+            throw PyRaise.raise(
+                    ZxJdbcModule.PROGRAMMING_ERROR, "invalid cursor scroll mode [" + mode + "]");
+        }
+        int count = rows == null ? 0 : rows.size();
+        if (target < 0 || target >= count) {
+            throw PyRaise.of(
+                    new PyBaseException(
+                            ExceptionTypes.INDEX_ERROR,
+                            new PyObject[] {PyStr.of("cursor index [" + target + "] out of range")}));
+        }
+        position = target;
+        return PyNone.INSTANCE;
+    }
+
+    /**
+     * {@code nextset()} is refused rather than answering {@code None}.
+     *
+     * <p>Jython 2's static fetch can hand out a second result set when the driver produced one; this
+     * layer reads and closes the first set inside {@code execute}, so it cannot reach a later one, and
+     * saying {@code None} would claim there is none. DB-API 2.0 files that as {@code NotSupportedError}.
+     */
+    private PyObject nextset(PyObject[] args, String[] kwNames) {
+        ZxJdbcModule.arity("nextset", ZxJdbcModule.positional(args, kwNames), 0, 0);
+        ensureOpen();
+        throw PyRaise.raise(
+                ZxJdbcModule.NOT_SUPPORTED_ERROR,
+                "nextset() is not supported: execute() reads and closes the first result set,"
+                        + " so a later one cannot be reached");
+    }
+
+    /** Jython 2's {@code prepare()} hand back a statement object; this layer has none to hand back. */
+    private PyObject prepare(PyObject[] args, String[] kwNames) {
+        ZxJdbcModule.arity("prepare", ZxJdbcModule.positional(args, kwNames), 1, 1);
+        ensureOpen();
+        throw PyRaise.raise(
+                ZxJdbcModule.NOT_SUPPORTED_ERROR,
+                "prepare() is not supported: pass the SQL and its parameters to execute()");
+    }
+
+    /**
+     * Jython 2's {@code callproc(name[, params[, bindings[, maxRows]]])}.
+     *
+     * <p>The driver is asked first, as the reference does with {@code DatabaseMetaData}: a database
+     * without stored procedures answers {@code NotSupportedError("stored procedures not implemented
+     * in db")}. A driver that has them would still need a {@code CallableStatement} binding for output
+     * parameters, which this layer does not build, so that case is refused in its own words too.
+     */
+    private PyObject callproc(PyObject[] args, String[] kwNames) {
+        int positional = ZxJdbcModule.positional(args, kwNames);
+        noKeywords("callproc", kwNames);
+        ZxJdbcModule.arity("callproc", positional, 1, 4);
+        ensureOpen();
+        try {
+            if (!owner.jdbc().getMetaData().supportsStoredProcedures()) {
+                throw PyRaise.raise(
+                        ZxJdbcModule.NOT_SUPPORTED_ERROR, "stored procedures not implemented in db");
+            }
+        } catch (SQLException failure) {
+            throw ZxJdbcModule.sqlException(failure);
+        }
+        throw PyRaise.raise(
+                ZxJdbcModule.NOT_SUPPORTED_ERROR,
+                "callproc() is not supported: this layer does not bind CallableStatement output parameters");
+    }
+
+    /** DB-API 2.0 says implementations are free to do nothing; Jython 2 does nothing too. */
+    private PyObject setinputsizes(PyObject[] args, String[] kwNames) {
+        ZxJdbcModule.arity("setinputsizes", ZxJdbcModule.positional(args, kwNames), 1, 1);
+        ensureOpen();
+        return PyNone.INSTANCE;
+    }
+
+    /** As {@link #setinputsizes}: an advisory call that DB-API 2.0 lets an implementation ignore. */
+    private PyObject setoutputsize(PyObject[] args, String[] kwNames) {
+        ZxJdbcModule.arity("setoutputsize", ZxJdbcModule.positional(args, kwNames), 1, 2);
+        ensureOpen();
         return PyNone.INSTANCE;
     }
 

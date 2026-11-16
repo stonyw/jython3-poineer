@@ -526,13 +526,16 @@ final class ZxJdbcModule {
      */
     private static void addSqlTypes(PyModule module) {
         PyDict sqltype = PyDict.empty();
+        java.util.Map<String, PyObject> filed = new java.util.HashMap<>();
         for (Field field : Types.class.getFields()) {
             if (constant(field)) {
                 continue;
             }
             try {
                 int value = field.getInt(null);
-                module.set(field.getName(), PyInt.of(value));
+                PyObject constant = new PyDBApiType(value);
+                module.set(field.getName(), constant);
+                filed.put(field.getName(), constant);
                 sqltype.put(PyInt.of(value), PyStr.of(field.getName()));
             } catch (IllegalAccessException ignored) {
                 // A public field of a public class is readable; nothing to report if it is not.
@@ -548,10 +551,10 @@ final class ZxJdbcModule {
                 // As above.
             }
         }
-        module.set("ROWID", PyInt.of(Types.OTHER));
-        module.set("NUMBER", PyInt.of(Types.NUMERIC));
-        module.set("STRING", PyInt.of(Types.VARCHAR));
-        module.set("DATETIME", PyInt.of(Types.TIMESTAMP));
+        module.set("ROWID", filed.get("OTHER"));
+        module.set("NUMBER", filed.get("NUMERIC"));
+        module.set("STRING", filed.get("VARCHAR"));
+        module.set("DATETIME", filed.get("TIMESTAMP"));
         module.set("sqltype", sqltype);
     }
 
