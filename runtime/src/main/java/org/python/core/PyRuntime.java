@@ -48,7 +48,7 @@ public final class PyRuntime {
                 "_struct", "binascii", "zlib", "array", "mmap", "_hashlib", "_md5", "_sha1", "_sha2", "_sha3",
                 "_blake2", "_codecs", "errno", "math", "time", "posix", "_collections",
                 "unicodedata", "resource", "_typing", "_testinternalcapi", "_warnings", "_operator",
-                "_csv", "_stat"};
+                "_csv", "_stat", "zxJDBC"};
 
     /** Whether {@code name} is one of the modules this runtime builds itself. */
     static boolean isBuiltinModuleName(String name) {
@@ -876,6 +876,11 @@ public final class PyRuntime {
         // filters are `re` patterns, and `re` is Python that cannot be imported at startup.
         if (name.equals("_warnings")) {
             return keep(WarningsModule.install(), name);
+        }
+        // `zxJDBC` is built on first import: its type codes come from the JDK's `java.sql` classes, and
+        // its two value types are registered with `Members` as they are built.
+        if (name.equals("zxJDBC")) {
+            return keep(ZxJdbcModule.newModule(), name);
         }
         return null;
     }
