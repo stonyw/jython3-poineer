@@ -89,6 +89,20 @@ public final class PyMemoryView extends PyObject {
     /** The views {@code __buffer__} exported from this one and that are still alive. */
     private final List<PyMemoryView> exports = new ArrayList<>();
 
+    /** Whether {@link #storedHash} holds a hash; CPython keeps it in the header and answers it forever. */
+    private boolean hashComputed;
+
+    /** The hash the first successful {@code hash(view)} computed, kept past release. */
+    private long storedHash;
+
+    /**
+     * Borrows in flight that are not views: the reference's temporary bump of {@code exports} around
+     * {@code hash} and {@code hex}. The exporter's {@code __hash__} or a separator's {@code __len__}
+     * runs while the buffer is being read, and a {@code release()} it makes there must be refused with
+     * {@code BufferError} rather than let the run be freed underneath the reader.
+     */
+    private int transientExports;
+
     private PyMemoryView(
             PyObject exporter,
             PyObject obj,
@@ -486,7 +500,7 @@ public final class PyMemoryView extends PyObject {
      * safe to repeat where the other reads are not.
      */
     void release() {
-        int live = 0;
+        int live = transientExports;
         for (PyMemoryView exported : exports) {
             if (!exported.released) {
                 live++;
@@ -604,7 +618,15 @@ public final class PyMemoryView extends PyObject {
      */
     PyStr hex(PyObject[] given) {
         check();
-        return (PyStr) PyBytes.hexadecimal(octets(), given);
+        byte[] source = octets();
+        // The separator's length is asked for inside `hexadecimal`, so a separator whose `__len__`
+        // releases this view would free the run the copy walks; the temporary export refuses it.
+        transientExports++;
+        try {
+            return (PyStr) PyBytes.hexadecimal(source, given);
+        } finally {
+            transientExports--;
+        }
     }
 
     /**
@@ -802,10 +824,12 @@ public final class PyMemoryView extends PyObject {
             equal = this == other;
         } else if (other instanceof PyMemoryView view) {
             equal = view.released ? this == other : sameElements(view);
-        } else if (other instanceof PyBytes || other instanceof PyByteArray) {
-            equal = matchesOctets(PyBytes.octets(other));
         } else {
-            return PyNotImplemented.INSTANCE;
+            BufferShape theirs = bufferShape(other);
+            if (theirs == null) {
+                return PyNotImplemented.INSTANCE;
+            }
+            equal = equalTo(theirs);
         }
         return PyBool.of(cmp == CompareOp.EQ ? equal : !equal);
     }
@@ -841,6 +865,11 @@ public final class PyMemoryView extends PyObject {
      */
     @Override
     public long hash() {
+        if (hashComputed) {
+            // CPython stores the hash in the header: a released view keeps answering it, and a second
+            // call never looks at a run the first call already read.
+            return storedHash;
+        }
         check();
         if (!readonly) {
             throw Slots.valueError("cannot hash writable memoryview object");
@@ -849,7 +878,20 @@ public final class PyMemoryView extends PyObject {
         if (code != 'B' && code != 'b' && code != 'c') {
             throw Slots.valueError("memoryview: hashing is restricted to formats 'B', 'b' or 'c'");
         }
-        return PyHash.bytesHash(octets());
+        if (obj != null) {
+            // The exporter's own hash runs here, which is where a subclass may try to release this very
+            // view; the temporary export makes that attempt a BufferError. A failure keeps its own
+            // sentence, as PyObject_Hash's error does in the reference.
+            transientExports++;
+            try {
+                obj.hash();
+            } finally {
+                transientExports--;
+            }
+        }
+        storedHash = PyHash.bytesHash(octets());
+        hashComputed = true;
+        return storedHash;
     }
 
     /**
@@ -912,7 +954,164 @@ public final class PyMemoryView extends PyObject {
         if (itemsize != other.itemsize || !formatFamily().equals(other.formatFamily())) {
             return false;
         }
-        return Arrays.equals(octets(), other.octets());
+        byte[] mine = octets();
+        byte[] theirs = other.octets();
+        for (int i = 0; i < elements(); i++) {
+            if (!valuesEqual(mine, i * itemsize, code(), theirs, i * other.itemsize, other.code())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * A buffer another exporter presents: its shape, element width, format code and flat octets.
+     *
+     * <p>Only the exporters this runtime knows are described this precisely. Everything else that
+     * exports a buffer is read the way {@code PyBUF_FULL_RO} would read it into a flat run — one
+     * dimension of {@code B} — which covers {@code bytes}, {@code bytearray} and {@code mmap}.
+     */
+    private record BufferShape(long[] shape, int itemsize, char code, byte[] octets) {
+
+        /** The description, or null when the value exports no buffer. */
+        static BufferShape of(PyObject value) {
+            if (value instanceof PyArray array) {
+                return new BufferShape(
+                        new long[] {array.size()},
+                        array.itemSizeValue(),
+                        array.typecodeValue(),
+                        array.rawBytes());
+            }
+            byte[] run = PyMemoryView.bufferIfAny(value);
+            if (run == null) {
+                return null;
+            }
+            return new BufferShape(new long[] {run.length}, 1, 'B', run);
+        }
+    }
+
+    /** Whether this window's elements equal the ones another buffer presents. */
+    private boolean equalTo(BufferShape other) {
+        if (shape.length != other.shape.length) {
+            return false;
+        }
+        for (int d = 0; d < shape.length; d++) {
+            if (shape[d] != other.shape[d]) {
+                return false;
+            }
+        }
+        byte[] mine = octets();
+        for (int i = 0; i < elements(); i++) {
+            if (!valuesEqual(
+                    mine, i * itemsize, code(),
+                    other.octets, i * other.itemsize, other.code)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static BufferShape bufferShape(PyObject value) {
+        return BufferShape.of(value);
+    }
+
+    /**
+     * Whether two elements are the same value in their own formats.
+     *
+     * <p>{@code memory_richcompare} reads both formats through {@code struct} and compares the values,
+     * not the octets: {@code '?'} is true for any non-zero element, a float is compared by value (so
+     * {@code -0.0} equals {@code 0.0} and NaN equals nothing), and a signed and an unsigned code of
+     * the same width are compared by the numbers they spell. Only formats this runtime cannot read as
+     * a value — {@code 'c'} and the unreadable ones — fall back to comparing the octet.
+     */
+    private static boolean valuesEqual(
+            byte[] a, int ai, char ca, byte[] b, int bi, char cb) {
+        if (ca == '?' && cb == '?') {
+            return (octet(a, ai) != 0) == (octet(b, bi) != 0);
+        }
+        if (isFloatCode(ca) && isFloatCode(cb)) {
+            return floating(a, ai, ca) == floating(b, bi, cb);
+        }
+        if (isIntegerCode(ca) && isIntegerCode(cb)) {
+            return integer(a, ai, ca).equals(integer(b, bi, cb));
+        }
+        return octet(a, ai) == octet(b, bi);
+    }
+
+    private static boolean isFloatCode(char code) {
+        return code == 'f' || code == 'd' || code == 'e';
+    }
+
+    private static boolean isIntegerCode(char code) {
+        switch (code) {
+            case 'b':
+            case 'B':
+            case 'h':
+            case 'H':
+            case 'i':
+            case 'I':
+            case 'l':
+            case 'L':
+            case 'q':
+            case 'Q':
+            case 'n':
+            case 'N':
+            case 'P':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static int octet(byte[] run, int at) {
+        return run[at] & 0xff;
+    }
+
+    /** One element of a flat run read as a little-endian integer of the signedness its code spells. */
+    private static BigInteger integer(byte[] run, int at, char code) {
+        switch (code) {
+            case 'b':
+                return BigInteger.valueOf((byte) octet(run, at));
+            case 'B':
+                return BigInteger.valueOf(octet(run, at));
+            case 'h':
+                return BigInteger.valueOf((short) readLE(run, at, 2));
+            case 'H':
+                return BigInteger.valueOf(readLE(run, at, 2));
+            case 'i':
+                return BigInteger.valueOf((int) readLE(run, at, 4));
+            case 'I':
+                return BigInteger.valueOf(readLE(run, at, 4) & 0xffffffffL);
+            case 'l':
+            case 'q':
+            case 'n':
+                return BigInteger.valueOf(readLE(run, at, 8));
+            default:
+                long value = readLE(run, at, 8);
+                return value >= 0
+                        ? BigInteger.valueOf(value)
+                        : BigInteger.valueOf(value).add(BigInteger.ONE.shiftLeft(64));
+        }
+    }
+
+    /** One element of a flat run read as the floating value its code spells. */
+    private static double floating(byte[] run, int at, char code) {
+        switch (code) {
+            case 'f':
+                return Float.intBitsToFloat((int) readLE(run, at, 4));
+            case 'd':
+                return Double.longBitsToDouble(readLE(run, at, 8));
+            default:
+                return halfToDouble((short) readLE(run, at, 2));
+        }
+    }
+
+    private static long readLE(byte[] run, int at, int width) {
+        long value = 0;
+        for (int i = width - 1; i >= 0; i--) {
+            value = (value << 8) | octet(run, at + i);
+        }
+        return value;
     }
 
     /** Whether a plain run stands in for this view: one dimension of the {@code B} family. */
