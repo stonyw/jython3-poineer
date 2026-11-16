@@ -2467,6 +2467,14 @@ final class TypeDict {
         table.wrapper("__gt__", GT_DOC, comparing(CompareOp.GT));
         table.wrapper("__ge__", GE_DOC, comparing(CompareOp.GE));
         table.wrapper("__iter__", ITER_DOC, args -> args[0].iterator());
+        // `memory_reduce`: a window holds no state of its own that a copy could rebuild — the octets
+        // live in the exporter — so both protocol hooks refuse in the reference's one sentence, and
+        // `copy.copy` reaches it through `__reduce_ex__` just as `pickle` does.
+        Method refusePickle = (args, kwNames, qualified) -> {
+            throw Slots.typeError("cannot pickle memoryview objects");
+        };
+        table.raw("__reduce__", null, refusePickle);
+        table.raw("__reduce_ex__", null, refusePickle);
         table.wrapper("__buffer__", BUFFER_DOC, TypeDict::exposeMemoryBuffer);
         table.wrapper("__release_buffer__", RELEASE_BUFFER_DOC, TypeDict::memoryviewReleaseBuffer);
         table.wrapper("__len__", LEN_DOC, args -> args[0].length());

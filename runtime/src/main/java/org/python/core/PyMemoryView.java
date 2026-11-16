@@ -1167,7 +1167,11 @@ public final class PyMemoryView extends PyObject {
             if (shape.length > 1) {
                 throw unimplemented("multi-dimensional sub-views are not implemented");
             }
-            return elementAt(position(indexOf(key)));
+            // The index protocol is the program's code, so it may have released this view; the
+            // reference checks again on the way into `memory_item`, after the conversion.
+            int flat = indexOf(key);
+            check();
+            return elementAt(position(flat));
         }
         if (Slices.isSlice(key)) {
             return sliced((PySlice) key);
@@ -1186,7 +1190,9 @@ public final class PyMemoryView extends PyObject {
             if (shape.length > 1) {
                 throw unimplemented("multi-dimensional sub-views are not implemented");
             }
-            writeElement(position(indexOf(key)), value);
+            int flat = indexOf(key);
+            check();
+            writeElement(position(flat), value);
         } else if (Slices.isSlice(key)) {
             assignSlice((PySlice) key, value);
         } else if (key instanceof PyTuple tuple) {
@@ -1350,7 +1356,10 @@ public final class PyMemoryView extends PyObject {
                 writeOctet(at, octets[0] & 0xff);
                 return;
             case '?':
-                writeOctet(at, Slots.truth(value) ? 1 : 0);
+                boolean truth = Slots.truth(value);
+                // `__bool__` is the program's code and may have released the view.
+                check();
+                writeOctet(at, truth ? 1 : 0);
                 return;
             case 'b':
                 writeInteger(at, value, code, BigInteger.valueOf(-128), BigInteger.valueOf(127));
@@ -1409,19 +1418,20 @@ public final class PyMemoryView extends PyObject {
         if (number.compareTo(minimum) < 0 || number.compareTo(maximum) > 0) {
             throw Slots.valueError("memoryview: invalid value for format '%c'", code);
         }
+        // `__index__` is the program's code and may have released the view.
+        check();
         writeLE(at, itemsize, number.longValue());
     }
 
     /** A floating-point element, which also accepts an integer the way the reference does. */
     private void writeFloat(int at, PyObject value, char code) {
-        double number;
-        if (value instanceof PyFloat real) {
-            number = real.getValue();
-        } else if (Numbers.isIndex(value)) {
-            number = Numbers.asIndex(value).doubleValue();
-        } else {
+        Double answer = Numbers.floatOf(value);
+        if (answer == null) {
             throw Slots.typeError("memoryview: invalid type for format '%c'", code);
         }
+        double number = answer;
+        // `__float__` (or the index fallback) is the program's code and may have released the view.
+        check();
         switch (code) {
             case 'f':
                 writeLE(at, 4, Float.floatToIntBits((float) number) & 0xffffffffL);
@@ -1511,7 +1521,9 @@ public final class PyMemoryView extends PyObject {
                 throw unimplemented("multi-dimensional slicing is not implemented");
             }
             if (Numbers.isIndex(element)) {
-                return elementAt(position(indexOf(element)));
+                int flat = indexOf(element);
+                check();
+                return elementAt(position(flat));
             }
             throw Slots.typeError("memoryview: invalid slice key");
         }
@@ -1543,6 +1555,7 @@ public final class PyMemoryView extends PyObject {
         for (int d = 0; d < size; d++) {
             at += dimensionIndex(tuple.at(d), d) * strides[d];
         }
+        check();
         return elementAt((int) at);
     }
 
@@ -1599,7 +1612,9 @@ public final class PyMemoryView extends PyObject {
                         "memoryview slice assignments are currently restricted to ndim = 1");
             }
             if (Numbers.isIndex(element)) {
-                writeElement(position(indexOf(element)), value);
+                int flat = indexOf(element);
+                check();
+                writeElement(position(flat), value);
                 return;
             }
             throw Slots.typeError("memoryview: invalid slice key");
@@ -1623,6 +1638,7 @@ public final class PyMemoryView extends PyObject {
             }
             at += dimensionIndex(key, d) * strides[d];
         }
+        check();
         writeElement((int) at, value);
     }
 
@@ -1637,6 +1653,8 @@ public final class PyMemoryView extends PyObject {
     private void assignSlice(PySlice key, PyObject value) {
         byte[] source = bufferOctets(value);
         Window window = windowOf(key);
+        // The bounds went through the index protocol, which may have released this view.
+        check();
         if (source.length != (long) window.count() * itemsize) {
             throw Slots.valueError(
                     "memoryview assignment: lvalue and rvalue have different structures");
