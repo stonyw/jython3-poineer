@@ -619,7 +619,8 @@ class Jy3LauncherTest {
                 "40_re_ssize_args.py",
                 "41_subprocess_pathlike.py",
                 "42_numeric_slot_order.py",
-                "43_m_run_module.py");
+                "43_m_run_module.py",
+                "44_stdin_and_interrupt.py");
     }
 
     private static List<String> m3Corpus() {

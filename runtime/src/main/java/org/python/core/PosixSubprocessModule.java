@@ -163,20 +163,42 @@ final class PosixSubprocessModule {
         if ((options & WNOHANG) != 0 && child.process.isAlive()) {
             return PyTuple.of(PyInt.of(0), PyInt.of(0));
         }
-        int status;
+        int waited;
         // The child may run for a long time: wait for it with the interpreter lock given up.
-        status = Gil.blocking(() -> {
+        waited = Gil.blocking(() -> {
             try {
                 return child.process.waitFor();
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 throw Slots.osError("waitpid() was interrupted");
             }
-        }) << 8;
+        });
+        int status = encodeWaitStatus(waited);
         synchronized (CHILDREN) {
             CHILDREN.remove(pid);
         }
         return PyTuple.of(PyInt.of(pid), PyInt.of(status));
+    }
+
+    /** The highest signal number the JVM's `0x80 + signal` convention can stand for. */
+    private static final int HIGHEST_SIGNAL = 64;
+
+    /**
+     * Turn {@link Process#waitFor()}'s answer into a POSIX wait status.
+     *
+     * <p>The JVM does not hand out the raw status: a child a signal ended comes back as
+     * {@code 0x80 + signal} and an ordinary exit as the code itself. A POSIX status keeps the exit
+     * code in the second byte and the terminating signal in the low seven bits, which is exactly what
+     * {@code subprocess} reads to report {@code -SIGINT} for a child that pressed {@code ^C} — the
+     * values {@code TestExit} waits for. The JVM's convention cannot tell a signal death from a
+     * program that deliberately exits with {@code 128 + signal}; those values are read the POSIX way,
+     * because that is the meaning every parent process depends on.
+     */
+    private static int encodeWaitStatus(int waited) {
+        if (waited > 128 && waited <= 128 + HIGHEST_SIGNAL) {
+            return waited - 128;
+        }
+        return waited << 8;
     }
 
     /** The child register for a start that failed: {@code waitpid} still has to answer it once. */

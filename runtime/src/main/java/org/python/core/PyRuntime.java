@@ -114,11 +114,12 @@ public final class PyRuntime {
             boolean dontWriteBytecode,
             boolean noSite,
             boolean noUserSite,
-            int optimize) {
+            int optimize,
+            boolean isolated) {
 
         /** What a launcher given no switches at all reports. */
         public static final CommandLine NONE =
-                new CommandLine(List.of(), List.of(), false, false, false, false, false, 0);
+                new CommandLine(List.of(), List.of(), false, false, false, false, false, 0, false);
     }
 
     private static CommandLine commandLine = CommandLine.NONE;
@@ -1788,12 +1789,14 @@ public final class PyRuntime {
      * {@code sys.flags}: the interpreter's start-up switches, all eighteen the reference answers.
      *
      * <p>Each member says what this runtime really does rather than what a switch asked for, because a
-     * flag that is accepted and not applied must not claim otherwise. Two follow that rule visibly:
-     * {@code ignore_environment} and {@code isolated} stay 0 because {@code -E} and {@code -I} are
-     * accepted but {@code PYTHONPATH} is still honoured; {@code hash_randomization} is 0 because text
-     * hashing is a deterministic FNV-1a with no per-process seed. {@code optimize} is what
-     * {@code -O} or {@code -OO} asked for, because the level really does reach the code objects.
-     * {@code dev_mode} and {@code safe_path} are booleans in the reference.
+     * flag that is accepted and not applied must not claim otherwise. {@code ignore_environment} stays
+     * 0 because {@code -E} is accepted but {@code PYTHONPATH} is still honoured; {@code isolated} and
+     * {@code safe_path} report {@code -I}, which really does keep the first entry off {@code sys.path}
+     * even though it cannot also afford to drop {@code PYTHONPATH}, the only place this runtime's
+     * standard library comes from. {@code hash_randomization} is 0 because text hashing is a
+     * deterministic FNV-1a with no per-process seed. {@code optimize} is what {@code -O} or
+     * {@code -OO} asked for, because the level really does reach the code objects.
+     * {@code dev_mode}, {@code safe_path} and {@code isolated} are booleans in the reference.
      *
      * <p>{@code utf8_mode} is always 1: the source decoder, the filesystem calls and the three streams
      * are unconditionally UTF-8 here, so {@code -X utf8} asks for what already holds. {@code
@@ -1815,11 +1818,11 @@ public final class PyRuntime {
         namespace.set("bytes_warning", PyInt.of(0));
         namespace.set("quiet", PyInt.of(commandLine.quiet() ? 1 : 0));
         namespace.set("hash_randomization", PyInt.of(0));
-        namespace.set("isolated", PyInt.of(0));
+        namespace.set("isolated", PyInt.of(commandLine.isolated() ? 1 : 0));
         namespace.set("dev_mode", PyBool.of(commandLine.devMode()));
         namespace.set("utf8_mode", PyInt.of(1));
         namespace.set("warn_default_encoding", PyInt.of(0));
-        namespace.set("safe_path", PyBool.FALSE);
+        namespace.set("safe_path", PyBool.of(commandLine.isolated()));
         namespace.set("int_max_str_digits", PyInt.of(Numbers.maxStrDigits()));
         namespace.set("context_aware_warnings", PyInt.of(0));
         // 3.14's `threading` reads this at import time; threads are refused rather than inherited, so

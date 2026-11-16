@@ -2011,3 +2011,61 @@ surprises 0。提交：代码 `4568400`、`869d3c8`、`beeffb1`、`6a306df` 四�
 - `env -u PYTHONPATH ./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` **BUILD
   SUCCESSFUL**（8m5s，26 任务：9 executed／17 up-to-date），JUnit 汇总 runtime 749／embedding 582
   （0 失败 0 错误 0 跳过），smoke 12/12、surprises 0。
+
+## M5 切片 77 明细（`test_runpy` 的 `TestExit` 七条；2026-11-17）
+
+**一、未捕获 `KeyboardInterrupt` 的退出语义**
+
+- 参考位点：`Py_RunMain` 收尾读 `_PyRuntime.signals.unhandled_keyboard_interrupt`，非零则
+  `exit_sigint()`——`signal(SIGINT, SIG_DFL)` 后 `kill(getpid(), SIGINT)`；进程由信号终止，父进程
+  `waitpid` 得到 `-SIGINT`，`subprocess.returncode == -2`，不是 130。标记由
+  `_Py_HandleSystemExitAndKeyboardInterrupt`（`Python/pythonrun.c`）在打印 traceback **之前**落下；
+  hook 自己抛的 `KeyboardInterrupt` 经 `_PyErr_PrintEx` 递归打印也落同一标记（实测 `-2`），hook 吞掉
+  异常则不影响；hook 抛 `SystemExit(7)` 仍是 exit 7。`SystemExit` 与普通异常两条路径不变。
+- 实现：`jy3.java` 的 `reportUncaught` 在原本返回 130 的两个位置改走 `interruptedExit`，记下静态
+  标记 `unhandledKeyboardInterrupt`；`main` 在 `flushStreams()` 之后、`System.exit` 之前调
+  `exitBySigint()`：先 `sun.misc.Signal.handle(INT, SIG_DFL)`，再由平台 `kill -INT <pid>` 投递。
+- 一次试错：装好 `SIG_DFL` 后 `sun.misc.Signal.raise` 以 `Unhandled signal: SIGINT` 拒绝发送；留着
+  JVM 自己的 handler 则只会走关停序列、仍是 130。因此信号交给 OS 投递——与参考的
+  `kill(getpid(), SIGINT)` 是同一个动作。`kill` 不可用或信号未送达时回退 130（参考无法自杀时同样
+  返回 `128 + SIGINT`）。
+
+**二、stdin 入口**
+
+- 参考实测（`pymain_run_stdin` → `_pymain_run_repl` → `_PyRun_AnyFile`）：无程序名且 `isatty(stdin)`
+  为假时整个流就是程序，`config_update_argv` 留下 `sys.argv == ['']`、`__file__ == '<stdin>'`、
+  `__spec__ is None`、`sys.path[0] == ''`；显式 `-` 只把 `argv[0]` 换成 `'-'`，其余相同；有终端时
+  照旧进 REPL。
+- 实现：原来的「`-i` 且无操作数」与「无操作数」两个分支合并；无操作数且 `System.console() == null`
+  （本 JDK 上即 stdin 不是终端）读 stdin 以 `<stdin>` 编译执行，`setArgv("", ...)`；有终端时保持
+  交互提示的具名拒绝。
+
+**三、子进程 wait 状态编码（7 条里 6 条真正的拦路者）**
+
+- `PosixSubprocessModule.waitpid` 原把 Java `Process.waitFor()` 的答案直接 `<<8`。JVM 对被信号结束的
+  子进程报 `0x80 + signal`，于是低字节 `WIFEXITED` 为真、`subprocess` 得到 130——即使子进程已按参考
+  以 SIGINT 自杀。
+- 新增 `encodeWaitStatus`：129–192 读作信号（低 7 位，`WIFSIGNALED`），其余左移 8 位。JVM 的约定
+  无法区分「信号终止」与「程序故意 exit 128+signal」，这一边界写在方法注释里。
+- 语料里 `send_signal(SIGINT)` 在 jy3 会撞 `os.kill` 只支持 0／SIGTERM／SIGKILL 的具名拒绝；改用
+  `subprocess.run(["kill","-INT",pid])`，不为本片扩 `os.kill` 的任意信号能力，两边输出逐字节相同。
+
+**四、`-m` 参数面、语料、回归、普查与门禁**
+
+- `-I` 现在真的把第一项（脚本目录／cwd／空串）从 `sys.path` 拿掉（`importPath(first, isolated)`），
+  并在 `sys.flags` 报 `isolated=1`、`safe_path`；`PYTHONPATH` 仍读（本运行时标准库唯一来源），`-E`
+  仍不应用（同一原因）——两条仍是具名缺口。`-m` 与 `-c`、脚本参数、`-m` 后无模块名、`-I`／`-E`／
+  `-B` 的先后，文案与退出码逐项与 3.14.10 相同（`-I -m name` → `<exe>: No module named name`，exit 1）。
+- 判据：`test_runpy` **40 ran／24 ok／0 fail／16 err**（原 17／7／16；参考 40／40／0／0／0），
+  `TestExit` 七条全绿；剩余 16 err 一字未动，仍是 `RunModuleTestCase`（10）与 `RunPathTestCase`（6）的
+  `.pyc`／`__cached__`／legacy pyc 簇，外加 zip import 与 `marshal` 读 code object。`test_json` 保持
+  **225／224／0／0／1**。六套回归逐数不变：`test_types` 128／124／0／2／2、`test_descr` 163／147／4／4／8、
+  `test_class` 42／39／1／0／2、`test_builtin` 147／−663／1／801／8、`test_re` 166／129／21／12／4、
+  `test_statistics` 400／400／0／0／0。普查 297 名 **238／57／2**。
+- 语料 `44_stdin_and_interrupt.py` 登记进 `m5Corpus()`，与 `python3.14` 逐字节相同：无参数 stdin、`-`、
+  `- x y` 的 `sys.argv`／`__file__`／`__spec__`／`path0`，stdin 里 `1/0` 的退出码，`-I -m`（找不到模块
+  的原文与 exit 1）与 `-E -B -m`，未捕获与 hook 抛出的 `KeyboardInterrupt`（returncode −2），以及
+  `kill -INT` 一个睡着的子进程后 `waitpid` 读到 −2。
+- `env -u PYTHONPATH ./gradlew check --no-watch-fs -Dorg.gradle.vfs.watch=false` **BUILD
+  SUCCESSFUL**（8m41s，26 任务：9 executed／17 up-to-date），JUnit 汇总 runtime 749／embedding 583
+  （0 失败 0 错误 0 跳过），smoke 12/12、surprises 0。

@@ -47,9 +47,11 @@ import org.python.front.cpython314.Cpython314Compiler;
  * and refused by name otherwise; an unknown key is never filed away and forgotten. Of the rest, the
  * ones accepted are ones whose promise already holds — {@code -B}, because no {@code .pyc} is ever
  * written, {@code -S} and {@code -s}, because no {@code site} or user directory is imported,
- * {@code -q}, because there is no banner to silence, {@code -u}, because both streams are already the
- * JVM's own, and {@code -E}/{@code -I}, which are accepted but not applied — {@code PYTHONPATH} is
- * still honoured under them, and {@code sys.flags} reports that rather than the switch.
+ * {@code -q}, because there is no banner to silence and {@code -u}, because both streams are already
+ * the JVM's own. {@code -I} keeps the working directory off {@code sys.path[0]} and reports itself in
+ * {@code sys.flags}, but {@code PYTHONPATH} is still honoured — it is the only place this runtime's
+ * standard library can come from — and {@code -E} is accepted without being applied for the same
+ * reason. Both gaps are named in the milestone notes.
  *
  * <p>Harness protocol, shared with {@code org.jython3.tools.harness.Jython3Backend}:
  *
@@ -78,9 +80,15 @@ public final class jy3 {
     /**
      * An uncaught {@code KeyboardInterrupt}, which leaves by {@code kill(getpid(), SIGINT)} so that the
      * caller learns the user pressed {@code ^C}: {@code 128 + SIGINT}, as CPython's {@code exit_sigint}
-     * counts it.
+     * counts it. It is also the fallback status when the signal itself cannot be delivered.
      */
     private static final int INTERRUPTED = 130;
+
+    /**
+     * Whether a {@code KeyboardInterrupt} escaped the program, which the reference remembers in
+     * {@code _PyRuntime.signals.unhandled_keyboard_interrupt} until the very end of {@code Py_RunMain}.
+     */
+    private static boolean unhandledKeyboardInterrupt;
 
     /** Anything outside the protocol's four codes, which the harness must read as a crash. */
     private static final int INTERNAL_CRASH = 70;
@@ -141,7 +149,41 @@ public final class jy3 {
         // Before exiting, not after: stdout is block-buffered whenever it is a pipe, and
         // System.exit makes no promise to drain a stream the JVM itself opened.
         PyRuntime.flushStreams();
+        if (unhandledKeyboardInterrupt) {
+            // `Py_RunMain`'s `exit_sigint`, after the atexit handlers and the final flush, so a parent
+            // that waits on the process sees it die from the signal rather than from a status that
+            // merely counts 128 + SIGINT.
+            status = exitBySigint();
+        }
         System.exit(status);
+    }
+
+    /**
+     * Leave by {@code SIGINT} the way the reference's {@code exit_sigint} does: restore the signal's
+     * default disposition, then kill the process with it.
+     *
+     * <p>Raising it from inside the JVM will not do. {@code sun.misc.Signal.raise} refuses a signal the
+     * VM no longer tracks once the default disposition has been installed, and leaving the VM's own
+     * handler in place turns {@code ^C} into the VM's shutdown sequence and an exit status of 130
+     * rather than a signal death. So the disposition is reset here — the same {@code signal(SIGINT,
+     * SIG_DFL)} — and the platform's {@code kill} delivers the signal, which is the same
+     * {@code kill(getpid(), SIGINT)}. Any failure falls back to the status the reference uses when it
+     * cannot signal itself.
+     */
+    private static int exitBySigint() {
+        try {
+            sun.misc.Signal.handle(new sun.misc.Signal("INT"), sun.misc.SignalHandler.SIG_DFL);
+            Process killed = new ProcessBuilder(
+                    "kill", "-INT", Long.toString(ProcessHandle.current().pid()))
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            killed.waitFor();
+        } catch (Throwable unavailable) {
+            // No signal support, or no `kill`: the reference falls back to 130 as well.
+        }
+        // Reaching here means the signal did not end the process.
+        return INTERRUPTED;
     }
 
     /** Parse the command line, compile whatever it names, run it. Returns the exit status. */
@@ -169,12 +211,13 @@ public final class jy3 {
         boolean noSite = false;
         int optimize = 0;
         boolean noUserSite = false;
+        boolean isolated = false;
 
         options:
         while (at < args.length) {
             String option = args[at];
             if (option.equals(HARNESS_FLAG)) {
-                return harness(args, at);
+                return harness(args, at, isolated);
             }
             if (option.equals("-")) {
                 stdin = true;
@@ -323,10 +366,17 @@ public final class jy3 {
                     noUserSite = true;
                     at++;
                 }
-                // `-E`, `-I` and `-u` are accepted and not applied: `PYTHONPATH` is still honoured
-                // under them and both streams are already the JVM's own. `sys.flags` reports that
-                // honestly, and the milestone notes name the gap.
-                case "-E", "-I", "-u" -> at++;
+                // `-E` and `-u` are accepted and not applied: `PYTHONPATH` is still honoured under
+                // `-E` and both streams are already the JVM's own. `sys.flags` reports that honestly,
+                // and the milestone notes name the gap.
+                case "-E", "-u" -> at++;
+                case "-I" -> {
+                    // Isolated mode also implies `-E` and `-s`; what this runtime can honour is the
+                    // part that decides where `-m` looks: no working directory on `sys.path`.
+                    isolated = true;
+                    noUserSite = true;
+                    at++;
+                }
                 default -> {
                     write("Unknown option: " + option + "\n" + USAGE);
                     return USAGE_ERROR;
@@ -348,7 +398,8 @@ public final class jy3 {
                         dontWriteBytecode,
                         noSite,
                         noUserSite,
-                        optimize));
+                        optimize,
+                        isolated));
 
         List<String> operands = new ArrayList<>();
         for (int i = at; i < args.length; i++) {
@@ -358,7 +409,8 @@ public final class jy3 {
         if (module != null) {
             // `-m` puts the working directory on `sys.path[0]` — the absolute one, because the module
             // is found from wherever the program was started rather than from where a script lives.
-            start(importPath(workingDirectory()));
+            // `-I` is the one switch that takes it away again.
+            start(importPath(workingDirectory(), isolated));
             // `sys.argv` is the switch plus the program's arguments: the module name is not an element
             // of it, because `runpy` writes the module's own origin into slot 0.
             PyRuntime.setArgv("-m", operands);
@@ -369,7 +421,7 @@ public final class jy3 {
             return interactive ? interact(optimize, status) : status;
         }
         if (command != null) {
-            start(importPath(""));
+            start(importPath("", isolated));
             PyRuntime.setArgv("-c", operands);
             PyCode compiled = Cpython314Compiler.compileUnit(command, "<string>", "exec", 0, optimize, -1);
             // The command is the only copy of this source there is: a report of a failure in it has
@@ -380,26 +432,29 @@ public final class jy3 {
             return interactive ? interact(optimize, status) : status;
         }
         if (stdin) {
-            start(importPath(""));
+            start(importPath("", isolated));
             PyRuntime.setArgv("-", operands);
             int status = execute(Cpython314Compiler.compileUnit(
                     readStdin(), "<stdin>", "exec", 0, optimize, -1), "<stdin>");
             return interactive ? interact(optimize, status) : status;
         }
-        if (interactive && operands.isEmpty() && System.console() == null) {
-            // With `-i` and no program named, standard input is the program and the pipe ends the
-            // interactive part as soon as it is consumed, which is what the reference does.
-            start(importPath(""));
-            PyRuntime.setArgv("-", operands);
+        if (operands.isEmpty()) {
+            if (System.console() != null) {
+                return notImplemented(
+                        "the interactive prompt",
+                        "a terminal, a line editor and a read-eval-print loop belong to the native"
+                                + " frontend milestone. Pass a file, -c cmd, or - for stdin");
+            }
+            // No program named and no terminal on standard input: the reference's `pymain_run_stdin`
+            // finds `isatty(stdin)` false, `_pymain_run_repl` therefore falls straight through to
+            // `_PyRun_AnyFile`, and the whole stream is the program. Its `sys.argv` is not `['-']`:
+            // `-` is what the explicit form asks for, while here `config_update_argv` had no program
+            // argument at all and left the one empty element.
+            start(importPath("", isolated));
+            PyRuntime.setArgv("", operands);
             int status = execute(Cpython314Compiler.compileUnit(
                     readStdin(), "<stdin>", "exec", 0, optimize, -1), "<stdin>");
-            return interact(optimize, status);
-        }
-        if (operands.isEmpty()) {
-            return notImplemented(
-                    "the interactive prompt",
-                    "a terminal, a line editor and a read-eval-print loop belong to the native"
-                            + " frontend milestone. Pass a file, -c cmd, or - for stdin");
+            return interactive ? interact(optimize, status) : status;
         }
 
         Path script;
@@ -427,7 +482,7 @@ public final class jy3 {
         // startup that happens before `setSysPath` builds `sys.path` from the empty default — which
         // is what a script run would otherwise get for `importlib.__path__` and every other name
         // derived from the search path.
-        start(importPath(scriptDirectory(script)));
+        start(importPath(scriptDirectory(script), isolated));
         PyRuntime.setArgv(operands.get(0), operands.subList(1, operands.size()));
         Cpython314Compiler.Compiled compiled = Cpython314Compiler.compileFile(script, optimize);
         int status = execute(compiled.code(), compiled.fileName());
@@ -498,13 +553,20 @@ public final class jy3 {
      *
      * <p>The reference puts the script's directory first, resolved through symlinks, and the empty
      * string — the working directory — first for {@code -c} and stdin. {@code PYTHONPATH} follows in
-     * both cases, split on the platform's path separator. {@code -E} and {@code -I} are accepted and
-     * ignored, so {@code PYTHONPATH} is honoured even under them; that omission is named in the
-     * milestone notes.
+     * both cases, split on the platform's path separator. {@code -I} removes that first entry
+     * ({@code safe_path}) but {@code PYTHONPATH} is still honoured, because in this runtime it is
+     * where the standard library lives; {@code -E} likewise stays unapplied. Both omissions are
+     * named in the milestone notes.
      */
-    private static List<String> importPath(String first) {
+    private static List<String> importPath(String first, boolean isolated) {
         List<String> directories = new ArrayList<>();
-        directories.add(first);
+        // `-I`'s `safe_path` keeps the first entry — the script's directory, the working directory,
+        // or the empty string — out of `sys.path`, which is what makes `-I -m name` look for the
+        // module in the same places an installed program would. `PYTHONPATH` is still read: in this
+        // runtime it is where the standard library itself lives, a gap the milestone notes name.
+        if (!isolated) {
+            directories.add(first);
+        }
         String fromEnvironment = System.getenv("PYTHONPATH");
         if (fromEnvironment != null) {
             for (String entry : fromEnvironment.split(
@@ -565,7 +627,7 @@ public final class jy3 {
      * reported as unimplemented rather than as skipped: exit code 2 means "skipped" to the harness and
      * would hide the fact that nothing was run.
      */
-    private static int harness(String[] args, int at) {
+    private static int harness(String[] args, int at, boolean isolated) {
         if (at + 1 >= args.length) {
             write("Argument expected for the " + HARNESS_FLAG + " option\n" + USAGE);
             return NOT_IMPLEMENTED;
@@ -577,7 +639,7 @@ public final class jy3 {
                     "the regrtest target " + target,
                     "no test/" + target + ".py under the working directory");
         }
-        start(importPath(""));
+        start(importPath("", isolated));
         PyRuntime.setArgv(test.toString(), List.of());
         Cpython314Compiler.Compiled compiled =
                 Cpython314Compiler.compileFile(test, PyRuntime.optimizeLevel());
@@ -655,10 +717,13 @@ public final class jy3 {
      * exception was:}. A {@code SystemExit} raised from inside a hook still wins over all of that text,
      * because the second {@code handle_system_exit} call exits the process where it stands.
      *
-     * <p>The note an interrupt leaves behind is what the process exits with: 130, which is CPython
-     * raising {@code SIGINT} at itself so that a shell learns the user pressed {@code ^C}. It is 130
-     * whether the interrupt was the escaped exception or only what the hook raised, and a hook that
-     * swallows the error does not change it — the note was made before the hook ran.
+     * <p>The note an interrupt leaves behind is what the process exits with: {@code SIGINT} raised at
+     * itself, so that a shell and {@code waitpid} learn the user pressed {@code ^C} — the reference's
+     * {@code exit_sigint} sets {@code SIGINT}'s default disposition and then kills the process, and a
+     * parent therefore sees {@code -2} rather than 130. It happens whether the interrupt was the
+     * escaped exception or only what the hook raised, because the flag is set before the hook runs;
+     * a hook that swallows the error does not change it. If the signal cannot be raised the reference's
+     * own fallback applies and the status is 130.
      */
     private static int reportUncaught(PyRaise raised) {
         PyBaseException value = raised.value();
@@ -677,7 +742,7 @@ public final class jy3 {
         if (hook == null) {
             write("sys.excepthook is missing\n");
             TracebackReport.print(value);
-            return interrupted ? INTERRUPTED : FAILED;
+            return interruptedExit(interrupted);
         }
         try {
             Slots.call(hook, new PyObject[] {value.exceptionType(), value, traceback}, null);
@@ -695,6 +760,19 @@ public final class jy3 {
             TracebackReport.print(fromHook);
             write("\nOriginal exception was:\n");
             TracebackReport.print(value);
+        }
+        return interruptedExit(interrupted);
+    }
+
+    /**
+     * Record that the escaped error was an interrupt — the reference's
+     * {@code _PyRuntime.signals.unhandled_keyboard_interrupt}, read once at the end of
+     * {@code Py_RunMain} — and report the status the reference would have used had the signal not
+     * been available.
+     */
+    private static int interruptedExit(boolean interrupted) {
+        if (interrupted) {
+            unhandledKeyboardInterrupt = true;
         }
         return interrupted ? INTERRUPTED : FAILED;
     }
