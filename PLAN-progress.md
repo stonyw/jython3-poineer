@@ -1190,3 +1190,46 @@ BLOB／CLOB 读成 `bytes`／`str`（Jython 2 返回 `java.sql.Blob`／`Clob`）
 读写、游标迭代与 `__exit__`、显式驱动错误路径，以及文档：`PLAN.md` §3.22 路线更新＋§3.23、
 `PLAN-progress.md`、`docs/sqlite3-inventory.md` 结论）。
 
+
+## M5 切片 67 明细（zxJDBC 第一轮缺口：`lastrowid`、`DBApiType`、过滤方法、`DataHandler` 盘点）
+
+**一、`lastrowid`（单独一笔，`1e07028`）**：参考 `PyCursor.updateAttributes()` 每次 `execute*` 后取
+`datahandler.getRowId(statement.statement)`；基类恒 `None`，`RowIdHandler` 反射驱动专有方法、失败即
+回落。实现改为 `prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)`（拒绝则回落普通
+`prepareStatement`），执行后读 `getGeneratedKeys()` 第一列（`Number`→`int`、`byte[]`→`bytes`、
+其余→`str`），空集／`SQLException`／`RuntimeException` 一律 `None`。sqlite 实测：建表前 `None`、
+DDL 后 `None`、两次 INSERT 得 `1`／`2`、SELECT 后 `None`、`executemany` 末行 `4`、显式主键 `100`、
+UPDATE 后 `None`、关闭后 `None`（`close→clear` 与参考同）。
+
+**二、`DataHandler` 盘点**：参考公开面全是 Java 类方法，参数为 JDBC 对象——`getMetaDataName`、
+`getProcedure`、`getRowId`、`preExecute`、`postExecute`、`setJDBCObject`×2、`getPyObject(ResultSet…)`、
+`getPyObject(CallableStatement…)`、`registerOut`、`checkNull`、`read`×2、`getSystemDataHandler`、
+`__chain__`；层次 `DataHandler→JDBC20DataHandler→JDBC30DataHandler`，另有 `FilterDataHandler`；
+`JDBC30DataHandler` 用 `ParameterMetaData` 选类型。**参考没有 `setJDBCTypes`**（全树 grep 0 命中）。
+能如实做的（BLOB→`bytes`、CLOB→`str`）已在 `ZxJdbcData`，且与参考 `getPyObject` 分支一致；不提供
+`cursor.datahandler`／`DataHandler`／`FilterDataHandler`：jy3 的 `Constructors.instantiate` 是固定
+分支表，新 `PyType` 不可构造／不可子类化，且钩子全要 JDBC 对象、jy3 无 Java 桥——具名不做。
+差异：参考 JDBC30 按列类型转换，本实现按 Python 值分派（接近 JDBC20）。
+
+**三、类型常量**：新增 `PyDBApiType extends PyInt`（`PyType.declare("DBApiType", PyType.INT)`），
+`java.sql.Types` 每个常量与四个别名都用它，别名取同一实例。实测 `type(STRING).__name__=="DBApiType"`、
+`STRING==12`、`isinstance(STRING,int)`、`ROWID is OTHER`、`DATETIME is TIMESTAMP`、
+`sqltype[STRING]=="VARCHAR"`、`STRING+1` 为普通 `int`。`Date`／`Time`／`Timestamp` 仍 `PyJavaObject`
+（参考是 `PyJavaInstance`，需保留 Java 值供 `setObject`；`type` 名为 `JavaObject` 已具名）；
+`Binary` 返回 `bytes`（参考对 `PyString` 转 `PyArray('b')`，具名差异）。
+
+**四、六个方法**：`scroll` 照 `StaticFetch.scroll`（relative／absolute，非法 mode →
+`ProgrammingError invalid cursor scroll mode [...]`，越界 → `IndexError cursor index [N] out of range`）；
+`nextset`／`prepare` → `NotSupportedError`（前者 `execute` 已关闭第一个结果集，回 `None` 会谎称没有；
+后者无可交回的 `Statement`）；`callproc` 先问 `supportsStoredProcedures()`，sqlite 抛参考资源原文
+`stored procedures not implemented in db`，支持时另抛自己的 `NotSupportedError`（不绑输出参数）；
+`setinputsizes`／`setoutputsize` 按 DB-API 2.0「free to do nothing」与 Jython 2 的 `not implemented`
+返回 `None`。实测三行集上 `scroll(0,"absolute")→(1,)`、`scroll(2,"absolute")→(3,)`、
+`scroll(-1,"relative")→(3,)`；三类异常消息原文如上。
+
+**五、回归与门禁**：无驱动原文重跑与切片 66 逐字相同；`e2e.py`／`shape.py` 无退化；类型往返
+`INTEGER/TEXT/REAL/NULL/BLOB` → `int/str/float/None/bytes`；`test_io` 675／515／82／58／20、
+`test_csv` 134／129／0／1／4、`test_tarfile` 768／411／23／1／333、`test_bytes` 325／298／6／8／13、
+`test_memoryview` 171／124／0／27／20 与基线一致；`./gradlew check --no-watch-fs
+-Dorg.gradle.vfs.watch=false` 单独跑 **BUILD SUCCESSFUL**。提交：`lastrowid` 一笔（`1e07028`），
+`DBApiType`＋六个方法一笔，PLAN 双文件一笔。
