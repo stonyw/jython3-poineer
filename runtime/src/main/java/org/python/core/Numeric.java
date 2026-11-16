@@ -48,20 +48,6 @@ final class Numeric {
                 || value instanceof PyComplex;
     }
 
-    /** {@code a op b} for two numbers, or a refusal when either is not one. */
-    static PyObject apply(BinaryOp op, PyObject a, PyObject b) {
-        if (!isNumber(a) || !isNumber(b)) {
-            return PyNotImplemented.INSTANCE;
-        }
-        if (a instanceof PyComplex || b instanceof PyComplex) {
-            return complexOp(op, asComplex(a), asComplex(b));
-        }
-        if (a instanceof PyFloat || b instanceof PyFloat) {
-            return floatOp(op, asDouble(a), asDouble(b));
-        }
-        return intOp(op, Numbers.asInteger(a), Numbers.asInteger(b));
-    }
-
     // --- int -------------------------------------------------------------------------------
 
     private static PyObject intOp(BinaryOp op, BigInteger x, BigInteger y) {
@@ -114,6 +100,11 @@ final class Numeric {
      * declines although {@code 5 + 2.5} answers, because the operator promotes inside {@code nb_add} while
      * the slot on its own reports only what it could not do. A {@code bool} passes the gate — {@code
      * int.__lshift__(5, True)} is {@code 10} — and a float, a complex or anything else does not.
+     *
+     * <p>Declining is observable. {@code 1 / 2.5} answers only because {@code long_true_divide}
+     * refuses a float and {@link Slots#binary} then asks the float's own slot; {@code 1 / MyFloat(2.5)}
+     * answers with {@code MyFloat.__rtruediv__} for the same reason, where promoting here would have
+     * silently produced a plain float.
      */
     static PyObject integerSlot(BinaryOp op, PyObject a, PyObject b) {
         BigInteger x = Numbers.asInteger(a);

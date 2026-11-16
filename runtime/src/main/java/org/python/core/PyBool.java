@@ -32,12 +32,12 @@ public final class PyBool extends PyObject {
 
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
-        return Numeric.apply(op, this, other);
+        return Numeric.integerSlot(op, this, other);
     }
 
     @Override
     public PyObject reflectedOp(BinaryOp op, PyObject other) {
-        return Numeric.apply(op, other, this);
+        return Numeric.integerSlot(op, other, this);
     }
 
     @Override

@@ -2037,7 +2037,7 @@ final class Builtins {
             return PyNotImplemented.INSTANCE;
         }
         if (!modulo) {
-            return Numeric.apply(BinaryOp.POW, PyInt.of(b), PyInt.of(e));
+            return Numeric.integerSlot(BinaryOp.POW, PyInt.of(b), PyInt.of(e));
         }
         return modularPower(b, e, m);
     }

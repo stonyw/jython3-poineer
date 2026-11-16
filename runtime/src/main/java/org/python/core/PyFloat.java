@@ -34,12 +34,13 @@ public class PyFloat extends PyObject {
 
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
-        return Numeric.apply(op, this, other);
+        return Numeric.floatSlot(op, this, other);
     }
 
     @Override
     public PyObject reflectedOp(BinaryOp op, PyObject other) {
-        return Numeric.apply(op, other, this);
+        // `float_<op>` called as `slotw(v, w)`: the operand order is the expression's, not ours.
+        return Numeric.floatSlot(op, other, this);
     }
 
     @Override

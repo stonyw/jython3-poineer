@@ -67,13 +67,13 @@ public class PyInt extends PyObject {
 
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
-        return Numeric.apply(op, this, other);
+        return Numeric.integerSlot(op, this, other);
     }
 
     @Override
     public PyObject reflectedOp(BinaryOp op, PyObject other) {
-        // The tower is closed: any number on either side is computed here, so nothing reflects back.
-        return Numeric.apply(op, other, this);
+        // `long_<op>` called as `slotw(v, w)`: the operand order is the expression's, not ours.
+        return Numeric.integerSlot(op, other, this);
     }
 
     @Override

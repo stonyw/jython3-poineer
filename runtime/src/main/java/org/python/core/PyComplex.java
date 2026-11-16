@@ -39,12 +39,13 @@ public class PyComplex extends PyObject {
 
     @Override
     public PyObject binaryOp(BinaryOp op, PyObject other) {
-        return Numeric.apply(op, this, other);
+        return Numeric.complexSlot(op, this, other);
     }
 
     @Override
     public PyObject reflectedOp(BinaryOp op, PyObject other) {
-        return Numeric.apply(op, other, this);
+        // `complex_<op>` called as `slotw(v, w)`: the operand order is the expression's, not ours.
+        return Numeric.complexSlot(op, other, this);
     }
 
     @Override
