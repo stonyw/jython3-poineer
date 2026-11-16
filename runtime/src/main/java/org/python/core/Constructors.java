@@ -1321,11 +1321,12 @@ final class Constructors {
         String mode = given[2] == PyNone.INSTANCE
                 ? "strict"
                 : requiredText("errors", given[2]);
-        if (!(value instanceof PyBytes source)) {
+        byte[] source = PyMemoryView.bufferIfAny(value);
+        if (source == null) {
             throw Slots.typeError(
                     "decoding to str: need a bytes-like object, %s found", value.getType().name());
         }
-        return PyStr.of(source.decodeText(codec, mode));
+        return PyStr.of(Decoder.decode(source, codec, mode));
     }
 
     /** An argument that CPython requires to be a {@code str}, checked positionally or by name alike. */

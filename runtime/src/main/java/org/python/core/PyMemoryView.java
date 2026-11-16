@@ -1305,7 +1305,7 @@ public final class PyMemoryView extends PyObject {
                 throw unimplemented("sub-views are not implemented");
             }
             if (size > 1) {
-                throw Slots.typeError("cannot index 1-dimension view with %d-element tuple", size);
+                throw tupleOfSeveral(tuple, "multi-dimensional slicing is not implemented");
             }
             PyObject element = tuple.at(0);
             if (Slices.isSlice(element)) {
@@ -1347,6 +1347,32 @@ public final class PyMemoryView extends PyObject {
         return elementAt((int) at);
     }
 
+    /**
+     * The refusal for a tuple too long for a one-dimensional view.
+     *
+     * <p>{@code is_multiindex} and {@code is_multislice} in {@code memoryobject.c} read the whole
+     * tuple before either refusal is chosen: all indices means "one element per dimension" and the
+     * count is what is wrong, all slices means a multi-dimensional slice, and anything mixed is
+     * neither, so the key itself is invalid.
+     */
+    private static PyRaise tupleOfSeveral(PyTuple tuple, String slicedSentence) {
+        boolean slices = true;
+        boolean indexes = true;
+        for (int i = 0; i < tuple.size(); i++) {
+            PyObject element = tuple.at(i);
+            slices &= Slices.isSlice(element);
+            indexes &= Numbers.isIndex(element);
+        }
+        if (slices) {
+            return unimplemented(slicedSentence);
+        }
+        if (indexes) {
+            return Slots.typeError(
+                    "cannot index 1-dimension view with %d-element tuple", tuple.size());
+        }
+        return Slots.typeError("memoryview: invalid slice key");
+    }
+
     /** One index of a multi-dimensional key, folded into that dimension's extent. */
     private int dimensionIndex(PyObject key, int dimension) {
         return Numbers.wrapIndex(
@@ -1364,7 +1390,9 @@ public final class PyMemoryView extends PyObject {
                 throw unimplemented("sub-views are not implemented");
             }
             if (size > 1) {
-                throw Slots.typeError("cannot index 1-dimension view with %d-element tuple", size);
+                throw tupleOfSeveral(
+                        tuple,
+                        "memoryview slice assignments are currently restricted to ndim = 1");
             }
             PyObject element = tuple.at(0);
             if (Slices.isSlice(element)) {

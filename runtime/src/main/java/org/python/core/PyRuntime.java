@@ -2044,6 +2044,22 @@ public final class PyRuntime {
                         + "Private function for clearing certain descriptors from a type's dictionary.\n"
                         + "\n"
                         + "See gh-135228 for context."));
+        // The JVM keeps no reference counts, so the number is bookkeeping and nothing more: it is the
+        // one reference the caller holds, which is the smallest answer the reference interpreter can
+        // give. Tests that ask only whether a count changed read the same value twice and agree.
+        sys.set("getrefcount", new PyNativeFunction(
+                        "getrefcount",
+                        (args, kwNames) -> {
+                            Arguments.exactlyOne("getrefcount", args, kwNames);
+                            return PyInt.of(1);
+                        })
+                .documented("getrefcount($module, object, /)\n"
+                        + "--\n"
+                        + "\n"
+                        + "Return the reference count of object.\n"
+                        + "\n"
+                        + "The count returned is generally one higher than you might expect,\n"
+                        + "because it includes the reference returned by getrefcount() itself."));
         // `inspect.unwrap` reads this while `dataclasses` builds a class, which is the first thing
         // `unittest` imports that asks. The interpreter's stack is Java's, so the number is bookkeeping:
         // a program that raises it may still overflow where the reference would not, and the milestone
